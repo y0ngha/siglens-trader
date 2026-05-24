@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 vi.mock('@/lib/api', () => ({
     api: {
         getStatus: vi.fn(),
+        getPositions: vi.fn(),
         getTrades: vi.fn(),
     },
 }));
@@ -20,9 +21,98 @@ function renderWithQuery(component: React.ReactElement) {
     return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 }
 
+const defaultStatus = {
+    running: true,
+    tradingMode: 'paper',
+    activePositions: 3,
+    todayTrades: 7,
+};
+
+const mockPositions = [
+    {
+        id: 1,
+        symbol: 'AAPL',
+        side: 'long',
+        quantity: 5,
+        avgPrice: '189.50',
+        currentPrice: '195.20',
+        openedAt: '2026-05-21T10:00:00Z',
+        status: 'open',
+    },
+    {
+        id: 2,
+        symbol: 'NVDA',
+        side: 'long',
+        quantity: 3,
+        avgPrice: '875.20',
+        currentPrice: '892.50',
+        openedAt: '2026-05-19T10:00:00Z',
+        status: 'open',
+    },
+];
+
+const mockTrades = [
+    {
+        id: 1,
+        symbol: 'AAPL',
+        side: 'buy',
+        orderType: 'market',
+        quantity: 5,
+        price: '189.50',
+        executedAt: '2026-05-24T14:30:00Z',
+        reason: null,
+        mode: 'paper',
+    },
+    {
+        id: 2,
+        symbol: 'NVDA',
+        side: 'buy',
+        orderType: 'market',
+        quantity: 3,
+        price: '875.20',
+        executedAt: '2026-05-23T10:00:00Z',
+        reason: null,
+        mode: 'paper',
+    },
+    {
+        id: 3,
+        symbol: 'TSLA',
+        side: 'sell',
+        orderType: 'market',
+        quantity: 5,
+        price: '255.30',
+        executedAt: '2026-05-22T15:00:00Z',
+        reason: null,
+        mode: 'paper',
+    },
+    {
+        id: 4,
+        symbol: 'GOOGL',
+        side: 'buy',
+        orderType: 'market',
+        quantity: 4,
+        price: '176.30',
+        executedAt: '2026-05-21T09:00:00Z',
+        reason: null,
+        mode: 'paper',
+    },
+    {
+        id: 5,
+        symbol: 'GOOGL',
+        side: 'sell',
+        orderType: 'market',
+        quantity: 4,
+        price: '181.90',
+        executedAt: '2026-05-20T12:00:00Z',
+        reason: null,
+        mode: 'paper',
+    },
+];
+
 describe('StatusPage', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mockedApi.getPositions.mockResolvedValue([]);
         mockedApi.getTrades.mockResolvedValue([]);
     });
 
@@ -33,12 +123,7 @@ describe('StatusPage', () => {
     });
 
     it('displays status data when loaded', async () => {
-        mockedApi.getStatus.mockResolvedValue({
-            running: true,
-            tradingMode: 'paper',
-            activePositions: 3,
-            todayTrades: 7,
-        });
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
 
         renderWithQuery(<StatusPage />);
 
@@ -143,86 +228,6 @@ describe('StatusPage', () => {
         });
     });
 
-    // --- Latest trade display tests ---
-
-    it('shows latest trade info when trades exist', async () => {
-        mockedApi.getStatus.mockResolvedValue({
-            running: true,
-            tradingMode: 'paper',
-            activePositions: 1,
-            todayTrades: 1,
-        });
-        mockedApi.getTrades.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                side: 'buy',
-                orderType: 'market',
-                quantity: 10,
-                price: '175.50',
-                executedAt: '2026-05-24T14:30:00Z',
-                reason: null,
-                mode: 'paper',
-            },
-        ]);
-
-        renderWithQuery(<StatusPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('AAPL')).toBeInTheDocument();
-        });
-
-        expect(screen.getByText('매수')).toBeInTheDocument();
-        expect(screen.getByText('$175.50')).toBeInTheDocument();
-    });
-
-    it('shows "거래 내역 없음" when no trades', async () => {
-        mockedApi.getStatus.mockResolvedValue({
-            running: true,
-            tradingMode: 'paper',
-            activePositions: 0,
-            todayTrades: 0,
-        });
-        mockedApi.getTrades.mockResolvedValue([]);
-
-        renderWithQuery(<StatusPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('거래 내역 없음')).toBeInTheDocument();
-        });
-    });
-
-    it('shows sell trade with red badge', async () => {
-        mockedApi.getStatus.mockResolvedValue({
-            running: true,
-            tradingMode: 'auto',
-            activePositions: 0,
-            todayTrades: 1,
-        });
-        mockedApi.getTrades.mockResolvedValue([
-            {
-                id: 2,
-                symbol: 'TSLA',
-                side: 'sell',
-                orderType: 'limit',
-                quantity: 5,
-                price: '200.00',
-                executedAt: '2026-05-24T15:00:00Z',
-                reason: null,
-                mode: 'auto',
-            },
-        ]);
-
-        renderWithQuery(<StatusPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('TSLA')).toBeInTheDocument();
-        });
-
-        expect(screen.getByText('매도')).toBeInTheDocument();
-        expect(screen.getByText('$200.00')).toBeInTheDocument();
-    });
-
     it('has health status aria-label for accessibility', async () => {
         mockedApi.getStatus.mockResolvedValue({
             running: true,
@@ -251,5 +256,216 @@ describe('StatusPage', () => {
         await waitFor(() => {
             expect(screen.getByText('모의투자')).toBeInTheDocument();
         });
+    });
+
+    // --- Portfolio (계좌 상태) tests ---
+
+    it('calculates portfolio values from positions data', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('total-invested')).toBeInTheDocument();
+        });
+
+        // totalInvested = (189.50 * 5) + (875.20 * 3) = 947.50 + 2625.60 = 3573.10
+        expect(screen.getByTestId('total-invested')).toHaveTextContent('$3,573.10');
+        // currentValue = (195.20 * 5) + (892.50 * 3) = 976.00 + 2677.50 = 3653.50
+        expect(screen.getByTestId('current-value')).toHaveTextContent('$3,653.50');
+        // pnl = (3653.50 - 3573.10) / 3573.10 * 100 = 2.25%
+        expect(screen.getByTestId('pnl-percent')).toHaveTextContent('+2.25%');
+    });
+
+    it('shows $0.00 and 0% when no positions', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue([]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('total-invested')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('total-invested')).toHaveTextContent('$0.00');
+        expect(screen.getByTestId('current-value')).toHaveTextContent('$0.00');
+        expect(screen.getByTestId('pnl-percent')).toHaveTextContent('0.00%');
+    });
+
+    it('uses avgPrice as fallback when currentPrice is missing', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+                avgPrice: '150.00',
+                openedAt: '2026-05-20T10:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('total-invested')).toBeInTheDocument();
+        });
+
+        // Without currentPrice, both invested and current use avgPrice
+        expect(screen.getByTestId('total-invested')).toHaveTextContent('$1,500.00');
+        expect(screen.getByTestId('current-value')).toHaveTextContent('$1,500.00');
+        expect(screen.getByTestId('pnl-percent')).toHaveTextContent('0.00%');
+    });
+
+    it('shows position symbols with side badges', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('NVDA')).toBeInTheDocument();
+    });
+
+    it('shows green pnl color for profit', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('pnl-percent')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('pnl-percent')).toHaveClass('text-green-400');
+    });
+
+    it('shows red pnl color for loss', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+                avgPrice: '200.00',
+                currentPrice: '180.00',
+                openedAt: '2026-05-20T10:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('pnl-percent')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('pnl-percent')).toHaveClass('text-red-400');
+        expect(screen.getByTestId('pnl-percent')).toHaveTextContent('-10.00%');
+    });
+
+    // --- Recent trades (최근 활동) tests ---
+
+    it('displays multiple recent trades', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('NVDA')).toBeInTheDocument();
+        expect(screen.getByText('TSLA')).toBeInTheDocument();
+        expect(screen.getAllByText('GOOGL')).toHaveLength(2);
+    });
+
+    it('shows buy/sell badges for recent trades', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        const buyBadges = screen.getAllByText('매수');
+        const sellBadges = screen.getAllByText('매도');
+        expect(buyBadges.length).toBe(3); // AAPL, NVDA, GOOGL
+        expect(sellBadges.length).toBe(2); // TSLA, GOOGL
+    });
+
+    it('shows prices for recent trades', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('$189.50')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('$875.20')).toBeInTheDocument();
+        expect(screen.getByText('$255.30')).toBeInTheDocument();
+    });
+
+    it('limits recent trades to max 10', async () => {
+        const manyTrades = Array.from({ length: 15 }, (_, i) => ({
+            id: i + 1,
+            symbol: `SYM${i}`,
+            side: 'buy' as const,
+            orderType: 'market',
+            quantity: 1,
+            price: '100.00',
+            executedAt: new Date(Date.now() - i * 3600000).toISOString(),
+            reason: null,
+            mode: 'paper',
+        }));
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(manyTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('SYM0')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('SYM9')).toBeInTheDocument();
+        expect(screen.queryByText('SYM10')).not.toBeInTheDocument();
+    });
+
+    it('shows "거래 내역 없음" when no trades', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('거래 내역 없음')).toBeInTheDocument();
+        });
+    });
+
+    // --- Responsive layout tests ---
+
+    it('has responsive grid classes', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+
+        const { container } = renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        const grid = container.querySelector('.grid');
+        expect(grid).toHaveClass('grid-cols-1');
+        expect(grid).toHaveClass('md:grid-cols-[1fr_1fr]');
     });
 });
