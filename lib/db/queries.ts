@@ -115,12 +115,13 @@ export async function getLatestAnalysisResult(db: Db, symbol: string, type: stri
     return rows[0] ?? null;
 }
 
-export async function getLatestAnalysisResults(db: Db, symbol: string) {
+export async function getLatestAnalysisResults(db: Db, symbol: string, limit = 50) {
     return db
         .select()
         .from(analysisResults)
         .where(eq(analysisResults.symbol, symbol))
-        .orderBy(desc(analysisResults.analyzedAt));
+        .orderBy(desc(analysisResults.analyzedAt))
+        .limit(limit);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,14 +159,16 @@ export async function openPosition(
 }
 
 export async function closePosition(db: Db, id: number, closePrice: number) {
-    return db
+    const result = await db
         .update(positions)
         .set({
             status: 'closed',
             closedAt: new Date(),
             closePrice: String(closePrice),
         })
-        .where(eq(positions.id, id));
+        .where(and(eq(positions.id, id), eq(positions.status, 'open')))
+        .returning({ id: positions.id });
+    return result.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,11 +260,21 @@ export async function getPendingOrderById(db: Db, id: number) {
 }
 
 export async function approvePendingOrder(db: Db, id: number) {
-    return db.update(pendingOrders).set({ status: 'approved' }).where(eq(pendingOrders.id, id));
+    const result = await db
+        .update(pendingOrders)
+        .set({ status: 'approved' })
+        .where(and(eq(pendingOrders.id, id), eq(pendingOrders.status, 'pending')))
+        .returning({ id: pendingOrders.id });
+    return result.length > 0;
 }
 
 export async function rejectPendingOrder(db: Db, id: number) {
-    return db.update(pendingOrders).set({ status: 'rejected' }).where(eq(pendingOrders.id, id));
+    const result = await db
+        .update(pendingOrders)
+        .set({ status: 'rejected' })
+        .where(and(eq(pendingOrders.id, id), eq(pendingOrders.status, 'pending')))
+        .returning({ id: pendingOrders.id });
+    return result.length > 0;
 }
 
 // ---------------------------------------------------------------------------

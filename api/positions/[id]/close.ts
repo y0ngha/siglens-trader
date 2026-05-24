@@ -25,9 +25,12 @@ export default async function handler(req: Request): Promise<Response> {
         return Response.json({ error: 'Position not found' }, { status: 404 });
     }
 
-    // Close the position (use avgPrice as placeholder since no live price available)
+    // Atomically close — returns false if already closed (race condition guard)
     const closePrice = Number(position.avgPrice);
-    await closePosition(db, id, closePrice);
+    const closed = await closePosition(db, id, closePrice);
+    if (!closed) {
+        return Response.json({ error: 'Position already closed' }, { status: 409 });
+    }
 
     // Record the trade
     await insertTrade(db, {

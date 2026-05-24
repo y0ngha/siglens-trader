@@ -77,7 +77,7 @@ describe('POST /api/positions/[id]/close', () => {
         mockGetOpenPositions.mockResolvedValue([
             { id: 5, symbol: 'AAPL', quantity: 10, avgPrice: '150.50', status: 'open' },
         ]);
-        mockClosePosition.mockResolvedValue(undefined);
+        mockClosePosition.mockResolvedValue(true);
         mockInsertTrade.mockResolvedValue([{}]);
 
         const res = await handler(makeRequest('https://example.com/api/positions/5/close', 'POST'));
@@ -105,7 +105,7 @@ describe('POST /api/positions/[id]/close', () => {
             { id: 1, symbol: 'AAPL', quantity: 5, avgPrice: '100', status: 'open' },
             { id: 2, symbol: 'TSLA', quantity: 3, avgPrice: '200', status: 'open' },
         ]);
-        mockClosePosition.mockResolvedValue(undefined);
+        mockClosePosition.mockResolvedValue(true);
         mockInsertTrade.mockResolvedValue([{}]);
 
         const res = await handler(makeRequest('https://example.com/api/positions/2/close', 'POST'));

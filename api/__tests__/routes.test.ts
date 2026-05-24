@@ -291,7 +291,7 @@ describe('POST /api/config', () => {
         );
         expect(res.status).toBe(400);
         const data = await res.json();
-        expect(data.error).toContain('must be a non-negative number');
+        expect(data.error).toContain('must be a number between');
     });
 
     it('rejects negative value for numeric config keys', async () => {
@@ -304,7 +304,7 @@ describe('POST /api/config', () => {
         );
         expect(res.status).toBe(400);
         const data = await res.json();
-        expect(data.error).toContain('must be a non-negative number');
+        expect(data.error).toContain('must be a number between');
     });
 
     it('rejects Infinity for numeric config keys', async () => {
@@ -503,7 +503,7 @@ describe('POST /api/approve/[id]', () => {
             status: 'pending',
             expiresAt: new Date(Date.now() + 60_000),
         });
-        mockApprovePendingOrder.mockResolvedValue(undefined);
+        mockApprovePendingOrder.mockResolvedValue(true);
         mockInsertTrade.mockResolvedValue([{}]);
         mockOpenPosition.mockResolvedValue([{}]);
 
@@ -544,7 +544,7 @@ describe('POST /api/approve/[id]', () => {
     });
 
     it('rejects a pending order', async () => {
-        mockRejectPendingOrder.mockResolvedValue(undefined);
+        mockRejectPendingOrder.mockResolvedValue(true);
 
         const res = await handler(
             makeRequest('https://example.com/api/approve/7', 'POST', { action: 'reject' }),

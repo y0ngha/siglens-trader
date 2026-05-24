@@ -53,7 +53,10 @@ export default async function handler(req: Request): Promise<Response> {
             return Response.json({ error: 'Order has expired' }, { status: 410 });
         }
 
-        await approvePendingOrder(db, id);
+        const updated = await approvePendingOrder(db, id);
+        if (!updated) {
+            return Response.json({ error: 'Order was already processed' }, { status: 409 });
+        }
 
         // Execute the trade
         const price = Number(order.priceLimit ?? 0);
@@ -83,7 +86,10 @@ export default async function handler(req: Request): Promise<Response> {
             }
         }
     } else {
-        await rejectPendingOrder(db, id);
+        const rejected = await rejectPendingOrder(db, id);
+        if (!rejected) {
+            return Response.json({ error: 'Order was already processed' }, { status: 409 });
+        }
     }
 
     return Response.json({ success: true, action, id });

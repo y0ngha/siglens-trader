@@ -82,9 +82,17 @@ export default async function handler(req: Request): Promise<Response> {
                     );
                 }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
-                    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+                    const MAX_VALUE = 1_000_000;
+                    if (
+                        typeof value !== 'number' ||
+                        !Number.isFinite(value) ||
+                        value < 0 ||
+                        value > MAX_VALUE
+                    ) {
                         return Response.json(
-                            { error: `"${key}" must be a non-negative number` },
+                            {
+                                error: `"${key}" must be a number between 0 and ${MAX_VALUE.toLocaleString()}`,
+                            },
                             { status: 400 },
                         );
                     }
