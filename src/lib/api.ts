@@ -54,6 +54,12 @@ export interface PendingOrder {
     status: string;
 }
 
+export interface TickerSearchResult {
+    symbol: string;
+    name: string;
+    exchange: string;
+}
+
 export const api = {
     getStatus: (signal?: AbortSignal) => fetchJson<StatusResponse>('/status', { signal }),
     getPositions: (signal?: AbortSignal) => fetchJson<Position[]>('/positions', { signal }),
@@ -74,4 +80,6 @@ export const api = {
     closePosition: (id: number) => fetchJson(`/positions/${id}/close`, { method: 'POST' }),
     triggerAnalysis: (symbol: string) =>
         fetchJson('/analysis/trigger', { method: 'POST', body: JSON.stringify({ symbol }) }),
+    searchTickers: (query: string, signal?: AbortSignal) =>
+        fetchJson<TickerSearchResult[]>(`/search?q=${encodeURIComponent(query)}`, { signal }),
 };

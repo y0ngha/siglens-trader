@@ -205,6 +205,19 @@ const routes: Record<string, (req: Connect.IncomingMessage) => unknown> = {
     '/api/analysis': () => mockAnalysis,
 };
 
+const mockSearchResults = [
+    { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ' },
+    { symbol: 'AMZN', name: 'Amazon.com Inc.', exchange: 'NASDAQ' },
+    { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
+    { symbol: 'TSLA', name: 'Tesla Inc.', exchange: 'NASDAQ' },
+    { symbol: 'MSFT', name: 'Microsoft Corporation', exchange: 'NASDAQ' },
+    { symbol: 'GOOGL', name: 'Alphabet Inc.', exchange: 'NASDAQ' },
+    { symbol: 'META', name: 'Meta Platforms Inc.', exchange: 'NASDAQ' },
+    { symbol: 'AMD', name: 'Advanced Micro Devices Inc.', exchange: 'NASDAQ' },
+    { symbol: 'NFLX', name: 'Netflix Inc.', exchange: 'NASDAQ' },
+    { symbol: 'JPM', name: 'JPMorgan Chase & Co.', exchange: 'NYSE' },
+];
+
 export function apiMockMiddleware(): Connect.NextHandleFunction {
     return (req, res, next) => {
         const url = req.url ?? '';
@@ -215,6 +228,19 @@ export function apiMockMiddleware(): Connect.NextHandleFunction {
         if (url.startsWith('/api/approve/')) {
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ ok: true }));
+            return;
+        }
+
+        // Handle search
+        if (url.startsWith('/api/search')) {
+            const q =
+                new URL(req.url ?? '', 'http://localhost').searchParams.get('q')?.toLowerCase() ??
+                '';
+            const filtered = mockSearchResults.filter(
+                (r) => r.symbol.toLowerCase().includes(q) || r.name.toLowerCase().includes(q),
+            );
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(filtered));
             return;
         }
 

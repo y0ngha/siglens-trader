@@ -9,6 +9,7 @@ vi.mock('@/lib/api', () => ({
     api: {
         getConfig: vi.fn(),
         updateConfig: vi.fn(),
+        searchTickers: vi.fn(),
     },
 }));
 
@@ -154,10 +155,13 @@ describe('SettingsPage', () => {
         });
     });
 
-    it('adds a new symbol to the watchlist with action-based API', async () => {
+    it('adds a new symbol to the watchlist via ticker search', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
+        mockedApi.searchTickers.mockResolvedValue([
+            { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
+        ]);
 
         renderWithQuery(<SettingsPage />);
 
@@ -165,19 +169,21 @@ describe('SettingsPage', () => {
             expect(screen.getByText('감시 종목')).toBeInTheDocument();
         });
 
-        const symbolInput = screen.getByPlaceholderText('종목 코드');
-        const nameInput = screen.getByPlaceholderText('회사명');
-        const addButton = screen.getByText('추가');
+        const searchInput = screen.getByLabelText('종목 검색');
+        await user.type(searchInput, 'NV');
 
-        await user.type(symbolInput, 'NVDA');
-        await user.type(nameInput, 'NVIDIA');
-        await user.click(addButton);
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+
+        const nvdaButton = screen.getByText('NVDA').closest('button')!;
+        await user.click(nvdaButton);
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'watchlist',
             action: 'add',
             symbol: 'NVDA',
-            companyName: 'NVIDIA',
+            companyName: 'NVIDIA Corporation',
         });
     });
 
@@ -256,6 +262,9 @@ describe('SettingsPage', () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
+        mockedApi.searchTickers.mockResolvedValue([
+            { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ' },
+        ]);
 
         renderWithQuery(<SettingsPage />);
 
@@ -263,11 +272,18 @@ describe('SettingsPage', () => {
             expect(screen.getByText('감시 종목')).toBeInTheDocument();
         });
 
-        const symbolInput = screen.getByPlaceholderText('종목 코드');
-        const addButton = screen.getByText('추가');
+        const searchInput = screen.getByLabelText('종목 검색');
+        await user.type(searchInput, 'AAPL');
 
-        await user.type(symbolInput, 'aapl');
-        await user.click(addButton);
+        await waitFor(() => {
+            expect(screen.getByRole('listbox')).toBeInTheDocument();
+        });
+
+        // Select the AAPL result from the dropdown (which is already in the watchlist)
+        const aaplOption = screen
+            .getAllByText('AAPL')
+            .find((el) => el.closest('[role="option"]') != null)!;
+        await user.click(aaplOption.closest('button')!);
 
         await waitFor(() => {
             expect(screen.getByText('이미 등록된 종목입니다')).toBeInTheDocument();
@@ -526,10 +542,8 @@ describe('SettingsPage', () => {
         });
     });
 
-    it('adds symbol with default companyName when name is empty', async () => {
-        const user = userEvent.setup();
+    it('renders ticker search input in watchlist section', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
-        mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
@@ -537,17 +551,6 @@ describe('SettingsPage', () => {
             expect(screen.getByText('감시 종목')).toBeInTheDocument();
         });
 
-        const symbolInput = screen.getByPlaceholderText('종목 코드');
-        const addButton = screen.getByText('추가');
-
-        await user.type(symbolInput, 'MSFT');
-        await user.click(addButton);
-
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'watchlist',
-            action: 'add',
-            symbol: 'MSFT',
-            companyName: 'MSFT',
-        });
+        expect(screen.getByLabelText('종목 검색')).toBeInTheDocument();
     });
 });

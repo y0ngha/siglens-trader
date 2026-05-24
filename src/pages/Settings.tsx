@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
+import { TickerSearch } from '@/components/TickerSearch';
 
 const MODELS = [
     'gemini-2.5-flash',
@@ -92,8 +93,6 @@ export function SettingsPage() {
         onSettled: () => queryClient.invalidateQueries({ queryKey: ['config'] }),
     });
 
-    const [newSymbol, setNewSymbol] = useState('');
-    const [newName, setNewName] = useState('');
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
     // Local state for risk inputs (to allow typing without immediate API calls)
@@ -132,19 +131,6 @@ export function SettingsPage() {
                 if (showMessage) setSaveMessage(`오류: ${(err as Error).message}`);
             },
         });
-    }
-
-    function handleAddSymbol() {
-        const symbol = newSymbol.trim().toUpperCase();
-        const name = newName.trim();
-        if (!symbol) return;
-        if (configData.watchlist.some((w) => w.symbol === symbol)) {
-            setSaveMessage('이미 등록된 종목입니다');
-            return;
-        }
-        mutate({ type: 'watchlist', action: 'add', symbol, companyName: name || symbol });
-        setNewSymbol('');
-        setNewName('');
     }
 
     function handleRemoveSymbol(id: number) {
@@ -252,28 +238,21 @@ export function SettingsPage() {
                         </li>
                     ))}
                 </ul>
-                <div className="mt-3 flex gap-2">
-                    <input
-                        type="text"
-                        placeholder="종목 코드"
-                        className="w-24 rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
-                        value={newSymbol}
-                        onChange={(e) => setNewSymbol(e.target.value)}
+                <div className="mt-3">
+                    <TickerSearch
+                        onSelect={(result) => {
+                            if (configData.watchlist.some((w) => w.symbol === result.symbol)) {
+                                setSaveMessage('이미 등록된 종목입니다');
+                                return;
+                            }
+                            mutate({
+                                type: 'watchlist',
+                                action: 'add',
+                                symbol: result.symbol,
+                                companyName: result.name,
+                            });
+                        }}
                     />
-                    <input
-                        type="text"
-                        placeholder="회사명"
-                        className="flex-1 rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
-                        value={newName}
-                        onChange={(e) => setNewName(e.target.value)}
-                    />
-                    <button
-                        type="button"
-                        onClick={handleAddSymbol}
-                        className="min-h-[44px] rounded-lg bg-neutral-700 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-600"
-                    >
-                        추가
-                    </button>
                 </div>
             </section>
 
