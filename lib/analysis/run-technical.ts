@@ -6,10 +6,11 @@ export async function runTechnicalAnalysis(
     options: RunAnalysisOptions,
 ): Promise<AnalysisRunResult> {
     try {
+        const timeframe = options.timeframe ?? '1Day';
         const submission = await submitAnalysis(
             options.symbol,
             options.companyName,
-            '1Day',
+            timeframe,
             false,
             undefined,
             { modelId: options.modelId, userApiKey: options.userApiKey },

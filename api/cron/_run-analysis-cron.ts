@@ -1,6 +1,11 @@
 import { verifyCronSecret } from '../_lib/cron-auth';
 import { getDb } from '../_lib/db';
-import { getEnabledWatchlist, getAnalysisConfig, saveAnalysisResult } from '../../lib/db/queries';
+import {
+    getEnabledWatchlist,
+    getAnalysisConfig,
+    getConfigValue,
+    saveAnalysisResult,
+} from '../../lib/db/queries';
 import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types';
 
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;
@@ -25,12 +30,15 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
         const cronRunId = `${analysisType}-${Date.now()}`;
         const results: Array<{ symbol: string; status: string; error?: string }> = [];
 
+        const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
+
         for (const item of watchlistItems) {
             const result = await runner({
                 symbol: item.symbol,
                 companyName: item.companyName,
                 modelId: config.modelId as RunAnalysisOptions['modelId'],
                 userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
+                timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
             });
 
             if (result.status === 'done' || result.status === 'cached') {

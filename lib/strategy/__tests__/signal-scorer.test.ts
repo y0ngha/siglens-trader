@@ -117,14 +117,14 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // technical = 95 (bullish 85 + low risk +10), news = 50 (null), options = 50 (null)
-            // fundamental = 80, overall = 50 (null)
+            // technical = 95, news = 50, options = 50, fundamental = 80, overall = 50
+            // weighted: (95*8 + 50*6 + 50*5 + 80*4 + 50*3) / 26 = 68 → hold (below 70)
             expect(result.components.technical).toBe(95);
             expect(result.components.news).toBe(50);
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(80);
             expect(result.components.overall).toBe(50);
-            expect(result.signal).toBe('buy');
+            expect(result.signal).toBe('hold');
         });
 
         it('handles technical with missing fields', () => {

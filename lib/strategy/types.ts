@@ -21,11 +21,11 @@ export interface ScoreWeights {
 }
 
 export const DEFAULT_WEIGHTS: ScoreWeights = {
-    technical: 40,
-    news: 20,
-    options: 20,
-    fundamental: 10,
-    overall: 10,
+    technical: 8,
+    news: 6,
+    options: 5,
+    fundamental: 4,
+    overall: 3,
 };
 
 export const DEFAULT_BUY_THRESHOLD = 70;

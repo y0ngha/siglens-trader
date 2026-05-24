@@ -27,6 +27,11 @@ export async function seed() {
         { key: 'take_profit_percent', value: 5 },
         { key: 'buy_threshold', value: 70 },
         { key: 'sell_threshold', value: 30 },
+        { key: 'analysis_timeframe', value: '1Day' },
+        {
+            key: 'score_weights',
+            value: { technical: 8, news: 6, options: 5, fundamental: 4, overall: 3 },
+        },
     ];
     for (const d of defaults) {
         await db

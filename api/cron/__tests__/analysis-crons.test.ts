@@ -17,10 +17,12 @@ vi.mock('../../_lib/db', () => ({
 
 const mockGetEnabledWatchlist = vi.fn();
 const mockGetAnalysisConfig = vi.fn();
+const mockGetConfigValue = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
+    getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
 }));
 
@@ -60,6 +62,7 @@ describe('createAnalysisCronHandler', () => {
 
         mockGetDb.mockReturnValue(fakeDb);
         mockGetAnalysisConfig.mockResolvedValue(fakeConfig);
+        mockGetConfigValue.mockResolvedValue(null);
         mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockVerifyCronSecret.mockReturnValue(true);

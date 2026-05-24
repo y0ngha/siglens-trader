@@ -1,4 +1,4 @@
-import type { ModelId } from '@y0ngha/siglens-core';
+import type { ModelId, Timeframe } from '@y0ngha/siglens-core';
 
 export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental' | 'overall';
 
@@ -7,6 +7,7 @@ export interface RunAnalysisOptions {
     companyName: string;
     modelId: ModelId;
     userApiKey?: string;
+    timeframe?: Timeframe;
 }
 
 export interface AnalysisRunResult {
