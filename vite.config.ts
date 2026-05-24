@@ -1,9 +1,8 @@
-/// <reference types="vitest" />
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { VitePWA } from 'vite-plugin-pwa';
+import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
+import { defineConfig } from 'vite';
+import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
     plugins: [
@@ -12,7 +11,7 @@ export default defineConfig({
         VitePWA({
             registerType: 'autoUpdate',
             manifest: {
-                name: 'SigLens Trader',
+                name: 'Siglens Trader',
                 short_name: 'Trader',
                 description: 'Auto-trading dashboard',
                 theme_color: '#0a0a0a',
@@ -33,10 +32,5 @@ export default defineConfig({
     },
     server: {
         port: 4300,
-    },
-    test: {
-        globals: true,
-        environment: 'jsdom',
-        setupFiles: ['./src/__tests__/setup.ts'],
     },
 });
