@@ -40,6 +40,10 @@ export function scoreSignals(
     const totalWeight =
         weights.technical + weights.news + weights.options + weights.fundamental + weights.overall;
 
+    if (totalWeight === 0) {
+        return { total: 50, components, signal: 'hold' as const };
+    }
+
     const weightedSum =
         components.technical * weights.technical +
         components.news * weights.news +

@@ -25,8 +25,13 @@ const mockToggleWatchlistItem = vi.fn();
 const mockUpdateAnalysisConfig = vi.fn();
 const mockUpdateNotificationConfig = vi.fn();
 const mockGetPendingOrders = vi.fn();
+const mockGetPendingOrderById = vi.fn();
 const mockApprovePendingOrder = vi.fn();
 const mockRejectPendingOrder = vi.fn();
+const mockInsertTrade = vi.fn();
+const mockOpenPosition = vi.fn();
+const mockGetOpenPositionBySymbol = vi.fn();
+const mockClosePosition = vi.fn();
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
@@ -45,8 +50,13 @@ vi.mock('../../lib/db/queries', () => ({
     updateAnalysisConfig: (...args: unknown[]) => mockUpdateAnalysisConfig(...args),
     updateNotificationConfig: (...args: unknown[]) => mockUpdateNotificationConfig(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
+    getPendingOrderById: (...args: unknown[]) => mockGetPendingOrderById(...args),
     approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
     rejectPendingOrder: (...args: unknown[]) => mockRejectPendingOrder(...args),
+    insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
+    openPosition: (...args: unknown[]) => mockOpenPosition(...args),
+    getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
+    closePosition: (...args: unknown[]) => mockClosePosition(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -428,7 +438,18 @@ describe('POST /api/approve/[id]', () => {
     });
 
     it('approves a pending order', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 42,
+            symbol: 'AAPL',
+            side: 'buy',
+            quantity: 10,
+            priceLimit: '150.00',
+            analysisSummary: 'Strong buy signal',
+            status: 'pending',
+        });
         mockApprovePendingOrder.mockResolvedValue(undefined);
+        mockInsertTrade.mockResolvedValue([{}]);
+        mockOpenPosition.mockResolvedValue([{}]);
 
         const res = await handler(
             makeRequest('https://example.com/api/approve/42', 'POST', { action: 'approve' }),
@@ -437,7 +458,33 @@ describe('POST /api/approve/[id]', () => {
 
         const data = await res.json();
         expect(data).toEqual({ success: true, action: 'approve', id: 42 });
+        expect(mockGetPendingOrderById).toHaveBeenCalledWith(fakeDb, 42);
         expect(mockApprovePendingOrder).toHaveBeenCalledWith(fakeDb, 42);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                symbol: 'AAPL',
+                side: 'buy',
+                mode: 'semi_auto',
+            }),
+        );
+        expect(mockOpenPosition).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+            }),
+        );
+    });
+
+    it('returns 404 when order not found', async () => {
+        mockGetPendingOrderById.mockResolvedValue(null);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/999', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(404);
     });
 
     it('rejects a pending order', async () => {

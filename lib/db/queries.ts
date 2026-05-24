@@ -207,15 +207,13 @@ export async function getRecentTrades(db: Db, limit = 50) {
 }
 
 export async function getTodayTradeCount(db: Db) {
-    const now = new Date();
-    const etDate = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-    const todayStart = new Date(`${etDate}T00:00:00.000-05:00`);
-
     const rows = await db
         .select({ count: sql<number>`count(*)` })
         .from(trades)
-        .where(gte(trades.executedAt, todayStart));
-    return rows[0]?.count ?? 0;
+        .where(
+            sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
+        );
+    return Number(rows[0]?.count ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +249,11 @@ export async function insertPendingOrder(
 
 export async function getPendingOrders(db: Db) {
     return db.select().from(pendingOrders).where(eq(pendingOrders.status, 'pending'));
+}
+
+export async function getPendingOrderById(db: Db, id: number) {
+    const rows = await db.select().from(pendingOrders).where(eq(pendingOrders.id, id)).limit(1);
+    return rows[0] ?? null;
 }
 
 export async function approvePendingOrder(db: Db, id: number) {

@@ -1,6 +1,14 @@
 import { getDb } from '../_lib/db';
 import { isAuthenticated } from '../_lib/auth';
-import { approvePendingOrder, rejectPendingOrder } from '../../lib/db/queries';
+import {
+    approvePendingOrder,
+    rejectPendingOrder,
+    getPendingOrderById,
+    insertTrade,
+    openPosition,
+    getOpenPositionBySymbol,
+    closePosition,
+} from '../../lib/db/queries';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
@@ -34,7 +42,40 @@ export default async function handler(req: Request): Promise<Response> {
     const db = getDb();
 
     if (action === 'approve') {
+        const order = await getPendingOrderById(db, id);
+        if (!order) {
+            return Response.json({ error: 'Order not found' }, { status: 404 });
+        }
+
         await approvePendingOrder(db, id);
+
+        // Execute the trade
+        const price = Number(order.priceLimit ?? 0);
+        await insertTrade(db, {
+            symbol: order.symbol,
+            side: order.side,
+            orderType: 'market',
+            quantity: order.quantity,
+            price,
+            executedAt: new Date(),
+            reason: order.analysisSummary ?? '수동 승인',
+            mode: 'semi_auto',
+        });
+
+        // Update position
+        if (order.side === 'buy') {
+            await openPosition(db, {
+                symbol: order.symbol,
+                side: 'long',
+                quantity: order.quantity,
+                avgPrice: price,
+            });
+        } else if (order.side === 'sell') {
+            const pos = await getOpenPositionBySymbol(db, order.symbol);
+            if (pos) {
+                await closePosition(db, pos.id, price);
+            }
+        }
     } else {
         await rejectPendingOrder(db, id);
     }

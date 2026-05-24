@@ -234,6 +234,11 @@ export default async function handler(req: Request): Promise<Response> {
             const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
             const currentPrice = (tech?.result as any)?.keyLevels?.currentPrice ?? 0;
 
+            if (currentPrice === 0) {
+                decisions.push({ symbol: item.symbol, action: 'skipped_no_price', score: 0 });
+                continue;
+            }
+
             const calculatedSize = calculatePositionSize({
                 price: currentPrice,
                 maxPositionSize,
@@ -306,6 +311,7 @@ export default async function handler(req: Request): Promise<Response> {
                             quantity: decision.quantity,
                             avgPrice: currentPrice,
                         });
+                        currentExposure += currentPrice * decision.quantity;
                     }
                     break;
 
@@ -332,22 +338,32 @@ export default async function handler(req: Request): Promise<Response> {
                 case 'auto': {
                     const orderFn = decision.action === 'buy' ? executeBuyOrder : executeSellOrder;
                     const orderResult = await orderFn(item.symbol, decision.quantity);
+                    const filledPrice = orderResult.filledPrice ?? currentPrice;
                     await insertTrade(db, {
                         symbol: item.symbol,
                         side: decision.action,
                         orderType: 'market',
                         quantity: decision.quantity,
-                        price: orderResult.filledPrice ?? currentPrice,
+                        price: filledPrice,
                         executedAt: new Date(),
                         reason: decision.reason,
                         mode: 'auto',
                         cronRunId,
                     });
+                    if (decision.action === 'buy') {
+                        await openPosition(db, {
+                            symbol: item.symbol,
+                            side: 'long',
+                            quantity: decision.quantity,
+                            avgPrice: filledPrice,
+                        });
+                        currentExposure += filledPrice * decision.quantity;
+                    }
                     await sendTradeExecutedEmail({
                         symbol: item.symbol,
                         side: decision.action,
                         quantity: decision.quantity,
-                        price: orderResult.filledPrice ?? currentPrice,
+                        price: filledPrice,
                         reason: decision.reason,
                         mode: 'auto',
                     });
