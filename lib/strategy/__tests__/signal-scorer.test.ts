@@ -685,4 +685,183 @@ describe('scoreSignals', () => {
             expect(result.total).toBeLessThanOrEqual(100);
         });
     });
+
+    describe('actionRecommendation scoring', () => {
+        it('buy action with high confidence boosts technical score', () => {
+            const withRec = scoreSignals(
+                {
+                    technical: {
+                        trend: 'bullish',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'buy', confidence: 0.9 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            const withoutRec = scoreSignals(
+                {
+                    technical: { trend: 'bullish', riskLevel: 'medium' },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // bullish=85, medium=0, buy(0.9)=+18 → 100 (clamped) vs 85
+            expect(withRec.components.technical).toBeGreaterThan(withoutRec.components.technical);
+            // confidence 0.9 → round(0.9*20)=18 bonus
+            expect(withRec.components.technical).toBe(100); // 85+18=103 → clamped to 100
+        });
+
+        it('buy action with low confidence gives small boost', () => {
+            const result = scoreSignals(
+                {
+                    technical: {
+                        trend: 'neutral',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'buy', confidence: 0.3 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // neutral=50, medium=0, buy(0.3)=+6 → 56
+            expect(result.components.technical).toBe(56);
+        });
+
+        it('wait action reduces technical score by 15', () => {
+            const result = scoreSignals(
+                {
+                    technical: {
+                        trend: 'bullish',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'wait', confidence: 0.8 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // bullish=85, medium=0, wait=-15 → 70
+            expect(result.components.technical).toBe(70);
+        });
+
+        it('hold action does not change score', () => {
+            const withHold = scoreSignals(
+                {
+                    technical: {
+                        trend: 'neutral',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'hold', confidence: 0.95 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            const withoutRec = scoreSignals(
+                {
+                    technical: { trend: 'neutral', riskLevel: 'medium' },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            expect(withHold.components.technical).toBe(withoutRec.components.technical);
+        });
+
+        it('absent actionRecommendation does not change score (backward compat)', () => {
+            const result = scoreSignals(
+                {
+                    technical: { trend: 'bullish', riskLevel: 'low' },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // bullish=85, low=+10, no rec → 95
+            expect(result.components.technical).toBe(95);
+        });
+
+        it('buy action confidence=1.0 gives maximum +20 bonus', () => {
+            const result = scoreSignals(
+                {
+                    technical: {
+                        trend: 'neutral',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'buy', confidence: 1.0 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // neutral=50, medium=0, buy(1.0)=+20 → 70
+            expect(result.components.technical).toBe(70);
+        });
+
+        it('buy action confidence=0 gives no bonus', () => {
+            const result = scoreSignals(
+                {
+                    technical: {
+                        trend: 'neutral',
+                        riskLevel: 'medium',
+                        actionRecommendation: { action: 'buy', confidence: 0 },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    overall: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // neutral=50, medium=0, buy(0)=+0 → 50
+            expect(result.components.technical).toBe(50);
+        });
+    });
 });

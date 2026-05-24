@@ -1,7 +1,16 @@
 import type { ScoreWeights, SignalScore, TradingSignal } from './types';
 
+export interface ActionRecommendation {
+    action: 'buy' | 'hold' | 'wait';
+    confidence: number; // 0-1
+}
+
 export interface AnalysisInputs {
-    technical: { trend?: string; riskLevel?: string; actionRecommendation?: unknown } | null;
+    technical: {
+        trend?: string;
+        riskLevel?: string;
+        actionRecommendation?: ActionRecommendation;
+    } | null;
     news: { overallSentiment?: string } | null;
     options: { signals?: Array<{ type?: string }> } | null;
     fundamental: { overallSentiment?: string } | null;
@@ -46,14 +55,33 @@ export function scoreSignals(
 }
 
 function scoreTechnical(
-    input: { trend?: string; riskLevel?: string; actionRecommendation?: unknown } | null,
+    input: {
+        trend?: string;
+        riskLevel?: string;
+        actionRecommendation?: ActionRecommendation;
+    } | null,
 ): number {
     if (!input) return 50;
 
     const trendScore = mapTrend(input.trend);
     const riskModifier = mapRiskLevel(input.riskLevel);
+    const recommendationModifier = mapActionRecommendation(input.actionRecommendation);
 
-    return clamp(trendScore + riskModifier, 0, 100);
+    return clamp(trendScore + riskModifier + recommendationModifier, 0, 100);
+}
+
+function mapActionRecommendation(rec: ActionRecommendation | undefined): number {
+    if (!rec) return 0;
+
+    switch (rec.action) {
+        case 'buy':
+            return Math.round(rec.confidence * 20);
+        case 'wait':
+            return -15;
+        case 'hold':
+        default:
+            return 0;
+    }
 }
 
 function mapTrend(trend: string | undefined): number {

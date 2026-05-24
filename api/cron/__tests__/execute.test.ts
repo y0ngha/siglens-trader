@@ -21,6 +21,7 @@ const mockGetAnalysisConfig = vi.fn();
 const mockGetLatestAnalysisResult = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetOpenPositionBySymbol = vi.fn();
+const mockClosePosition = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertPendingOrder = vi.fn();
@@ -31,6 +32,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getLatestAnalysisResult: (...args: unknown[]) => mockGetLatestAnalysisResult(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
+    closePosition: (...args: unknown[]) => mockClosePosition(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
@@ -47,8 +49,10 @@ vi.mock('../../../lib/strategy/signal-scorer', () => ({
 }));
 
 const mockCalculatePositionSize = vi.fn();
+const mockEvaluateExistingPosition = vi.fn();
 vi.mock('../../../lib/strategy/risk-manager', () => ({
     calculatePositionSize: (...args: unknown[]) => mockCalculatePositionSize(...args),
+    evaluateExistingPosition: (...args: unknown[]) => mockEvaluateExistingPosition(...args),
 }));
 
 const mockMakeTradeDecision = vi.fn();
@@ -136,8 +140,10 @@ function setupDefaults() {
     mockGetAnalysisConfig.mockResolvedValue(null); // Overall disabled by default
     mockGetLatestAnalysisResult.mockResolvedValue(null);
     mockGetOpenPositionBySymbol.mockResolvedValue(null);
+    mockClosePosition.mockResolvedValue([]);
     mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
     mockCalculatePositionSize.mockReturnValue(5);
+    mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지 (조건 미충족)' });
     mockMakeTradeDecision.mockReturnValue({
         action: 'hold',
         symbol: 'AAPL',
@@ -223,14 +229,14 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('empty watchlist', () => {
-        it('returns skipped response when watchlist is empty', async () => {
+        it('returns skipped response when watchlist is empty and no open positions', async () => {
             mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
             expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
-            expect(mockGetOpenPositions).not.toHaveBeenCalled();
         });
     });
 
@@ -887,6 +893,313 @@ describe('execute cron handler', () => {
             expect(body.cronRunId).toMatch(/^exec-\d+$/);
             expect(body.tradingMode).toBe('dry_run');
             expect(body.decisions).toBeInstanceOf(Array);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Position re-evaluation
+    // -----------------------------------------------------------------------
+
+    describe('position re-evaluation', () => {
+        const fakeOpenPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        };
+
+        const fakeTechWithBearish = {
+            result: {
+                trend: 'bearish',
+                riskLevel: 'high',
+                keyLevels: { currentPrice: 95, support: [90], resistance: [110] },
+                priceTargets: { bullish: { target: 120 } },
+            },
+        };
+
+        const fakeTechWithSupport = {
+            result: {
+                trend: 'neutral',
+                riskLevel: 'medium',
+                keyLevels: { currentPrice: 88, support: [90], resistance: [110] },
+            },
+        };
+
+        const fakeTechAtTarget = {
+            result: {
+                trend: 'bullish',
+                riskLevel: 'low',
+                keyLevels: { currentPrice: 115, support: [100], resistance: [120] },
+                priceTargets: { bullish: { target: 116 } },
+            },
+        };
+
+        const fakeTechHealthy = {
+            result: {
+                trend: 'bullish',
+                riskLevel: 'low',
+                keyLevels: { currentPrice: 105, support: [95], resistance: [120] },
+                priceTargets: { bullish: { target: 130 } },
+            },
+        };
+
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            // Empty watchlist to isolate position re-evaluation from new-entry loop
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+        });
+
+        it('sells position in dry_run when trend is bearish', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    avgPrice: 100,
+                    currentPrice: 95,
+                    technicalTrend: 'bearish',
+                }),
+            );
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 10,
+                    price: 95,
+                    mode: 'dry_run',
+                    reason: '기술적 추세 반전 (bearish)',
+                }),
+            );
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stop_loss',
+                score: 0,
+            });
+        });
+
+        it('sells position when price is below support', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithSupport);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '지지선 이탈 (지지: $90, 현재: $88)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    price: 88,
+                }),
+            );
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 88);
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stop_loss',
+                score: 0,
+            });
+        });
+
+        it('takes profit when price is near target', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechAtTarget);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접 (목표: $116)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    price: 115,
+                }),
+            );
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 115);
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'take_profit',
+                score: 0,
+            });
+        });
+
+        it('takes no action when position is healthy', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechHealthy);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'hold',
+                reason: '유지 (조건 미충족)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // No trade or position close
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            // No decisions pushed for hold
+            expect(body.decisions).toEqual([]);
+        });
+
+        it('skips position when no currentPrice available', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockResolvedValue({ result: {} }); // no keyLevels
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toEqual([]);
+        });
+
+        it('handles semi_auto mode for position re-evaluation', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('semi_auto');
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertPendingOrder).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 10,
+                }),
+            );
+            expect(mockSendApprovalRequestEmail).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                }),
+            );
+            // No direct close in semi_auto
+            expect(mockClosePosition).not.toHaveBeenCalled();
+        });
+
+        it('handles auto mode for position re-evaluation', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    mode: 'auto',
+                }),
+            );
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 148); // filledPrice from mock
+            expect(mockSendTradeExecutedEmail).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    mode: 'auto',
+                }),
+            );
+        });
+
+        it('catches errors during re-evaluation and continues', async () => {
+            mockGetOpenPositions.mockResolvedValue([
+                fakeOpenPosition,
+                { ...fakeOpenPosition, id: 2, symbol: 'TSLA' },
+            ]);
+            // First position throws
+            mockGetLatestAnalysisResult
+                .mockRejectedValueOnce(new Error('DB error'))
+                .mockRejectedValueOnce(new Error('DB error'))
+                // Second position succeeds
+                .mockImplementation((_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechHealthy);
+                    return Promise.resolve(null);
+                });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'hold',
+                reason: '유지 (조건 미충족)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                'AAPL',
+                expect.stringContaining('DB error'),
+            );
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'error',
+                score: 0,
+            });
         });
     });
 });

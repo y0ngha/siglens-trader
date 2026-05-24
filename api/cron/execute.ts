@@ -7,13 +7,14 @@ import {
     getLatestAnalysisResult,
     getOpenPositions,
     getOpenPositionBySymbol,
+    closePosition,
     saveAnalysisResult,
     insertTrade,
     insertPendingOrder,
 } from '../../lib/db/queries';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall';
 import { scoreSignals } from '../../lib/strategy/signal-scorer';
-import { calculatePositionSize } from '../../lib/strategy/risk-manager';
+import { calculatePositionSize, evaluateExistingPosition } from '../../lib/strategy/risk-manager';
 import { makeTradeDecision } from '../../lib/strategy/decision';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/order';
 import {
@@ -46,13 +47,18 @@ export default async function handler(req: Request): Promise<Response> {
     const sellThreshold =
         (await getConfigValue<number>(db, 'sell_threshold')) ?? DEFAULT_SELL_THRESHOLD;
 
+    const stopLossPercent = (await getConfigValue<number>(db, 'stop_loss_percent')) ?? 5;
+    const takeProfitPercent = (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
+
     const watchlistItems = await getEnabledWatchlist(db);
-    if (watchlistItems.length === 0) {
-        return Response.json({ skipped: true, reason: 'empty_watchlist' });
-    }
 
     // Calculate current exposure
     const openPositions = await getOpenPositions(db);
+
+    if (watchlistItems.length === 0 && openPositions.length === 0) {
+        return Response.json({ skipped: true, reason: 'empty_watchlist' });
+    }
+
     const currentExposure = openPositions.reduce(
         (sum, p) => sum + Number(p.avgPrice) * p.quantity,
         0,
@@ -61,6 +67,102 @@ export default async function handler(req: Request): Promise<Response> {
     const cronRunId = `exec-${Date.now()}`;
     const overallConfig = await getAnalysisConfig(db, 'overall');
     const decisions: Array<{ symbol: string; action: string; score: number }> = [];
+
+    // --- Position re-evaluation ---
+    for (const position of openPositions) {
+        try {
+            const [tech, news] = await Promise.all([
+                getLatestAnalysisResult(db, position.symbol, 'technical'),
+                getLatestAnalysisResult(db, position.symbol, 'news'),
+            ]);
+
+            const techResult = tech?.result as any;
+            const currentPrice: number = techResult?.keyLevels?.currentPrice ?? 0;
+            if (currentPrice === 0) continue; // no price data
+
+            const evaluation = evaluateExistingPosition({
+                avgPrice: Number(position.avgPrice),
+                currentPrice,
+                stopLossPercent,
+                takeProfitPercent,
+                supportLevel: techResult?.keyLevels?.support?.[0],
+                resistanceLevel: techResult?.keyLevels?.resistance?.[0],
+                targetPrice: techResult?.priceTargets?.bullish?.target,
+                technicalTrend: techResult?.trend,
+                newsSentiment: (news?.result as any)?.overallSentiment,
+            });
+
+            if (evaluation.action === 'hold') continue;
+
+            // Execute the exit
+            switch (tradingMode) {
+                case 'dry_run':
+                    await insertTrade(db, {
+                        symbol: position.symbol,
+                        side: 'sell',
+                        orderType: 'market',
+                        quantity: position.quantity,
+                        price: currentPrice,
+                        executedAt: new Date(),
+                        reason: evaluation.reason,
+                        mode: 'dry_run',
+                        cronRunId,
+                    });
+                    await closePosition(db, position.id, currentPrice);
+                    break;
+
+                case 'semi_auto':
+                    await insertPendingOrder(db, {
+                        symbol: position.symbol,
+                        side: 'sell',
+                        quantity: position.quantity,
+                        priceLimit: currentPrice,
+                        analysisSummary: evaluation.reason,
+                        signalScore: 0,
+                        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+                    });
+                    await sendApprovalRequestEmail({
+                        symbol: position.symbol,
+                        side: 'sell',
+                        quantity: position.quantity,
+                        score: 0,
+                        reason: evaluation.reason,
+                        approveUrl: 'https://auto-trade.siglens.io/pending',
+                    });
+                    break;
+
+                case 'auto': {
+                    const orderResult = await executeSellOrder(position.symbol, position.quantity);
+                    await insertTrade(db, {
+                        symbol: position.symbol,
+                        side: 'sell',
+                        orderType: 'market',
+                        quantity: position.quantity,
+                        price: orderResult.filledPrice ?? currentPrice,
+                        executedAt: new Date(),
+                        reason: evaluation.reason,
+                        mode: 'auto',
+                        cronRunId,
+                    });
+                    await closePosition(db, position.id, orderResult.filledPrice ?? currentPrice);
+                    await sendTradeExecutedEmail({
+                        symbol: position.symbol,
+                        side: 'sell',
+                        quantity: position.quantity,
+                        price: orderResult.filledPrice ?? currentPrice,
+                        reason: evaluation.reason,
+                        mode: 'auto',
+                    });
+                    break;
+                }
+            }
+
+            decisions.push({ symbol: position.symbol, action: evaluation.action, score: 0 });
+        } catch (err) {
+            await sendErrorEmail(position.symbol, String(err)).catch(() => {});
+            decisions.push({ symbol: position.symbol, action: 'error', score: 0 });
+        }
+    }
 
     for (const item of watchlistItems) {
         try {

@@ -1,3 +1,27 @@
+export interface PositionEvaluation {
+    action: 'hold' | 'take_profit' | 'stop_loss';
+    reason: string;
+}
+
+export interface EvaluatePositionParams {
+    avgPrice: number;
+    currentPrice: number;
+    stopLossPercent: number;
+    takeProfitPercent: number;
+    /** from keyLevels.support[0] */
+    supportLevel?: number;
+    /** from keyLevels.resistance[0] */
+    resistanceLevel?: number;
+    /** from priceTargets.bullish.target */
+    targetPrice?: number;
+    /** if trend flipped to bearish -> close */
+    technicalTrend?: string;
+    /** if news turned bearish -> tighten stops */
+    newsSentiment?: string;
+    /** sell signal from overall -> close */
+    overallSignal?: string;
+}
+
 interface PositionSizeParams {
     price: number;
     maxPositionSize: number;
@@ -28,4 +52,68 @@ export function shouldTakeProfit(
 ): boolean {
     const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
     return gainPercent >= takeProfitPercent;
+}
+
+/**
+ * Evaluates an existing open position using both fixed thresholds and dynamic
+ * analysis-derived levels to decide whether to hold, take profit, or stop loss.
+ *
+ * Priority order:
+ * 1. Fixed stop loss (hard floor)
+ * 2. Dynamic stop loss (support level break)
+ * 3. Technical trend reversal (bearish)
+ * 4. Fixed take profit
+ * 5. Dynamic take profit (resistance / target approach)
+ * 6. News-driven preemptive exit (bearish news + profit zone)
+ */
+export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
+    const { avgPrice, currentPrice, stopLossPercent, takeProfitPercent } = params;
+
+    // 1. Fixed stop loss check (hard floor)
+    if (shouldStopLoss(avgPrice, currentPrice, stopLossPercent)) {
+        return { action: 'stop_loss', reason: `고정 손절선 도달 (-${stopLossPercent}%)` };
+    }
+
+    // 2. Dynamic stop loss: price broke below key support
+    if (params.supportLevel && currentPrice < params.supportLevel) {
+        return {
+            action: 'stop_loss',
+            reason: `지지선 이탈 (지지: $${params.supportLevel}, 현재: $${currentPrice})`,
+        };
+    }
+
+    // 3. Technical trend reversal
+    if (params.technicalTrend === 'bearish') {
+        return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
+    }
+
+    // 4. Fixed take profit check
+    if (shouldTakeProfit(avgPrice, currentPrice, takeProfitPercent)) {
+        return { action: 'take_profit', reason: `고정 익절선 도달 (+${takeProfitPercent}%)` };
+    }
+
+    // 5. Dynamic take profit: approaching resistance or target
+    if (params.resistanceLevel && currentPrice >= params.resistanceLevel * 0.98) {
+        return {
+            action: 'take_profit',
+            reason: `저항선 근접 (저항: $${params.resistanceLevel})`,
+        };
+    }
+
+    if (params.targetPrice && currentPrice >= params.targetPrice * 0.95) {
+        return {
+            action: 'take_profit',
+            reason: `목표가 근접 (목표: $${params.targetPrice})`,
+        };
+    }
+
+    // 6. News-driven exit
+    if (params.newsSentiment === 'bearish' && params.technicalTrend !== 'bullish') {
+        const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+        if (gainPercent > 0) {
+            return { action: 'take_profit', reason: '뉴스 악재 + 수익 구간 — 선제 익절' };
+        }
+    }
+
+    return { action: 'hold', reason: '유지 (조건 미충족)' };
 }
