@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
-import { resolve } from 'node:path';
+import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
     plugins: [
@@ -26,8 +26,8 @@ export default defineConfig({
     ],
     resolve: {
         alias: {
-            '@': resolve(__dirname, 'src'),
-            '@lib': resolve(__dirname, 'lib'),
+            '@': fileURLToPath(new URL('./src', import.meta.url)),
+            '@lib': fileURLToPath(new URL('./lib', import.meta.url)),
         },
     },
     server: {
