@@ -20,7 +20,7 @@
         "format:check": "prettier --check .",
         "db:generate": "drizzle-kit generate",
         "db:migrate": "tsx --env-file=.env.local lib/db/migrate.ts",
-        "db:seed": "tsx lib/db/seed.ts",
+        "db:seed": "tsx --env-file=.env.local lib/db/seed.ts",
         "prepare": "husky"
     },
     "dependencies": {
