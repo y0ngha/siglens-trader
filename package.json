@@ -15,6 +15,7 @@
         "lint:style": "stylelint --allow-empty-input '**/*.{css,scss}'",
         "lint:style-fix": "stylelint --fix '**/*.{css,scss}'",
         "test": "vitest run",
+        "test:quiet": "vitest run --silent --reporter=dot",
         "test:coverage": "vitest run --coverage",
         "test:watch": "vitest",
         "format": "prettier --write .",
