@@ -178,7 +178,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                'Score 82/100 — BUY (tech:90, news:75, opt:80, fund:70, overall:85)',
+                '신호 82/100 — 매수 (기술:90, 뉴스:75, 옵션:80, 펀더멘털:70, 종합:85)',
             );
         });
 
@@ -203,7 +203,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                'Score 18/100 — SELL (tech:10, news:20, opt:15, fund:25, overall:20)',
+                '신호 18/100 — 매도 (기술:10, 뉴스:20, 옵션:15, 펀더멘털:25, 종합:20)',
             );
         });
 
@@ -224,7 +224,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                'Score 50/100 — HOLD (tech:50, news:50, opt:50, fund:50, overall:50)',
+                '신호 50/100 — 대기 (기술:50, 뉴스:50, 옵션:50, 펀더멘털:50, 종합:50)',
             );
         });
     });

@@ -46,7 +46,7 @@ const mockTrades = [
         quantity: 5,
         price: '189.50',
         executedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-        reason: 'Score 78/100 — BUY (tech:85, news:70, opt:75, fund:65, overall:72)',
+        reason: '신호 78/100 — 매수 (기술:85, 뉴스:70, 옵션:75, 펀더멘털:65, 종합:72)',
         mode: 'dry_run',
     },
     {
@@ -57,7 +57,7 @@ const mockTrades = [
         quantity: 3,
         price: '875.20',
         executedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-        reason: 'Score 82/100 — BUY (tech:90, news:80, opt:70, fund:75, overall:80)',
+        reason: '신호 82/100 — 매수 (기술:90, 뉴스:80, 옵션:70, 펀더멘털:75, 종합:80)',
         mode: 'dry_run',
     },
     {
@@ -68,7 +68,7 @@ const mockTrades = [
         quantity: 5,
         price: '255.30',
         executedAt: new Date(Date.now() - 6 * 3600000).toISOString(),
-        reason: 'Score 22/100 — SELL (tech:15, news:28, opt:20, fund:30, overall:18)',
+        reason: '신호 22/100 — 매도 (기술:15, 뉴스:28, 옵션:20, 펀더멘털:30, 종합:18)',
         mode: 'dry_run',
     },
     {
@@ -79,7 +79,7 @@ const mockTrades = [
         quantity: 4,
         price: '176.30',
         executedAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-        reason: 'Score 73/100 — BUY (tech:80, news:68, opt:65, fund:70, overall:72)',
+        reason: '신호 73/100 — 매수 (기술:80, 뉴스:68, 옵션:65, 펀더멘털:70, 종합:72)',
         mode: 'dry_run',
     },
     {
@@ -90,7 +90,7 @@ const mockTrades = [
         quantity: 4,
         price: '181.90',
         executedAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-        reason: 'Score 28/100 — SELL (tech:20, news:35, opt:30, fund:40, overall:25)',
+        reason: '신호 28/100 — 매도 (기술:20, 뉴스:35, 옵션:30, 펀더멘털:40, 종합:25)',
         mode: 'dry_run',
     },
 ];
@@ -102,7 +102,7 @@ const mockPending = [
         side: 'buy',
         quantity: 3,
         priceLimit: '195.00',
-        analysisSummary: 'Score 74/100 — BUY (tech:82, news:70, opt:68, fund:72, overall:71)',
+        analysisSummary: '신호 74/100 — 매수 (기술:82, 뉴스:70, 옵션:68, 펀더멘털:72, 종합:71)',
         signalScore: '74',
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 10 * 60000).toISOString(),
@@ -114,7 +114,7 @@ const mockPending = [
         side: 'buy',
         quantity: 5,
         priceLimit: '178.50',
-        analysisSummary: 'Score 72/100 — BUY (tech:78, news:65, opt:70, fund:68, overall:70)',
+        analysisSummary: '신호 72/100 — 매수 (기술:78, 뉴스:65, 옵션:70, 펀더멘털:68, 종합:70)',
         signalScore: '72',
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 12 * 60000).toISOString(),

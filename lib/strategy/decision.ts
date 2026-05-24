@@ -50,5 +50,6 @@ export function makeTradeDecision(ctx: DecisionContext): TradeDecision {
 
 function buildReason(score: SignalScore, action: string): string {
     const { components } = score;
-    return `Score ${score.total}/100 — ${action} (tech:${components.technical}, news:${components.news}, opt:${components.options}, fund:${components.fundamental}, overall:${components.overall})`;
+    const actionKo = action === 'BUY' ? '매수' : action === 'SELL' ? '매도' : '대기';
+    return `신호 ${score.total}/100 — ${actionKo} (기술:${components.technical}, 뉴스:${components.news}, 옵션:${components.options}, 펀더멘털:${components.fundamental}, 종합:${components.overall})`;
 }

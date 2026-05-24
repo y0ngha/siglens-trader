@@ -35,21 +35,21 @@ describe('AnalysisPage', () => {
             {
                 id: 1,
                 symbol: 'AAPL',
-                type: 'technical',
+                analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bullish' }),
                 createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
             },
             {
                 id: 2,
                 symbol: 'AAPL',
-                type: 'news',
+                analysisType: 'news',
                 result: JSON.stringify({ signal: 'neutral' }),
                 createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
             },
             {
                 id: 3,
                 symbol: 'TSLA',
-                type: 'technical',
+                analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bearish' }),
                 createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
             },
@@ -65,8 +65,8 @@ describe('AnalysisPage', () => {
         expect(screen.getByText('TSLA')).toBeInTheDocument();
         expect(screen.getAllByText('기술적')).toHaveLength(2);
         expect(screen.getByText('뉴스')).toBeInTheDocument();
-        expect(screen.getByText('Bullish')).toBeInTheDocument();
-        expect(screen.getByText('Bearish')).toBeInTheDocument();
+        expect(screen.getByText('강세')).toBeInTheDocument();
+        expect(screen.getByText('약세')).toBeInTheDocument();
     });
 
     it('shows empty state when no analysis data', async () => {
@@ -96,7 +96,7 @@ describe('AnalysisPage', () => {
             {
                 id: 1,
                 symbol: 'AAPL',
-                type: 'technical',
+                analysisType: 'technical',
                 result: 'not valid json',
                 createdAt: new Date().toISOString(),
             },
@@ -108,6 +108,6 @@ describe('AnalysisPage', () => {
             expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        expect(screen.getByText('Neutral')).toBeInTheDocument();
+        expect(screen.getByText('중립')).toBeInTheDocument();
     });
 });
