@@ -85,7 +85,14 @@ export function TradesPage() {
                                     <span className="font-mono text-[#fafafa]">${trade.price}</span>
                                 </span>
                                 <span>
-                                    유형 <span className="text-[#fafafa]">{trade.orderType}</span>
+                                    유형{' '}
+                                    <span className="text-[#fafafa]">
+                                        {trade.orderType === 'market'
+                                            ? '시장가'
+                                            : trade.orderType === 'limit'
+                                              ? '지정가'
+                                              : trade.orderType}
+                                    </span>
                                 </span>
                             </div>
                             {trade.reason && (

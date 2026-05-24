@@ -66,6 +66,7 @@ describe('TradesPage', () => {
         expect(screen.getByText('매수')).toBeInTheDocument();
         expect(screen.getByText('10')).toBeInTheDocument();
         expect(screen.getByText('$150.00')).toBeInTheDocument();
+        expect(screen.getByText('시장가')).toBeInTheDocument();
         expect(screen.getByText('모의')).toBeInTheDocument();
         expect(screen.getByText('RSI oversold signal')).toBeInTheDocument();
 
@@ -73,6 +74,7 @@ describe('TradesPage', () => {
         expect(screen.getByText('매도')).toBeInTheDocument();
         expect(screen.getByText('5')).toBeInTheDocument();
         expect(screen.getByText('$210.50')).toBeInTheDocument();
+        expect(screen.getByText('지정가')).toBeInTheDocument();
         expect(screen.getByText('반자동')).toBeInTheDocument();
     });
 

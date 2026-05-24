@@ -22,29 +22,74 @@ function renderWithQuery(component: React.ReactElement) {
 }
 
 const mockConfig = {
-    tradingMode: 'DRY_RUN',
+    config: [
+        { key: 'trading_mode', value: 'DRY_RUN', updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'max_position_size', value: 5000, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'max_total_exposure', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'stop_loss_percent', value: 5, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'take_profit_percent', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'buy_threshold', value: 0.7, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'sell_threshold', value: -0.7, updatedAt: '2026-01-01T00:00:00Z' },
+    ],
     watchlist: [
-        { symbol: 'AAPL', name: 'Apple Inc.', enabled: true },
-        { symbol: 'TSLA', name: 'Tesla Inc.', enabled: false },
+        {
+            id: 1,
+            symbol: 'AAPL',
+            companyName: 'Apple Inc.',
+            enabled: true,
+            createdAt: '2026-01-01T00:00:00Z',
+        },
+        {
+            id: 2,
+            symbol: 'TSLA',
+            companyName: 'Tesla Inc.',
+            enabled: false,
+            createdAt: '2026-01-01T00:00:00Z',
+        },
     ],
     analysis: [
-        { type: 'technical', enabled: true, model: 'gemini-2.5-flash', byok: false },
-        { type: 'news', enabled: true, model: 'claude-sonnet-4-6', byok: false },
-        { type: 'options', enabled: false, model: 'gpt-5-mini', byok: true },
-        { type: 'fundamental', enabled: true, model: 'gemini-2.5-pro', byok: false },
+        {
+            id: 1,
+            analysisType: 'technical',
+            enabled: true,
+            modelId: 'gemini-2.5-flash',
+            useByok: false,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        {
+            id: 2,
+            analysisType: 'news',
+            enabled: true,
+            modelId: 'claude-sonnet-4-6',
+            useByok: false,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        {
+            id: 3,
+            analysisType: 'options',
+            enabled: false,
+            modelId: 'gpt-5-mini',
+            useByok: true,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        {
+            id: 4,
+            analysisType: 'fundamental',
+            enabled: true,
+            modelId: 'gemini-2.5-pro',
+            useByok: false,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
     ],
-    risk: {
-        maxPositionSize: 5000,
-        maxTotalExposure: 25000,
-        stopLossPercent: 5,
-        takeProfitPercent: 10,
-        buyThreshold: 0.7,
-        sellThreshold: -0.7,
-    },
-    notifications: {
-        emailEnabled: true,
-        events: ['trade_executed', 'stop_loss'],
-    },
+    notification: [
+        {
+            id: 1,
+            channel: 'email',
+            enabled: true,
+            target: 'user@example.com',
+            events: ['trade_executed', 'stop_loss'],
+        },
+    ],
 };
 
 describe('SettingsPage', () => {
@@ -88,7 +133,7 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Tesla Inc.')).toBeInTheDocument();
     });
 
-    it('changes trading mode and calls API', async () => {
+    it('changes trading mode and calls API with config type', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -103,12 +148,13 @@ describe('SettingsPage', () => {
         await user.selectOptions(select, 'SEMI_AUTO');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'general',
-            tradingMode: 'SEMI_AUTO',
+            type: 'config',
+            key: 'trading_mode',
+            value: 'SEMI_AUTO',
         });
     });
 
-    it('adds a new symbol to the watchlist', async () => {
+    it('adds a new symbol to the watchlist with action-based API', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -127,17 +173,15 @@ describe('SettingsPage', () => {
         await user.type(nameInput, 'NVIDIA');
         await user.click(addButton);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'watchlist',
-                watchlist: expect.arrayContaining([
-                    expect.objectContaining({ symbol: 'NVDA', name: 'NVIDIA', enabled: true }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'watchlist',
+            action: 'add',
+            symbol: 'NVDA',
+            companyName: 'NVIDIA',
+        });
     });
 
-    it('removes a symbol from watchlist', async () => {
+    it('removes a symbol from watchlist using id', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -151,14 +195,11 @@ describe('SettingsPage', () => {
         const deleteButton = screen.getByLabelText('AAPL 삭제');
         await user.click(deleteButton);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'watchlist',
-                watchlist: expect.not.arrayContaining([
-                    expect.objectContaining({ symbol: 'AAPL' }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'watchlist',
+            action: 'remove',
+            id: 1,
+        });
     });
 
     it('shows error message on failure', async () => {
@@ -235,7 +276,7 @@ describe('SettingsPage', () => {
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
-    it('changing analysis model dropdown calls API', async () => {
+    it('changing analysis model dropdown calls API with analysisType', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -249,17 +290,14 @@ describe('SettingsPage', () => {
         const modelSelects = screen.getAllByDisplayValue('gemini-2.5-flash');
         await user.selectOptions(modelSelects[0], 'claude-sonnet-4-6');
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'analysis',
-                analysis: expect.arrayContaining([
-                    expect.objectContaining({ type: 'technical', model: 'claude-sonnet-4-6' }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'analysis',
+            analysisType: 'technical',
+            updates: { modelId: 'claude-sonnet-4-6' },
+        });
     });
 
-    it('toggling BYOK checkbox calls API', async () => {
+    it('toggling BYOK button calls API with analysisType', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -274,14 +312,11 @@ describe('SettingsPage', () => {
         // Click the first BYOK button (technical analysis - currently false)
         await user.click(byokButtons[0]);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'analysis',
-                analysis: expect.arrayContaining([
-                    expect.objectContaining({ type: 'technical', byok: true }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'analysis',
+            analysisType: 'technical',
+            updates: { useByok: true },
+        });
     });
 
     it('changing stop loss value calls API on blur', async () => {
@@ -300,12 +335,11 @@ describe('SettingsPage', () => {
         await user.type(stopLossInput, '7');
         await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'risk',
-                risk: expect.objectContaining({ stopLossPercent: 7 }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'stop_loss_percent',
+            value: 7,
+        });
     });
 
     it('changing take profit value calls API on blur', async () => {
@@ -324,15 +358,14 @@ describe('SettingsPage', () => {
         await user.type(takeProfitInput, '15');
         await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'risk',
-                risk: expect.objectContaining({ takeProfitPercent: 15 }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'take_profit_percent',
+            value: 15,
+        });
     });
 
-    it('notification event checkbox toggle calls API', async () => {
+    it('notification event checkbox toggle calls API with channel', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -347,18 +380,13 @@ describe('SettingsPage', () => {
         const orderPendingCheckbox = screen.getByLabelText('주문 승인 대기');
         await user.click(orderPendingCheckbox);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'notifications',
-                notifications: expect.objectContaining({
-                    events: expect.arrayContaining([
-                        'trade_executed',
-                        'stop_loss',
-                        'order_pending',
-                    ]),
-                }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'notification',
+            channel: 'email',
+            updates: {
+                events: ['trade_executed', 'stop_loss', 'order_pending'],
+            },
+        });
     });
 
     it('toggles email notification on/off', async () => {
@@ -377,15 +405,14 @@ describe('SettingsPage', () => {
         const emailToggle = emailLabel.parentElement!.querySelector('button')!;
         await user.click(emailToggle);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'notifications',
-                notifications: expect.objectContaining({ emailEnabled: false }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'notification',
+            channel: 'email',
+            updates: { enabled: false },
+        });
     });
 
-    it('toggles watchlist symbol enabled state', async () => {
+    it('toggles watchlist symbol enabled state using id', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -399,14 +426,12 @@ describe('SettingsPage', () => {
         const toggleButton = screen.getByLabelText('AAPL 비활성화');
         await user.click(toggleButton);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'watchlist',
-                watchlist: expect.arrayContaining([
-                    expect.objectContaining({ symbol: 'AAPL', enabled: false }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'watchlist',
+            action: 'toggle',
+            id: 1,
+            enabled: false,
+        });
     });
 
     it('toggles analysis type enabled state', async () => {
@@ -424,14 +449,11 @@ describe('SettingsPage', () => {
         const optionsToggle = screen.getByLabelText('옵션 분석 활성화');
         await user.click(optionsToggle);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'analysis',
-                analysis: expect.arrayContaining([
-                    expect.objectContaining({ type: 'options', enabled: true }),
-                ]),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'analysis',
+            analysisType: 'options',
+            updates: { enabled: true },
+        });
     });
 
     it('unchecking a notification event removes it', async () => {
@@ -449,14 +471,13 @@ describe('SettingsPage', () => {
         const tradeExecutedCheckbox = screen.getByLabelText('거래 체결');
         await user.click(tradeExecutedCheckbox);
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'notifications',
-                notifications: expect.objectContaining({
-                    events: expect.not.arrayContaining(['trade_executed']),
-                }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'notification',
+            channel: 'email',
+            updates: {
+                events: ['stop_loss'],
+            },
+        });
     });
 
     it('changing buy threshold calls API on blur', async () => {
@@ -475,12 +496,11 @@ describe('SettingsPage', () => {
         await user.type(buyThresholdInput, '0.8');
         await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'risk',
-                risk: expect.objectContaining({ buyThreshold: 0.8 }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'buy_threshold',
+            value: 0.8,
+        });
     });
 
     it('changing sell threshold calls API on blur', async () => {
@@ -499,11 +519,35 @@ describe('SettingsPage', () => {
         await user.type(sellThresholdInput, '0.5');
         await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-                type: 'risk',
-                risk: expect.objectContaining({ sellThreshold: 0.5 }),
-            }),
-        );
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'sell_threshold',
+            value: 0.5,
+        });
+    });
+
+    it('adds symbol with default companyName when name is empty', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('감시 종목')).toBeInTheDocument();
+        });
+
+        const symbolInput = screen.getByPlaceholderText('종목 코드');
+        const addButton = screen.getByText('추가');
+
+        await user.type(symbolInput, 'MSFT');
+        await user.click(addButton);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'watchlist',
+            action: 'add',
+            symbol: 'MSFT',
+            companyName: 'MSFT',
+        });
     });
 });
