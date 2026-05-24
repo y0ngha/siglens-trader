@@ -4,10 +4,24 @@ import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+const useMock = process.env.VITE_API_MOCK === 'true';
+
 export default defineConfig({
     plugins: [
         react(),
         tailwindcss(),
+        ...(useMock
+            ? [
+                  {
+                      name: 'api-mock',
+                      async configureServer(server: import('vite').ViteDevServer) {
+                          const { apiMockMiddleware } = await import('./api-mock/middleware');
+                          server.middlewares.use(apiMockMiddleware());
+                          console.log('🔶 API Mock middleware enabled');
+                      },
+                  },
+              ]
+            : []),
         VitePWA({
             registerType: 'autoUpdate',
             manifest: {
