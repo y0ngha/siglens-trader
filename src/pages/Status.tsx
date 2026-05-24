@@ -18,10 +18,22 @@ function modeLabel(mode: string): string {
     }
 }
 
+/**
+ * Overall health is determined by system running state + recent activity.
+ * Green = running + traded today, Yellow = running but no trades, Red = stopped.
+ */
+function getHealthStatus(running: boolean, todayTrades: number) {
+    if (!running) return { label: '시스템 정지', color: 'bg-red-500', textColor: 'text-red-400' };
+    if (todayTrades === 0)
+        return { label: '대기 중', color: 'bg-yellow-500', textColor: 'text-yellow-400' };
+    return { label: '정상 운영', color: 'bg-green-500', textColor: 'text-green-400' };
+}
+
 export function StatusPage() {
     const { data, isLoading, error } = useQuery({
         queryKey: ['status'],
         queryFn: ({ signal }) => api.getStatus(signal),
+        refetchInterval: 30_000,
     });
 
     const { data: trades } = useQuery({
@@ -34,10 +46,19 @@ export function StatusPage() {
     if (!data) return null;
 
     const lastTrade = trades?.[0] ?? null;
+    const health = getHealthStatus(data.running, data.todayTrades);
 
     return (
         <div className="space-y-4">
-            <h1 className="text-lg font-semibold">시스템 상태</h1>
+            <div className="flex items-center justify-between">
+                <h1 className="text-lg font-semibold">시스템 상태</h1>
+                <div className="flex items-center gap-2" aria-label="전체 건강 상태">
+                    <span className={`inline-block h-2.5 w-2.5 rounded-full ${health.color}`} />
+                    <span className={`text-sm font-medium ${health.textColor}`}>
+                        {health.label}
+                    </span>
+                </div>
+            </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {/* Left column: status indicators */}
                 <div className="space-y-2">

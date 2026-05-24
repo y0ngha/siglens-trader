@@ -97,8 +97,7 @@ describe('PendingPage', () => {
             expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        const approveButtons = screen.getAllByText('승인');
-        await user.click(approveButtons[0]);
+        await user.click(screen.getByLabelText('AAPL 승인'));
 
         expect(mockedApi.approveOrder).toHaveBeenCalledWith(1);
     });
@@ -114,8 +113,7 @@ describe('PendingPage', () => {
             expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        const rejectButtons = screen.getAllByText('거부');
-        await user.click(rejectButtons[0]);
+        await user.click(screen.getByLabelText('AAPL 거부'));
 
         expect(mockedApi.rejectOrder).toHaveBeenCalledWith(1);
     });
@@ -153,11 +151,183 @@ describe('PendingPage', () => {
             expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        const approveButtons = screen.getAllByText('승인');
-        await user.click(approveButtons[0]);
+        await user.click(screen.getByLabelText('AAPL 승인'));
 
         await waitFor(() => {
             expect(screen.getAllByText('처리 중...').length).toBeGreaterThanOrEqual(1);
         });
+    });
+
+    // --- Optimistic update tests ---
+
+    it('removes order from list immediately after approve (optimistic update)', async () => {
+        const user = userEvent.setup();
+        // First call returns both, subsequent refetch after mutation returns only TSLA
+        mockedApi.getPending.mockResolvedValueOnce(mockOrders).mockResolvedValue([mockOrders[1]]);
+        mockedApi.approveOrder.mockResolvedValue(undefined);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 승인'));
+
+        await waitFor(() => {
+            expect(screen.queryByText('AAPL')).not.toBeInTheDocument();
+        });
+
+        expect(screen.getByText('TSLA')).toBeInTheDocument();
+    });
+
+    it('removes order from list immediately after reject (optimistic update)', async () => {
+        const user = userEvent.setup();
+        // First call returns both, subsequent refetch after mutation returns only AAPL
+        mockedApi.getPending.mockResolvedValueOnce(mockOrders).mockResolvedValue([mockOrders[0]]);
+        mockedApi.rejectOrder.mockResolvedValue(undefined);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('TSLA')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('TSLA 거부'));
+
+        await waitFor(() => {
+            expect(screen.queryByText('TSLA')).not.toBeInTheDocument();
+        });
+
+        expect(screen.getByText('AAPL')).toBeInTheDocument();
+    });
+
+    // --- Feedback message tests ---
+
+    it('shows success feedback after approve', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPending.mockResolvedValue(mockOrders);
+        mockedApi.approveOrder.mockResolvedValue(undefined);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 승인'));
+
+        await waitFor(() => {
+            expect(screen.getByText('주문이 승인되었습니다')).toBeInTheDocument();
+        });
+    });
+
+    it('shows success feedback after reject', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPending.mockResolvedValue(mockOrders);
+        mockedApi.rejectOrder.mockResolvedValue(undefined);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('TSLA')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('TSLA 거부'));
+
+        await waitFor(() => {
+            expect(screen.getByText('주문이 거부되었습니다')).toBeInTheDocument();
+        });
+    });
+
+    it('shows error feedback and restores order on approve failure', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPending.mockResolvedValue(mockOrders);
+        mockedApi.approveOrder.mockRejectedValue(new Error('Server error'));
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 승인'));
+
+        await waitFor(() => {
+            expect(screen.getByText('승인 처리에 실패했습니다')).toBeInTheDocument();
+        });
+
+        // Order should be restored after rollback
+        expect(screen.getByText('AAPL')).toBeInTheDocument();
+    });
+
+    it('shows error feedback and restores order on reject failure', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPending.mockResolvedValue(mockOrders);
+        mockedApi.rejectOrder.mockRejectedValue(new Error('Server error'));
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('TSLA')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('TSLA 거부'));
+
+        await waitFor(() => {
+            expect(screen.getByText('거부 처리에 실패했습니다')).toBeInTheDocument();
+        });
+
+        // Order should be restored after rollback
+        expect(screen.getByText('TSLA')).toBeInTheDocument();
+    });
+
+    // --- Expiry display ---
+
+    it('shows time remaining for pending orders', async () => {
+        mockedApi.getPending.mockResolvedValue([
+            {
+                ...mockOrders[0],
+                expiresAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            // 90 minutes = 1 hour 30 minutes
+            expect(screen.getByText(/1시간.*분 남음/)).toBeInTheDocument();
+        });
+    });
+
+    it('shows "만료됨" for expired orders', async () => {
+        mockedApi.getPending.mockResolvedValue([
+            {
+                ...mockOrders[0],
+                expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('만료됨')).toBeInTheDocument();
+        });
+    });
+
+    // --- Accessibility ---
+
+    it('has aria-labels on approve and reject buttons', async () => {
+        mockedApi.getPending.mockResolvedValue(mockOrders);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 승인')).toBeInTheDocument();
+        });
+
+        expect(screen.getByLabelText('AAPL 거부')).toBeInTheDocument();
+        expect(screen.getByLabelText('TSLA 승인')).toBeInTheDocument();
+        expect(screen.getByLabelText('TSLA 거부')).toBeInTheDocument();
     });
 });

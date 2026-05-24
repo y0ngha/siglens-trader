@@ -1,13 +1,54 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { api } from '@/lib/api';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
+import type { Position } from '@/lib/api';
+
+/**
+ * Compute unrealized P&L percentage based on currentPrice vs avgPrice.
+ * For short positions, profit is inverted.
+ */
+function computePnlPercent(position: Position): number | null {
+    if (!position.currentPrice) return null;
+    const avg = parseFloat(position.avgPrice);
+    const current = parseFloat(position.currentPrice);
+    if (avg === 0) return null;
+    const raw = ((current - avg) / avg) * 100;
+    return position.side === 'long' ? raw : -raw;
+}
+
+function formatPnl(pnl: number | null): string {
+    if (pnl === null) return '-';
+    const sign = pnl >= 0 ? '+' : '';
+    return `${sign}${pnl.toFixed(2)}%`;
+}
+
+function pnlColorClass(pnl: number | null): string {
+    if (pnl === null) return 'text-neutral-400';
+    if (pnl > 0) return 'text-green-400';
+    if (pnl < 0) return 'text-red-400';
+    return 'text-neutral-400';
+}
 
 export function PositionsPage() {
+    const queryClient = useQueryClient();
+    const [closingId, setClosingId] = useState<number | null>(null);
+
     const { data, isLoading, error } = useQuery({
         queryKey: ['positions'],
         queryFn: ({ signal }) => api.getPositions(signal),
+        refetchInterval: 30_000,
+    });
+
+    const closeMutation = useMutation({
+        mutationFn: (id: number) => api.closePosition(id),
+        onMutate: (id) => setClosingId(id),
+        onSettled: () => {
+            setClosingId(null);
+            queryClient.invalidateQueries({ queryKey: ['positions'] });
+        },
     });
 
     if (isLoading) return <LoadingSkeleton />;
@@ -21,6 +62,7 @@ export function PositionsPage() {
                 {data.map((position) => {
                     const borderColor =
                         position.side === 'long' ? 'border-l-green-500' : 'border-l-red-500';
+                    const pnl = computePnlPercent(position);
 
                     return (
                         <li
@@ -42,8 +84,10 @@ export function PositionsPage() {
                                 </div>
                                 <div className="text-right">
                                     <span className="text-xs text-neutral-400">평가손익</span>
-                                    <p className="font-mono text-sm font-medium text-green-400">
-                                        +0.00%
+                                    <p
+                                        className={`font-mono text-sm font-medium ${pnlColorClass(pnl)}`}
+                                    >
+                                        {formatPnl(pnl)}
                                     </p>
                                 </div>
                             </div>
@@ -60,12 +104,31 @@ export function PositionsPage() {
                                         ${position.avgPrice}
                                     </span>
                                 </span>
+                                {position.currentPrice && (
+                                    <span>
+                                        현재가{' '}
+                                        <span className="font-mono text-[#fafafa]">
+                                            ${position.currentPrice}
+                                        </span>
+                                    </span>
+                                )}
                                 <span>
                                     진입{' '}
                                     <span className="text-[#fafafa]">
                                         {timeAgo(position.openedAt)}
                                     </span>
                                 </span>
+                            </div>
+                            <div className="mt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => closeMutation.mutate(position.id)}
+                                    disabled={closingId === position.id}
+                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                                    aria-label={`${position.symbol} 포지션 청산`}
+                                >
+                                    {closingId === position.id ? '처리 중...' : '청산'}
+                                </button>
                             </div>
                         </li>
                     );

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/Badge';
 import { EmptyState } from '@/components/EmptyState';
@@ -12,6 +12,9 @@ interface AnalysisEntry {
     result: string;
     createdAt: string;
 }
+
+/** Analysis older than 4 hours is considered stale */
+const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 
 function typeLabel(type: string): string {
     switch (type) {
@@ -67,10 +70,28 @@ function timeAgo(dateStr: string): string {
     return `${days}일 전`;
 }
 
+function isStale(dateStr: string): boolean {
+    return Date.now() - new Date(dateStr).getTime() > STALE_THRESHOLD_MS;
+}
+
+function getLatestDate(entries: AnalysisEntry[]): string {
+    return entries.reduce(
+        (latest, e) => (e.createdAt > latest ? e.createdAt : latest),
+        entries[0].createdAt,
+    );
+}
+
 export function AnalysisPage() {
+    const queryClient = useQueryClient();
+
     const { data, isLoading, error } = useQuery({
         queryKey: ['analysis'],
         queryFn: ({ signal }) => api.getAnalysis(undefined, signal) as Promise<AnalysisEntry[]>,
+    });
+
+    const triggerMutation = useMutation({
+        mutationFn: (symbol: string) => api.triggerAnalysis(symbol),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['analysis'] }),
     });
 
     if (isLoading) return <LoadingSkeleton />;
@@ -88,38 +109,66 @@ export function AnalysisPage() {
         <div className="space-y-4">
             <h1 className="text-lg font-semibold">분석 결과</h1>
             <ul className="space-y-3">
-                {Object.entries(grouped).map(([symbol, entries]) => (
-                    <li
-                        key={symbol}
-                        className="rounded-lg border border-[#262626] bg-[#141414] p-4"
-                    >
-                        <h2 className="text-sm font-semibold">{symbol}</h2>
-                        <ul className="mt-2 space-y-1.5">
-                            {entries.map((entry) => {
-                                const signal = extractSignal(entry.result);
-                                return (
-                                    <li
-                                        key={entry.id}
-                                        className="flex items-center justify-between text-xs"
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-neutral-400">
-                                                {typeLabel(entry.analysisType)}
-                                            </span>
-                                            <Badge
-                                                label={signalLabel(signal)}
-                                                variant={signalVariant(signal)}
-                                            />
-                                        </div>
-                                        <span className="text-neutral-500">
-                                            {timeAgo(entry.createdAt)}
+                {Object.entries(grouped).map(([symbol, entries]) => {
+                    const latestDate = getLatestDate(entries);
+                    const stale = isStale(latestDate);
+
+                    return (
+                        <li
+                            key={symbol}
+                            className={`rounded-lg border bg-[#141414] p-4 ${stale ? 'border-yellow-500/30' : 'border-[#262626]'}`}
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <h2 className="text-sm font-semibold">{symbol}</h2>
+                                    {stale && (
+                                        <span className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-medium text-yellow-400">
+                                            오래됨
                                         </span>
-                                    </li>
-                                );
-                            })}
-                        </ul>
-                    </li>
-                ))}
+                                    )}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => triggerMutation.mutate(symbol)}
+                                    disabled={triggerMutation.isPending}
+                                    className="min-h-[36px] rounded-md border border-[#262626] px-2.5 py-1 text-xs text-neutral-400 transition-colors hover:border-neutral-500 hover:text-neutral-200 disabled:opacity-50"
+                                    aria-label={`${symbol} 재분석`}
+                                >
+                                    {triggerMutation.isPending &&
+                                    triggerMutation.variables === symbol
+                                        ? '분석 중...'
+                                        : '재분석'}
+                                </button>
+                            </div>
+                            <ul className="mt-2 space-y-1.5">
+                                {entries.map((entry) => {
+                                    const signal = extractSignal(entry.result);
+                                    return (
+                                        <li
+                                            key={entry.id}
+                                            className="flex items-center justify-between text-xs"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-neutral-400">
+                                                    {typeLabel(entry.analysisType)}
+                                                </span>
+                                                <Badge
+                                                    label={signalLabel(signal)}
+                                                    variant={signalVariant(signal)}
+                                                />
+                                            </div>
+                                            <span
+                                                className={`${isStale(entry.createdAt) ? 'text-yellow-500' : 'text-neutral-500'}`}
+                                            >
+                                                {timeAgo(entry.createdAt)}
+                                            </span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </li>
+                    );
+                })}
             </ul>
         </div>
     );

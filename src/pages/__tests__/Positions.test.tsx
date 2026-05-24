@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { PositionsPage } from '../Positions';
@@ -7,6 +8,7 @@ import { api } from '@/lib/api';
 vi.mock('@/lib/api', () => ({
     api: {
         getPositions: vi.fn(),
+        closePosition: vi.fn(),
     },
 }));
 
@@ -18,6 +20,29 @@ function renderWithQuery(component: React.ReactElement) {
     });
     return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 }
+
+const mockPositions = [
+    {
+        id: 1,
+        symbol: 'AAPL',
+        side: 'long',
+        quantity: 10,
+        avgPrice: '150.00',
+        currentPrice: '165.00',
+        openedAt: '2026-05-20T10:00:00Z',
+        status: 'open',
+    },
+    {
+        id: 2,
+        symbol: 'TSLA',
+        side: 'short',
+        quantity: 5,
+        avgPrice: '200.00',
+        currentPrice: '180.00',
+        openedAt: '2026-05-21T14:00:00Z',
+        status: 'open',
+    },
+];
 
 describe('PositionsPage', () => {
     beforeEach(() => {
@@ -31,26 +56,7 @@ describe('PositionsPage', () => {
     });
 
     it('displays positions when loaded', async () => {
-        mockedApi.getPositions.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                side: 'long',
-                quantity: 10,
-                avgPrice: '150.50',
-                openedAt: '2026-05-20T10:00:00Z',
-                status: 'open',
-            },
-            {
-                id: 2,
-                symbol: 'TSLA',
-                side: 'short',
-                quantity: 5,
-                avgPrice: '200.00',
-                openedAt: '2026-05-21T14:00:00Z',
-                status: 'open',
-            },
-        ]);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
 
         renderWithQuery(<PositionsPage />);
 
@@ -61,7 +67,7 @@ describe('PositionsPage', () => {
         expect(screen.getByText('AAPL')).toBeInTheDocument();
         expect(screen.getByText('롱')).toBeInTheDocument();
         expect(screen.getByText('10')).toBeInTheDocument();
-        expect(screen.getByText('$150.50')).toBeInTheDocument();
+        expect(screen.getByText('$150.00')).toBeInTheDocument();
 
         expect(screen.getByText('TSLA')).toBeInTheDocument();
         expect(screen.getByText('숏')).toBeInTheDocument();
@@ -89,5 +95,173 @@ describe('PositionsPage', () => {
         });
 
         expect(screen.getByText('오류: Server down')).toBeInTheDocument();
+    });
+
+    // --- P&L display tests ---
+
+    it('displays positive P&L for profitable long position', async () => {
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+                avgPrice: '150.00',
+                currentPrice: '165.00',
+                openedAt: '2026-05-20T10:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('+10.00%')).toBeInTheDocument();
+        });
+    });
+
+    it('displays negative P&L for losing long position', async () => {
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+                avgPrice: '150.00',
+                currentPrice: '135.00',
+                openedAt: '2026-05-20T10:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('-10.00%')).toBeInTheDocument();
+        });
+    });
+
+    it('displays positive P&L for profitable short position (price went down)', async () => {
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 2,
+                symbol: 'TSLA',
+                side: 'short',
+                quantity: 5,
+                avgPrice: '200.00',
+                currentPrice: '180.00',
+                openedAt: '2026-05-21T14:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('+10.00%')).toBeInTheDocument();
+        });
+    });
+
+    it('displays dash when currentPrice is not available', async () => {
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 10,
+                avgPrice: '150.00',
+                openedAt: '2026-05-20T10:00:00Z',
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('-')).toBeInTheDocument();
+        });
+    });
+
+    // --- Current price display ---
+
+    it('shows current price when available', async () => {
+        mockedApi.getPositions.mockResolvedValue([mockPositions[0]]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('$165.00')).toBeInTheDocument();
+        });
+    });
+
+    // --- Close position button ---
+
+    it('shows a close position button for each position', async () => {
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
+        });
+
+        expect(screen.getByLabelText('TSLA 포지션 청산')).toBeInTheDocument();
+    });
+
+    it('calls closePosition API when close button is clicked', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+        mockedApi.closePosition.mockResolvedValue(undefined);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
+
+        expect(mockedApi.closePosition).toHaveBeenCalledWith(1);
+    });
+
+    it('shows loading state on close button while mutation is pending', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+        mockedApi.closePosition.mockReturnValue(new Promise(() => {}));
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
+
+        await waitFor(() => {
+            expect(screen.getByText('처리 중...')).toBeInTheDocument();
+        });
+    });
+
+    // --- timeAgo display ---
+
+    it('shows time ago for recently opened positions', async () => {
+        mockedApi.getPositions.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'NVDA',
+                side: 'long',
+                quantity: 3,
+                avgPrice: '900.00',
+                currentPrice: '910.00',
+                openedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+                status: 'open',
+            },
+        ]);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('30분 전')).toBeInTheDocument();
+        });
     });
 });

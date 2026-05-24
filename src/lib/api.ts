@@ -24,6 +24,7 @@ export interface Position {
     side: string;
     quantity: number;
     avgPrice: string;
+    currentPrice?: string;
     openedAt: string;
     status: string;
 }
@@ -70,4 +71,7 @@ export const api = {
         }),
     rejectOrder: (id: number) =>
         fetchJson(`/approve/${id}`, { method: 'POST', body: JSON.stringify({ action: 'reject' }) }),
+    closePosition: (id: number) => fetchJson(`/positions/${id}/close`, { method: 'POST' }),
+    triggerAnalysis: (symbol: string) =>
+        fetchJson('/analysis/trigger', { method: 'POST', body: JSON.stringify({ symbol }) }),
 };
