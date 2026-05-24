@@ -17,6 +17,11 @@ coverage/
 .DS_Store
 Thumbs.db
 
+# Claude/Agent skills (installed locally)
+.agents/
+.claude/skills/
+.claude/worktrees/
+
 # Yarn
 .yarn/*
 !.yarn/patches

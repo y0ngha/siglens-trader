@@ -101,4 +101,4 @@ RESEND_API_KEY=        # 이메일 알림
 
 ## 라이선스
 
-PolyForm Noncommercial 1.0.0
+MITLicense

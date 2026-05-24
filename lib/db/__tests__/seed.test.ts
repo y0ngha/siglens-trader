@@ -39,7 +39,6 @@ describe('seed', () => {
         const { seed } = await import('../seed');
         await seed();
 
-        const configInsertCalls = mockInsert.mock.calls;
         // Count insert calls that received config values
         const configValueCalls = mockValues.mock.calls.filter(
             (call) =>
