@@ -8,11 +8,11 @@
         }
     },
     "crons": [
-        { "path": "/api/cron/technical", "schedule": "*/15 22-23,0-5 * * 1-5" },
-        { "path": "/api/cron/news", "schedule": "*/15 22-23,0-5 * * 1-5" },
-        { "path": "/api/cron/options", "schedule": "*/15 22-23,0-5 * * 1-5" },
+        { "path": "/api/cron/technical", "schedule": "0 22-23,0-5 * * 1-5" },
+        { "path": "/api/cron/news", "schedule": "0 22-23,0-5 * * 1-5" },
+        { "path": "/api/cron/options", "schedule": "0 22-23,0-5 * * 1-5" },
         { "path": "/api/cron/fundamental", "schedule": "0 22 * * 1-5" },
-        { "path": "/api/cron/execute", "schedule": "7,22,37,52 22-23,0-5 * * 1-5" }
+        { "path": "/api/cron/execute", "schedule": "7 22-23,0-5 * * 1-5" }
     ],
     "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
     "headers": [
