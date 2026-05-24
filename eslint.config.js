@@ -14,6 +14,7 @@ export default tseslint.config(
             '.yarn',
             '*.config.*',
             '.claude/**',
+            'public/mockServiceWorker.js',
         ],
     },
     {

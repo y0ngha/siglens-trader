@@ -16,12 +16,24 @@ const queryClient = new QueryClient({
     },
 });
 
-createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-        <ErrorBoundary FallbackComponent={ErrorFallback}>
-            <QueryClientProvider client={queryClient}>
-                <App />
-            </QueryClientProvider>
-        </ErrorBoundary>
-    </StrictMode>,
-);
+async function startApp() {
+    if (import.meta.env.VITE_API_MOCK === 'true') {
+        const { worker } = await import('./mocks/browser');
+        await worker.start({
+            onUnhandledRequest: 'bypass',
+        });
+        console.log('[MSW] Mock enabled');
+    }
+
+    createRoot(document.getElementById('root')!).render(
+        <StrictMode>
+            <ErrorBoundary FallbackComponent={ErrorFallback}>
+                <QueryClientProvider client={queryClient}>
+                    <App />
+                </QueryClientProvider>
+            </ErrorBoundary>
+        </StrictMode>,
+    );
+}
+
+startApp();
