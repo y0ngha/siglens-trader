@@ -106,16 +106,6 @@ export function SettingsPage() {
     const configData = data;
     const tradingMode = getConfigValue(configData.config, 'trading_mode', 'DRY_RUN') as string;
 
-    // Derive risk values from config entries
-    const riskKeys = [
-        'max_position_size',
-        'max_total_exposure',
-        'stop_loss_percent',
-        'take_profit_percent',
-        'buy_threshold',
-        'sell_threshold',
-    ] as const;
-
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
         max_total_exposure: 25000,
