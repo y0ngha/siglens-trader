@@ -60,6 +60,15 @@ export default async function handler(req: Request): Promise<Response> {
             'score_weights',
         ]);
 
+        const NUMERIC_CONFIG_KEYS = new Set([
+            'max_position_size',
+            'max_total_exposure',
+            'stop_loss_percent',
+            'take_profit_percent',
+            'buy_threshold',
+            'sell_threshold',
+        ]);
+
         switch (payload.type) {
             case 'config': {
                 const { key, value } = payload;
@@ -71,6 +80,14 @@ export default async function handler(req: Request): Promise<Response> {
                         { error: `Unknown config key: "${key}"` },
                         { status: 400 },
                     );
+                }
+                if (NUMERIC_CONFIG_KEYS.has(key)) {
+                    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+                        return Response.json(
+                            { error: `"${key}" must be a non-negative number` },
+                            { status: 400 },
+                        );
+                    }
                 }
                 await setConfigValue(db, key, value);
                 return Response.json({ success: true });

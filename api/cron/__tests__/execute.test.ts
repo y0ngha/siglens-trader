@@ -524,6 +524,72 @@ describe('execute cron handler', () => {
                 }),
             );
         });
+
+        it('records order_submitted when buy order status is submitted', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'submitted',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should not insert trade or open position
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+
+            // Should record as order_submitted in decisions
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_submitted',
+                score: 80,
+            });
+        });
+
+        it('records order_submitted when sell order status is submitted', async () => {
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-2',
+                status: 'submitted',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should not insert trade or close position
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_submitted',
+                score: 20,
+            });
+        });
     });
 
     // -----------------------------------------------------------------------
@@ -1295,6 +1361,42 @@ describe('execute cron handler', () => {
                     mode: 'auto',
                 }),
             );
+        });
+
+        it('handles submitted status in auto mode position re-evaluation', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-3',
+                status: 'submitted',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should not insert trade or close position
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_submitted',
+                score: 0,
+            });
         });
 
         it('catches errors during re-evaluation and continues', async () => {

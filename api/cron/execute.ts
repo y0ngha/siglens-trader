@@ -149,6 +149,15 @@ export default async function handler(req: Request): Promise<Response> {
                         ).catch(() => {});
                         break;
                     }
+                    if (orderResult.status === 'submitted') {
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'order_submitted',
+                            score: 0,
+                        });
+                        break;
+                    }
+                    // status === 'filled' — proceed with trade record + position close
                     await insertTrade(db, {
                         symbol: position.symbol,
                         side: 'sell',
@@ -365,6 +374,15 @@ export default async function handler(req: Request): Promise<Response> {
                         ).catch(() => {});
                         break;
                     }
+                    if (orderResult.status === 'submitted') {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'order_submitted',
+                            score: decision.score,
+                        });
+                        break;
+                    }
+                    // status === 'filled' — proceed with trade record + position
                     const filledPrice = orderResult.filledPrice ?? currentPrice;
                     await insertTrade(db, {
                         symbol: item.symbol,

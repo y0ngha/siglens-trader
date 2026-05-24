@@ -281,6 +281,57 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(400);
     });
 
+    it('rejects non-numeric value for numeric config keys', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'max_position_size',
+                value: 'not_a_number',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a non-negative number');
+    });
+
+    it('rejects negative value for numeric config keys', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'stop_loss_percent',
+                value: -5,
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a non-negative number');
+    });
+
+    it('rejects Infinity for numeric config keys', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'buy_threshold',
+                value: Infinity,
+            }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('accepts valid numeric config value', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'max_position_size',
+                value: 2000,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'max_position_size', 2000);
+    });
+
     it('handles watchlist add', async () => {
         mockAddToWatchlist.mockResolvedValue([{ id: 1, symbol: 'AAPL' }]);
 
