@@ -19,7 +19,7 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "db:generate": "drizzle-kit generate",
-        "db:migrate": "tsx lib/db/migrate.ts",
+        "db:migrate": "tsx --env-file=.env.local lib/db/migrate.ts",
         "db:seed": "tsx lib/db/seed.ts",
         "prepare": "husky"
     },
@@ -47,6 +47,7 @@
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/react": "^16.3.2",
         "@testing-library/user-event": "^14.6.1",
+        "@types/node": "^25.9.1",
         "@types/react": "^19",
         "@types/react-dom": "^19",
         "@vitejs/plugin-react": "^4.5.2",
