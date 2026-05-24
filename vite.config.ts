@@ -25,7 +25,7 @@ export default defineConfig({
         VitePWA({
             registerType: 'autoUpdate',
             manifest: {
-                name: 'Siglens Trader',
+                name: 'Siglens Auto Trader',
                 short_name: 'Trader',
                 description: 'Auto-trading dashboard',
                 theme_color: '#0a0a0a',

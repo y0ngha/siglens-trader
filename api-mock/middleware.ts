@@ -123,32 +123,96 @@ const mockPending = [
 ];
 
 const mockConfig = {
-    tradingMode: 'dry_run',
+    config: [
+        { key: 'trading_mode', value: 'dry_run', updatedAt: new Date().toISOString() },
+        { key: 'max_position_size', value: 1000, updatedAt: new Date().toISOString() },
+        { key: 'max_total_exposure', value: 5000, updatedAt: new Date().toISOString() },
+        { key: 'stop_loss_percent', value: 3, updatedAt: new Date().toISOString() },
+        { key: 'take_profit_percent', value: 5, updatedAt: new Date().toISOString() },
+        { key: 'buy_threshold', value: 70, updatedAt: new Date().toISOString() },
+        { key: 'sell_threshold', value: 30, updatedAt: new Date().toISOString() },
+        { key: 'analysis_timeframe', value: '1Day', updatedAt: new Date().toISOString() },
+    ],
     watchlist: [
-        { symbol: 'AAPL', name: 'Apple Inc.', enabled: true },
-        { symbol: 'NVDA', name: 'NVIDIA Corporation', enabled: true },
-        { symbol: 'TSLA', name: 'Tesla Inc.', enabled: true },
-        { symbol: 'MSFT', name: 'Microsoft Corporation', enabled: true },
-        { symbol: 'GOOGL', name: 'Alphabet Inc.', enabled: true },
+        {
+            id: 1,
+            symbol: 'AAPL',
+            companyName: 'Apple Inc.',
+            enabled: true,
+            createdAt: new Date().toISOString(),
+        },
+        {
+            id: 2,
+            symbol: 'NVDA',
+            companyName: 'NVIDIA Corporation',
+            enabled: true,
+            createdAt: new Date().toISOString(),
+        },
+        {
+            id: 3,
+            symbol: 'TSLA',
+            companyName: 'Tesla Inc.',
+            enabled: true,
+            createdAt: new Date().toISOString(),
+        },
+        {
+            id: 4,
+            symbol: 'MSFT',
+            companyName: 'Microsoft Corporation',
+            enabled: false,
+            createdAt: new Date().toISOString(),
+        },
+        {
+            id: 5,
+            symbol: 'GOOGL',
+            companyName: 'Alphabet Inc.',
+            enabled: true,
+            createdAt: new Date().toISOString(),
+        },
     ],
     analysis: [
-        { type: 'technical', enabled: true, model: 'claude-opus-4-7', byok: true },
-        { type: 'news', enabled: true, model: 'gemini-2.5-flash', byok: true },
-        { type: 'options', enabled: true, model: 'gemini-2.5-flash', byok: true },
-        { type: 'fundamental', enabled: true, model: 'gemini-2.5-flash', byok: true },
+        {
+            id: 1,
+            analysisType: 'technical',
+            enabled: true,
+            modelId: 'claude-opus-4-7',
+            useByok: true,
+            updatedAt: new Date().toISOString(),
+        },
+        {
+            id: 2,
+            analysisType: 'news',
+            enabled: true,
+            modelId: 'gemini-2.5-flash',
+            useByok: true,
+            updatedAt: new Date().toISOString(),
+        },
+        {
+            id: 3,
+            analysisType: 'options',
+            enabled: true,
+            modelId: 'gemini-2.5-flash',
+            useByok: true,
+            updatedAt: new Date().toISOString(),
+        },
+        {
+            id: 4,
+            analysisType: 'fundamental',
+            enabled: true,
+            modelId: 'gemini-2.5-flash',
+            useByok: true,
+            updatedAt: new Date().toISOString(),
+        },
     ],
-    risk: {
-        maxPositionSize: 1000,
-        maxTotalExposure: 5000,
-        stopLossPercent: 3,
-        takeProfitPercent: 5,
-        buyThreshold: 70,
-        sellThreshold: 30,
-    },
-    notifications: {
-        emailEnabled: true,
-        events: ['trade_executed', 'approval_required', 'error'],
-    },
+    notification: [
+        {
+            id: 1,
+            channel: 'email',
+            enabled: true,
+            target: 'dev.y0ngha@gmail.com',
+            events: ['trade_executed', 'approval_required', 'error'],
+        },
+    ],
 };
 
 const mockAnalysis = [
