@@ -1,0 +1,260 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createAnalysisCronHandler, resolveApiKey } from '../_run-analysis-cron';
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+const mockVerifyCronSecret = vi.fn<(req: Request) => boolean>();
+vi.mock('../../_lib/cron-auth', () => ({
+    verifyCronSecret: (...args: [Request]) => mockVerifyCronSecret(...args),
+}));
+
+const mockGetDb = vi.fn();
+vi.mock('../../_lib/db', () => ({
+    getDb: () => mockGetDb(),
+}));
+
+const mockGetEnabledWatchlist = vi.fn();
+const mockGetAnalysisConfig = vi.fn();
+const mockSaveAnalysisResult = vi.fn();
+vi.mock('../../../lib/db/queries', () => ({
+    getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
+    getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
+    saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
+}));
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const fakeDb = { fake: 'db' };
+const fakeConfig = { enabled: true, modelId: 'claude-sonnet-4-20250514', useByok: true };
+const fakeWatchlist = [
+    { symbol: 'AAPL', companyName: 'Apple Inc.', enabled: true },
+    { symbol: 'TSLA', companyName: 'Tesla Inc.', enabled: true },
+];
+
+function makeRequest(authorized: boolean): Request {
+    const headers = new Headers();
+    if (authorized) {
+        headers.set('authorization', 'Bearer test-secret');
+    }
+    return new Request('https://example.com/api/cron/technical', { headers });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('createAnalysisCronHandler', () => {
+    let mockRunner: ReturnType<typeof vi.fn>;
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-24T10:00:00.000Z'));
+
+        mockRunner = vi.fn();
+        handler = createAnalysisCronHandler('technical', mockRunner);
+
+        mockGetDb.mockReturnValue(fakeDb);
+        mockGetAnalysisConfig.mockResolvedValue(fakeConfig);
+        mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
+        mockSaveAnalysisResult.mockResolvedValue([]);
+        mockVerifyCronSecret.mockReturnValue(true);
+
+        process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+        process.env.OPENAI_API_KEY = 'sk-openai-test';
+        process.env.GEMINI_API_KEY = 'gemini-test';
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.OPENAI_API_KEY;
+        delete process.env.GEMINI_API_KEY;
+    });
+
+    it('returns 401 when cron secret is invalid', async () => {
+        mockVerifyCronSecret.mockReturnValue(false);
+
+        const res = await handler(makeRequest(false));
+
+        expect(res.status).toBe(401);
+        expect(await res.text()).toBe('Unauthorized');
+        expect(mockGetAnalysisConfig).not.toHaveBeenCalled();
+    });
+
+    it('skips when config is disabled', async () => {
+        mockGetAnalysisConfig.mockResolvedValue({ ...fakeConfig, enabled: false });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body).toEqual({ skipped: true, reason: 'disabled' });
+        expect(mockGetEnabledWatchlist).not.toHaveBeenCalled();
+    });
+
+    it('skips when config is null', async () => {
+        mockGetAnalysisConfig.mockResolvedValue(null);
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body).toEqual({ skipped: true, reason: 'disabled' });
+    });
+
+    it('skips when watchlist is empty', async () => {
+        mockGetEnabledWatchlist.mockResolvedValue([]);
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
+        expect(mockRunner).not.toHaveBeenCalled();
+    });
+
+    it('runs analysis for each watchlist item and saves successful results', async () => {
+        mockRunner
+            .mockResolvedValueOnce({ status: 'done', result: { trend: 'bullish' } })
+            .mockResolvedValueOnce({ status: 'cached', result: { trend: 'bearish' } });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.cronRunId).toMatch(/^technical-\d+$/);
+        expect(body.results).toHaveLength(2);
+        expect(body.results[0]).toEqual({ symbol: 'AAPL', status: 'done' });
+        expect(body.results[1]).toEqual({ symbol: 'TSLA', status: 'cached' });
+
+        // Both results should be saved
+        expect(mockSaveAnalysisResult).toHaveBeenCalledTimes(2);
+        expect(mockSaveAnalysisResult).toHaveBeenCalledWith(fakeDb, {
+            symbol: 'AAPL',
+            analysisType: 'technical',
+            result: { trend: 'bullish' },
+            modelId: 'claude-sonnet-4-20250514',
+            analyzedAt: new Date('2026-05-24T10:00:00.000Z'),
+            cronRunId: expect.stringMatching(/^technical-/),
+        });
+    });
+
+    it('does not save result when analysis returns error status', async () => {
+        mockRunner.mockResolvedValue({ status: 'error', error: 'API rate limited' });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body.results).toEqual([
+            { symbol: 'AAPL', status: 'error', error: 'API rate limited' },
+            { symbol: 'TSLA', status: 'error', error: 'API rate limited' },
+        ]);
+        expect(mockSaveAnalysisResult).not.toHaveBeenCalled();
+    });
+
+    it('does not save result when analysis returns skipped status', async () => {
+        mockRunner.mockResolvedValue({ status: 'skipped' });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body.results[0]).toEqual({ symbol: 'AAPL', status: 'skipped' });
+        expect(mockSaveAnalysisResult).not.toHaveBeenCalled();
+    });
+
+    it('passes userApiKey when useByok is true', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunner).toHaveBeenCalledWith({
+            symbol: 'AAPL',
+            companyName: 'Apple Inc.',
+            modelId: 'claude-sonnet-4-20250514',
+            userApiKey: 'sk-ant-test',
+        });
+    });
+
+    it('does not pass userApiKey when useByok is false', async () => {
+        mockGetAnalysisConfig.mockResolvedValue({ ...fakeConfig, useByok: false });
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunner).toHaveBeenCalledWith({
+            symbol: 'AAPL',
+            companyName: 'Apple Inc.',
+            modelId: 'claude-sonnet-4-20250514',
+            userApiKey: undefined,
+        });
+    });
+
+    it('includes error field in results only when present', async () => {
+        mockRunner
+            .mockResolvedValueOnce({ status: 'done', result: {} })
+            .mockResolvedValueOnce({ status: 'error', error: 'timeout' });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body.results[0].error).toBeUndefined();
+        expect(body.results[1].error).toBe('timeout');
+    });
+
+    it('uses different analysis type prefix in cronRunId', async () => {
+        const newsHandler = createAnalysisCronHandler('news', mockRunner);
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        const res = await newsHandler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body.cronRunId).toMatch(/^news-\d+$/);
+    });
+
+    it('passes correct analysisType to getAnalysisConfig', async () => {
+        const optionsHandler = createAnalysisCronHandler('options', mockRunner);
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await optionsHandler(makeRequest(true));
+
+        expect(mockGetAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'options');
+    });
+});
+
+describe('resolveApiKey', () => {
+    beforeEach(() => {
+        process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+        process.env.OPENAI_API_KEY = 'sk-openai-test';
+        process.env.GEMINI_API_KEY = 'gemini-test';
+    });
+
+    afterEach(() => {
+        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.OPENAI_API_KEY;
+        delete process.env.GEMINI_API_KEY;
+    });
+
+    it('returns ANTHROPIC_API_KEY for claude model', () => {
+        expect(resolveApiKey('claude-sonnet-4-20250514')).toBe('sk-ant-test');
+        expect(resolveApiKey('claude-3-haiku')).toBe('sk-ant-test');
+    });
+
+    it('returns OPENAI_API_KEY for gpt model', () => {
+        expect(resolveApiKey('gpt-4o')).toBe('sk-openai-test');
+        expect(resolveApiKey('gpt-4-turbo')).toBe('sk-openai-test');
+    });
+
+    it('returns GEMINI_API_KEY for gemini model', () => {
+        expect(resolveApiKey('gemini-2.0-flash')).toBe('gemini-test');
+        expect(resolveApiKey('gemini-pro')).toBe('gemini-test');
+    });
+
+    it('returns undefined for unknown model prefix', () => {
+        expect(resolveApiKey('llama-3')).toBeUndefined();
+        expect(resolveApiKey('mistral-large')).toBeUndefined();
+    });
+});
