@@ -30,7 +30,7 @@ const mockTrades = [
         price: '150.00',
         executedAt: '2026-05-24T09:30:00Z',
         reason: 'RSI oversold signal',
-        mode: 'paper',
+        mode: 'dry_run',
     },
     {
         id: 2,
@@ -41,7 +41,7 @@ const mockTrades = [
         price: '210.50',
         executedAt: '2026-05-24T10:00:00Z',
         reason: null,
-        mode: 'semi-auto',
+        mode: 'semi_auto',
     },
     {
         id: 3,
@@ -271,7 +271,7 @@ describe('TradesPage', () => {
             price: '100.00',
             executedAt: `2026-05-24T0${String(9 + Math.floor(i / 6)).padStart(1, '0')}:${String((i % 6) * 10).padStart(2, '0')}:00Z`,
             reason: null,
-            mode: 'paper',
+            mode: 'dry_run',
         }));
         mockedApi.getTrades.mockResolvedValue(manyTrades);
 
@@ -295,7 +295,7 @@ describe('TradesPage', () => {
             price: '100.00',
             executedAt: `2026-05-24T0${String(9 + Math.floor(i / 6)).padStart(1, '0')}:${String((i % 6) * 10).padStart(2, '0')}:00Z`,
             reason: null,
-            mode: 'paper',
+            mode: 'dry_run',
         }));
         mockedApi.getTrades.mockResolvedValue(manyTrades);
 

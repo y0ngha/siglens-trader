@@ -7,18 +7,16 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const PAGE_SIZE = 20;
 
-type ModeFilter = 'all' | 'paper' | 'semi-auto' | 'auto';
+type ModeFilter = 'all' | 'dry_run' | 'semi_auto' | 'auto';
 
 function modeBadgeLabel(mode: string): string {
     switch (mode) {
-        case 'paper':
+        case 'dry_run':
             return '모의';
-        case 'semi-auto':
+        case 'semi_auto':
             return '반자동';
         case 'auto':
             return '자동';
-        case 'dry_run':
-            return '모의';
         default:
             return mode;
     }
@@ -47,10 +45,7 @@ export function TradesPage() {
     const filteredTrades = useMemo(() => {
         if (!data) return [];
         if (modeFilter === 'all') return data;
-        return data.filter((trade) => {
-            if (modeFilter === 'paper') return trade.mode === 'paper' || trade.mode === 'dry_run';
-            return trade.mode === modeFilter;
-        });
+        return data.filter((trade) => trade.mode === modeFilter);
     }, [data, modeFilter]);
 
     const visibleTrades = filteredTrades.slice(0, visibleCount);
@@ -72,8 +67,8 @@ export function TradesPage() {
                 {(
                     [
                         ['all', '전체'],
-                        ['paper', '모의'],
-                        ['semi-auto', '반자동'],
+                        ['dry_run', '모의'],
+                        ['semi_auto', '반자동'],
                         ['auto', '자동'],
                     ] as const
                 ).map(([value, label]) => (

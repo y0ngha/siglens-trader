@@ -82,8 +82,8 @@ function DesktopNav({ navItems }: { navItems: NavItem[] }) {
                 >
                     {item.label}
                     {item.badge != null && item.badge > 0 && (
-                        <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-                            {item.badge}
+                        <span className="ml-1.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] leading-none font-bold text-white">
+                            {item.badge > 9 ? '9+' : item.badge}
                         </span>
                     )}
                 </NavLink>
@@ -133,8 +133,8 @@ function MobileNavLink({
             <span className="text-base">{icon}</span>
             <span>{label}</span>
             {badge != null && badge > 0 && (
-                <span className="absolute top-1 right-1/4 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-bold text-white">
-                    {badge}
+                <span className="absolute top-1 right-1/4 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] leading-none font-bold text-white">
+                    {badge > 9 ? '9+' : badge}
                 </span>
             )}
         </NavLink>
