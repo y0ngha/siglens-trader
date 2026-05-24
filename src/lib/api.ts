@@ -54,15 +54,15 @@ export interface PendingOrder {
 }
 
 export const api = {
-    getStatus: () => fetchJson<StatusResponse>('/status'),
-    getPositions: () => fetchJson<Position[]>('/positions'),
-    getTrades: () => fetchJson<Trade[]>('/trades'),
-    getAnalysis: (symbol?: string) =>
-        fetchJson<unknown[]>(symbol ? `/analysis?symbol=${symbol}` : '/analysis'),
-    getConfig: () => fetchJson<unknown>('/config'),
+    getStatus: (signal?: AbortSignal) => fetchJson<StatusResponse>('/status', { signal }),
+    getPositions: (signal?: AbortSignal) => fetchJson<Position[]>('/positions', { signal }),
+    getTrades: (signal?: AbortSignal) => fetchJson<Trade[]>('/trades', { signal }),
+    getAnalysis: (symbol?: string, signal?: AbortSignal) =>
+        fetchJson<unknown[]>(symbol ? `/analysis?symbol=${symbol}` : '/analysis', { signal }),
+    getConfig: (signal?: AbortSignal) => fetchJson<unknown>('/config', { signal }),
     updateConfig: (body: unknown) =>
         fetchJson('/config', { method: 'POST', body: JSON.stringify(body) }),
-    getPending: () => fetchJson<PendingOrder[]>('/pending'),
+    getPending: (signal?: AbortSignal) => fetchJson<PendingOrder[]>('/pending', { signal }),
     approveOrder: (id: number) =>
         fetchJson(`/approve/${id}`, {
             method: 'POST',

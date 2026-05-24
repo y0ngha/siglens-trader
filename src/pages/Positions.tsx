@@ -8,7 +8,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 export function PositionsPage() {
     const { data, isLoading, error } = useQuery({
         queryKey: ['positions'],
-        queryFn: api.getPositions,
+        queryFn: ({ signal }) => api.getPositions(signal),
     });
 
     if (isLoading) return <LoadingSkeleton />;

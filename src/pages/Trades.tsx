@@ -21,7 +21,7 @@ function modeBadgeLabel(mode: string): string {
 export function TradesPage() {
     const { data, isLoading, error } = useQuery({
         queryKey: ['trades'],
-        queryFn: api.getTrades,
+        queryFn: ({ signal }) => api.getTrades(signal),
     });
 
     if (isLoading) return <LoadingSkeleton />;

@@ -70,7 +70,7 @@ function timeAgo(dateStr: string): string {
 export function AnalysisPage() {
     const { data, isLoading, error } = useQuery({
         queryKey: ['analysis'],
-        queryFn: () => api.getAnalysis() as Promise<AnalysisEntry[]>,
+        queryFn: ({ signal }) => api.getAnalysis(undefined, signal) as Promise<AnalysisEntry[]>,
     });
 
     if (isLoading) return <LoadingSkeleton />;

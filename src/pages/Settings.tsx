@@ -72,7 +72,7 @@ export function SettingsPage() {
     const queryClient = useQueryClient();
     const { data, isLoading, error } = useQuery({
         queryKey: ['config'],
-        queryFn: () => api.getConfig() as Promise<Config>,
+        queryFn: ({ signal }) => api.getConfig(signal) as Promise<Config>,
     });
 
     const updateMutation = useMutation({

@@ -11,7 +11,7 @@ import {
     pendingOrders,
 } from './schema';
 
-async function seed() {
+export async function seed() {
     if (!process.env.DATABASE_URL) {
         throw new Error('DATABASE_URL is required');
     }
@@ -316,7 +316,10 @@ function generateMockAnalysisResult(type: string, symbol: string): object {
     }
 }
 
-seed().catch((err) => {
-    console.error('Seed failed:', err);
-    process.exit(1);
-});
+// Only auto-execute when run directly as a script
+if (process.argv[1]?.endsWith('seed.ts')) {
+    seed().catch((err) => {
+        console.error('Seed failed:', err);
+        process.exit(1);
+    });
+}

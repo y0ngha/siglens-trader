@@ -20,7 +20,7 @@ function modeLabel(mode: string): string {
 export function StatusPage() {
     const { data, isLoading, error } = useQuery({
         queryKey: ['status'],
-        queryFn: api.getStatus,
+        queryFn: ({ signal }) => api.getStatus(signal),
     });
 
     if (isLoading) return <LoadingSkeleton />;

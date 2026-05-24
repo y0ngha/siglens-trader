@@ -22,7 +22,7 @@ export function PendingPage() {
         error,
     } = useQuery({
         queryKey: ['pending'],
-        queryFn: api.getPending,
+        queryFn: ({ signal }) => api.getPending(signal),
     });
 
     const approveMutation = useMutation({

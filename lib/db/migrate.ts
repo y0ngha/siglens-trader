@@ -2,7 +2,7 @@ import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { migrate } from 'drizzle-orm/neon-http/migrator';
 
-async function main() {
+export async function main() {
     if (!process.env.DATABASE_URL) {
         throw new Error('DATABASE_URL is required');
     }
@@ -12,4 +12,7 @@ async function main() {
     console.log('Migration complete');
 }
 
-main().catch(console.error);
+// Only auto-execute when run directly as a script
+if (process.argv[1]?.endsWith('migrate.ts')) {
+    main().catch(console.error);
+}
