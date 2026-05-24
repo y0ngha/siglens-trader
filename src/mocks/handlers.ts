@@ -293,12 +293,23 @@ export const handlers = [
         return HttpResponse.json(positions.filter((p) => p.status === 'open'));
     }),
 
-    // Close position
+    // Close position → add trade record
     http.post('/api/positions/:id/close', ({ params }) => {
         const id = Number(params.id);
         const pos = positions.find((p) => p.id === id);
         if (!pos) return HttpResponse.json({ error: 'Not found' }, { status: 404 });
         pos.status = 'closed';
+        trades.push({
+            id: genId(),
+            symbol: pos.symbol,
+            side: 'sell',
+            orderType: 'market',
+            quantity: pos.quantity,
+            price: pos.currentPrice ?? pos.avgPrice,
+            executedAt: new Date().toISOString(),
+            reason: '수동 청산',
+            mode: 'semi_auto',
+        });
         return HttpResponse.json({ success: true });
     }),
 
@@ -335,13 +346,41 @@ export const handlers = [
         return HttpResponse.json(pendingOrders.filter((o) => o.status === 'pending'));
     }),
 
-    // Approve/reject order
+    // Approve/reject order → approved adds trade record
     http.post('/api/approve/:id', async ({ params, request }) => {
         const id = Number(params.id);
         const body = (await request.json()) as { action: 'approve' | 'reject' };
         const order = pendingOrders.find((o) => o.id === id);
         if (!order) return HttpResponse.json({ error: 'Not found' }, { status: 404 });
         order.status = body.action === 'approve' ? 'approved' : 'rejected';
+
+        if (body.action === 'approve') {
+            trades.push({
+                id: genId(),
+                symbol: order.symbol,
+                side: order.side,
+                orderType: 'market',
+                quantity: order.quantity,
+                price: order.priceLimit ?? '0',
+                executedAt: new Date().toISOString(),
+                reason: order.analysisSummary ?? '승인됨',
+                mode: 'semi_auto',
+            });
+            // If buy, add to positions
+            if (order.side === 'buy') {
+                positions.push({
+                    id: genId(),
+                    symbol: order.symbol,
+                    side: 'long',
+                    quantity: order.quantity,
+                    avgPrice: order.priceLimit ?? '0',
+                    currentPrice: order.priceLimit ?? '0',
+                    openedAt: new Date().toISOString(),
+                    status: 'open',
+                });
+            }
+        }
+
         return HttpResponse.json({ success: true });
     }),
 
