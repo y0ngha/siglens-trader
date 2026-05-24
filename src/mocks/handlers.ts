@@ -270,24 +270,6 @@ const analysisResults = [
     },
 ];
 
-const searchDatabase = [
-    { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ' },
-    { symbol: 'AMZN', name: 'Amazon.com Inc.', exchange: 'NASDAQ' },
-    { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
-    { symbol: 'TSLA', name: 'Tesla Inc.', exchange: 'NASDAQ' },
-    { symbol: 'MSFT', name: 'Microsoft Corporation', exchange: 'NASDAQ' },
-    { symbol: 'GOOGL', name: 'Alphabet Inc.', exchange: 'NASDAQ' },
-    { symbol: 'META', name: 'Meta Platforms Inc.', exchange: 'NASDAQ' },
-    { symbol: 'AMD', name: 'Advanced Micro Devices Inc.', exchange: 'NASDAQ' },
-    { symbol: 'NFLX', name: 'Netflix Inc.', exchange: 'NASDAQ' },
-    { symbol: 'JPM', name: 'JPMorgan Chase & Co.', exchange: 'NYSE' },
-    { symbol: 'V', name: 'Visa Inc.', exchange: 'NYSE' },
-    { symbol: 'DIS', name: 'The Walt Disney Company', exchange: 'NYSE' },
-    { symbol: 'INTC', name: 'Intel Corporation', exchange: 'NASDAQ' },
-    { symbol: 'CRM', name: 'Salesforce Inc.', exchange: 'NYSE' },
-    { symbol: 'UBER', name: 'Uber Technologies Inc.', exchange: 'NYSE' },
-];
-
 // --- Handlers ---
 
 export const handlers = [
@@ -447,16 +429,5 @@ export const handlers = [
             default:
                 return HttpResponse.json({ error: 'Unknown type' }, { status: 400 });
         }
-    }),
-
-    // Search
-    http.get('/api/search', ({ request }) => {
-        const url = new URL(request.url);
-        const q = (url.searchParams.get('q') ?? '').toLowerCase();
-        if (!q) return HttpResponse.json([]);
-        const results = searchDatabase.filter(
-            (r) => r.symbol.toLowerCase().includes(q) || r.name.toLowerCase().includes(q),
-        );
-        return HttpResponse.json(results.slice(0, 10));
     }),
 ];
