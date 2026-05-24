@@ -149,7 +149,7 @@ export function PendingPage() {
                             <button
                                 type="button"
                                 onClick={() => approveMutation.mutate(order.id)}
-                                disabled={approveMutation.isPending}
+                                disabled={approveMutation.isPending || rejectMutation.isPending}
                                 className="min-h-[44px] flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
                                 aria-label={`${order.symbol} 승인`}
                             >
@@ -158,7 +158,7 @@ export function PendingPage() {
                             <button
                                 type="button"
                                 onClick={() => rejectMutation.mutate(order.id)}
-                                disabled={rejectMutation.isPending}
+                                disabled={approveMutation.isPending || rejectMutation.isPending}
                                 className="min-h-[44px] flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
                                 aria-label={`${order.symbol} 거부`}
                             >

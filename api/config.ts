@@ -1,4 +1,5 @@
 import { getDb } from './_lib/db';
+import { isAuthenticated } from './_lib/auth';
 import {
     getAllConfig,
     setConfigValue,
@@ -13,6 +14,8 @@ import {
 } from '../lib/db/queries';
 
 export default async function handler(req: Request): Promise<Response> {
+    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+
     const db = getDb();
 
     if (req.method === 'GET') {

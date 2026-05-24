@@ -32,6 +32,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
 
         const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
 
+        // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
         for (const item of watchlistItems) {
             const result = await runner({
                 symbol: item.symbol,

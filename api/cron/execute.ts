@@ -7,6 +7,7 @@ import {
     getLatestAnalysisResult,
     getOpenPositions,
     getOpenPositionBySymbol,
+    openPosition,
     closePosition,
     saveAnalysisResult,
     insertTrade,
@@ -59,7 +60,7 @@ export default async function handler(req: Request): Promise<Response> {
         return Response.json({ skipped: true, reason: 'empty_watchlist' });
     }
 
-    const currentExposure = openPositions.reduce(
+    let currentExposure = openPositions.reduce(
         (sum, p) => sum + Number(p.avgPrice) * p.quantity,
         0,
     );
@@ -78,7 +79,10 @@ export default async function handler(req: Request): Promise<Response> {
 
             const techResult = tech?.result as any;
             const currentPrice: number = techResult?.keyLevels?.currentPrice ?? 0;
-            if (currentPrice === 0) continue; // no price data
+            if (currentPrice === 0) {
+                decisions.push({ symbol: position.symbol, action: 'skipped_no_price', score: 0 });
+                continue;
+            }
 
             const evaluation = evaluateExistingPosition({
                 avgPrice: Number(position.avgPrice),
@@ -128,7 +132,7 @@ export default async function handler(req: Request): Promise<Response> {
                         score: 0,
                         reason: evaluation.reason,
                         approveUrl: 'https://auto-trade.siglens.io/pending',
-                    });
+                    }).catch(() => {});
                     break;
 
                 case 'auto': {
@@ -164,6 +168,10 @@ export default async function handler(req: Request): Promise<Response> {
         }
     }
 
+    // Recalculate exposure after position closures
+    const updatedPositions = await getOpenPositions(db);
+    currentExposure = updatedPositions.reduce((sum, p) => sum + Number(p.avgPrice) * p.quantity, 0);
+
     for (const item of watchlistItems) {
         try {
             // Gather latest analysis results
@@ -174,27 +182,37 @@ export default async function handler(req: Request): Promise<Response> {
                 getLatestAnalysisResult(db, item.symbol, 'fundamental'),
             ]);
 
-            // Optional: run overall analysis
+            // Optional: run overall analysis (skip if recent cache exists)
             let overall = null;
             if (overallConfig?.enabled) {
-                const overallResult = await runOverallAnalysis({
-                    symbol: item.symbol,
-                    companyName: item.companyName,
-                    modelId: overallConfig.modelId as any,
-                    userApiKey: overallConfig.useByok
-                        ? resolveApiKey(overallConfig.modelId)
-                        : undefined,
-                });
-                if (overallResult.status === 'done' || overallResult.status === 'cached') {
-                    overall = overallResult.result;
-                    await saveAnalysisResult(db, {
+                const existingOverall = await getLatestAnalysisResult(db, item.symbol, 'overall');
+                const TWO_HOURS = 2 * 60 * 60 * 1000;
+                const overallAge = existingOverall
+                    ? Date.now() - new Date(existingOverall.analyzedAt).getTime()
+                    : Infinity;
+
+                if (overallAge <= TWO_HOURS) {
+                    overall = existingOverall!.result;
+                } else {
+                    const overallResult = await runOverallAnalysis({
                         symbol: item.symbol,
-                        analysisType: 'overall',
-                        result: overall,
-                        modelId: overallConfig.modelId,
-                        analyzedAt: new Date(),
-                        cronRunId,
+                        companyName: item.companyName,
+                        modelId: overallConfig.modelId as any,
+                        userApiKey: overallConfig.useByok
+                            ? resolveApiKey(overallConfig.modelId)
+                            : undefined,
                     });
+                    if (overallResult.status === 'done' || overallResult.status === 'cached') {
+                        overall = overallResult.result;
+                        await saveAnalysisResult(db, {
+                            symbol: item.symbol,
+                            analysisType: 'overall',
+                            result: overall,
+                            modelId: overallConfig.modelId,
+                            analyzedAt: new Date(),
+                            cronRunId,
+                        });
+                    }
                 }
             }
 
@@ -281,6 +299,14 @@ export default async function handler(req: Request): Promise<Response> {
                         mode: 'dry_run',
                         cronRunId,
                     });
+                    if (decision.action === 'buy') {
+                        await openPosition(db, {
+                            symbol: item.symbol,
+                            side: 'long',
+                            quantity: decision.quantity,
+                            avgPrice: currentPrice,
+                        });
+                    }
                     break;
 
                 case 'semi_auto':
@@ -300,7 +326,7 @@ export default async function handler(req: Request): Promise<Response> {
                         score: decision.score,
                         reason: decision.reason,
                         approveUrl: 'https://auto-trade.siglens.io/pending',
-                    });
+                    }).catch(() => {});
                     break;
 
                 case 'auto': {

@@ -1,4 +1,4 @@
-import { eq, desc, and, gte } from 'drizzle-orm';
+import { eq, desc, and, gte, sql } from 'drizzle-orm';
 import type { Db } from './index';
 import {
     watchlist,
@@ -207,11 +207,15 @@ export async function getRecentTrades(db: Db, limit = 50) {
 }
 
 export async function getTodayTradeCount(db: Db) {
-    const todayStart = new Date();
-    todayStart.setUTCHours(0, 0, 0, 0);
+    const now = new Date();
+    const etDate = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const todayStart = new Date(`${etDate}T00:00:00.000-05:00`);
 
-    const rows = await db.select().from(trades).where(gte(trades.executedAt, todayStart));
-    return rows.length;
+    const rows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(trades)
+        .where(gte(trades.executedAt, todayStart));
+    return rows[0]?.count ?? 0;
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ function getResend() {
 }
 
 const FROM = () => process.env.NOTIFICATION_EMAIL_FROM ?? 'noreply@siglens.io';
-const TO = 'dev.y0ngha@gmail.com';
+const DEFAULT_TO = 'dev.y0ngha@gmail.com';
 
 export interface TradeNotification {
     symbol: string;
@@ -27,11 +27,12 @@ export interface ApprovalNotification {
     approveUrl: string;
 }
 
-export async function sendTradeExecutedEmail(trade: TradeNotification): Promise<void> {
+export async function sendTradeExecutedEmail(trade: TradeNotification, to?: string): Promise<void> {
+    const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     await resend.emails.send({
         from: FROM(),
-        to: TO,
+        to: recipient,
         subject: `[Trader] ${trade.side.toUpperCase()} ${trade.symbol} — ${trade.quantity}주`,
         html: `
             <h2>${trade.side === 'buy' ? '매수' : '매도'} 체결</h2>
@@ -42,11 +43,15 @@ export async function sendTradeExecutedEmail(trade: TradeNotification): Promise<
     });
 }
 
-export async function sendApprovalRequestEmail(order: ApprovalNotification): Promise<void> {
+export async function sendApprovalRequestEmail(
+    order: ApprovalNotification,
+    to?: string,
+): Promise<void> {
+    const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     await resend.emails.send({
         from: FROM(),
-        to: TO,
+        to: recipient,
         subject: `[Trader] 승인 요청: ${order.side.toUpperCase()} ${order.symbol}`,
         html: `
             <h2>매매 승인 요청</h2>
@@ -58,11 +63,12 @@ export async function sendApprovalRequestEmail(order: ApprovalNotification): Pro
     });
 }
 
-export async function sendErrorEmail(subject: string, error: string): Promise<void> {
+export async function sendErrorEmail(subject: string, error: string, to?: string): Promise<void> {
+    const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     await resend.emails.send({
         from: FROM(),
-        to: TO,
+        to: recipient,
         subject: `[Trader] 오류: ${subject}`,
         html: `<pre>${error}</pre>`,
     });

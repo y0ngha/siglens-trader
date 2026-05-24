@@ -65,7 +65,10 @@ export const api = {
     getPositions: (signal?: AbortSignal) => fetchJson<Position[]>('/positions', { signal }),
     getTrades: (signal?: AbortSignal) => fetchJson<Trade[]>('/trades', { signal }),
     getAnalysis: (symbol?: string, signal?: AbortSignal) =>
-        fetchJson<unknown[]>(symbol ? `/analysis?symbol=${symbol}` : '/analysis', { signal }),
+        fetchJson<unknown[]>(
+            symbol ? `/analysis?symbol=${encodeURIComponent(symbol)}` : '/analysis',
+            { signal },
+        ),
     getConfig: (signal?: AbortSignal) => fetchJson<unknown>('/config', { signal }),
     updateConfig: (body: unknown) =>
         fetchJson('/config', { method: 'POST', body: JSON.stringify(body) }),

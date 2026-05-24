@@ -1,5 +1,5 @@
 const POLL_INTERVAL_MS = 2_000;
-const MAX_POLL_TIME_MS = 600_000;
+const MAX_POLL_TIME_MS = 120_000;
 
 export async function pollUntilDone<T>(
     pollFn: (jobId: string) => Promise<{ status: string; result?: T; error?: string }>,

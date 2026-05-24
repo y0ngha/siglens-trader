@@ -103,7 +103,7 @@ export function SettingsPage() {
     if (!data) return null;
 
     const configData = data;
-    const tradingMode = getConfigValue(configData.config, 'trading_mode', 'DRY_RUN') as string;
+    const tradingMode = getConfigValue(configData.config, 'trading_mode', 'dry_run') as string;
 
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
@@ -194,9 +194,9 @@ export function SettingsPage() {
                             mutate({ type: 'config', key: 'trading_mode', value: e.target.value });
                         }}
                     >
-                        <option value="DRY_RUN">모의투자 (DRY_RUN)</option>
-                        <option value="SEMI_AUTO">반자동 (SEMI_AUTO)</option>
-                        <option value="AUTO">자동 (AUTO)</option>
+                        <option value="dry_run">모의투자 (DRY_RUN)</option>
+                        <option value="semi_auto">반자동 (SEMI_AUTO)</option>
+                        <option value="auto">자동 (AUTO)</option>
                     </select>
                 </div>
             </section>

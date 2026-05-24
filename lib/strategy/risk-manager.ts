@@ -84,6 +84,10 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
 
     // 3. Technical trend reversal
     if (params.technicalTrend === 'bearish') {
+        const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+        if (gainPercent > 0) {
+            return { action: 'take_profit', reason: '기술적 추세 반전 — 수익 구간 익절' };
+        }
         return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
     }
 

@@ -450,16 +450,17 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('지지선 이탈');
         });
 
-        it('trend reversal takes priority over fixed take profit', () => {
-            // Edge case: price is +12% (above TP) but also trend reversed
-            // Actually trend reversal is checked BEFORE take profit, so it wins
+        it('trend reversal takes priority over fixed take profit (profitable = take_profit)', () => {
+            // Edge case: price is +12% (above TP) and trend reversed
+            // Since position is profitable, bearish trend triggers take_profit instead of stop_loss
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 112, // +12% gain (above 10% TP)
                 technicalTrend: 'bearish',
             });
-            expect(result.action).toBe('stop_loss');
+            expect(result.action).toBe('take_profit');
             expect(result.reason).toContain('기술적 추세 반전');
+            expect(result.reason).toContain('수익 구간 익절');
         });
 
         it('fixed take profit takes priority over resistance approach', () => {

@@ -550,7 +550,7 @@ describe('Trades queries', () => {
 
     describe('getTodayTradeCount', () => {
         it('returns count of today trades', async () => {
-            const mockRows = [{ id: 1 }, { id: 2 }, { id: 3 }];
+            const mockRows = [{ count: 3 }];
             const db = createMockDb(mockRows);
 
             const result = await getTodayTradeCount(db as unknown as Db);
@@ -560,7 +560,7 @@ describe('Trades queries', () => {
         });
 
         it('returns 0 when no trades today', async () => {
-            const db = createMockDb([]);
+            const db = createMockDb([{ count: 0 }]);
 
             const result = await getTodayTradeCount(db as unknown as Db);
 

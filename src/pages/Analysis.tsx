@@ -9,7 +9,7 @@ interface AnalysisEntry {
     id: number;
     symbol: string;
     analysisType: string;
-    result: string;
+    result: unknown;
     createdAt: string;
 }
 
@@ -50,10 +50,13 @@ function signalLabel(signal: string): string {
     }
 }
 
-function extractSignal(result: string): string {
+function extractSignal(result: unknown): string {
     try {
-        const parsed = JSON.parse(result);
-        return parsed.trend ?? parsed.overallSentiment ?? parsed.signal ?? 'neutral';
+        const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+        if (!parsed || typeof parsed !== 'object') return 'neutral';
+        const obj = parsed as Record<string, unknown>;
+        const signal = obj.trend ?? obj.overallSentiment ?? obj.signal;
+        return typeof signal === 'string' ? signal : 'neutral';
     } catch {
         return 'neutral';
     }
@@ -76,7 +79,8 @@ function isStale(dateStr: string): boolean {
 
 function getLatestDate(entries: AnalysisEntry[]): string {
     return entries.reduce(
-        (latest, e) => (e.createdAt > latest ? e.createdAt : latest),
+        (latest, e) =>
+            new Date(e.createdAt).getTime() > new Date(latest).getTime() ? e.createdAt : latest,
         entries[0].createdAt,
     );
 }

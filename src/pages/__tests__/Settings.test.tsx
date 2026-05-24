@@ -24,7 +24,7 @@ function renderWithQuery(component: React.ReactElement) {
 
 const mockConfig = {
     config: [
-        { key: 'trading_mode', value: 'DRY_RUN', updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'trading_mode', value: 'dry_run', updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_position_size', value: 5000, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_total_exposure', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'stop_loss_percent', value: 5, updatedAt: '2026-01-01T00:00:00Z' },
@@ -146,12 +146,12 @@ describe('SettingsPage', () => {
         });
 
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
-        await user.selectOptions(select, 'SEMI_AUTO');
+        await user.selectOptions(select, 'semi_auto');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
             key: 'trading_mode',
-            value: 'SEMI_AUTO',
+            value: 'semi_auto',
         });
     });
 
@@ -232,7 +232,7 @@ describe('SettingsPage', () => {
         });
 
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
-        await user.selectOptions(select, 'AUTO');
+        await user.selectOptions(select, 'auto');
 
         await waitFor(() => {
             expect(screen.getByText('오류: Save failed')).toBeInTheDocument();
@@ -251,7 +251,7 @@ describe('SettingsPage', () => {
         });
 
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
-        await user.selectOptions(select, 'AUTO');
+        await user.selectOptions(select, 'auto');
 
         await waitFor(() => {
             expect(screen.getByText('저장되었습니다')).toBeInTheDocument();

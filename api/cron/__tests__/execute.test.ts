@@ -21,6 +21,7 @@ const mockGetAnalysisConfig = vi.fn();
 const mockGetLatestAnalysisResult = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetOpenPositionBySymbol = vi.fn();
+const mockOpenPosition = vi.fn();
 const mockClosePosition = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
@@ -32,6 +33,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getLatestAnalysisResult: (...args: unknown[]) => mockGetLatestAnalysisResult(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
+    openPosition: (...args: unknown[]) => mockOpenPosition(...args),
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
@@ -140,6 +142,7 @@ function setupDefaults() {
     mockGetAnalysisConfig.mockResolvedValue(null); // Overall disabled by default
     mockGetLatestAnalysisResult.mockResolvedValue(null);
     mockGetOpenPositionBySymbol.mockResolvedValue(null);
+    mockOpenPosition.mockResolvedValue([]);
     mockClosePosition.mockResolvedValue([]);
     mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
     mockCalculatePositionSize.mockReturnValue(5);
@@ -1214,7 +1217,9 @@ describe('execute cron handler', () => {
 
             expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
             expect(mockInsertTrade).not.toHaveBeenCalled();
-            expect(body.decisions).toEqual([]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'skipped_no_price', score: 0 },
+            ]);
         });
 
         it('handles semi_auto mode for position re-evaluation', async () => {
