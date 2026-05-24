@@ -1,4 +1,4 @@
-import { eq, desc, and, gte, sql } from 'drizzle-orm';
+import { eq, desc, and, sql } from 'drizzle-orm';
 import type { Db } from './index';
 import {
     watchlist,
