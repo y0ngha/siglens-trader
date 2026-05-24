@@ -7,10 +7,13 @@ import type {
     RawFmpGradesEvent,
     RawFmpGradesConsensus,
     RawFmpPriceTargetConsensus,
+    RawFmpPriceTargetSummary,
     RawFmpEarningsReport,
     RawFmpFinancialScore,
     RawFmpIncomeGrowth,
     RawFmpCashFlowStatement,
+    RawFmpAnalystEstimate,
+    RawFmpSectorPerformance,
 } from '../fmp-types';
 
 const mockFmpGet = vi.fn();
@@ -430,6 +433,274 @@ describe('FmpFundamentalClient', () => {
             const result = await client.getEarningsReport('X');
 
             expect(result).toBeNull();
+        });
+    });
+
+    describe('getRatiosTtm', () => {
+        it('combines ratios and metrics fallback', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const ratios: RawFmpRatiosTtm[] = [
+                {
+                    returnOnEquityTTM: 0.35,
+                    operatingProfitMarginTTM: 0.3,
+                    netProfitMarginTTM: 0.25,
+                    debtToAssetsRatioTTM: 0.45,
+                    currentRatioTTM: 1.5,
+                },
+            ];
+            const metrics: RawFmpKeyMetricsTtm[] = [
+                {
+                    returnOnEquityTTM: 0.33,
+                    returnOnAssetsTTM: 0.2,
+                    currentRatioTTM: 1.4,
+                },
+            ];
+            mockFmpGet.mockResolvedValueOnce(ratios).mockResolvedValueOnce(metrics);
+
+            const result = await client.getRatiosTtm('AAPL');
+
+            expect(result).toEqual({
+                returnOnEquityTTM: 0.33, // metrics takes priority
+                returnOnAssetsTTM: 0.2, // from metrics
+                operatingProfitMarginTTM: 0.3,
+                netProfitMarginTTM: 0.25,
+                debtRatioTTM: 0.45, // debtToAssetsRatioTTM
+                currentRatioTTM: 1.5, // ratios currentRatioTTM via fallback logic
+            });
+        });
+
+        it('returns null when both ratios and metrics are empty', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            mockFmpGet.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+            const result = await client.getRatiosTtm('UNKNOWN');
+
+            expect(result).toBeNull();
+        });
+
+        it('handles ratios-only (no metrics) gracefully', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const ratios: RawFmpRatiosTtm[] = [
+                {
+                    returnOnEquityTTM: 0.25,
+                    returnOnAssetsTTM: 0.12,
+                    operatingProfitMarginTTM: 0.18,
+                    netProfitMarginTTM: 0.15,
+                    debtRatioTTM: 0.3,
+                    currentRatioTTM: 2.0,
+                },
+            ];
+            mockFmpGet.mockResolvedValueOnce(ratios).mockResolvedValueOnce([]);
+
+            const result = await client.getRatiosTtm('TEST');
+
+            expect(result).toEqual({
+                returnOnEquityTTM: 0.25,
+                returnOnAssetsTTM: 0.12,
+                operatingProfitMarginTTM: 0.18,
+                netProfitMarginTTM: 0.15,
+                debtRatioTTM: 0.3,
+                currentRatioTTM: 2.0,
+            });
+        });
+    });
+
+    describe('getAnalystEstimates', () => {
+        it('returns analyst estimates with epsAvg fallback', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpAnalystEstimate[] = [{ epsAvg: 5.2, revenueAvg: 100_000_000 }];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getAnalystEstimates('AAPL');
+
+            expect(result).toEqual({
+                estimatedEpsAvg: 5.2,
+                estimatedRevenueAvg: 100_000_000,
+            });
+            expect(mockFmpGet).toHaveBeenCalledWith('analyst-estimates', {
+                symbol: 'AAPL',
+                period: 'annual',
+                page: '0',
+                limit: '10',
+            });
+        });
+
+        it('returns null when empty', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            mockFmpGet.mockResolvedValueOnce([]);
+
+            const result = await client.getAnalystEstimates('X');
+
+            expect(result).toBeNull();
+        });
+
+        it('uses estimatedEpsAvg when epsAvg is absent', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpAnalystEstimate[] = [
+                { estimatedEpsAvg: 3.8, estimatedRevenueAvg: 50_000_000 },
+            ];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getAnalystEstimates('TSLA');
+
+            expect(result).toEqual({
+                estimatedEpsAvg: 3.8,
+                estimatedRevenueAvg: 50_000_000,
+            });
+        });
+    });
+
+    describe('getPriceTargetSummary', () => {
+        it('returns rolling average price targets', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpPriceTargetSummary[] = [
+                {
+                    symbol: 'AAPL',
+                    lastMonthCount: 5,
+                    lastMonthAvgPriceTarget: 220,
+                    lastQuarterCount: 15,
+                    lastQuarterAvgPriceTarget: 210,
+                    lastYearCount: 40,
+                    lastYearAvgPriceTarget: 200,
+                    allTimeCount: 100,
+                    allTimeAvgPriceTarget: 180,
+                    publishers: 'Goldman Sachs',
+                },
+            ];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getPriceTargetSummary('AAPL');
+
+            expect(result).toEqual({
+                lastMonth: { avgPriceTarget: 220 },
+                lastQuarter: { avgPriceTarget: 210 },
+                lastYear: { avgPriceTarget: 200 },
+            });
+        });
+
+        it('returns null when empty', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            mockFmpGet.mockResolvedValueOnce([]);
+
+            const result = await client.getPriceTargetSummary('X');
+
+            expect(result).toBeNull();
+        });
+    });
+
+    describe('getSectorPerformanceSnapshot', () => {
+        it('returns sector performance entries with valid changes', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpSectorPerformance[] = [
+                { sector: 'Technology', changesPercentage: 2.5 },
+                { sector: 'Healthcare', averageChange: 1.2 },
+                { sector: 'Energy', changesPercentage: null },
+            ];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getSectorPerformanceSnapshot('2025-05-01');
+
+            expect(result).toHaveLength(2);
+            expect(result[0]).toEqual({ sector: 'Technology', changesPercentage: 2.5 });
+            expect(result[1]).toEqual({ sector: 'Healthcare', changesPercentage: 1.2 });
+        });
+
+        it('returns empty array when no valid data', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpSectorPerformance[] = [{ sector: 'Bad', changesPercentage: null }];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getSectorPerformanceSnapshot('2025-01-01');
+
+            expect(result).toEqual([]);
+        });
+    });
+
+    describe('getHistoricalSectorPerformance', () => {
+        it('returns empty array (stub)', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+
+            const result = await client.getHistoricalSectorPerformance('Technology');
+
+            expect(result).toEqual([]);
+        });
+    });
+
+    describe('getEarningsReports', () => {
+        it('returns multiple earnings report items', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpEarningsReport[] = [
+                {
+                    symbol: 'AAPL',
+                    date: '2025-07-25',
+                    epsActual: 1.5,
+                    epsEstimated: 1.4,
+                    revenueActual: 100_000_000,
+                    revenueEstimated: 95_000_000,
+                    lastUpdated: '2025-07-26',
+                },
+                {
+                    symbol: 'AAPL',
+                    earningsDate: '2025-04-25',
+                    eps: 1.3,
+                    epsEstimated: 1.2,
+                    revenue: 90_000_000,
+                    revenueEstimated: 88_000_000,
+                },
+            ];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getEarningsReports('AAPL');
+
+            expect(result).toHaveLength(2);
+            expect(result[0]).toEqual({
+                symbol: 'AAPL',
+                earningsDate: '2025-07-25',
+                epsActual: 1.5,
+                epsEstimated: 1.4,
+                revenueActual: 100_000_000,
+                revenueEstimated: 95_000_000,
+                lastUpdated: '2025-07-26',
+                rawPayload: raw[0],
+            });
+            expect(result[1].earningsDate).toBe('2025-04-25');
+            expect(result[1].epsActual).toBe(1.3);
+        });
+
+        it('respects custom limit parameter', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            mockFmpGet.mockResolvedValueOnce([]);
+
+            await client.getEarningsReports('AAPL', 3);
+
+            expect(mockFmpGet).toHaveBeenCalledWith('earnings', {
+                symbol: 'AAPL',
+                limit: '3',
+            });
+        });
+
+        it('filters out items with no valid date', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpEarningsReport[] = [{ symbol: 'BAD' } as RawFmpEarningsReport];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getEarningsReports('BAD');
+
+            expect(result).toEqual([]);
         });
     });
 });

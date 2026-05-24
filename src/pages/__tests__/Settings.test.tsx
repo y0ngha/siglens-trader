@@ -210,4 +210,300 @@ describe('SettingsPage', () => {
             expect(screen.getByText('저장되었습니다')).toBeInTheDocument();
         });
     });
+
+    it('rejects duplicate symbol and shows error message', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('감시 종목')).toBeInTheDocument();
+        });
+
+        const symbolInput = screen.getByPlaceholderText('종목 코드');
+        const addButton = screen.getByText('추가');
+
+        await user.type(symbolInput, 'aapl');
+        await user.click(addButton);
+
+        await waitFor(() => {
+            expect(screen.getByText('이미 등록된 종목입니다')).toBeInTheDocument();
+        });
+
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('changing analysis model dropdown calls API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('분석 설정')).toBeInTheDocument();
+        });
+
+        const modelSelects = screen.getAllByDisplayValue('gemini-2.5-flash');
+        await user.selectOptions(modelSelects[0], 'claude-sonnet-4-6');
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'analysis',
+                analysis: expect.arrayContaining([
+                    expect.objectContaining({ type: 'technical', model: 'claude-sonnet-4-6' }),
+                ]),
+            }),
+        );
+    });
+
+    it('toggling BYOK checkbox calls API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('분석 설정')).toBeInTheDocument();
+        });
+
+        const byokButtons = screen.getAllByText('BYOK');
+        // Click the first BYOK button (technical analysis - currently false)
+        await user.click(byokButtons[0]);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'analysis',
+                analysis: expect.arrayContaining([
+                    expect.objectContaining({ type: 'technical', byok: true }),
+                ]),
+            }),
+        );
+    });
+
+    it('changing stop loss value calls API on blur', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const stopLossInput = screen.getByDisplayValue('5');
+        await user.clear(stopLossInput);
+        await user.type(stopLossInput, '7');
+        await user.tab();
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'risk',
+                risk: expect.objectContaining({ stopLossPercent: 7 }),
+            }),
+        );
+    });
+
+    it('changing take profit value calls API on blur', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const takeProfitInput = screen.getByDisplayValue('10');
+        await user.clear(takeProfitInput);
+        await user.type(takeProfitInput, '15');
+        await user.tab();
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'risk',
+                risk: expect.objectContaining({ takeProfitPercent: 15 }),
+            }),
+        );
+    });
+
+    it('notification event checkbox toggle calls API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('알림')).toBeInTheDocument();
+        });
+
+        // 'order_pending' is not in the initial events, so check it
+        const orderPendingCheckbox = screen.getByLabelText('주문 승인 대기');
+        await user.click(orderPendingCheckbox);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'notifications',
+                notifications: expect.objectContaining({
+                    events: expect.arrayContaining([
+                        'trade_executed',
+                        'stop_loss',
+                        'order_pending',
+                    ]),
+                }),
+            }),
+        );
+    });
+
+    it('toggles email notification on/off', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('이메일 알림')).toBeInTheDocument();
+        });
+
+        // The email toggle is the ON button next to "이메일 알림" text
+        const emailLabel = screen.getByText('이메일 알림');
+        const emailToggle = emailLabel.parentElement!.querySelector('button')!;
+        await user.click(emailToggle);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'notifications',
+                notifications: expect.objectContaining({ emailEnabled: false }),
+            }),
+        );
+    });
+
+    it('toggles watchlist symbol enabled state', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        const toggleButton = screen.getByLabelText('AAPL 비활성화');
+        await user.click(toggleButton);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'watchlist',
+                watchlist: expect.arrayContaining([
+                    expect.objectContaining({ symbol: 'AAPL', enabled: false }),
+                ]),
+            }),
+        );
+    });
+
+    it('toggles analysis type enabled state', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('분석 설정')).toBeInTheDocument();
+        });
+
+        // Toggle the 'options' analysis (currently disabled) ON
+        const optionsToggle = screen.getByLabelText('옵션 분석 활성화');
+        await user.click(optionsToggle);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'analysis',
+                analysis: expect.arrayContaining([
+                    expect.objectContaining({ type: 'options', enabled: true }),
+                ]),
+            }),
+        );
+    });
+
+    it('unchecking a notification event removes it', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('알림')).toBeInTheDocument();
+        });
+
+        // 'trade_executed' is in the initial events, so uncheck it
+        const tradeExecutedCheckbox = screen.getByLabelText('거래 체결');
+        await user.click(tradeExecutedCheckbox);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'notifications',
+                notifications: expect.objectContaining({
+                    events: expect.not.arrayContaining(['trade_executed']),
+                }),
+            }),
+        );
+    });
+
+    it('changing buy threshold calls API on blur', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        await user.clear(buyThresholdInput);
+        await user.type(buyThresholdInput, '0.8');
+        await user.tab();
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'risk',
+                risk: expect.objectContaining({ buyThreshold: 0.8 }),
+            }),
+        );
+    });
+
+    it('changing sell threshold calls API on blur', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const sellThresholdInput = screen.getByDisplayValue('-0.7');
+        await user.clear(sellThresholdInput);
+        await user.type(sellThresholdInput, '0.5');
+        await user.tab();
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'risk',
+                risk: expect.objectContaining({ sellThreshold: 0.5 }),
+            }),
+        );
+    });
 });

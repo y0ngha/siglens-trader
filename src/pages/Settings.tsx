@@ -108,6 +108,10 @@ export function SettingsPage() {
         const symbol = newSymbol.trim().toUpperCase();
         const name = newName.trim();
         if (!symbol) return;
+        if (config!.watchlist.some((w) => w.symbol === symbol)) {
+            setSaveMessage('이미 등록된 종목입니다');
+            return;
+        }
         const updated = [...config!.watchlist, { symbol, name, enabled: true }];
         setConfig({ ...config!, watchlist: updated });
         save('watchlist', { watchlist: updated });
