@@ -33,4 +33,4 @@ Every `run*` function returns `Promise<AnalysisRunResult>`:
 
 ## Testing
 
-All runners are tested with mocked siglens-core and data adapters. 100% coverage.
+All runners are tested with mocked siglens-core and data adapters.

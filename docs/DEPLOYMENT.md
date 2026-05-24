@@ -26,7 +26,7 @@ yarn db:migrate
    - Repository: `y0ngha/siglens-trader`
    - Framework: Vite
    - Root Directory: `.`
-   - Build Command: `vite build`
+   - Build Command: `tsc -b && vite build`
    - Output Directory: `dist`
 
 2. Environment Variables 설정 (Vercel Dashboard → Settings → Environment Variables):
@@ -67,11 +67,13 @@ TOSS_ACCOUNT_NO=
 
 | Cron | 스케줄 | 역할 |
 |------|--------|------|
-| `/api/cron/technical` | 15분마다 (US 장중) | 기술적 분석 |
-| `/api/cron/news` | 15분마다 | 뉴스 분석 |
-| `/api/cron/options` | 15분마다 | 옵션 분석 |
-| `/api/cron/fundamental` | 하루 1회 (장 시작) | 펀더멘털 분석 |
-| `/api/cron/execute` | 15분마다 +7분 offset | 매매 판단/실행 |
+| `/api/cron/technical` | 매시 정각 (US 장중) | 기술적 분석 |
+| `/api/cron/news` | 매시 정각 | 뉴스 분석 |
+| `/api/cron/options` | 매시 정각 | 옵션 분석 |
+| `/api/cron/fundamental` | 하루 1회 (KST 22:00) | 펀더멘털 분석 |
+| `/api/cron/execute` | 매시 7분 (분석 후 offset) | 매매 판단/실행 |
+
+스케줄 상세: `0 22-23,0-5 * * 1-5` (KST 22:00~05:59, 월~금 = US 장중)
 
 Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
 
@@ -112,6 +114,8 @@ Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
 4. 인증 방법: **One-time PIN** (이메일 OTP)
    - 접속 시 이메일로 6자리 코드 발송 → 입력하면 7일간 유효
 
+**API 인증 체계**: 인증된 사용자는 `cf-access-authenticated-user-email` 헤더가 설정됨. `api/_lib/auth.ts`에서 이 헤더로 인증 여부를 판단. 로컬 개발 시 `DISABLE_AUTH=true`를 `.env.local`에 설정하면 인증 없이 API 사용 가능.
+
 ---
 
 ## 6. Resend 설정 (이메일 알림)
@@ -135,6 +139,11 @@ yarn db:seed
 **B. 빈 상태로 시작 (프로덕션)**
 - 대시보드 접속 → 설정 → 감시 종목 추가
 - Cron이 자동으로 분석 실행 시작
+
+**데이터 초기화:**
+```bash
+yarn db:clear    # 모든 테이블 데이터 삭제 (확인 프롬프트)
+```
 
 ---
 
@@ -169,12 +178,44 @@ UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 
 ---
 
+## 10. API 엔드포인트
+
+### Dashboard API (인증 필요)
+
+| Method | Path | 역할 |
+|--------|------|------|
+| GET | `/api/status` | 시스템 상태 |
+| GET | `/api/positions` | 보유 포지션 |
+| POST | `/api/positions/:id/close` | 수동 포지션 청산 (atomic) |
+| GET | `/api/trades` | 거래 내역 |
+| GET | `/api/analysis?symbol=` | 분석 결과 조회 |
+| POST | `/api/analysis/trigger` | 수동 분석 트리거 |
+| GET | `/api/config` | 전체 설정 조회 |
+| POST | `/api/config` | 설정 변경 (allowlist 검증) |
+| GET | `/api/pending` | 승인 대기 주문 |
+| POST | `/api/approve/:id` | 주문 승인/거절 |
+| GET | `/api/search?q=` | 종목 검색 (FMP) |
+
+### Cron API (CRON_SECRET 인증)
+
+| Method | Path | 역할 |
+|--------|------|------|
+| GET | `/api/cron/technical` | 기술적 분석 실행 |
+| GET | `/api/cron/news` | 뉴스 분석 실행 |
+| GET | `/api/cron/options` | 옵션 분석 실행 |
+| GET | `/api/cron/fundamental` | 펀더멘털 분석 실행 |
+| GET | `/api/cron/execute` | 매매 판단 + 실행 |
+
+---
+
 ## 트러블슈팅
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | Cron 401 | CRON_SECRET 불일치 | Vercel env vars 확인 |
+| Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true |
 | 분석 안 됨 | WORKER_URL/SECRET 미설정 | siglens-worker 정보 확인 |
 | 빈 대시보드 | watchlist 비어있음 | 설정에서 종목 추가 |
 | 이메일 안 옴 | RESEND_API_KEY 미설정 | Resend 대시보드 확인 |
 | Access 거부 | Cloudflare policy 미적용 | Zero Trust 설정 재확인 |
+| Config 400 | 허용되지 않은 key | ALLOWED_CONFIG_KEYS 확인 (api/config.ts) |

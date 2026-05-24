@@ -3,14 +3,14 @@
 ## Overview
 
 US equity auto-trading system. Generates trading signals from AI analysis (via siglens-core) and executes orders based on configured mode.
-Personal use only (Toss Securities Terms §5③ — trading data for personal use only).
+Personal use only (Toss Securities Terms — trading data for personal use only).
 
 ---
 
 ## Layer Structure
 
 ```
-api/              → Vercel Serverless Functions (HTTP handlers)
+api/              → Vercel Serverless Functions (HTTP handlers + cron)
 src/              → React SPA (Dashboard UI)
 lib/strategy/     → Domain: pure logic (no external deps)
 lib/analysis/     → Application: siglens-core integration
@@ -41,6 +41,16 @@ lib/db/ → @neondatabase/serverless, drizzle-orm
 
 ---
 
+## Authentication
+
+In production, Cloudflare Access sets `cf-access-authenticated-user-email` header.
+For local development, set `DISABLE_AUTH=true` in `.env.local` to bypass authentication.
+
+All dashboard API endpoints (non-cron) check `isAuthenticated(req)` from `api/_lib/auth.ts`.
+Cron endpoints use `CRON_SECRET` header verification via `api/_lib/cron-auth.ts`.
+
+---
+
 ## React Query Best Practice
 
 All `useQuery` hooks must destructure `queryKey` inside `queryFn` to avoid stale closure over external state:
@@ -62,6 +72,30 @@ useQuery({
 2. **DRY_RUN first** — Full flow testable without live API
 3. **Decision tracking** — Every trade stores `reason` (AI judgment basis); included in email notifications. Future: user evaluation → AI improvement loop.
 4. **Configurable** — Models, weights, thresholds, watchlist all editable from dashboard
+5. **Security** — Config POST uses allowlist (`ALLOWED_CONFIG_KEYS`); position close uses atomic DB update (race condition guard)
+6. **MSW for dev** — `yarn dev:mock` enables Mock Service Worker for UI development without backend
+
+---
+
+## Signal Scoring
+
+Priority-weighted average (weights sum to 26):
+- Technical: 8
+- News: 6
+- Options: 5
+- Fundamental: 4
+- Overall: 3
+
+Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
+
+---
+
+## Cron Schedule
+
+All crons run hourly during US market hours (KST 22:00~05:59, Mon-Fri):
+- Analysis crons (technical, news, options): `0 22-23,0-5 * * 1-5`
+- Fundamental: `0 22 * * 1-5` (daily at market open)
+- Execute: `7 22-23,0-5 * * 1-5` (7-minute offset after analysis)
 
 ---
 
@@ -69,12 +103,20 @@ useQuery({
 
 ```bash
 yarn dev              # Vite dev server (port 4300)
-yarn build            # Production build
+yarn dev:mock         # Vite dev with MSW mocking (no backend needed)
+yarn build            # tsc -b && vite build
 yarn typecheck        # tsc --noEmit
 yarn lint             # ESLint
+yarn lint:fix         # ESLint --fix
+yarn lint:style       # Stylelint
+yarn lint:style-fix   # Stylelint --fix
 yarn test             # Vitest (all)
-yarn test --coverage  # Coverage report
+yarn test:watch       # Vitest watch mode
+yarn test:coverage    # Vitest with coverage
+yarn format           # Prettier write
+yarn format:check     # Prettier check
 yarn db:generate      # Drizzle migration generate
 yarn db:migrate       # Run migrations
 yarn db:seed          # Insert mock data
+yarn db:clear         # Delete all data (with confirmation prompt)
 ```

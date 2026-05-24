@@ -6,7 +6,7 @@ Fetches market data from external providers. Adapted from siglens app's infrastr
 
 | File | Responsibility |
 |------|---------------|
-| `fmp-http.ts` | Generic FMP HTTP client. Uses `readFmpConfig()` from siglens-core for API key. |
+| `fmp-http.ts` | Generic FMP HTTP client (`fmpGet()`). Uses `readFmpConfig()` from siglens-core for API key. |
 | `fmp-types.ts` | Raw FMP response interfaces (all `Raw*` types) |
 | `fmp-fundamental.ts` | `FmpFundamentalClient` — implements siglens-core's `FundamentalDataProvider` port |
 | `fmp-news.ts` | `FmpNewsClient` — news articles + earnings reports. Handles ET timezone normalization. |

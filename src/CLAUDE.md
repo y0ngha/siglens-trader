@@ -11,9 +11,9 @@ src/
 ├── index.css          # Tailwind + body styles + PWA safe area
 ├── pages/             # Route components
 │   ├── Status.tsx     # System status overview
-│   ├── Positions.tsx  # Open positions list
-│   ├── Trades.tsx     # Trade history with reasons
-│   ├── Analysis.tsx   # Latest analysis results per symbol
+│   ├── Positions.tsx  # Open positions list (with manual close)
+│   ├── Trades.tsx     # Trade history with reasons (includes skipped trades)
+│   ├── Analysis.tsx   # Latest analysis results per symbol (with trigger)
 │   ├── Pending.tsx    # Order approval queue (approve/reject)
 │   └── Settings.tsx   # Configuration (mode, watchlist, models, risk, notifications)
 ├── components/        # Shared UI primitives
@@ -22,7 +22,11 @@ src/
 │   ├── EmptyState.tsx
 │   ├── ErrorFallback.tsx
 │   ├── ErrorMessage.tsx
-│   └── LoadingSkeleton.tsx
+│   ├── LoadingSkeleton.tsx
+│   └── TickerSearch.tsx   # Combobox for adding watchlist symbols via FMP search
+├── mocks/             # MSW (Mock Service Worker) for dev:mock mode
+│   ├── browser.ts     # MSW browser setup
+│   └── handlers.ts    # All API endpoint mocks with in-memory state
 └── lib/
     └── api.ts         # Typed fetch wrapper for all API routes
 ```
@@ -50,12 +54,21 @@ useQuery({
 
 Never reference external variables inside queryFn — always derive from queryKey.
 
+## MSW Mock Mode
+
+`yarn dev:mock` sets `VITE_API_MOCK=true`, which activates MSW in `src/mocks/browser.ts`.
+The handlers in `src/mocks/handlers.ts` provide full in-memory state for all dashboard features:
+- Status, positions, trades (including skipped), pending orders, analysis results
+- Config CRUD (all types: config, watchlist, analysis, notification)
+- Position close, order approve/reject
+- Ticker search passes through to real API
+
 ## Design
 
 - Minimal, dark, no unnecessary chrome
 - Green (#22c55e) for profit/buy, Red (#ef4444) for loss/sell
 - Cards with subtle borders, clean typography
-- Accessible: semantic HTML, aria-labels, focus-visible
+- Accessible: semantic HTML, aria-labels, focus-visible, combobox pattern for search
 
 ## Testing
 

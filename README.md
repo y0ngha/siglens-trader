@@ -28,6 +28,18 @@ US 주식 자동매매 시스템. AI 분석 결과를 기반으로 매매 신호
 
 분석 로직과 프롬프트 빌딩은 [`@y0ngha/siglens-core`](https://github.com/y0ngha/siglens-core)에서 관리한다.
 
+### 신호 가중치
+
+priority-weighted average (합 26):
+
+| 축 | 가중치 |
+|----|--------|
+| 기술적 | 8 |
+| 뉴스 | 6 |
+| 옵션 | 5 |
+| 펀더멘털 | 4 |
+| 종합 | 3 |
+
 ## 매매 모드
 
 | 모드 | 동작 |
@@ -40,13 +52,15 @@ US 주식 자동매매 시스템. AI 분석 결과를 기반으로 매매 신호
 
 ## 기술 스택
 
-- **Frontend**: React 19 + Vite (PWA)
-- **Backend**: Vercel Serverless Functions (Cron)
+- **Frontend**: React 19 + Vite (PWA), TanStack Query, Tailwind CSS v4
+- **Backend**: Vercel Serverless Functions (Cron, maxDuration 800s)
 - **DB**: Neon PostgreSQL + Drizzle ORM
 - **분석**: [@y0ngha/siglens-core](https://github.com/y0ngha/siglens-core) + siglens-worker (LLM proxy)
-- **데이터**: FMP API, Yahoo Finance
+- **데이터**: FMP API, Yahoo Finance (yahoo-finance2)
 - **인증**: Cloudflare Access (Zero Trust)
 - **알림**: Resend (Email)
+- **테스트**: Vitest + MSW (Mock Service Worker)
+- **패키지 매니저**: Yarn 4
 
 ## 필요한 외부 서비스
 
@@ -57,7 +71,7 @@ US 주식 자동매매 시스템. AI 분석 결과를 기반으로 매매 신호
 | LLM Worker | AI 분석 실행 | siglens-worker (자체 호스팅, 비공개) |
 | Upstash Redis | 분석 작업 큐 | siglens-core 내부에서 사용 |
 | Neon DB | 상태/이력 저장 | PostgreSQL |
-| Toss Securities | 주문 실행 | Open API (개인용) |
+| Toss Securities | 주문 실행 | Open API (개인용, 미출시) |
 | Resend | 이메일 알림 | |
 | Cloudflare | DNS + Access 인증 | |
 
@@ -70,17 +84,35 @@ yarn install
 # 개발 서버 (대시보드)
 yarn dev
 
-# DB 마이그레이션
-yarn db:migrate
-
-# Mock 데이터 삽입
-yarn db:seed
-
-# 테스트
-yarn test
+# 개발 서버 (MSW mock 모드 — API 없이 UI 개발)
+yarn dev:mock
 
 # 빌드
 yarn build
+
+# 타입 체크
+yarn typecheck
+
+# 린트
+yarn lint
+yarn lint:fix
+yarn lint:style
+yarn lint:style-fix
+
+# 테스트
+yarn test
+yarn test:watch
+yarn test:coverage
+
+# 포맷
+yarn format
+yarn format:check
+
+# DB
+yarn db:generate    # 스키마 변경 → 마이그레이션 생성
+yarn db:migrate     # 마이그레이션 실행
+yarn db:seed        # Mock 데이터 삽입
+yarn db:clear       # 전체 데이터 삭제 (확인 프롬프트 있음)
 ```
 
 ## 환경변수
@@ -88,15 +120,23 @@ yarn build
 `.env.example` 참고. 주요 항목:
 
 ```
+DISABLE_AUTH=          # true로 설정하면 로컬에서 Cloudflare Access 없이 개발 가능
 DATABASE_URL=          # Neon PostgreSQL
 UPSTASH_REDIS_REST_URL= # 분석 작업 큐
+UPSTASH_REDIS_REST_TOKEN=
 WORKER_URL=            # LLM worker 서버 URL
 WORKER_SECRET=         # Worker 인증 시크릿
 FMP_API_KEY=           # 시장 데이터
+MARKET_DATA_PROVIDER=fmp
+ANTHROPIC_API_KEY=     # BYOK (대시보드에서 모델별 활성화)
+OPENAI_API_KEY=
+GEMINI_API_KEY=
 TOSS_APP_KEY=          # 토스증권 (API 오픈 시 설정)
 TOSS_SECRET_KEY=
+TOSS_ACCOUNT_NO=
 CRON_SECRET=           # Vercel Cron 인증
 RESEND_API_KEY=        # 이메일 알림
+NOTIFICATION_EMAIL_FROM=noreply@siglens.io
 ```
 
 ## 라이선스

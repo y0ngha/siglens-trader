@@ -1,13 +1,13 @@
 # lib/trading/ — Infrastructure (Toss Securities API)
 
-HTTP client for order execution and balance queries via Toss Securities Open API.
+HTTP client for order execution via Toss Securities Open API.
 
 ## Files
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | `TossOrderRequest`, `TossOrderResponse`, `TossBalance` |
-| `toss-client.ts` | Core HTTP client: `submitOrder()`, `getBalances()` |
+| `types.ts` | `TossOrderRequest`, `TossOrderResponse` (status: filled/submitted/rejected) |
+| `toss-client.ts` | Core HTTP client: `submitOrder()` |
 | `order.ts` | Convenience wrappers: `executeBuyOrder()`, `executeSellOrder()` |
 
 ## Current Status
@@ -24,4 +24,4 @@ HTTP client for order execution and balance queries via Toss Securities Open API
 
 ## Testing
 
-Fully tested with mocked `fetch`. 100% coverage.
+Fully tested with mocked `fetch`.
