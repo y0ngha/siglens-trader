@@ -19,6 +19,7 @@ const SettingsPage = lazy(() =>
 interface NavItem {
     to: string;
     label: string;
+    icon: string;
     badge?: number;
 }
 
@@ -30,40 +31,21 @@ export function App() {
     const pendingCount = pendingOrders?.length ?? 0;
 
     const navItems: NavItem[] = [
-        { to: '/', label: '상태' },
-        { to: '/positions', label: '포지션' },
-        { to: '/trades', label: '거래' },
-        { to: '/analysis', label: '분석' },
-        { to: '/pending', label: '승인', badge: pendingCount },
-        { to: '/settings', label: '설정' },
+        { to: '/', label: '상태', icon: '●' },
+        { to: '/positions', label: '포지션', icon: '◆' },
+        { to: '/trades', label: '거래', icon: '↕' },
+        { to: '/analysis', label: '분석', icon: '◎' },
+        { to: '/pending', label: '승인', icon: '✓', badge: pendingCount },
+        { to: '/settings', label: '설정', icon: '⚙' },
     ];
 
     return (
         <BrowserRouter>
             <div className="flex min-h-dvh flex-col bg-[#0a0a0a] text-[#fafafa]">
-                <nav
-                    className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-[#262626] bg-[#0a0a0a]/80 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4 sm:py-3"
-                    aria-label="Main navigation"
-                >
-                    {navItems.map((item) => (
-                        <NavLink
-                            key={item.to}
-                            to={item.to}
-                            end={item.to === '/'}
-                            className={({ isActive }) =>
-                                `flex items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${isActive ? 'bg-[#262626] text-white' : 'text-neutral-400 hover:text-neutral-200'}`
-                            }
-                        >
-                            {item.label}
-                            {item.badge != null && item.badge > 0 && (
-                                <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-                                    {item.badge}
-                                </span>
-                            )}
-                        </NavLink>
-                    ))}
-                </nav>
-                <main className="flex-1 p-3 sm:p-4">
+                {/* Desktop top nav — hidden on mobile */}
+                <DesktopNav navItems={navItems} />
+
+                <main className="flex-1 p-3 pb-20 sm:p-4 sm:pb-4">
                     <Suspense fallback={<LoadingSpinner />}>
                         <Routes>
                             <Route path="/" element={<StatusPage />} />
@@ -75,8 +57,87 @@ export function App() {
                         </Routes>
                     </Suspense>
                 </main>
+
+                {/* Mobile bottom tab bar — hidden on desktop */}
+                <MobileNav navItems={navItems} />
             </div>
         </BrowserRouter>
+    );
+}
+
+function DesktopNav({ navItems }: { navItems: NavItem[] }) {
+    return (
+        <nav
+            className="scrollbar-hide sticky top-0 z-10 hidden gap-1 overflow-x-auto border-b border-[#262626] bg-[#0a0a0a]/80 px-3 py-2 backdrop-blur-sm sm:flex sm:gap-3 sm:px-4 sm:py-3"
+            aria-label="Main navigation"
+        >
+            {navItems.map((item) => (
+                <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    className={({ isActive }) =>
+                        `flex items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${isActive ? 'bg-[#262626] text-white' : 'text-neutral-400 hover:text-neutral-200'}`
+                    }
+                >
+                    {item.label}
+                    {item.badge != null && item.badge > 0 && (
+                        <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+                            {item.badge}
+                        </span>
+                    )}
+                </NavLink>
+            ))}
+        </nav>
+    );
+}
+
+function MobileNav({ navItems }: { navItems: NavItem[] }) {
+    return (
+        <nav
+            className="fixed inset-x-0 bottom-0 z-10 flex items-center justify-around border-t border-[#262626] bg-[#0a0a0a]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm sm:hidden"
+            aria-label="Mobile navigation"
+        >
+            {navItems.map((item) => (
+                <MobileNavLink
+                    key={item.to}
+                    to={item.to}
+                    label={item.label}
+                    icon={item.icon}
+                    badge={item.badge}
+                />
+            ))}
+        </nav>
+    );
+}
+
+function MobileNavLink({
+    to,
+    label,
+    icon,
+    badge,
+}: {
+    to: string;
+    label: string;
+    icon: string;
+    badge?: number;
+}) {
+    return (
+        <NavLink
+            to={to}
+            end={to === '/'}
+            className={({ isActive }) =>
+                `relative flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 text-[10px] transition-colors ${isActive ? 'text-white' : 'text-neutral-500'}`
+            }
+        >
+            <span className="text-base">{icon}</span>
+            <span>{label}</span>
+            {badge != null && badge > 0 && (
+                <span className="absolute top-1 right-1/4 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-bold text-white">
+                    {badge}
+                </span>
+            )}
+        </NavLink>
     );
 }
 
