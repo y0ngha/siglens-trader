@@ -1,0 +1,455 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+const mockGetDb = vi.fn();
+vi.mock('../_lib/db', () => ({
+    getDb: () => mockGetDb(),
+}));
+
+const mockGetOpenPositions = vi.fn();
+const mockGetConfigValue = vi.fn();
+const mockGetTodayTradeCount = vi.fn();
+const mockGetRecentTrades = vi.fn();
+const mockGetLatestAnalysisResults = vi.fn();
+const mockGetAllConfig = vi.fn();
+const mockGetAllWatchlist = vi.fn();
+const mockGetAllAnalysisConfigs = vi.fn();
+const mockGetNotificationConfig = vi.fn();
+const mockSetConfigValue = vi.fn();
+const mockAddToWatchlist = vi.fn();
+const mockRemoveFromWatchlist = vi.fn();
+const mockToggleWatchlistItem = vi.fn();
+const mockUpdateAnalysisConfig = vi.fn();
+const mockUpdateNotificationConfig = vi.fn();
+const mockGetPendingOrders = vi.fn();
+const mockApprovePendingOrder = vi.fn();
+const mockRejectPendingOrder = vi.fn();
+
+vi.mock('../../lib/db/queries', () => ({
+    getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
+    getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
+    getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
+    getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
+    getLatestAnalysisResults: (...args: unknown[]) => mockGetLatestAnalysisResults(...args),
+    getAllConfig: (...args: unknown[]) => mockGetAllConfig(...args),
+    getAllWatchlist: (...args: unknown[]) => mockGetAllWatchlist(...args),
+    getAllAnalysisConfigs: (...args: unknown[]) => mockGetAllAnalysisConfigs(...args),
+    getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    setConfigValue: (...args: unknown[]) => mockSetConfigValue(...args),
+    addToWatchlist: (...args: unknown[]) => mockAddToWatchlist(...args),
+    removeFromWatchlist: (...args: unknown[]) => mockRemoveFromWatchlist(...args),
+    toggleWatchlistItem: (...args: unknown[]) => mockToggleWatchlistItem(...args),
+    updateAnalysisConfig: (...args: unknown[]) => mockUpdateAnalysisConfig(...args),
+    updateNotificationConfig: (...args: unknown[]) => mockUpdateNotificationConfig(...args),
+    getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
+    approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
+    rejectPendingOrder: (...args: unknown[]) => mockRejectPendingOrder(...args),
+}));
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const fakeDb = { fake: 'db' };
+
+function makeRequest(url: string, method = 'GET', body?: unknown): Request {
+    const init: RequestInit = { method };
+    if (body) {
+        init.body = JSON.stringify(body);
+        init.headers = { 'Content-Type': 'application/json' };
+    }
+    return new Request(url, init);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+    vi.resetAllMocks();
+    mockGetDb.mockReturnValue(fakeDb);
+});
+
+describe('GET /api/status', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../status')).default;
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/status', 'POST'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns correct status shape', async () => {
+        mockGetOpenPositions.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+        mockGetConfigValue.mockResolvedValue('live');
+        mockGetTodayTradeCount.mockResolvedValue(5);
+
+        const res = await handler(makeRequest('https://example.com/api/status'));
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({
+            running: true,
+            tradingMode: 'live',
+            activePositions: 2,
+            todayTrades: 5,
+        });
+    });
+
+    it('defaults tradingMode to dry_run when not set', async () => {
+        mockGetOpenPositions.mockResolvedValue([]);
+        mockGetConfigValue.mockResolvedValue(null);
+        mockGetTodayTradeCount.mockResolvedValue(0);
+
+        const res = await handler(makeRequest('https://example.com/api/status'));
+        const data = await res.json();
+        expect(data.tradingMode).toBe('dry_run');
+    });
+});
+
+describe('GET /api/positions', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../positions')).default;
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/positions', 'POST'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns open positions', async () => {
+        const positions = [{ id: 1, symbol: 'AAPL', status: 'open' }];
+        mockGetOpenPositions.mockResolvedValue(positions);
+
+        const res = await handler(makeRequest('https://example.com/api/positions'));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual(positions);
+    });
+});
+
+describe('GET /api/trades', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../trades')).default;
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/trades', 'PUT'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns recent trades with limit 100', async () => {
+        const tradeList = [{ id: 1, symbol: 'TSLA' }];
+        mockGetRecentTrades.mockResolvedValue(tradeList);
+
+        const res = await handler(makeRequest('https://example.com/api/trades'));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual(tradeList);
+        expect(mockGetRecentTrades).toHaveBeenCalledWith(fakeDb, 100);
+    });
+});
+
+describe('GET /api/analysis', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../analysis')).default;
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/analysis', 'DELETE'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns empty array when no symbol provided', async () => {
+        const res = await handler(makeRequest('https://example.com/api/analysis'));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([]);
+        expect(mockGetLatestAnalysisResults).not.toHaveBeenCalled();
+    });
+
+    it('returns analysis results for symbol', async () => {
+        const results = [{ id: 1, symbol: 'AAPL', analysisType: 'technical' }];
+        mockGetLatestAnalysisResults.mockResolvedValue(results);
+
+        const res = await handler(makeRequest('https://example.com/api/analysis?symbol=AAPL'));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual(results);
+        expect(mockGetLatestAnalysisResults).toHaveBeenCalledWith(fakeDb, 'AAPL');
+    });
+});
+
+describe('GET /api/config', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../config')).default;
+    });
+
+    it('rejects unsupported methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/config', 'DELETE'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns all config sections', async () => {
+        mockGetAllConfig.mockResolvedValue([{ key: 'trading_mode', value: 'live' }]);
+        mockGetAllWatchlist.mockResolvedValue([{ symbol: 'AAPL' }]);
+        mockGetAllAnalysisConfigs.mockResolvedValue([{ analysisType: 'technical' }]);
+        mockGetNotificationConfig.mockResolvedValue([{ channel: 'email' }]);
+
+        const res = await handler(makeRequest('https://example.com/api/config'));
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({
+            config: [{ key: 'trading_mode', value: 'live' }],
+            watchlist: [{ symbol: 'AAPL' }],
+            analysis: [{ analysisType: 'technical' }],
+            notification: [{ channel: 'email' }],
+        });
+    });
+});
+
+describe('POST /api/config', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../config')).default;
+    });
+
+    it('rejects invalid JSON', async () => {
+        const req = new Request('https://example.com/api/config', {
+            method: 'POST',
+            body: 'not json',
+        });
+        const res = await handler(req);
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects body without type field', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', { key: 'foo' }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('handles config type', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: 'live',
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ success: true });
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_mode', 'live');
+    });
+
+    it('rejects config type without key', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                value: 'test',
+            }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('handles watchlist add', async () => {
+        mockAddToWatchlist.mockResolvedValue([{ id: 1, symbol: 'AAPL' }]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'add',
+                symbol: 'AAPL',
+                companyName: 'Apple Inc.',
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockAddToWatchlist).toHaveBeenCalledWith(fakeDb, 'AAPL', 'Apple Inc.');
+    });
+
+    it('handles watchlist remove', async () => {
+        mockRemoveFromWatchlist.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'remove',
+                id: 5,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockRemoveFromWatchlist).toHaveBeenCalledWith(fakeDb, 5);
+    });
+
+    it('handles watchlist toggle', async () => {
+        mockToggleWatchlistItem.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'toggle',
+                id: 3,
+                enabled: false,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockToggleWatchlistItem).toHaveBeenCalledWith(fakeDb, 3, false);
+    });
+
+    it('rejects invalid watchlist action', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'invalid',
+            }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('handles analysis config update', async () => {
+        mockUpdateAnalysisConfig.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'analysis',
+                analysisType: 'technical',
+                updates: { enabled: true, modelId: 'claude-sonnet-4-20250514' },
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockUpdateAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'technical', {
+            enabled: true,
+            modelId: 'claude-sonnet-4-20250514',
+        });
+    });
+
+    it('handles notification config update', async () => {
+        mockUpdateNotificationConfig.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'notification',
+                channel: 'email',
+                updates: { enabled: true, target: 'user@example.com' },
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockUpdateNotificationConfig).toHaveBeenCalledWith(fakeDb, 'email', {
+            enabled: true,
+            target: 'user@example.com',
+        });
+    });
+
+    it('rejects unknown type', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', { type: 'unknown' }),
+        );
+        expect(res.status).toBe(400);
+    });
+});
+
+describe('GET /api/pending', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../pending')).default;
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/pending', 'POST'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns pending orders', async () => {
+        const orders = [{ id: 1, symbol: 'AAPL', status: 'pending' }];
+        mockGetPendingOrders.mockResolvedValue(orders);
+
+        const res = await handler(makeRequest('https://example.com/api/pending'));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual(orders);
+    });
+});
+
+describe('POST /api/approve/[id]', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../approve/[id]')).default;
+    });
+
+    it('rejects non-POST methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/approve/1', 'GET'));
+        expect(res.status).toBe(405);
+    });
+
+    it('rejects invalid ID', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/abc', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects invalid JSON body', async () => {
+        const req = new Request('https://example.com/api/approve/1', {
+            method: 'POST',
+            body: 'not json',
+        });
+        const res = await handler(req);
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects missing action', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/1', 'POST', { foo: 'bar' }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects invalid action value', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/1', 'POST', { action: 'cancel' }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('approves a pending order', async () => {
+        mockApprovePendingOrder.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/42', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({ success: true, action: 'approve', id: 42 });
+        expect(mockApprovePendingOrder).toHaveBeenCalledWith(fakeDb, 42);
+    });
+
+    it('rejects a pending order', async () => {
+        mockRejectPendingOrder.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/7', 'POST', { action: 'reject' }),
+        );
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({ success: true, action: 'reject', id: 7 });
+        expect(mockRejectPendingOrder).toHaveBeenCalledWith(fakeDb, 7);
+    });
+});
