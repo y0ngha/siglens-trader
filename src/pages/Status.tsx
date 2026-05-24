@@ -84,6 +84,7 @@ export function StatusPage() {
     const openPositions = positions ?? [];
     const { totalInvested, currentValue, pnlPercent } = computePortfolio(openPositions);
     const recentTrades = (trades ?? []).slice(0, MAX_RECENT_TRADES);
+    const skippedTrades = (trades ?? []).filter((t) => t.mode === 'skipped');
 
     return (
         <div className="space-y-4">
@@ -98,7 +99,7 @@ export function StatusPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr]">
-                {/* Left column: 상태 지표 + 계좌 상태 */}
+                {/* Left column: 상태 지표 + 계좌 상태 + 경고 */}
                 <div className="space-y-4">
                     {/* 상태 지표 */}
                     <div className="space-y-2">
@@ -205,6 +206,33 @@ export function StatusPage() {
                             </div>
                         </div>
                     </div>
+
+                    {/* 경고: 잔고 부족으로 미실행된 거래 */}
+                    {skippedTrades.length > 0 && (
+                        <section>
+                            <h2 className="text-xs font-medium text-yellow-500">경고</h2>
+                            <div className="mt-2 space-y-1.5">
+                                {skippedTrades.slice(0, 5).map((trade) => (
+                                    <div
+                                        key={trade.id}
+                                        className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-yellow-400">
+                                                {trade.symbol}
+                                            </span>
+                                            <span className="text-[10px] text-yellow-500/70">
+                                                잔고 부족
+                                            </span>
+                                        </div>
+                                        <p className="mt-0.5 text-[11px] text-yellow-500/60">
+                                            {trade.reason}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+                    )}
                 </div>
 
                 {/* Right column: 최근 활동 */}

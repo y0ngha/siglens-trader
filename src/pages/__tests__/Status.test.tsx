@@ -453,6 +453,83 @@ describe('StatusPage', () => {
         });
     });
 
+    // --- Skipped trades alert tests ---
+
+    it('displays skipped trades alert section when skipped trades exist', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: '2026-05-24T12:00:00Z',
+                reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
+                mode: 'skipped',
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('경고')).toBeInTheDocument();
+        });
+
+        // META appears in both alert section and recent trades section
+        expect(screen.getAllByText('META')).toHaveLength(2);
+        expect(screen.getByText('잔고 부족')).toBeInTheDocument();
+        expect(
+            screen.getByText(
+                '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it('does not show alert section when no skipped trades', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        expect(screen.queryByText('경고')).not.toBeInTheDocument();
+    });
+
+    it('limits skipped trades alert to 5 items', async () => {
+        const skippedTrades = Array.from({ length: 7 }, (_, i) => ({
+            id: 100 + i,
+            symbol: `SYM${i}`,
+            side: 'buy',
+            orderType: 'market',
+            quantity: 0,
+            price: '100.00',
+            executedAt: new Date(Date.now() - i * 3600000).toISOString(),
+            reason: '잔고 부족 — 미실행',
+            mode: 'skipped',
+        }));
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue(skippedTrades);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('경고')).toBeInTheDocument();
+        });
+
+        // SYM0-SYM4 appear in both alert (max 5) and recent trades (max 10)
+        // SYM5, SYM6 only appear in recent trades (not in alert which is limited to 5)
+        expect(screen.getAllByText('SYM0')).toHaveLength(2); // alert + recent trades
+        expect(screen.getAllByText('SYM4')).toHaveLength(2); // alert + recent trades
+        // SYM5 and SYM6 appear only in recent trades, not in the alert
+        expect(screen.getAllByText('SYM5')).toHaveLength(1); // recent trades only
+        expect(screen.getAllByText('SYM6')).toHaveLength(1); // recent trades only
+    });
+
     // --- Responsive layout tests ---
 
     it('has responsive grid classes', async () => {

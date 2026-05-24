@@ -232,6 +232,37 @@ export default async function handler(req: Request): Promise<Response> {
                 calculatedSize,
             });
 
+            // Insufficient balance — signal is buy but position size is 0
+            if (
+                decision.action === 'hold' &&
+                signalScore.signal === 'buy' &&
+                calculatedSize === 0
+            ) {
+                await insertTrade(db, {
+                    symbol: item.symbol,
+                    side: 'buy',
+                    orderType: 'market',
+                    quantity: 0,
+                    price: currentPrice,
+                    executedAt: new Date(),
+                    reason: `잔고 부족 — 신호 ${signalScore.total}/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행`,
+                    mode: 'skipped',
+                    cronRunId,
+                });
+
+                await sendErrorEmail(
+                    `잔고 부족: ${item.symbol}`,
+                    `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
+                ).catch(() => {});
+
+                decisions.push({
+                    symbol: item.symbol,
+                    action: 'skipped',
+                    score: signalScore.total,
+                });
+                continue;
+            }
+
             decisions.push({ symbol: item.symbol, action: decision.action, score: decision.score });
 
             if (decision.action === 'hold') continue;

@@ -196,6 +196,17 @@ const trades = [
         reason: '신호 28/100 — 매도 (기술:20, 뉴스:35, 옵션:30, 펀더멘털:40, 종합:25)',
         mode: 'dry_run',
     },
+    {
+        id: 6,
+        symbol: 'META',
+        side: 'buy',
+        orderType: 'market',
+        quantity: 0,
+        price: '520.00',
+        executedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
+        reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
+        mode: 'skipped',
+    },
 ];
 
 const pendingOrders = [

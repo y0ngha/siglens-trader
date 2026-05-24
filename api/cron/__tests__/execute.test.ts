@@ -867,6 +867,129 @@ describe('execute cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Insufficient balance (skipped trades)
+    // -----------------------------------------------------------------------
+
+    describe('insufficient balance', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'max_total_exposure') return Promise.resolve(5000);
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockGetOpenPositions.mockResolvedValue([
+                { symbol: 'MSFT', quantity: 10, avgPrice: '500', status: 'open' },
+            ]);
+        });
+
+        it('records skipped trade and sends error email when buy signal but calculatedSize is 0', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockCalculatePositionSize.mockReturnValue(0);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — HOLD',
+                quantity: 0,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should record as skipped
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 0,
+                    price: 150,
+                    mode: 'skipped',
+                    reason: expect.stringContaining('잔고 부족'),
+                }),
+            );
+
+            // Should send error email
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '잔고 부족: AAPL',
+                expect.stringContaining('잔고 부족으로 미실행'),
+            );
+
+            // Should report as skipped in decisions
+            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'skipped', score: 80 }]);
+        });
+
+        it('does not record skipped trade when signal is hold (not buy)', async () => {
+            mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
+            mockCalculatePositionSize.mockReturnValue(0);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'AAPL',
+                score: 50,
+                reason: 'Score 50/100 — HOLD',
+                quantity: 0,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'hold', score: 50 }]);
+        });
+
+        it('does not record skipped trade when calculatedSize > 0', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockCalculatePositionSize.mockReturnValue(5);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Normal buy trade inserted (not skipped)
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    mode: 'dry_run',
+                    quantity: 5,
+                }),
+            );
+            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'buy', score: 80 }]);
+        });
+
+        it('continues to next symbol after recording skipped trade', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
+            mockScoreSignals
+                .mockReturnValueOnce(fakeBuySignalScore) // AAPL - buy signal
+                .mockReturnValueOnce(fakeBuySignalScore); // TSLA - buy signal
+            mockCalculatePositionSize.mockReturnValue(0); // Both get 0
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: '',
+                score: 80,
+                reason: 'HOLD',
+                quantity: 0,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toHaveLength(2);
+            expect(body.decisions[0]).toEqual({ symbol: 'AAPL', action: 'skipped', score: 80 });
+            expect(body.decisions[1]).toEqual({ symbol: 'TSLA', action: 'skipped', score: 80 });
+            expect(mockInsertTrade).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Response format
     // -----------------------------------------------------------------------
 

@@ -54,6 +54,17 @@ const mockTrades = [
         reason: 'Breakout detected',
         mode: 'auto',
     },
+    {
+        id: 4,
+        symbol: 'META',
+        side: 'buy',
+        orderType: 'market',
+        quantity: 0,
+        price: '520.00',
+        executedAt: '2026-05-24T12:00:00Z',
+        reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
+        mode: 'skipped',
+    },
 ];
 
 describe('TradesPage', () => {
@@ -77,12 +88,12 @@ describe('TradesPage', () => {
         });
 
         expect(screen.getByText('AAPL')).toBeInTheDocument();
-        // Multiple "매수" badges exist (AAPL + NVDA both are buy)
-        expect(screen.getAllByText('매수')).toHaveLength(2);
+        // Multiple "매수" badges exist (AAPL + NVDA + META are buy)
+        expect(screen.getAllByText('매수')).toHaveLength(3);
         expect(screen.getByText('10')).toBeInTheDocument();
         expect(screen.getByText('$150.00')).toBeInTheDocument();
-        // "시장가" appears twice (AAPL + NVDA both are market orders)
-        expect(screen.getAllByText('시장가')).toHaveLength(2);
+        // "시장가" appears three times (AAPL + NVDA + META are market orders)
+        expect(screen.getAllByText('시장가')).toHaveLength(3);
         expect(screen.getByText('RSI oversold signal')).toBeInTheDocument();
 
         expect(screen.getByText('TSLA')).toBeInTheDocument();
@@ -91,8 +102,9 @@ describe('TradesPage', () => {
         expect(screen.getByText('$210.50')).toBeInTheDocument();
         expect(screen.getByText('지정가')).toBeInTheDocument();
 
-        // All three trades displayed
+        // All four trades displayed
         expect(screen.getByText('NVDA')).toBeInTheDocument();
+        expect(screen.getByText('META')).toBeInTheDocument();
     });
 
     it('shows auto mode badge', async () => {
@@ -215,6 +227,7 @@ describe('TradesPage', () => {
         expect(screen.getByText('AAPL')).toBeInTheDocument();
         expect(screen.getByText('TSLA')).toBeInTheDocument();
         expect(screen.getByText('NVDA')).toBeInTheDocument();
+        expect(screen.getByText('META')).toBeInTheDocument();
     });
 
     it('shows empty filtered state when no trades match the filter', async () => {
@@ -240,7 +253,7 @@ describe('TradesPage', () => {
         renderWithQuery(<TradesPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('3건')).toBeInTheDocument();
+            expect(screen.getByText('4건')).toBeInTheDocument();
         });
     });
 
@@ -251,7 +264,7 @@ describe('TradesPage', () => {
         renderWithQuery(<TradesPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('3건')).toBeInTheDocument();
+            expect(screen.getByText('4건')).toBeInTheDocument();
         });
 
         await user.click(screen.getByRole('button', { name: '모의' }));
@@ -309,5 +322,49 @@ describe('TradesPage', () => {
 
         // All 25 items should now be visible, no "더 보기" button
         expect(screen.queryByText(/더 보기/)).not.toBeInTheDocument();
+    });
+
+    // --- Skipped mode filter tests ---
+
+    it('shows 미실행 filter button', async () => {
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<TradesPage />);
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: '미실행' })).toBeInTheDocument();
+        });
+    });
+
+    it('filters trades by skipped mode when 미실행 is selected', async () => {
+        const user = userEvent.setup();
+        mockedApi.getTrades.mockResolvedValue(mockTrades);
+
+        renderWithQuery(<TradesPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('META')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { name: '미실행' }));
+
+        expect(screen.getByText('META')).toBeInTheDocument();
+        expect(screen.queryByText('AAPL')).not.toBeInTheDocument();
+        expect(screen.queryByText('TSLA')).not.toBeInTheDocument();
+        expect(screen.queryByText('NVDA')).not.toBeInTheDocument();
+    });
+
+    it('shows 미실행 badge on skipped trades', async () => {
+        mockedApi.getTrades.mockResolvedValue([mockTrades[3]]);
+
+        renderWithQuery(<TradesPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('META')).toBeInTheDocument();
+        });
+
+        // "미실행" appears both as filter button and mode badge
+        const skippedElements = screen.getAllByText('미실행');
+        expect(skippedElements.length).toBeGreaterThanOrEqual(2);
     });
 });

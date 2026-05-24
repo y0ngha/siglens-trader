@@ -7,7 +7,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const PAGE_SIZE = 20;
 
-type ModeFilter = 'all' | 'dry_run' | 'semi_auto' | 'auto';
+type ModeFilter = 'all' | 'dry_run' | 'semi_auto' | 'auto' | 'skipped';
 
 function modeBadgeLabel(mode: string): string {
     switch (mode) {
@@ -17,6 +17,8 @@ function modeBadgeLabel(mode: string): string {
             return '반자동';
         case 'auto':
             return '자동';
+        case 'skipped':
+            return '미실행';
         default:
             return mode;
     }
@@ -70,6 +72,7 @@ export function TradesPage() {
                         ['dry_run', '모의'],
                         ['semi_auto', '반자동'],
                         ['auto', '자동'],
+                        ['skipped', '미실행'],
                     ] as const
                 ).map(([value, label]) => (
                     <button
