@@ -9,6 +9,10 @@ vi.mock('../_lib/db', () => ({
     getDb: () => mockGetDb(),
 }));
 
+vi.mock('../_lib/auth', () => ({
+    isAuthenticated: () => true,
+}));
+
 const mockGetOpenPositions = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
@@ -446,6 +450,7 @@ describe('POST /api/approve/[id]', () => {
             priceLimit: '150.00',
             analysisSummary: 'Strong buy signal',
             status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
         });
         mockApprovePendingOrder.mockResolvedValue(undefined);
         mockInsertTrade.mockResolvedValue([{}]);

@@ -46,6 +46,12 @@ export default async function handler(req: Request): Promise<Response> {
         if (!order) {
             return Response.json({ error: 'Order not found' }, { status: 404 });
         }
+        if (order.status !== 'pending') {
+            return Response.json({ error: 'Order is no longer pending' }, { status: 409 });
+        }
+        if (new Date(order.expiresAt) < new Date()) {
+            return Response.json({ error: 'Order has expired' }, { status: 410 });
+        }
 
         await approvePendingOrder(db, id);
 

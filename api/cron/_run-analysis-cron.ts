@@ -27,7 +27,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             return Response.json({ skipped: true, reason: 'empty_watchlist' });
         }
 
-        const cronRunId = `${analysisType}-${Date.now()}`;
+        const cronRunId = `${analysisType}-${crypto.randomUUID()}`;
         const results: Array<{ symbol: string; status: string; error?: string }> = [];
 
         const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');

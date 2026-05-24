@@ -1,5 +1,13 @@
 import { Resend } from 'resend';
 
+function escapeHtml(str: string): string {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 function getResend() {
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) throw new Error('RESEND_API_KEY is required');
@@ -36,9 +44,9 @@ export async function sendTradeExecutedEmail(trade: TradeNotification, to?: stri
         subject: `[Trader] ${trade.side.toUpperCase()} ${trade.symbol} — ${trade.quantity}주`,
         html: `
             <h2>${trade.side === 'buy' ? '매수' : '매도'} 체결</h2>
-            <p><strong>${trade.symbol}</strong> ${trade.quantity}주 @ $${trade.price}</p>
-            <p>사유: ${trade.reason}</p>
-            <p>모드: ${trade.mode}</p>
+            <p><strong>${escapeHtml(trade.symbol)}</strong> ${trade.quantity}주 @ $${trade.price}</p>
+            <p>사유: ${escapeHtml(trade.reason)}</p>
+            <p>모드: ${escapeHtml(trade.mode)}</p>
         `,
     });
 }
@@ -55,10 +63,10 @@ export async function sendApprovalRequestEmail(
         subject: `[Trader] 승인 요청: ${order.side.toUpperCase()} ${order.symbol}`,
         html: `
             <h2>매매 승인 요청</h2>
-            <p><strong>${order.symbol}</strong> ${order.side === 'buy' ? '매수' : '매도'} ${order.quantity}주</p>
+            <p><strong>${escapeHtml(order.symbol)}</strong> ${order.side === 'buy' ? '매수' : '매도'} ${order.quantity}주</p>
             <p>신호 점수: ${order.score}/100</p>
-            <p>사유: ${order.reason}</p>
-            <p><a href="${order.approveUrl}">대시보드에서 확인</a></p>
+            <p>사유: ${escapeHtml(order.reason)}</p>
+            <p><a href="${escapeHtml(order.approveUrl)}">대시보드에서 확인</a></p>
         `,
     });
 }
@@ -70,6 +78,6 @@ export async function sendErrorEmail(subject: string, error: string, to?: string
         from: FROM(),
         to: recipient,
         subject: `[Trader] 오류: ${subject}`,
-        html: `<pre>${error}</pre>`,
+        html: `<pre>${escapeHtml(error)}</pre>`,
     });
 }

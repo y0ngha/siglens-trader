@@ -129,7 +129,7 @@ describe('createAnalysisCronHandler', () => {
         const body = await res.json();
 
         expect(res.status).toBe(200);
-        expect(body.cronRunId).toMatch(/^technical-\d+$/);
+        expect(body.cronRunId).toMatch(/^technical-[0-9a-f-]+$/);
         expect(body.results).toHaveLength(2);
         expect(body.results[0]).toEqual({ symbol: 'AAPL', status: 'done' });
         expect(body.results[1]).toEqual({ symbol: 'TSLA', status: 'cached' });
@@ -215,7 +215,7 @@ describe('createAnalysisCronHandler', () => {
         const res = await newsHandler(makeRequest(true));
         const body = await res.json();
 
-        expect(body.cronRunId).toMatch(/^news-\d+$/);
+        expect(body.cronRunId).toMatch(/^news-[0-9a-f-]+$/);
     });
 
     it('passes correct analysisType to getAnalysisConfig', async () => {

@@ -65,7 +65,7 @@ export default async function handler(req: Request): Promise<Response> {
         0,
     );
 
-    const cronRunId = `exec-${Date.now()}`;
+    const cronRunId = `exec-${crypto.randomUUID()}`;
     const overallConfig = await getAnalysisConfig(db, 'overall');
     const decisions: Array<{ symbol: string; action: string; score: number }> = [];
 
@@ -137,6 +137,18 @@ export default async function handler(req: Request): Promise<Response> {
 
                 case 'auto': {
                     const orderResult = await executeSellOrder(position.symbol, position.quantity);
+                    if (orderResult.status === 'rejected') {
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'order_rejected',
+                            score: 0,
+                        });
+                        await sendErrorEmail(
+                            `주문 거부: ${position.symbol}`,
+                            orderResult.message ?? '거부 사유 없음',
+                        ).catch(() => {});
+                        break;
+                    }
                     await insertTrade(db, {
                         symbol: position.symbol,
                         side: 'sell',
@@ -305,13 +317,16 @@ export default async function handler(req: Request): Promise<Response> {
                         cronRunId,
                     });
                     if (decision.action === 'buy') {
-                        await openPosition(db, {
-                            symbol: item.symbol,
-                            side: 'long',
-                            quantity: decision.quantity,
-                            avgPrice: currentPrice,
-                        });
-                        currentExposure += currentPrice * decision.quantity;
+                        const existingDryRun = await getOpenPositionBySymbol(db, item.symbol);
+                        if (!existingDryRun) {
+                            await openPosition(db, {
+                                symbol: item.symbol,
+                                side: 'long',
+                                quantity: decision.quantity,
+                                avgPrice: currentPrice,
+                            });
+                            currentExposure += currentPrice * decision.quantity;
+                        }
                     }
                     break;
 
@@ -338,6 +353,18 @@ export default async function handler(req: Request): Promise<Response> {
                 case 'auto': {
                     const orderFn = decision.action === 'buy' ? executeBuyOrder : executeSellOrder;
                     const orderResult = await orderFn(item.symbol, decision.quantity);
+                    if (orderResult.status === 'rejected') {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'order_rejected',
+                            score: decision.score,
+                        });
+                        await sendErrorEmail(
+                            `주문 거부: ${item.symbol}`,
+                            orderResult.message ?? '거부 사유 없음',
+                        ).catch(() => {});
+                        break;
+                    }
                     const filledPrice = orderResult.filledPrice ?? currentPrice;
                     await insertTrade(db, {
                         symbol: item.symbol,
@@ -351,13 +378,16 @@ export default async function handler(req: Request): Promise<Response> {
                         cronRunId,
                     });
                     if (decision.action === 'buy') {
-                        await openPosition(db, {
-                            symbol: item.symbol,
-                            side: 'long',
-                            quantity: decision.quantity,
-                            avgPrice: filledPrice,
-                        });
-                        currentExposure += filledPrice * decision.quantity;
+                        const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
+                        if (!existingAuto) {
+                            await openPosition(db, {
+                                symbol: item.symbol,
+                                side: 'long',
+                                quantity: decision.quantity,
+                                avgPrice: filledPrice,
+                            });
+                            currentExposure += filledPrice * decision.quantity;
+                        }
                     }
                     await sendTradeExecutedEmail({
                         symbol: item.symbol,

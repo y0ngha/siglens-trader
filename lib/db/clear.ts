@@ -1,7 +1,16 @@
 import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
-import { sql } from 'drizzle-orm';
 import * as readline from 'node:readline';
+import {
+    analysisResults,
+    trades,
+    pendingOrders,
+    positions,
+    watchlist,
+    analysisModelConfig,
+    notificationConfig,
+    config,
+} from './schema';
 
 async function confirm(message: string): Promise<boolean> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -31,20 +40,20 @@ export async function clear() {
     const client = neon(process.env.DATABASE_URL);
     const db = drizzle(client);
 
-    const tables = [
-        'analysis_results',
-        'trades',
-        'pending_orders',
-        'positions',
-        'watchlist',
-        'analysis_model_config',
-        'notification_config',
-        'config',
-    ];
+    const tablesToClear = [
+        { table: analysisResults, name: 'analysis_results' },
+        { table: trades, name: 'trades' },
+        { table: pendingOrders, name: 'pending_orders' },
+        { table: positions, name: 'positions' },
+        { table: watchlist, name: 'watchlist' },
+        { table: analysisModelConfig, name: 'analysis_model_config' },
+        { table: notificationConfig, name: 'notification_config' },
+        { table: config, name: 'config' },
+    ] as const;
 
-    for (const table of tables) {
-        await db.execute(sql.raw(`DELETE FROM ${table}`));
-        console.log(`  Cleared: ${table}`);
+    for (const { table, name } of tablesToClear) {
+        await db.delete(table);
+        console.log(`  Cleared: ${name}`);
     }
 
     console.log('\n✅ All tables cleared.');

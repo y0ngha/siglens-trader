@@ -1016,7 +1016,7 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(body.cronRunId).toMatch(/^exec-\d+$/);
+            expect(body.cronRunId).toMatch(/^exec-[0-9a-f-]+$/);
             expect(body.tradingMode).toBe('dry_run');
             expect(body.decisions).toBeInstanceOf(Array);
         });
