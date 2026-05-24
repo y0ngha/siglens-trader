@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router';
 import { lazy, Suspense } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 
 const StatusPage = lazy(() => import('./pages/Status').then((m) => ({ default: m.StatusPage })));
 const PositionsPage = lazy(() =>
@@ -14,16 +16,28 @@ const SettingsPage = lazy(() =>
     import('./pages/Settings').then((m) => ({ default: m.SettingsPage })),
 );
 
-const NAV_ITEMS = [
-    { to: '/', label: '상태' },
-    { to: '/positions', label: '포지션' },
-    { to: '/trades', label: '거래' },
-    { to: '/analysis', label: '분석' },
-    { to: '/pending', label: '승인' },
-    { to: '/settings', label: '설정' },
-] as const;
+interface NavItem {
+    to: string;
+    label: string;
+    badge?: number;
+}
 
 export function App() {
+    const { data: pendingOrders } = useQuery({
+        queryKey: ['pending'],
+        queryFn: ({ signal }) => api.getPending(signal),
+    });
+    const pendingCount = pendingOrders?.length ?? 0;
+
+    const navItems: NavItem[] = [
+        { to: '/', label: '상태' },
+        { to: '/positions', label: '포지션' },
+        { to: '/trades', label: '거래' },
+        { to: '/analysis', label: '분석' },
+        { to: '/pending', label: '승인', badge: pendingCount },
+        { to: '/settings', label: '설정' },
+    ];
+
     return (
         <BrowserRouter>
             <div className="flex min-h-dvh flex-col bg-[#0a0a0a] text-[#fafafa]">
@@ -31,16 +45,21 @@ export function App() {
                     className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-[#262626] bg-[#0a0a0a]/80 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4 sm:py-3"
                     aria-label="Main navigation"
                 >
-                    {NAV_ITEMS.map((item) => (
+                    {navItems.map((item) => (
                         <NavLink
                             key={item.to}
                             to={item.to}
                             end={item.to === '/'}
                             className={({ isActive }) =>
-                                `rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${isActive ? 'bg-[#262626] text-white' : 'text-neutral-400 hover:text-neutral-200'}`
+                                `flex items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${isActive ? 'bg-[#262626] text-white' : 'text-neutral-400 hover:text-neutral-200'}`
                             }
                         >
                             {item.label}
+                            {item.badge != null && item.badge > 0 && (
+                                <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+                                    {item.badge}
+                                </span>
+                            )}
                         </NavLink>
                     ))}
                 </nav>

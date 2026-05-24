@@ -8,7 +8,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 interface AnalysisEntry {
     id: number;
     symbol: string;
-    type: string;
+    analysisType: string;
     result: string;
     createdAt: string;
 }
@@ -37,11 +37,11 @@ function signalVariant(signal: string): 'green' | 'red' | 'neutral' {
 function signalLabel(signal: string): string {
     switch (signal) {
         case 'bullish':
-            return 'Bullish';
+            return '강세';
         case 'bearish':
-            return 'Bearish';
+            return '약세';
         case 'neutral':
-            return 'Neutral';
+            return '중립';
         default:
             return signal;
     }
@@ -50,7 +50,7 @@ function signalLabel(signal: string): string {
 function extractSignal(result: string): string {
     try {
         const parsed = JSON.parse(result);
-        return parsed.signal ?? parsed.direction ?? 'neutral';
+        return parsed.trend ?? parsed.overallSentiment ?? parsed.signal ?? 'neutral';
     } catch {
         return 'neutral';
     }
@@ -75,7 +75,8 @@ export function AnalysisPage() {
 
     if (isLoading) return <LoadingSkeleton />;
     if (error) return <ErrorMessage error={error as Error} />;
-    if (!data || data.length === 0) return <EmptyState message="분석 결과가 없습니다" />;
+    if (!data || !Array.isArray(data) || data.length === 0)
+        return <EmptyState message="분석 결과가 없습니다" />;
 
     const grouped = data.reduce<Record<string, AnalysisEntry[]>>((acc, entry) => {
         if (!acc[entry.symbol]) acc[entry.symbol] = [];
@@ -103,7 +104,7 @@ export function AnalysisPage() {
                                     >
                                         <div className="flex items-center gap-2">
                                             <span className="text-neutral-400">
-                                                {typeLabel(entry.type)}
+                                                {typeLabel(entry.analysisType)}
                                             </span>
                                             <Badge
                                                 label={signalLabel(signal)}

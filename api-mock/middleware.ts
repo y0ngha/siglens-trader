@@ -151,7 +151,50 @@ const mockConfig = {
     },
 };
 
-const mockAnalysis: Record<string, unknown[]> = {};
+const mockAnalysis = [
+    {
+        id: 1,
+        symbol: 'AAPL',
+        analysisType: 'technical',
+        result: JSON.stringify({ trend: 'bullish', riskLevel: 'medium' }),
+        createdAt: new Date(Date.now() - 3600000).toISOString(),
+    },
+    {
+        id: 2,
+        symbol: 'AAPL',
+        analysisType: 'news',
+        result: JSON.stringify({ overallSentiment: 'bullish' }),
+        createdAt: new Date(Date.now() - 5400000).toISOString(),
+    },
+    {
+        id: 3,
+        symbol: 'NVDA',
+        analysisType: 'technical',
+        result: JSON.stringify({ trend: 'bullish', riskLevel: 'low' }),
+        createdAt: new Date(Date.now() - 7200000).toISOString(),
+    },
+    {
+        id: 4,
+        symbol: 'NVDA',
+        analysisType: 'options',
+        result: JSON.stringify({ signals: [{ type: 'bullish' }] }),
+        createdAt: new Date(Date.now() - 9000000).toISOString(),
+    },
+    {
+        id: 5,
+        symbol: 'TSLA',
+        analysisType: 'technical',
+        result: JSON.stringify({ trend: 'bearish', riskLevel: 'high' }),
+        createdAt: new Date(Date.now() - 1800000).toISOString(),
+    },
+    {
+        id: 6,
+        symbol: 'TSLA',
+        analysisType: 'news',
+        result: JSON.stringify({ overallSentiment: 'bearish' }),
+        createdAt: new Date(Date.now() - 3000000).toISOString(),
+    },
+];
 
 const routes: Record<string, (req: Connect.IncomingMessage) => unknown> = {
     '/api/status': () => mockStatus,
