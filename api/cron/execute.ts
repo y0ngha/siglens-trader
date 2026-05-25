@@ -37,6 +37,9 @@ import { resolveApiKey } from './_run-analysis-cron';
 import { acquireLock, releaseLock } from '../../lib/lock';
 import { isFinitePositive, safeNumber } from '../../lib/validation';
 
+/** Maximum age for analysis results before they are considered stale (4 hours). */
+const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Safe extraction helpers for untyped AI analysis results
 // ---------------------------------------------------------------------------
@@ -106,6 +109,27 @@ function safeAnalysisTargetPrice(result: unknown): number | undefined {
     return isFinitePositive(target) ? target : undefined;
 }
 
+function safeArray(obj: unknown, key: string): unknown[] | undefined {
+    const r = safeRecord(obj);
+    if (!r) return undefined;
+    const val = r[key];
+    return Array.isArray(val) ? val : undefined;
+}
+
+function safeActionRecommendation(
+    obj: unknown,
+): { action: 'buy' | 'hold' | 'wait'; confidence: number } | undefined {
+    const r = safeRecord(obj);
+    if (!r) return undefined;
+    const rec = safeRecord(r.actionRecommendation);
+    if (!rec) return undefined;
+    const action = safeString(rec.action);
+    if (action !== 'buy' && action !== 'hold' && action !== 'wait') return undefined;
+    const confidence =
+        typeof rec.confidence === 'number' && Number.isFinite(rec.confidence) ? rec.confidence : 0;
+    return { action, confidence };
+}
+
 export default async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
         return new Response('Unauthorized', { status: 401 });
@@ -163,7 +187,7 @@ export default async function handler(req: Request): Promise<Response> {
         }
 
         let currentExposure = openPositions.reduce(
-            (sum, p) => sum + Number(p.avgPrice) * p.quantity,
+            (sum, p) => sum + safeNumber(Number(p.avgPrice), 0) * p.quantity,
             0,
         );
 
@@ -336,11 +360,9 @@ export default async function handler(req: Request): Promise<Response> {
         // Recalculate exposure after position closures
         const updatedPositions = await getOpenPositions(db);
         currentExposure = updatedPositions.reduce(
-            (sum, p) => sum + Number(p.avgPrice) * p.quantity,
+            (sum, p) => sum + safeNumber(Number(p.avgPrice), 0) * p.quantity,
             0,
         );
-
-        const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
 
         for (const item of watchlistItems) {
             try {
@@ -397,15 +419,43 @@ export default async function handler(req: Request): Promise<Response> {
                     }
                 }
 
-                // Score signals
+                // Score signals — build type-safe inputs from untyped AI results
+                const signalInputs = {
+                    technical: tech?.result
+                        ? {
+                              trend: safeAnalysisTrend(tech.result),
+                              riskLevel: safeString(safeRecord(tech.result)?.riskLevel),
+                              actionRecommendation: safeActionRecommendation(tech.result),
+                          }
+                        : null,
+                    news: news?.result
+                        ? {
+                              overallSentiment: safeAnalysisSentiment(news.result),
+                          }
+                        : null,
+                    options: options?.result
+                        ? {
+                              signals: safeArray(options.result, 'signals') as
+                                  | Array<{ type?: string }>
+                                  | undefined,
+                          }
+                        : null,
+                    fundamental: fundamental?.result
+                        ? {
+                              overallSentiment: safeAnalysisSentiment(fundamental.result),
+                          }
+                        : null,
+                    overall: overall
+                        ? {
+                              integratedConclusionKo: safeString(
+                                  safeRecord(overall)?.integratedConclusionKo,
+                              ),
+                              scenarios: safeArray(overall, 'scenarios'),
+                          }
+                        : null,
+                };
                 const signalScore = scoreSignals(
-                    {
-                        technical: (tech?.result ?? null) as any,
-                        news: (news?.result ?? null) as any,
-                        options: (options?.result ?? null) as any,
-                        fundamental: (fundamental?.result ?? null) as any,
-                        overall: (overall ?? null) as any,
-                    },
+                    signalInputs,
                     weights,
                     buyThreshold,
                     sellThreshold,
@@ -478,15 +528,17 @@ export default async function handler(req: Request): Promise<Response> {
                     continue;
                 }
 
-                decisions.push({
-                    symbol: item.symbol,
-                    action: decision.action,
-                    score: decision.score,
-                });
-
-                if (decision.action === 'hold') continue;
+                if (decision.action === 'hold') {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: decision.action,
+                        score: decision.score,
+                    });
+                    continue;
+                }
 
                 // Execute based on mode
+                let decisionPushed = false;
                 switch (tradingMode) {
                     case 'dry_run':
                         await insertTrade(db, {
@@ -528,6 +580,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 action: 'pending_exists',
                                 score: decision.score,
                             });
+                            decisionPushed = true;
                             break;
                         }
                         await insertPendingOrder(db, {
@@ -579,6 +632,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 action: 'order_rejected',
                                 score: decision.score,
                             });
+                            decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${item.symbol}`,
                                 orderResult.message ?? '거부 사유 없음',
@@ -595,6 +649,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 action: 'order_submitted',
                                 score: decision.score,
                             });
+                            decisionPushed = true;
                             break;
                         }
                         // status === 'filled' — proceed with trade record + position
@@ -635,6 +690,14 @@ export default async function handler(req: Request): Promise<Response> {
                         });
                         break;
                     }
+                }
+
+                if (!decisionPushed) {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: decision.action,
+                        score: decision.score,
+                    });
                 }
             } catch (err) {
                 await sendErrorEmail(item.symbol, String(err)).catch(() => {});

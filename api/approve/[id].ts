@@ -108,9 +108,13 @@ export default async function handler(req: Request): Promise<Response> {
                 if (result.status === 'filled' && result.filledPrice) {
                     filledPrice = result.filledPrice;
                 }
-            } catch {
-                // Toss API unavailable — fall back to paper trade at priceLimit.
-                // The order is already approved in DB so we proceed with paper execution.
+            } catch (err) {
+                // Toss API failed — notify user, fall back to paper trade
+                await sendErrorEmail(
+                    `주문 실행 실패: ${order.symbol}`,
+                    `${order.symbol} ${order.side} ${order.quantity}주 주문 API 호출에 실패했습니다. 페이퍼 트레이드로 기록합니다.\n오류: ${String(err)}`,
+                ).catch(() => {});
+                // Trade will be recorded below with original priceLimit
             }
         }
 

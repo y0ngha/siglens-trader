@@ -1082,10 +1082,14 @@ describe('execute cron handler', () => {
 
             expect(mockScoreSignals).toHaveBeenCalledWith(
                 {
-                    technical: fakeTechResult.result,
-                    news: fakeNewsResult.result,
-                    options: fakeOptionsResult.result,
-                    fundamental: fakeFundamentalResult.result,
+                    technical: {
+                        trend: 'bullish',
+                        riskLevel: 'low',
+                        actionRecommendation: undefined,
+                    },
+                    news: { overallSentiment: 'bullish' },
+                    options: { signals: [{ type: 'bullish' }] },
+                    fundamental: { overallSentiment: 'neutral' },
                     overall: null,
                 },
                 expect.any(Object), // weights

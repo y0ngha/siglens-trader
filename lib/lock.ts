@@ -18,7 +18,10 @@ export async function acquireLock(
     ttlSeconds = DEFAULT_LOCK_TTL_SECONDS,
 ): Promise<boolean> {
     const r = getRedis();
-    if (!r) return true; // No Redis = dev mode, allow execution
+    if (!r) {
+        console.warn('[lock] Redis not configured — lock disabled (dev mode)');
+        return true;
+    }
     const result = await r.set(key, Date.now().toString(), { nx: true, ex: ttlSeconds });
     return result === 'OK';
 }

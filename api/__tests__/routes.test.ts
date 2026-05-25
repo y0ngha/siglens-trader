@@ -20,7 +20,7 @@ vi.mock('../../lib/trading/order', () => ({
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
 }));
 
-const mockSendErrorEmail = vi.fn();
+const mockSendErrorEmail = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../lib/notification/email', () => ({
     sendErrorEmail: (...args: unknown[]) => mockSendErrorEmail(...args),
 }));
@@ -99,6 +99,7 @@ function makeRequest(url: string, method = 'GET', body?: unknown): Request {
 beforeEach(() => {
     vi.resetAllMocks();
     mockGetDb.mockReturnValue(fakeDb);
+    mockSendErrorEmail.mockResolvedValue(undefined);
 });
 
 describe('GET /api/status', () => {
