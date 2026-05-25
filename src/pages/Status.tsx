@@ -89,7 +89,10 @@ export function StatusPage() {
     const openPositions = positions ?? [];
     const { totalInvested, currentValue, pnlPercent } = computePortfolio(openPositions);
     const recentTrades = (trades ?? []).slice(0, MAX_RECENT_TRADES);
-    const skippedTrades = (trades ?? []).filter((t) => t.mode === 'skipped');
+    const ALERT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const skippedTrades = (trades ?? []).filter(
+        (t) => t.mode === 'skipped' && Date.now() - new Date(t.executedAt).getTime() < ALERT_TTL_MS,
+    );
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
 

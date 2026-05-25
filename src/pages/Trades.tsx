@@ -101,7 +101,11 @@ export function TradesPage() {
                     <ul className="space-y-2">
                         {visibleTrades.map((trade) => {
                             const borderColor =
-                                trade.side === 'buy' ? 'border-l-green-500' : 'border-l-red-500';
+                                trade.mode === 'skipped'
+                                    ? 'border-l-yellow-500'
+                                    : trade.side === 'buy'
+                                      ? 'border-l-green-500'
+                                      : 'border-l-red-500';
 
                             return (
                                 <li
@@ -122,7 +126,13 @@ export function TradesPage() {
                                             >
                                                 {trade.side === 'buy' ? '매수' : '매도'}
                                             </span>
-                                            <span className="rounded bg-neutral-700 px-1.5 py-0.5 text-[10px] font-medium text-neutral-300">
+                                            <span
+                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                                    trade.mode === 'skipped'
+                                                        ? 'bg-yellow-500/10 text-yellow-400'
+                                                        : 'bg-neutral-700 text-neutral-300'
+                                                }`}
+                                            >
                                                 {modeBadgeLabel(trade.mode)}
                                             </span>
                                         </div>

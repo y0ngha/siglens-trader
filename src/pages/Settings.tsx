@@ -200,8 +200,7 @@ export function SettingsPage() {
                             '실제 주문 없이 가상 거래만 기록합니다. 전략 검증에 적합합니다.'}
                         {currentMode === 'semi_auto' &&
                             '매매 신호 발생 시 이메일 알림을 보내고, 대시보드에서 직접 승인해야 주문이 실행됩니다.'}
-                        {currentMode === 'auto' &&
-                            '매매 신호 발생 시 즉시 주문을 실행합니다. 토스증권 API 연동이 필요합니다.'}
+                        {currentMode === 'auto' && '매매 신호 발생 시 즉시 주문을 실행합니다.'}
                     </p>
                     {modeChanged && (
                         <div className="mt-2 flex items-center gap-2">
@@ -399,24 +398,32 @@ export function SettingsPage() {
                         [
                             [
                                 'max_position_size',
-                                '종목당 최대 투자 금액',
+                                '종목당 최대 투자 금액 ($)',
                                 '한 종목에 투자할 수 있는 최대 금액',
                             ],
                             [
                                 'max_total_exposure',
-                                '전체 투자 한도',
+                                '전체 투자 한도 ($)',
                                 '모든 종목 합산 최대 투자 금액',
                             ],
-                            ['stop_loss_percent', '손절선', '평균 매입가 대비 하락 시 자동 매도'],
-                            ['take_profit_percent', '익절선', '평균 매입가 대비 상승 시 자동 매도'],
+                            [
+                                'stop_loss_percent',
+                                '손절선 (%)',
+                                '평균 매입가 대비 하락 시 자동 매도',
+                            ],
+                            [
+                                'take_profit_percent',
+                                '익절선 (%)',
+                                '평균 매입가 대비 상승 시 자동 매도',
+                            ],
                             [
                                 'buy_threshold',
-                                '매수 신호 기준',
+                                '매수 신호 기준 (점)',
                                 'AI 분석 점수가 이 값 이상이면 매수',
                             ],
                             [
                                 'sell_threshold',
-                                '매도 신호 기준',
+                                '매도 신호 기준 (점)',
                                 'AI 분석 점수가 이 값 이하이면 매도',
                             ],
                         ] as const

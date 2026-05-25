@@ -489,7 +489,7 @@ describe('StatusPage', () => {
                 orderType: 'market',
                 quantity: 0,
                 price: '520.00',
-                executedAt: '2026-05-24T12:00:00Z',
+                executedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), // 1 hour ago (within 24h TTL)
                 reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
                 mode: 'skipped',
             },
@@ -521,6 +521,32 @@ describe('StatusPage', () => {
             expect(screen.getByText('시스템 상태')).toBeInTheDocument();
         });
 
+        expect(screen.queryByText('경고')).not.toBeInTheDocument();
+    });
+
+    it('hides skipped trades older than 24 hours', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), // 25 hours ago (beyond 24h TTL)
+                reason: '잔고 부족 — 미실행',
+                mode: 'skipped',
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        // The skipped trade is older than 24h, so the alert section should not appear
         expect(screen.queryByText('경고')).not.toBeInTheDocument();
     });
 
