@@ -151,6 +151,10 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                         } else {
                             await reducePositionQuantity(tx, existingPosition.id, quantity);
                         }
+                    } else {
+                        details.push(
+                            `${order.symbol} sell: 거래 기록은 생성했으나 DB에 열린 포지션 없음 (브로커 확인 필요)`,
+                        );
                     }
                 }
             });

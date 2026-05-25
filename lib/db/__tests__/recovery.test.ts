@@ -429,4 +429,49 @@ describe('autoRecoverFilledOrders', () => {
         expect(result.details[0]).toContain('DB connection lost');
         expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
     });
+
+    it('recovers sell order but warns when no open position exists', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 1,
+            idempotencyKey: 'exec-abc-AAPL-sell',
+            symbol: 'AAPL',
+            side: 'sell',
+            quantity: 5,
+            filledPrice: '195.00',
+            submittedAt: new Date('2026-05-24T10:00:00Z'),
+            resolvedAt: new Date('2026-05-24T10:01:00Z'),
+            cronRunId: 'run-1',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+
+        // No open position exists
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce(null as any);
+
+        // Transaction succeeds (trade inserted, no position change)
+        mockDb.transaction.mockImplementationOnce(async (fn: any) => fn(mockDb));
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(1);
+        expect(result.failed).toBe(0);
+        // Should have trade creation
+        expect(mockInsertTrade).toHaveBeenCalled();
+        // Should NOT have position close/reduce (no position)
+        expect(mockClosePosition).not.toHaveBeenCalled();
+        expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+        // Should have warning in details
+        const warning = result.details.find((d) => d.includes('열린 포지션 없음'));
+        expect(warning).toBeDefined();
+        expect(warning).toContain('AAPL');
+        expect(warning).toContain('브로커 확인 필요');
+        // Should still be marked recovered
+        expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+            mockDb,
+            'exec-abc-AAPL-sell',
+            expect.objectContaining({ status: 'recovered' }),
+        );
+    });
 });
