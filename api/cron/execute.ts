@@ -13,6 +13,8 @@ import {
     insertTrade,
     insertPendingOrder,
     getTodayTradeCount,
+    createOrderTracking,
+    updateOrderTracking,
 } from '../../lib/db/queries';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall';
 import { scoreSignals } from '../../lib/strategy/signal-scorer';
@@ -240,10 +242,26 @@ export default async function handler(req: Request): Promise<Response> {
                         break;
 
                     case 'auto': {
+                        const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
+                        await createOrderTracking(db, {
+                            idempotencyKey: exitIdempotencyKey,
+                            symbol: position.symbol,
+                            side: 'sell',
+                            quantity: position.quantity,
+                            status: 'submitted',
+                            cronRunId,
+                        });
                         const orderResult = await executeSellOrder(
                             position.symbol,
                             position.quantity,
+                            exitIdempotencyKey,
                         );
+                        await updateOrderTracking(db, exitIdempotencyKey, {
+                            tossOrderId: orderResult.orderId,
+                            status: orderResult.status,
+                            filledPrice: orderResult.filledPrice ?? undefined,
+                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
+                        });
                         if (orderResult.status === 'rejected') {
                             decisions.push({
                                 symbol: position.symbol,
@@ -257,6 +275,10 @@ export default async function handler(req: Request): Promise<Response> {
                             break;
                         }
                         if (orderResult.status === 'submitted') {
+                            await sendErrorEmail(
+                                `미체결 주문: ${position.symbol}`,
+                                `${position.symbol} sell ${position.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                            ).catch(() => {});
                             decisions.push({
                                 symbol: position.symbol,
                                 action: 'order_submitted',
@@ -493,9 +515,28 @@ export default async function handler(req: Request): Promise<Response> {
                         break;
 
                     case 'auto': {
+                        const idempotencyKey = `${cronRunId}-${item.symbol}-${decision.action}`;
+                        await createOrderTracking(db, {
+                            idempotencyKey,
+                            symbol: item.symbol,
+                            side: decision.action,
+                            quantity: decision.quantity,
+                            status: 'submitted',
+                            cronRunId,
+                        });
                         const orderFn =
                             decision.action === 'buy' ? executeBuyOrder : executeSellOrder;
-                        const orderResult = await orderFn(item.symbol, decision.quantity);
+                        const orderResult = await orderFn(
+                            item.symbol,
+                            decision.quantity,
+                            idempotencyKey,
+                        );
+                        await updateOrderTracking(db, idempotencyKey, {
+                            tossOrderId: orderResult.orderId,
+                            status: orderResult.status,
+                            filledPrice: orderResult.filledPrice ?? undefined,
+                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
+                        });
                         if (orderResult.status === 'rejected') {
                             decisions.push({
                                 symbol: item.symbol,
@@ -509,6 +550,10 @@ export default async function handler(req: Request): Promise<Response> {
                             break;
                         }
                         if (orderResult.status === 'submitted') {
+                            await sendErrorEmail(
+                                `미체결 주문: ${item.symbol}`,
+                                `${item.symbol} ${decision.action} ${decision.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                            ).catch(() => {});
                             decisions.push({
                                 symbol: item.symbol,
                                 action: 'order_submitted',

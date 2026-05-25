@@ -78,6 +78,34 @@ describe('toss-client', () => {
             });
         });
 
+        it('includes X-Idempotency-Key header when idempotencyKey is provided', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockResolvedValueOnce(mockResponse({ orderId: 'ORD-003', status: 'filled' }));
+
+            await submitOrder(
+                { symbol: '005930', side: 'buy', orderType: 'market', quantity: 10 },
+                'exec-abc-005930-buy',
+            );
+
+            const [, options] = mockFetch.mock.calls[0];
+            expect(options.headers).toEqual({
+                'Content-Type': 'application/json',
+                Authorization: 'Bearer test-secret-key',
+                'X-App-Key': 'test-app-key',
+                'X-Idempotency-Key': 'exec-abc-005930-buy',
+            });
+        });
+
+        it('does not include X-Idempotency-Key header when not provided', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockResolvedValueOnce(mockResponse({ orderId: 'ORD-004', status: 'filled' }));
+
+            await submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 10 });
+
+            const [, options] = mockFetch.mock.calls[0];
+            expect(options.headers).not.toHaveProperty('X-Idempotency-Key');
+        });
+
         it('throws when TOSS_APP_KEY is missing', async () => {
             vi.stubEnv('TOSS_APP_KEY', '');
             // Re-import to pick up env change in the closure

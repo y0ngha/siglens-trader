@@ -83,6 +83,20 @@ export const config = pgTable('config', {
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const orderTracking = pgTable('order_tracking', {
+    id: serial('id').primaryKey(),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    symbol: text('symbol').notNull(),
+    side: text('side').notNull(),
+    quantity: integer('quantity').notNull(),
+    tossOrderId: text('toss_order_id'),
+    status: text('status').notNull(),
+    filledPrice: numeric('filled_price'),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    cronRunId: text('cron_run_id'),
+});
+
 export const notificationConfig = pgTable('notification_config', {
     id: serial('id').primaryKey(),
     channel: text('channel').notNull().unique(),

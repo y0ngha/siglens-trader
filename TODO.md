@@ -5,6 +5,7 @@
 - [ ] 토스증권 Open API 실제 endpoint/응답 형식에 맞춰 `lib/trading/toss-client.ts` 교체
 - [ ] 토스 API 인증 플로우 (OAuth, 토큰 갱신) 구현
 - [ ] `auto` 모드 실전 테스트 (소액)
+- [ ] 미체결 주문 확인 cron (order_tracking status='submitted' 체크 후 Toss API로 상태 조회, 체결/취소 반영)
 
 ## 중기
 

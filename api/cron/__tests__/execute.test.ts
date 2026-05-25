@@ -27,6 +27,8 @@ const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertPendingOrder = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
+const mockCreateOrderTracking = vi.fn();
+const mockUpdateOrderTracking = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -40,6 +42,8 @@ vi.mock('../../../lib/db/queries', () => ({
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
+    createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
+    updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
 }));
 
 const mockRunOverallAnalysis = vi.fn();
@@ -178,6 +182,8 @@ function setupDefaults() {
         status: 'filled',
         filledPrice: 148,
     });
+    mockCreateOrderTracking.mockResolvedValue([]);
+    mockUpdateOrderTracking.mockResolvedValue([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +628,7 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('calls executeBuyOrder for buy decisions', async () => {
+        it('calls executeBuyOrder for buy decisions with idempotency key', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -634,11 +640,15 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(mockExecuteBuyOrder).toHaveBeenCalledWith('AAPL', 5);
+            expect(mockExecuteBuyOrder).toHaveBeenCalledWith(
+                'AAPL',
+                5,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+            );
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
         });
 
-        it('calls executeSellOrder for sell decisions', async () => {
+        it('calls executeSellOrder for sell decisions with idempotency key', async () => {
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -657,7 +667,11 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10);
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith(
+                'AAPL',
+                10,
+                expect.stringMatching(/^exec-.*-AAPL-sell$/),
+            );
             expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
         });
 
@@ -742,7 +756,7 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('records order_submitted when buy order status is submitted', async () => {
+        it('records order_submitted when buy order status is submitted and sends alert email', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -764,6 +778,12 @@ describe('execute cron handler', () => {
             expect(mockOpenPosition).not.toHaveBeenCalled();
             expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
 
+            // Should send alert email for pending fill
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '미체결 주문: AAPL',
+                expect.stringContaining('체결되지 않았습니다'),
+            );
+
             // Should record as order_submitted in decisions
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
@@ -772,7 +792,7 @@ describe('execute cron handler', () => {
             });
         });
 
-        it('records order_submitted when sell order status is submitted', async () => {
+        it('records order_submitted when sell order status is submitted and sends alert email', async () => {
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -801,11 +821,119 @@ describe('execute cron handler', () => {
             expect(mockClosePosition).not.toHaveBeenCalled();
             expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
 
+            // Should send alert email for pending fill
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '미체결 주문: AAPL',
+                expect.stringContaining('체결되지 않았습니다'),
+            );
+
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
                 action: 'order_submitted',
                 score: 20,
             });
+        });
+
+        it('creates order tracking before calling Toss API', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockCreateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    idempotencyKey: expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 5,
+                    status: 'submitted',
+                    cronRunId: expect.stringMatching(/^exec-/),
+                }),
+            );
+        });
+
+        it('updates order tracking after Toss API responds with filled', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: 151.5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    tossOrderId: 'ord-1',
+                    status: 'filled',
+                    filledPrice: 151.5,
+                    resolvedAt: expect.any(Date),
+                }),
+            );
+        });
+
+        it('updates order tracking with submitted status (no resolvedAt)', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'submitted',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    tossOrderId: 'ord-1',
+                    status: 'submitted',
+                    resolvedAt: undefined,
+                }),
+            );
+        });
+
+        it('does not create order tracking in dry_run or semi_auto mode', async () => {
+            // Reconfigure to dry_run
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
         });
     });
 
@@ -1610,7 +1738,20 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10);
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith(
+                'AAPL',
+                10,
+                expect.stringMatching(/^exec-.*-AAPL-sell$/),
+            );
+            expect(mockCreateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 10,
+                    status: 'submitted',
+                }),
+            );
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
@@ -1629,7 +1770,7 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('handles submitted status in auto mode position re-evaluation', async () => {
+        it('handles submitted status in auto mode position re-evaluation and sends alert', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
@@ -1657,6 +1798,14 @@ describe('execute cron handler', () => {
             expect(mockInsertTrade).not.toHaveBeenCalled();
             expect(mockClosePosition).not.toHaveBeenCalled();
             expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+
+            // Should create order tracking and send alert email
+            expect(mockCreateOrderTracking).toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '미체결 주문: AAPL',
+                expect.stringContaining('체결되지 않았습니다'),
+            );
 
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',

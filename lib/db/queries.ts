@@ -9,6 +9,7 @@ import {
     pendingOrders,
     config,
     notificationConfig,
+    orderTracking,
 } from './schema';
 
 // ---------------------------------------------------------------------------
@@ -298,4 +299,61 @@ export async function updateNotificationConfig(
         .update(notificationConfig)
         .set(updates)
         .where(eq(notificationConfig.channel, channel));
+}
+
+// ---------------------------------------------------------------------------
+// Order tracking
+// ---------------------------------------------------------------------------
+
+export async function createOrderTracking(
+    db: Db,
+    params: {
+        idempotencyKey: string;
+        symbol: string;
+        side: string;
+        quantity: number;
+        tossOrderId?: string;
+        status: string;
+        cronRunId?: string;
+    },
+) {
+    return db
+        .insert(orderTracking)
+        .values({
+            idempotencyKey: params.idempotencyKey,
+            symbol: params.symbol,
+            side: params.side,
+            quantity: params.quantity,
+            tossOrderId: params.tossOrderId,
+            status: params.status,
+            cronRunId: params.cronRunId,
+        })
+        .returning();
+}
+
+export async function updateOrderTracking(
+    db: Db,
+    idempotencyKey: string,
+    updates: {
+        status?: string;
+        tossOrderId?: string;
+        filledPrice?: number;
+        resolvedAt?: Date;
+    },
+) {
+    return db
+        .update(orderTracking)
+        .set({
+            ...updates,
+            filledPrice: updates.filledPrice != null ? String(updates.filledPrice) : undefined,
+        })
+        .where(eq(orderTracking.idempotencyKey, idempotencyKey));
+}
+
+export async function getPendingSubmittedOrders(db: Db) {
+    return db
+        .select()
+        .from(orderTracking)
+        .where(eq(orderTracking.status, 'submitted'))
+        .orderBy(orderTracking.submittedAt);
 }

@@ -13,15 +13,17 @@ function validateOrderInputs(symbol: string, quantity: number): void {
 export async function executeBuyOrder(
     symbol: string,
     quantity: number,
+    idempotencyKey?: string,
 ): Promise<TossOrderResponse> {
     validateOrderInputs(symbol, quantity);
-    return submitOrder({ symbol, side: 'buy', orderType: 'market', quantity });
+    return submitOrder({ symbol, side: 'buy', orderType: 'market', quantity }, idempotencyKey);
 }
 
 export async function executeSellOrder(
     symbol: string,
     quantity: number,
+    idempotencyKey?: string,
 ): Promise<TossOrderResponse> {
     validateOrderInputs(symbol, quantity);
-    return submitOrder({ symbol, side: 'sell', orderType: 'market', quantity });
+    return submitOrder({ symbol, side: 'sell', orderType: 'market', quantity }, idempotencyKey);
 }

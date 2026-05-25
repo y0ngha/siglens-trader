@@ -27,6 +27,9 @@ import {
     rejectPendingOrder,
     getNotificationConfig,
     updateNotificationConfig,
+    createOrderTracking,
+    updateOrderTracking,
+    getPendingSubmittedOrders,
 } from '../queries';
 import type { Db } from '../index';
 
@@ -718,6 +721,146 @@ describe('Notification config queries', () => {
             });
 
             expect(db._chain.set).toHaveBeenCalledWith({ enabled: true });
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Order tracking
+// ---------------------------------------------------------------------------
+
+describe('Order tracking queries', () => {
+    describe('createOrderTracking', () => {
+        it('inserts order tracking record with correct params', async () => {
+            const mockReturned = [{ id: 1, idempotencyKey: 'exec-abc-AAPL-buy' }];
+            const db = createMockDb(mockReturned);
+
+            const result = await createOrderTracking(db as unknown as Db, {
+                idempotencyKey: 'exec-abc-AAPL-buy',
+                symbol: 'AAPL',
+                side: 'buy',
+                quantity: 5,
+                status: 'submitted',
+                cronRunId: 'exec-abc',
+            });
+
+            expect(
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+            ).toHaveBeenCalled();
+            expect(db._chain.values).toHaveBeenCalledWith({
+                idempotencyKey: 'exec-abc-AAPL-buy',
+                symbol: 'AAPL',
+                side: 'buy',
+                quantity: 5,
+                tossOrderId: undefined,
+                status: 'submitted',
+                cronRunId: 'exec-abc',
+            });
+            expect(db._chain.returning).toHaveBeenCalled();
+            expect(result).toEqual(mockReturned);
+        });
+
+        it('includes tossOrderId when provided', async () => {
+            const db = createMockDb([{ id: 1 }]);
+
+            await createOrderTracking(db as unknown as Db, {
+                idempotencyKey: 'exec-abc-TSLA-sell',
+                symbol: 'TSLA',
+                side: 'sell',
+                quantity: 10,
+                tossOrderId: 'ORD-123',
+                status: 'filled',
+                cronRunId: 'exec-abc',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    tossOrderId: 'ORD-123',
+                }),
+            );
+        });
+    });
+
+    describe('updateOrderTracking', () => {
+        it('updates order tracking with status and tossOrderId', async () => {
+            const db = createMockDb([]);
+
+            await updateOrderTracking(db as unknown as Db, 'exec-abc-AAPL-buy', {
+                status: 'filled',
+                tossOrderId: 'ORD-456',
+            });
+
+            expect(
+                (db as unknown as { update: ReturnType<typeof vi.fn> }).update,
+            ).toHaveBeenCalled();
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'filled',
+                    tossOrderId: 'ORD-456',
+                }),
+            );
+            expect(db._chain.where).toHaveBeenCalled();
+        });
+
+        it('converts filledPrice to string', async () => {
+            const db = createMockDb([]);
+
+            await updateOrderTracking(db as unknown as Db, 'exec-abc-AAPL-buy', {
+                filledPrice: 150.5,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    filledPrice: '150.5',
+                }),
+            );
+        });
+
+        it('does not convert filledPrice when undefined', async () => {
+            const db = createMockDb([]);
+
+            await updateOrderTracking(db as unknown as Db, 'exec-abc-AAPL-buy', {
+                status: 'rejected',
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    filledPrice: undefined,
+                }),
+            );
+        });
+
+        it('passes resolvedAt when provided', async () => {
+            const db = createMockDb([]);
+            const resolvedAt = new Date('2026-05-25T10:00:00Z');
+
+            await updateOrderTracking(db as unknown as Db, 'exec-abc-AAPL-buy', {
+                status: 'filled',
+                resolvedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    resolvedAt,
+                }),
+            );
+        });
+    });
+
+    describe('getPendingSubmittedOrders', () => {
+        it('returns orders with status=submitted ordered by submittedAt', async () => {
+            const mockRows = [
+                { id: 1, status: 'submitted', symbol: 'AAPL' },
+                { id: 2, status: 'submitted', symbol: 'TSLA' },
+            ];
+            const db = createMockDb(mockRows);
+
+            const result = await getPendingSubmittedOrders(db as unknown as Db);
+
+            expect(db._chain.from).toHaveBeenCalled();
+            expect(db._chain.where).toHaveBeenCalled();
+            expect(db._chain.orderBy).toHaveBeenCalled();
+            expect(result).toEqual(mockRows);
         });
     });
 });
