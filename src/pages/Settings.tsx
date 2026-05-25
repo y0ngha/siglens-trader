@@ -95,6 +95,9 @@ export function SettingsPage() {
 
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+    // Local state for trading mode (explicit save pattern)
+    const [pendingMode, setPendingMode] = useState<string | null>(null);
+
     // Local state for risk inputs (to allow typing without immediate API calls)
     const [riskOverrides, setRiskOverrides] = useState<Record<string, string>>({});
 
@@ -104,6 +107,8 @@ export function SettingsPage() {
 
     const configData = data;
     const tradingMode = getConfigValue(configData.config, 'trading_mode', 'dry_run') as string;
+    const currentMode = pendingMode ?? tradingMode;
+    const modeChanged = pendingMode !== null && pendingMode !== tradingMode;
 
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
@@ -149,16 +154,7 @@ export function SettingsPage() {
         mutate({ type: 'notification', channel, updates });
     }
 
-    function handleRiskBlur(key: string) {
-        const val = riskOverrides[key];
-        if (val === undefined) return;
-        mutate({ type: 'config', key, value: Number(val) });
-        setRiskOverrides((prev) => {
-            const next = { ...prev };
-            delete next[key];
-            return next;
-        });
-    }
+    const hasRiskChanges = Object.keys(riskOverrides).length > 0;
 
     // Find email notification config
     const emailNotification = configData.notification.find((n) => n.channel === 'email');
@@ -189,15 +185,46 @@ export function SettingsPage() {
                     <label className="text-xs text-neutral-400">트레이딩 모드</label>
                     <select
                         className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
-                        value={tradingMode}
-                        onChange={(e) => {
-                            mutate({ type: 'config', key: 'trading_mode', value: e.target.value });
-                        }}
+                        value={currentMode}
+                        onChange={(e) => setPendingMode(e.target.value)}
                     >
                         <option value="dry_run">모의투자 (DRY_RUN)</option>
                         <option value="semi_auto">반자동 (SEMI_AUTO)</option>
                         <option value="auto">자동 (AUTO)</option>
                     </select>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500">
+                        {currentMode === 'dry_run' &&
+                            '실제 주문 없이 가상 거래만 기록합니다. 전략 검증에 적합합니다.'}
+                        {currentMode === 'semi_auto' &&
+                            '매매 신호 발생 시 이메일 알림을 보내고, 대시보드에서 직접 승인해야 주문이 실행됩니다.'}
+                        {currentMode === 'auto' &&
+                            '매매 신호 발생 시 즉시 주문을 실행합니다. 토스증권 API 연동이 필요합니다.'}
+                    </p>
+                    {modeChanged && (
+                        <div className="mt-2 flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    mutate({
+                                        type: 'config',
+                                        key: 'trading_mode',
+                                        value: pendingMode,
+                                    });
+                                    setPendingMode(null);
+                                }}
+                                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                            >
+                                저장
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setPendingMode(null)}
+                                className="rounded-lg border border-[#262626] px-4 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+                            >
+                                취소
+                            </button>
+                        </div>
+                    )}
                 </div>
             </section>
 
@@ -341,16 +368,33 @@ export function SettingsPage() {
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {(
                         [
-                            ['max_position_size', '최대 포지션 크기 ($)'],
-                            ['max_total_exposure', '최대 총 노출 ($)'],
-                            ['stop_loss_percent', '손절 (%)'],
-                            ['take_profit_percent', '익절 (%)'],
-                            ['buy_threshold', '매수 임계값'],
-                            ['sell_threshold', '매도 임계값'],
+                            [
+                                'max_position_size',
+                                '종목당 최대 투자 금액',
+                                '한 종목에 투자할 수 있는 최대 금액',
+                            ],
+                            [
+                                'max_total_exposure',
+                                '전체 투자 한도',
+                                '모든 종목 합산 최대 투자 금액',
+                            ],
+                            ['stop_loss_percent', '손절선', '평균 매입가 대비 하락 시 자동 매도'],
+                            ['take_profit_percent', '익절선', '평균 매입가 대비 상승 시 자동 매도'],
+                            [
+                                'buy_threshold',
+                                '매수 신호 기준',
+                                'AI 분석 점수가 이 값 이상이면 매수',
+                            ],
+                            [
+                                'sell_threshold',
+                                '매도 신호 기준',
+                                'AI 분석 점수가 이 값 이하이면 매도',
+                            ],
                         ] as const
-                    ).map(([key, label]) => (
+                    ).map(([key, label, helper]) => (
                         <div key={key}>
                             <label className="text-xs text-neutral-400">{label}</label>
+                            <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
                                 type="number"
                                 className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
@@ -361,11 +405,37 @@ export function SettingsPage() {
                                         [key]: e.target.value,
                                     }))
                                 }
-                                onBlur={() => handleRiskBlur(key)}
                             />
                         </div>
                     ))}
                 </div>
+                {hasRiskChanges && (
+                    <div className="mt-3 flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                for (const [key, val] of Object.entries(riskOverrides)) {
+                                    mutate(
+                                        { type: 'config', key, value: Number(val) },
+                                        { showMessage: false },
+                                    );
+                                }
+                                setRiskOverrides({});
+                                setSaveMessage('리스크 설정이 저장되었습니다');
+                            }}
+                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                        >
+                            저장
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setRiskOverrides({})}
+                            className="rounded-lg border border-[#262626] px-4 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+                        >
+                            취소
+                        </button>
+                    </div>
+                )}
             </section>
 
             {/* Notifications */}

@@ -134,7 +134,7 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Tesla Inc.')).toBeInTheDocument();
     });
 
-    it('changes trading mode and calls API with config type', async () => {
+    it('does not auto-save trading mode on select change', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -148,11 +148,94 @@ describe('SettingsPage', () => {
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
         await user.selectOptions(select, 'semi_auto');
 
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('shows save/cancel buttons when trading mode is changed', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        // No save/cancel buttons initially
+        expect(screen.queryByText('저장')).not.toBeInTheDocument();
+        expect(screen.queryByText('취소')).not.toBeInTheDocument();
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'semi_auto');
+
+        // Save/cancel buttons appear
+        expect(screen.getByText('저장')).toBeInTheDocument();
+        expect(screen.getByText('취소')).toBeInTheDocument();
+    });
+
+    it('saves trading mode when save button is clicked', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'semi_auto');
+
+        const saveButton = screen.getByText('저장');
+        await user.click(saveButton);
+
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
             key: 'trading_mode',
             value: 'semi_auto',
         });
+    });
+
+    it('reverts trading mode when cancel button is clicked', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'semi_auto');
+
+        // Buttons visible
+        expect(screen.getByText('저장')).toBeInTheDocument();
+
+        const cancelButton = screen.getByText('취소');
+        await user.click(cancelButton);
+
+        // Buttons should disappear and mode should revert
+        expect(screen.queryByText('저장')).not.toBeInTheDocument();
+        expect(screen.queryByText('취소')).not.toBeInTheDocument();
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('shows mode description for current trading mode', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        expect(
+            screen.getByText('실제 주문 없이 가상 거래만 기록합니다. 전략 검증에 적합합니다.'),
+        ).toBeInTheDocument();
     });
 
     it('adds a new symbol to the watchlist via ticker search', async () => {
@@ -234,6 +317,9 @@ describe('SettingsPage', () => {
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
         await user.selectOptions(select, 'auto');
 
+        const saveButton = screen.getByText('저장');
+        await user.click(saveButton);
+
         await waitFor(() => {
             expect(screen.getByText('오류: Save failed')).toBeInTheDocument();
         });
@@ -252,6 +338,9 @@ describe('SettingsPage', () => {
 
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
         await user.selectOptions(select, 'auto');
+
+        const saveButton = screen.getByText('저장');
+        await user.click(saveButton);
 
         await waitFor(() => {
             expect(screen.getByText('저장되었습니다')).toBeInTheDocument();
@@ -335,7 +424,7 @@ describe('SettingsPage', () => {
         });
     });
 
-    it('changing stop loss value calls API on blur', async () => {
+    it('does not save risk values on blur', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -351,14 +440,10 @@ describe('SettingsPage', () => {
         await user.type(stopLossInput, '7');
         await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'config',
-            key: 'stop_loss_percent',
-            value: 7,
-        });
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
-    it('changing take profit value calls API on blur', async () => {
+    it('shows save button when risk values are changed', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -369,11 +454,44 @@ describe('SettingsPage', () => {
             expect(screen.getByText('리스크 관리')).toBeInTheDocument();
         });
 
+        const stopLossInput = screen.getByDisplayValue('5');
+        await user.clear(stopLossInput);
+        await user.type(stopLossInput, '7');
+
+        // Save button should appear in risk section
+        const riskSection = screen.getByText('리스크 관리').closest('section')!;
+        expect(riskSection.querySelector('button')).toHaveTextContent('저장');
+    });
+
+    it('saves all changed risk values when save button is clicked', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const stopLossInput = screen.getByDisplayValue('5');
+        await user.clear(stopLossInput);
+        await user.type(stopLossInput, '7');
+
         const takeProfitInput = screen.getByDisplayValue('10');
         await user.clear(takeProfitInput);
         await user.type(takeProfitInput, '15');
-        await user.tab();
 
+        // Click save in the risk section
+        const riskSection = screen.getByText('리스크 관리').closest('section')!;
+        const saveButton = riskSection.querySelector('button')!;
+        await user.click(saveButton);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'stop_loss_percent',
+            value: 7,
+        });
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
             key: 'take_profit_percent',
@@ -496,7 +614,7 @@ describe('SettingsPage', () => {
         });
     });
 
-    it('changing buy threshold calls API on blur', async () => {
+    it('risk cancel button reverts changes and hides buttons', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
@@ -510,36 +628,18 @@ describe('SettingsPage', () => {
         const buyThresholdInput = screen.getByDisplayValue('0.7');
         await user.clear(buyThresholdInput);
         await user.type(buyThresholdInput, '0.8');
-        await user.tab();
 
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'config',
-            key: 'buy_threshold',
-            value: 0.8,
-        });
-    });
+        const riskSection = screen.getByText('리스크 관리').closest('section')!;
+        const cancelButton = riskSection.querySelectorAll('button')[1];
+        await user.click(cancelButton);
 
-    it('changing sell threshold calls API on blur', async () => {
-        const user = userEvent.setup();
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-        mockedApi.updateConfig.mockResolvedValue(undefined);
+        // Buttons should disappear
+        const buttons = riskSection.querySelectorAll('button');
+        const buttonTexts = Array.from(buttons).map((b) => b.textContent);
+        expect(buttonTexts).not.toContain('저장');
+        expect(buttonTexts).not.toContain('취소');
 
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
-        });
-
-        const sellThresholdInput = screen.getByDisplayValue('-0.7');
-        await user.clear(sellThresholdInput);
-        await user.type(sellThresholdInput, '0.5');
-        await user.tab();
-
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'config',
-            key: 'sell_threshold',
-            value: 0.5,
-        });
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
     it('renders ticker search input in watchlist section', async () => {
