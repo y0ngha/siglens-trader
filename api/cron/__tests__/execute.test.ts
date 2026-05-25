@@ -868,6 +868,7 @@ describe('execute cron handler', () => {
                 orderId: 'ord-1',
                 status: 'filled',
                 filledPrice: 151.5,
+                filledQuantity: 5,
             });
 
             await handler(makeRequest(true));
@@ -897,6 +898,7 @@ describe('execute cron handler', () => {
                 orderId: 'ord-1',
                 status: 'filled',
                 filledPrice: 151.5,
+                filledQuantity: 5,
             });
 
             await handler(makeRequest(true));
@@ -911,7 +913,33 @@ describe('execute cron handler', () => {
             });
         });
 
-        it('records fill_price_unknown when filledPrice is undefined', async () => {
+        it('appends quantity warning to reason when filledQuantity is missing', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: 151.5,
+                // filledQuantity intentionally omitted
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    reason: 'Score 80/100 — BUY (수량 미확인 — 요청 수량으로 기록)',
+                }),
+            );
+        });
+
+        it('closes position at estimated price when filledPrice is undefined (buy)', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -929,27 +957,47 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            // Should not insert trade or open position
-            expect(mockInsertTrade).not.toHaveBeenCalled();
-            expect(mockOpenPosition).not.toHaveBeenCalled();
+            // Should insert trade at estimated price (currentPrice=150)
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    price: 150,
+                    reason: expect.stringContaining('체결가 미확인'),
+                    mode: 'auto',
+                }),
+            );
+
+            // Should open position at estimated price
+            expect(mockOpenPosition).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: 150,
+                }),
+            );
 
             // Should update order tracking with fill_price_unknown
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
                 expect.any(String),
-                expect.objectContaining({ status: 'fill_price_unknown' }),
+                expect.objectContaining({
+                    status: 'fill_price_unknown',
+                    resolvedAt: expect.any(Date),
+                }),
             );
 
-            // Should send error email
+            // Should send error email with estimated price info
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결가 누락'),
-                expect.stringContaining('수동 확인이 필요합니다'),
+                expect.stringContaining('$150'),
             );
 
-            // Should record as fill_price_unknown in decisions
+            // Should record action (buy) in decisions, not fill_price_unknown
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
-                action: 'fill_price_unknown',
+                action: 'buy',
                 score: 80,
             });
         });
@@ -2641,7 +2689,7 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('filledPrice missing in position re-evaluation', () => {
-        it('records fill_price_unknown when filledPrice is undefined in auto sell', async () => {
+        it('closes position at estimated price when filledPrice is undefined in auto sell', async () => {
             const fakeOpenPosition = {
                 id: 1,
                 symbol: 'AAPL',
@@ -2684,16 +2732,40 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(mockInsertTrade).not.toHaveBeenCalled();
-            expect(mockClosePosition).not.toHaveBeenCalled();
+            // Should close position at estimated price (currentPrice=95)
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+
+            // Should insert trade at estimated price
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    price: 95,
+                    reason: expect.stringContaining('체결가 미확인'),
+                    mode: 'auto',
+                }),
+            );
+
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
                 expect.any(String),
-                expect.objectContaining({ status: 'fill_price_unknown' }),
+                expect.objectContaining({
+                    status: 'fill_price_unknown',
+                    resolvedAt: expect.any(Date),
+                }),
             );
+
+            // Should send error email with estimated price
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                expect.stringContaining('체결가 누락'),
+                expect.stringContaining('$95'),
+            );
+
+            // Should record evaluation action, not fill_price_unknown
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
-                action: 'fill_price_unknown',
+                action: 'stop_loss',
                 score: 0,
             });
         });

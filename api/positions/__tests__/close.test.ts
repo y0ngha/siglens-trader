@@ -26,7 +26,10 @@ vi.mock('../../../lib/db/queries', () => ({
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const fakeDb = { fake: 'db' };
+const fakeDb = {
+    fake: 'db',
+    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeDb),
+};
 
 function makeRequest(url: string, method = 'POST', body?: unknown): Request {
     const init: RequestInit = { method };

@@ -75,9 +75,10 @@ export function shouldTakeProfit(
 export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
     const { avgPrice, currentPrice, stopLossPercent, takeProfitPercent } = params;
 
-    // Guard: invalid avgPrice or currentPrice — cannot evaluate, hold by default
+    // Guard: invalid avgPrice — trigger stop_loss so the position gets closed and
+    // an alert email is sent. Silently holding a corrupt position is dangerous.
     if (!Number.isFinite(avgPrice) || avgPrice <= 0) {
-        return { action: 'hold', reason: '유효하지 않은 매수가' };
+        return { action: 'stop_loss', reason: '유효하지 않은 매수가 — 수동 확인 필요' };
     }
     if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
         return { action: 'hold', reason: '유효하지 않은 현재가' };

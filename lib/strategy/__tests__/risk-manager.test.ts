@@ -528,39 +528,40 @@ describe('evaluateExistingPosition', () => {
     });
 
     describe('NaN / invalid input protection', () => {
-        it('returns hold with reason when avgPrice is 0', () => {
+        it('returns stop_loss with reason when avgPrice is 0', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 avgPrice: 0,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
+            expect(result.reason).toContain('수동 확인 필요');
         });
 
-        it('returns hold with reason when avgPrice is NaN', () => {
+        it('returns stop_loss with reason when avgPrice is NaN', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 avgPrice: NaN,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
         });
 
-        it('returns hold with reason when avgPrice is negative', () => {
+        it('returns stop_loss with reason when avgPrice is negative', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 avgPrice: -100,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
         });
 
-        it('returns hold with reason when avgPrice is Infinity', () => {
+        it('returns stop_loss with reason when avgPrice is Infinity', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 avgPrice: Infinity,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
         });
 

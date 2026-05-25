@@ -238,16 +238,26 @@ export async function getTodayTradeCount(db: Db) {
         .select({ count: sql<number>`count(*)` })
         .from(trades)
         .where(
-            sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
+            sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                AND ${trades.mode} != 'skipped'`,
         );
     return Number(rows[0]?.count ?? 0);
 }
 
+/**
+ * Returns today's realized PnL, accounting for position direction (long vs short).
+ * TODO: Currently only 'long' positions are used. When short-selling is enabled,
+ *       add a CHECK constraint on positions.side IN ('long', 'short').
+ */
 export async function getTodayRealizedPnl(db: Db): Promise<number> {
     const rows = await db
         .select({
             pnl: sql<number>`COALESCE(SUM(
-                (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
+                CASE
+                    WHEN ${positions.side} = 'short'
+                    THEN (${positions.avgPrice}::numeric - ${positions.closePrice}::numeric) * ${positions.quantity}
+                    ELSE (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
+                END
             ), 0)`,
         })
         .from(positions)

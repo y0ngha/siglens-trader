@@ -350,18 +350,34 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — require filledPrice for real trades
+                        // status === 'filled' — close at estimated price if filledPrice missing
                         if (!orderResult.filledPrice) {
                             await updateOrderTracking(db, exitIdempotencyKey, {
                                 status: 'fill_price_unknown',
+                                resolvedAt: new Date(),
+                            });
+                            await db.transaction(async (tx) => {
+                                const closed = await closePosition(tx, position.id, currentPrice);
+                                if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                await insertTrade(tx, {
+                                    symbol: position.symbol,
+                                    side: 'sell',
+                                    orderType: 'market',
+                                    quantity: position.quantity,
+                                    price: currentPrice,
+                                    executedAt: new Date(),
+                                    reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
+                                    mode: 'auto',
+                                    cronRunId,
+                                });
                             });
                             await sendErrorEmail(
                                 `체결가 누락: ${position.symbol}`,
-                                `${position.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 수동 확인이 필요합니다.`,
+                                `${position.symbol} 매도가 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: position.symbol,
-                                action: 'fill_price_unknown',
+                                action: evaluation.action,
                                 score: 0,
                             });
                             decisionPushed = true;
@@ -843,18 +859,95 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — require filledPrice for real trades
+                        // status === 'filled' — close/open at estimated price if filledPrice missing
                         if (!orderResult.filledPrice) {
                             await updateOrderTracking(db, idempotencyKey, {
                                 status: 'fill_price_unknown',
+                                resolvedAt: new Date(),
                             });
+                            const estimatedQty = orderResult.filledQuantity ?? decision.quantity;
+                            if (decision.action === 'buy' || decision.action === 'average_in') {
+                                const existingEstimated = await getOpenPositionBySymbol(
+                                    db,
+                                    item.symbol,
+                                );
+                                await db.transaction(async (tx) => {
+                                    await insertTrade(tx, {
+                                        symbol: item.symbol,
+                                        side: autoSide,
+                                        orderType: 'market',
+                                        quantity: estimatedQty,
+                                        price: currentPrice,
+                                        executedAt: new Date(),
+                                        reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
+                                        mode: 'auto',
+                                        cronRunId,
+                                    });
+                                    if (existingEstimated) {
+                                        await averageIntoPosition(
+                                            tx,
+                                            existingEstimated.id,
+                                            estimatedQty,
+                                            currentPrice,
+                                        );
+                                    } else {
+                                        await openPosition(tx, {
+                                            symbol: item.symbol,
+                                            side: 'long',
+                                            quantity: estimatedQty,
+                                            avgPrice: currentPrice,
+                                        });
+                                    }
+                                });
+                                currentExposure += currentPrice * estimatedQty;
+                            } else if (decision.action === 'sell') {
+                                const existingSellEstimated = await getOpenPositionBySymbol(
+                                    db,
+                                    item.symbol,
+                                );
+                                if (existingSellEstimated) {
+                                    await db.transaction(async (tx) => {
+                                        const closed = await closePosition(
+                                            tx,
+                                            existingSellEstimated.id,
+                                            currentPrice,
+                                        );
+                                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                        await insertTrade(tx, {
+                                            symbol: item.symbol,
+                                            side: autoSide,
+                                            orderType: 'market',
+                                            quantity: estimatedQty,
+                                            price: currentPrice,
+                                            executedAt: new Date(),
+                                            reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
+                                            mode: 'auto',
+                                            cronRunId,
+                                        });
+                                    });
+                                    currentExposure -= currentPrice * estimatedQty;
+                                    if (currentExposure < 0) currentExposure = 0;
+                                } else {
+                                    await insertTrade(db, {
+                                        symbol: item.symbol,
+                                        side: autoSide,
+                                        orderType: 'market',
+                                        quantity: estimatedQty,
+                                        price: currentPrice,
+                                        executedAt: new Date(),
+                                        reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
+                                        mode: 'auto',
+                                        cronRunId,
+                                    });
+                                }
+                            }
                             await sendErrorEmail(
                                 `체결가 누락: ${item.symbol}`,
-                                `${item.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 수동 확인이 필요합니다.`,
+                                `${item.symbol} ${autoSide} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: item.symbol,
-                                action: 'fill_price_unknown',
+                                action: decision.action,
                                 score: decision.score,
                             });
                             decisionPushed = true;
@@ -862,6 +955,8 @@ export default async function handler(req: Request): Promise<Response> {
                         }
                         const filledPrice = orderResult.filledPrice;
                         const actualQuantity = orderResult.filledQuantity ?? decision.quantity;
+                        const quantityEstimated = !orderResult.filledQuantity;
+                        const tradeReason = `${decision.reason}${quantityEstimated ? ' (수량 미확인 — 요청 수량으로 기록)' : ''}`;
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
                             await db.transaction(async (tx) => {
@@ -872,7 +967,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     quantity: actualQuantity,
                                     price: filledPrice,
                                     executedAt: new Date(),
-                                    reason: decision.reason,
+                                    reason: tradeReason,
                                     mode: 'auto',
                                     cronRunId,
                                 });
@@ -911,7 +1006,7 @@ export default async function handler(req: Request): Promise<Response> {
                                             quantity: actualQuantity,
                                             price: filledPrice,
                                             executedAt: new Date(),
-                                            reason: decision.reason,
+                                            reason: tradeReason,
                                             mode: 'auto',
                                             cronRunId,
                                         });
@@ -941,7 +1036,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     quantity: actualQuantity,
                                     price: filledPrice,
                                     executedAt: new Date(),
-                                    reason: decision.reason,
+                                    reason: tradeReason,
                                     mode: 'auto',
                                     cronRunId,
                                 });
@@ -954,7 +1049,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 quantity: actualQuantity,
                                 price: filledPrice,
                                 executedAt: new Date(),
-                                reason: decision.reason,
+                                reason: tradeReason,
                                 mode: 'auto',
                                 cronRunId,
                             });
@@ -964,7 +1059,7 @@ export default async function handler(req: Request): Promise<Response> {
                             side: autoSide,
                             quantity: actualQuantity,
                             price: filledPrice,
-                            reason: decision.reason,
+                            reason: tradeReason,
                             mode: 'auto',
                         });
                         break;

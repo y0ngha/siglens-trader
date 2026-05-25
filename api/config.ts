@@ -2,6 +2,7 @@ import { getDb } from './_lib/db';
 import { isAuthenticated } from './_lib/auth';
 import {
     getAllConfig,
+    getConfigValue,
     setConfigValue,
     getAllWatchlist,
     addToWatchlist,
@@ -132,6 +133,32 @@ export default async function handler(req: Request): Promise<Response> {
                             {
                                 error: `"${key}" must be a number between 0 and ${MAX_VALUE.toLocaleString()}`,
                             },
+                            { status: 400 },
+                        );
+                    }
+                }
+                // Logical validation: minimum thresholds for risk parameters
+                if (key === 'stop_loss_percent' && (value as number) < 1) {
+                    return Response.json(
+                        { error: 'stop_loss_percent must be at least 1' },
+                        { status: 400 },
+                    );
+                }
+                if (key === 'take_profit_percent' && (value as number) < 1) {
+                    return Response.json(
+                        { error: 'take_profit_percent must be at least 1' },
+                        { status: 400 },
+                    );
+                }
+                // Logical validation: buy_threshold must be greater than sell_threshold
+                if (key === 'buy_threshold' || key === 'sell_threshold') {
+                    const otherKey = key === 'buy_threshold' ? 'sell_threshold' : 'buy_threshold';
+                    const otherValue = await getConfigValue<number>(db, otherKey);
+                    const buyT = key === 'buy_threshold' ? (value as number) : (otherValue ?? 70);
+                    const sellT = key === 'sell_threshold' ? (value as number) : (otherValue ?? 30);
+                    if (buyT <= sellT) {
+                        return Response.json(
+                            { error: 'buy_threshold must be greater than sell_threshold' },
                             { status: 400 },
                         );
                     }
