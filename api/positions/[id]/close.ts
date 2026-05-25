@@ -25,8 +25,13 @@ export default async function handler(req: Request): Promise<Response> {
         return Response.json({ error: 'Position not found' }, { status: 404 });
     }
 
-    // Atomically close — returns false if already closed (race condition guard)
-    const closePrice = Number(position.avgPrice);
+    // Accept optional price from request body; fall back to avgPrice
+    const body = await req.json().catch(() => ({}));
+    const requestedPrice = (body as Record<string, unknown>)?.price;
+    const closePrice =
+        typeof requestedPrice === 'number' && Number.isFinite(requestedPrice) && requestedPrice > 0
+            ? requestedPrice
+            : Number(position.avgPrice);
     const closed = await closePosition(db, id, closePrice);
     if (!closed) {
         return Response.json({ error: 'Position already closed' }, { status: 409 });

@@ -84,7 +84,11 @@ export const api = {
         }),
     rejectOrder: (id: number) =>
         fetchJson(`/approve/${id}`, { method: 'POST', body: JSON.stringify({ action: 'reject' }) }),
-    closePosition: (id: number) => fetchJson(`/positions/${id}/close`, { method: 'POST' }),
+    closePosition: (id: number, price?: number) =>
+        fetchJson(`/positions/${id}/close`, {
+            method: 'POST',
+            body: JSON.stringify(price ? { price } : {}),
+        }),
     triggerAnalysis: (symbol: string) =>
         fetchJson('/analysis/trigger', { method: 'POST', body: JSON.stringify({ symbol }) }),
     dismissAlert: (id: number) =>

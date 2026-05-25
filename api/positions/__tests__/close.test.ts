@@ -28,8 +28,13 @@ vi.mock('../../../lib/db/queries', () => ({
 
 const fakeDb = { fake: 'db' };
 
-function makeRequest(url: string, method = 'POST'): Request {
-    return new Request(url, { method });
+function makeRequest(url: string, method = 'POST', body?: unknown): Request {
+    const init: RequestInit = { method };
+    if (body !== undefined) {
+        init.body = JSON.stringify(body);
+        init.headers = { 'Content-Type': 'application/json' };
+    }
+    return new Request(url, init);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,5 +121,68 @@ describe('POST /api/positions/[id]/close', () => {
             fakeDb,
             expect.objectContaining({ symbol: 'TSLA', quantity: 3 }),
         );
+    });
+
+    it('uses provided price from request body when valid', async () => {
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 5, symbol: 'AAPL', quantity: 10, avgPrice: '150.50', status: 'open' },
+        ]);
+        mockClosePosition.mockResolvedValue(true);
+        mockInsertTrade.mockResolvedValue([{}]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/positions/5/close', 'POST', { price: 155.25 }),
+        );
+        expect(res.status).toBe(200);
+
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 5, 155.25);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ price: 155.25 }),
+        );
+    });
+
+    it('falls back to avgPrice when price in body is invalid', async () => {
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 5, symbol: 'AAPL', quantity: 10, avgPrice: '150.50', status: 'open' },
+        ]);
+        mockClosePosition.mockResolvedValue(true);
+        mockInsertTrade.mockResolvedValue([{}]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/positions/5/close', 'POST', { price: -10 }),
+        );
+        expect(res.status).toBe(200);
+
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 5, 150.5);
+    });
+
+    it('falls back to avgPrice when body has no price field', async () => {
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 5, symbol: 'AAPL', quantity: 10, avgPrice: '150.50', status: 'open' },
+        ]);
+        mockClosePosition.mockResolvedValue(true);
+        mockInsertTrade.mockResolvedValue([{}]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/positions/5/close', 'POST', {}),
+        );
+        expect(res.status).toBe(200);
+
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 5, 150.5);
+    });
+
+    it('falls back to avgPrice when body is not valid JSON', async () => {
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 5, symbol: 'AAPL', quantity: 10, avgPrice: '150.50', status: 'open' },
+        ]);
+        mockClosePosition.mockResolvedValue(true);
+        mockInsertTrade.mockResolvedValue([{}]);
+
+        // Send request with no body at all
+        const res = await handler(makeRequest('https://example.com/api/positions/5/close', 'POST'));
+        expect(res.status).toBe(200);
+
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 5, 150.5);
     });
 });

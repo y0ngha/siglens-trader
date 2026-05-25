@@ -323,12 +323,12 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'trading_mode',
-                value: 'live',
+                value: 'dry_run',
             }),
         );
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ success: true });
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_mode', 'live');
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_mode', 'dry_run');
     });
 
     it('rejects config type without key', async () => {
@@ -390,6 +390,46 @@ describe('POST /api/config', () => {
         );
         expect(res.status).toBe(200);
         expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'max_position_size', 2000);
+    });
+
+    it('accepts valid trading_mode values', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        for (const mode of ['dry_run', 'semi_auto', 'auto']) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'trading_mode',
+                    value: mode,
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+        expect(mockSetConfigValue).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects invalid trading_mode value', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: 'live',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('trading_mode must be one of');
+    });
+
+    it('rejects empty string for trading_mode', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: '',
+            }),
+        );
+        expect(res.status).toBe(400);
     });
 
     it('handles watchlist add', async () => {

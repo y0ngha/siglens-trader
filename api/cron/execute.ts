@@ -205,6 +205,7 @@ export default async function handler(req: Request): Promise<Response> {
                 if (evaluation.action === 'hold') continue;
 
                 // Execute the exit
+                let decisionPushed = false;
                 switch (tradingMode) {
                     case 'dry_run':
                         await insertTrade(db, {
@@ -219,6 +220,8 @@ export default async function handler(req: Request): Promise<Response> {
                             cronRunId,
                         });
                         await closePosition(db, position.id, currentPrice);
+                        currentExposure -= currentPrice * position.quantity;
+                        if (currentExposure < 0) currentExposure = 0;
                         break;
 
                     case 'semi_auto':
@@ -268,6 +271,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 action: 'order_rejected',
                                 score: 0,
                             });
+                            decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${position.symbol}`,
                                 orderResult.message ?? '거부 사유 없음',
@@ -284,30 +288,30 @@ export default async function handler(req: Request): Promise<Response> {
                                 action: 'order_submitted',
                                 score: 0,
                             });
+                            decisionPushed = true;
                             break;
                         }
                         // status === 'filled' — proceed with trade record + position close
+                        const filledSellPrice = orderResult.filledPrice ?? currentPrice;
                         await insertTrade(db, {
                             symbol: position.symbol,
                             side: 'sell',
                             orderType: 'market',
                             quantity: position.quantity,
-                            price: orderResult.filledPrice ?? currentPrice,
+                            price: filledSellPrice,
                             executedAt: new Date(),
                             reason: evaluation.reason,
                             mode: 'auto',
                             cronRunId,
                         });
-                        await closePosition(
-                            db,
-                            position.id,
-                            orderResult.filledPrice ?? currentPrice,
-                        );
+                        await closePosition(db, position.id, filledSellPrice);
+                        currentExposure -= filledSellPrice * position.quantity;
+                        if (currentExposure < 0) currentExposure = 0;
                         await sendTradeExecutedEmail({
                             symbol: position.symbol,
                             side: 'sell',
                             quantity: position.quantity,
-                            price: orderResult.filledPrice ?? currentPrice,
+                            price: filledSellPrice,
                             reason: evaluation.reason,
                             mode: 'auto',
                         });
@@ -315,7 +319,13 @@ export default async function handler(req: Request): Promise<Response> {
                     }
                 }
 
-                decisions.push({ symbol: position.symbol, action: evaluation.action, score: 0 });
+                if (!decisionPushed) {
+                    decisions.push({
+                        symbol: position.symbol,
+                        action: evaluation.action,
+                        score: 0,
+                    });
+                }
             } catch (err) {
                 await sendErrorEmail(position.symbol, String(err)).catch(() => {});
                 decisions.push({ symbol: position.symbol, action: 'error', score: 0 });
@@ -329,6 +339,8 @@ export default async function handler(req: Request): Promise<Response> {
             0,
         );
 
+        const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
+
         for (const item of watchlistItems) {
             try {
                 // Gather latest analysis results
@@ -338,6 +350,13 @@ export default async function handler(req: Request): Promise<Response> {
                     getLatestAnalysisResult(db, item.symbol, 'options'),
                     getLatestAnalysisResult(db, item.symbol, 'fundamental'),
                 ]);
+
+                // Staleness check: skip symbol if technical analysis is too old
+                const techAge = tech ? Date.now() - new Date(tech.analyzedAt).getTime() : Infinity;
+                if (techAge > MAX_ANALYSIS_AGE_MS) {
+                    decisions.push({ symbol: item.symbol, action: 'stale_analysis', score: 0 });
+                    continue;
+                }
 
                 // Optional: run overall analysis (skip if recent cache exists)
                 let overall = null;
@@ -491,6 +510,9 @@ export default async function handler(req: Request): Promise<Response> {
                                 });
                                 currentExposure += currentPrice * decision.quantity;
                             }
+                        } else if (decision.action === 'sell') {
+                            currentExposure -= currentPrice * decision.quantity;
+                            if (currentExposure < 0) currentExposure = 0;
                         }
                         break;
 
@@ -585,6 +607,9 @@ export default async function handler(req: Request): Promise<Response> {
                                 });
                                 currentExposure += filledPrice * decision.quantity;
                             }
+                        } else if (decision.action === 'sell') {
+                            currentExposure -= filledPrice * decision.quantity;
+                            if (currentExposure < 0) currentExposure = 0;
                         }
                         await sendTradeExecutedEmail({
                             symbol: item.symbol,

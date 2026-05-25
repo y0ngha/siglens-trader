@@ -87,6 +87,15 @@ export default async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
+                if (key === 'trading_mode') {
+                    const ALLOWED_MODES = new Set(['dry_run', 'semi_auto', 'auto']);
+                    if (!ALLOWED_MODES.has(value as string)) {
+                        return Response.json(
+                            { error: 'trading_mode must be one of: dry_run, semi_auto, auto' },
+                            { status: 400 },
+                        );
+                    }
+                }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
                     const MAX_VALUE = 1_000_000;
                     if (

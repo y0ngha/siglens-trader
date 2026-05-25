@@ -1846,5 +1846,201 @@ describe('execute cron handler', () => {
                 score: 0,
             });
         });
+
+        it('decrements currentExposure when position is closed in dry_run', async () => {
+            mockGetOpenPositions
+                .mockResolvedValueOnce([fakeOpenPosition]) // initial
+                .mockResolvedValueOnce([]); // after re-evaluation recalc
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전',
+            });
+            // After position loop, watchlist has an item that needs exposure check
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            // Position had exposure 100*10=1000, closed at price 95 -> decrement 95*10=950
+            // After recalc from DB (empty), exposure should be 0
+            expect(mockCalculatePositionSize).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    currentExposure: 0,
+                }),
+            );
+        });
+
+        it('does not produce duplicate decisions when auto mode rejects sell order', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions
+                .mockResolvedValueOnce([fakeOpenPosition])
+                .mockResolvedValueOnce([]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전',
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-x',
+                status: 'rejected',
+                message: 'Insufficient shares',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should only have one decision for AAPL, not duplicated
+            const aaplDecisions = body.decisions.filter(
+                (d: { symbol: string }) => d.symbol === 'AAPL',
+            );
+            expect(aaplDecisions).toHaveLength(1);
+            expect(aaplDecisions[0].action).toBe('order_rejected');
+        });
+
+        it('does not produce duplicate decisions when auto mode has submitted sell order', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions
+                .mockResolvedValueOnce([fakeOpenPosition])
+                .mockResolvedValueOnce([]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전',
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-y',
+                status: 'submitted',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            const aaplDecisions = body.decisions.filter(
+                (d: { symbol: string }) => d.symbol === 'AAPL',
+            );
+            expect(aaplDecisions).toHaveLength(1);
+            expect(aaplDecisions[0].action).toBe('order_submitted');
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Stale analysis
+    // -----------------------------------------------------------------------
+
+    describe('stale analysis', () => {
+        it('skips symbol when technical analysis is older than 4 hours', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            ...fakeTechResult,
+                            analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stale_analysis',
+                score: 0,
+            });
+            // Should not proceed to score or trade
+            expect(mockScoreSignals).not.toHaveBeenCalled();
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
+        it('skips symbol when no technical analysis exists', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(null);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stale_analysis',
+                score: 0,
+            });
+        });
+
+        it('proceeds when technical analysis is fresh (under 4 hours)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            ...fakeTechResult,
+                            analyzedAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+            mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'AAPL',
+                score: 50,
+                reason: 'HOLD',
+                quantity: 0,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'hold',
+                score: 50,
+            });
+            expect(mockScoreSignals).toHaveBeenCalled();
+        });
     });
 });

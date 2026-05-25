@@ -473,20 +473,6 @@ const pendingOrders = [
     },
 ];
 
-const orderTrackingEntries: {
-    id: number;
-    idempotencyKey: string;
-    symbol: string;
-    side: string;
-    quantity: number;
-    tossOrderId: string | null;
-    status: string;
-    filledPrice: string | null;
-    submittedAt: string;
-    resolvedAt: string | null;
-    cronRunId: string | null;
-}[] = [];
-
 const analysisResults = [
     {
         id: 1,
