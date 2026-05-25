@@ -109,12 +109,18 @@ export default async function handler(req: Request): Promise<Response> {
                     filledPrice = result.filledPrice;
                 }
             } catch (err) {
-                // Toss API failed — notify user, fall back to paper trade
+                // Toss API failed — do NOT record a phantom trade
                 await sendErrorEmail(
                     `주문 실행 실패: ${order.symbol}`,
-                    `${order.symbol} ${order.side} ${order.quantity}주 주문 API 호출에 실패했습니다. 페이퍼 트레이드로 기록합니다.\n오류: ${String(err)}`,
+                    `승인된 주문의 실제 실행에 실패했습니다. 재시도하거나 수동으로 처리해주세요.\n오류: ${String(err)}`,
                 ).catch(() => {});
-                // Trade will be recorded below with original priceLimit
+                return Response.json(
+                    {
+                        error: 'Toss API 주문 실행 실패. 거래가 기록되지 않았습니다.',
+                        detail: String(err),
+                    },
+                    { status: 502 },
+                );
             }
         }
 

@@ -96,6 +96,30 @@ export default async function handler(req: Request): Promise<Response> {
                         );
                     }
                 }
+                if (key === 'score_weights') {
+                    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                        return Response.json(
+                            { error: 'score_weights must be an object' },
+                            { status: 400 },
+                        );
+                    }
+                    const w = value as Record<string, unknown>;
+                    const requiredKeys = ['technical', 'news', 'options', 'fundamental', 'overall'];
+                    for (const k of requiredKeys) {
+                        if (
+                            typeof w[k] !== 'number' ||
+                            !Number.isFinite(w[k] as number) ||
+                            (w[k] as number) < 0
+                        ) {
+                            return Response.json(
+                                {
+                                    error: `score_weights.${k} must be a non-negative number`,
+                                },
+                                { status: 400 },
+                            );
+                        }
+                    }
+                }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
                     const MAX_VALUE = 1_000_000;
                     if (

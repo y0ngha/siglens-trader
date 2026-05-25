@@ -528,6 +528,92 @@ describe('POST /api/config', () => {
         );
         expect(res.status).toBe(400);
     });
+
+    it('rejects score_weights that is not an object', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: 'not_an_object',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('score_weights must be an object');
+    });
+
+    it('rejects score_weights that is an array', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: [1, 2, 3],
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('score_weights must be an object');
+    });
+
+    it('rejects score_weights with missing required key', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 30, news: 20, options: 20, fundamental: 20 },
+                // missing 'overall'
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('score_weights.overall must be a non-negative number');
+    });
+
+    it('rejects score_weights with negative value', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: -5, news: 20, options: 20, fundamental: 20, overall: 10 },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('score_weights.technical must be a non-negative number');
+    });
+
+    it('rejects score_weights with non-numeric value', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 'high', news: 20, options: 20, fundamental: 20, overall: 10 },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('score_weights.technical must be a non-negative number');
+    });
+
+    it('accepts valid score_weights object', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 30, news: 20, options: 20, fundamental: 20, overall: 10 },
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'score_weights', {
+            technical: 30,
+            news: 20,
+            options: 20,
+            fundamental: 20,
+            overall: 10,
+        });
+    });
 });
 
 describe('GET /api/pending', () => {
@@ -709,7 +795,7 @@ describe('POST /api/approve/[id]', () => {
         expect(data.error).toContain('Insufficient balance');
     });
 
-    it('falls back to paper trade when Toss API throws', async () => {
+    it('returns 502 and does not record trade when Toss API throws', async () => {
         mockGetPendingOrderById.mockResolvedValue({
             id: 52,
             symbol: 'META',
@@ -724,18 +810,16 @@ describe('POST /api/approve/[id]', () => {
         mockGetOpenPositionBySymbol.mockResolvedValue(null);
         mockGetConfigValue.mockResolvedValue('auto');
         mockExecuteBuyOrder.mockRejectedValue(new Error('TOSS_APP_KEY is required'));
-        mockInsertTrade.mockResolvedValue([{}]);
-        mockOpenPosition.mockResolvedValue([{}]);
 
         const res = await handler(
             makeRequest('https://example.com/api/approve/52', 'POST', { action: 'approve' }),
         );
-        expect(res.status).toBe(200);
-        // Should fall back to priceLimit
-        expect(mockInsertTrade).toHaveBeenCalledWith(
-            fakeDb,
-            expect.objectContaining({ price: 520, mode: 'auto' }),
-        );
+        expect(res.status).toBe(502);
+        const data = await res.json();
+        expect(data.error).toContain('Toss API 주문 실행 실패');
+        // No phantom trade should be recorded
+        expect(mockInsertTrade).not.toHaveBeenCalled();
+        expect(mockOpenPosition).not.toHaveBeenCalled();
     });
 
     it('records trade without opening duplicate position for buy', async () => {
@@ -810,6 +894,173 @@ describe('POST /api/approve/[id]', () => {
             makeRequest('https://example.com/api/approve/999', 'POST', { action: 'approve' }),
         );
         expect(res.status).toBe(404);
+    });
+
+    it('returns 409 when double-approve (approvePendingOrder returns false)', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 80,
+            symbol: 'AAPL',
+            side: 'buy',
+            quantity: 5,
+            priceLimit: '150.00',
+            analysisSummary: 'Double approve test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+        mockApprovePendingOrder.mockResolvedValue(false);
+        mockGetOpenPositionBySymbol.mockResolvedValue(null);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/80', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.error).toBe('Order was already processed');
+    });
+
+    it('returns 410 when order has expired', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 81,
+            symbol: 'TSLA',
+            side: 'buy',
+            quantity: 3,
+            priceLimit: '200.00',
+            analysisSummary: 'Expired order test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() - 60_000), // expired 1 minute ago
+        });
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/81', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(410);
+        const data = await res.json();
+        expect(data.error).toBe('Order has expired');
+    });
+
+    it('returns 409 when order status is not pending', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 82,
+            symbol: 'GOOG',
+            side: 'buy',
+            quantity: 2,
+            priceLimit: '170.00',
+            analysisSummary: 'Already processed test',
+            status: 'approved', // not 'pending'
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/82', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.error).toBe('Order is no longer pending');
+    });
+
+    it('returns 400 when priceLimit is null/0', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 83,
+            symbol: 'AMZN',
+            side: 'buy',
+            quantity: 1,
+            priceLimit: null,
+            analysisSummary: 'No price test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/83', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('Order has no valid price limit');
+    });
+
+    it('returns 400 when priceLimit is 0', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 84,
+            symbol: 'AMZN',
+            side: 'buy',
+            quantity: 1,
+            priceLimit: '0',
+            analysisSummary: 'Zero price test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/84', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('Order has no valid price limit');
+    });
+
+    it('sell-side approve closes position in dry_run mode', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 85,
+            symbol: 'NVDA',
+            side: 'sell',
+            quantity: 10,
+            priceLimit: '900.00',
+            analysisSummary: 'Sell approve test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+        mockApprovePendingOrder.mockResolvedValue(true);
+        mockGetConfigValue.mockResolvedValue('dry_run');
+        mockInsertTrade.mockResolvedValue([{}]);
+        mockGetOpenPositionBySymbol.mockResolvedValue({
+            id: 99,
+            symbol: 'NVDA',
+            status: 'open',
+        });
+        mockClosePosition.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/85', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                symbol: 'NVDA',
+                side: 'sell',
+                mode: 'semi_auto',
+            }),
+        );
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 99, 900);
+        // Should not call Toss API in dry_run mode
+        expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when Toss API throws in auto mode (no phantom trade)', async () => {
+        mockGetPendingOrderById.mockResolvedValue({
+            id: 86,
+            symbol: 'META',
+            side: 'buy',
+            quantity: 2,
+            priceLimit: '520.00',
+            analysisSummary: 'Toss failure test',
+            status: 'pending',
+            expiresAt: new Date(Date.now() + 60_000),
+        });
+        mockApprovePendingOrder.mockResolvedValue(true);
+        mockGetOpenPositionBySymbol.mockResolvedValue(null);
+        mockGetConfigValue.mockResolvedValue('auto');
+        mockExecuteBuyOrder.mockRejectedValue(new Error('TOSS_APP_KEY is required'));
+
+        const res = await handler(
+            makeRequest('https://example.com/api/approve/86', 'POST', { action: 'approve' }),
+        );
+        expect(res.status).toBe(502);
+        const data = await res.json();
+        expect(data.error).toContain('Toss API 주문 실행 실패');
+        // No trade should be recorded
+        expect(mockInsertTrade).not.toHaveBeenCalled();
+        expect(mockOpenPosition).not.toHaveBeenCalled();
     });
 
     it('rejects a pending order', async () => {

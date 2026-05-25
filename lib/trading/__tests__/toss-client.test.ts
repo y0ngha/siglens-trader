@@ -160,6 +160,45 @@ describe('toss-client', () => {
                 submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
             ).rejects.toThrow('fetch failed');
         });
+
+        it('propagates AbortError on timeout', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockRejectedValueOnce(
+                new DOMException('The operation was aborted', 'AbortError'),
+            );
+
+            await expect(
+                submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
+            ).rejects.toThrow('The operation was aborted');
+        });
+
+        it('throws on malformed (non-JSON) response body', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                text: () => Promise.resolve('not json'),
+                json: () => Promise.reject(new SyntaxError('Unexpected token')),
+            } as Response);
+
+            await expect(
+                submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
+            ).rejects.toThrow('Unexpected token');
+        });
+
+        it('handles 200 with empty object response', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockResolvedValueOnce(mockResponse({}));
+
+            const result = await submitOrder({
+                symbol: '005930',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 1,
+            });
+            // Empty object is valid JSON — returned as-is, caller handles missing fields
+            expect(result).toEqual({});
+        });
     });
 
     describe('getBalances', () => {

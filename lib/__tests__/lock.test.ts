@@ -6,11 +6,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSet = vi.fn();
 const mockDel = vi.fn();
+const mockEval = vi.fn();
 
 vi.mock('@upstash/redis', () => ({
     Redis: vi.fn().mockImplementation(() => ({
         set: mockSet,
         del: mockDel,
+        eval: mockEval,
     })),
 }));
 
@@ -105,20 +107,43 @@ describe('lock', () => {
 
             await freshRelease('test:lock');
 
+            expect(mockEval).not.toHaveBeenCalled();
             expect(mockDel).not.toHaveBeenCalled();
         });
 
-        it('deletes the key when Redis is configured', async () => {
+        it('releases lock with Lua script after successful acquire', async () => {
+            vi.resetModules();
+            process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
+            process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
+
+            const { acquireLock: freshAcquire, releaseLock: freshRelease } =
+                await import('../lock');
+            mockSet.mockResolvedValue('OK');
+            mockEval.mockResolvedValue(1);
+
+            // Must acquire first so the owner UUID is stored
+            await freshAcquire('cron:execute:lock');
+            await freshRelease('cron:execute:lock');
+
+            expect(mockEval).toHaveBeenCalledWith(
+                expect.stringContaining('redis.call("get", KEYS[1])'),
+                ['cron:execute:lock'],
+                [expect.any(String)],
+            );
+        });
+
+        it('does nothing if lock was never acquired (no owner value)', async () => {
             vi.resetModules();
             process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
             process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
 
             const { releaseLock: freshRelease } = await import('../lock');
-            mockDel.mockResolvedValue(1);
 
             await freshRelease('cron:execute:lock');
 
-            expect(mockDel).toHaveBeenCalledWith('cron:execute:lock');
+            // Should not attempt to delete — no owner UUID exists
+            expect(mockEval).not.toHaveBeenCalled();
+            expect(mockDel).not.toHaveBeenCalled();
         });
     });
 });

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Redis } from '@upstash/redis';
 
 let redis: Redis | null = null;
@@ -13,6 +14,12 @@ function getRedis(): Redis | null {
 
 const DEFAULT_LOCK_TTL_SECONDS = 900; // 15 minutes
 
+/**
+ * In-memory map of lock keys to their owner UUIDs.
+ * Used to ensure only the process that acquired the lock can release it.
+ */
+const lockValues = new Map<string, string>();
+
 export async function acquireLock(
     key: string,
     ttlSeconds = DEFAULT_LOCK_TTL_SECONDS,
@@ -22,12 +29,22 @@ export async function acquireLock(
         console.warn('[lock] Redis not configured — lock disabled (dev mode)');
         return true;
     }
-    const result = await r.set(key, Date.now().toString(), { nx: true, ex: ttlSeconds });
-    return result === 'OK';
+    const value = crypto.randomUUID();
+    const result = await r.set(key, value, { nx: true, ex: ttlSeconds });
+    if (result === 'OK') {
+        lockValues.set(key, value);
+        return true;
+    }
+    return false;
 }
 
 export async function releaseLock(key: string): Promise<void> {
     const r = getRedis();
     if (!r) return;
-    await r.del(key);
+    const expectedValue = lockValues.get(key);
+    if (!expectedValue) return;
+    // Atomic check-and-delete via Lua script to prevent releasing another owner's lock
+    const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+    await r.eval(script, [key], [expectedValue]);
+    lockValues.delete(key);
 }

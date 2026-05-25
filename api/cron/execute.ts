@@ -585,6 +585,10 @@ export default async function handler(req: Request): Promise<Response> {
                                 currentExposure += currentPrice * decision.quantity;
                             }
                         } else if (decision.action === 'sell') {
+                            const existingSellPos = await getOpenPositionBySymbol(db, item.symbol);
+                            if (existingSellPos) {
+                                await closePosition(db, existingSellPos.id, currentPrice);
+                            }
                             currentExposure -= currentPrice * decision.quantity;
                             if (currentExposure < 0) currentExposure = 0;
                         }
@@ -698,6 +702,10 @@ export default async function handler(req: Request): Promise<Response> {
                                 currentExposure += filledPrice * decision.quantity;
                             }
                         } else if (decision.action === 'sell') {
+                            const existingSellPos = await getOpenPositionBySymbol(db, item.symbol);
+                            if (existingSellPos) {
+                                await closePosition(db, existingSellPos.id, filledPrice);
+                            }
                             currentExposure -= filledPrice * decision.quantity;
                             if (currentExposure < 0) currentExposure = 0;
                         }
