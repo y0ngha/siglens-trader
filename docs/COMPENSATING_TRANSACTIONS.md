@@ -1,197 +1,202 @@
-# 보상 트랜잭션 (Compensating Transactions) 설계
+# 보상 트랜잭션 — 실제 동작 방식
 
-## 1. 개요
+## 왜 필요한가
 
-siglens-trader는 외부 브로커(Toss Securities)에 주문을 전송하고, 그 결과를 로컬 DB에 기록한다.
-이 두 시스템 간에는 분산 트랜잭션이 불가능하다:
-
-- Toss API 호출은 HTTP 요청이므로 로컬 DB 트랜잭션에 포함할 수 없다.
-- 브로커에서 체결이 확인되었지만 DB 기록이 실패하면, 실제 포지션과 DB 상태가 불일치한다.
-- 네트워크 에러 시 주문이 실제로 접수되었는지 확인할 수 없다.
-
-이 문서는 각 실패 케이스에 대한 보상 트랜잭션 전략과 자동/수동 복구 메커니즘을 정의한다.
+Toss API에 주문을 보내고, 그 결과를 DB에 기록하는 2단계 작업은 한쪽만 성공할 수 있다.
+브로커에서 주식을 샀는데 DB에 기록을 못 하면, 시스템은 그 주식을 모르는 상태가 된다.
+이걸 막기 위해 모든 실패 케이스에 대해 보상 처리를 설계했다.
 
 ---
 
-## 2. 전체 흐름도
+## 실행 순서
+
+모든 auto 모드 주문은 이 순서로 진행된다:
 
 ```
-사용자 승인 (approve)
-    │
-    ▼
-┌─────────────────────┐
-│  orderTracking 생성  │  ← 멱등성 키 기반, status='submitted'
-│  (증거 기록)         │
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  Toss API 호출       │  ← placeOrder(idempotencyKey, symbol, side, qty)
-└────────┬────────────┘
-         │
-    ┌────┼────┬────────┬────────┬────────┐
-    │    │    │        │        │        │
-    ▼    ▼    ▼        ▼        ▼        ▼
-  filled submitted rejected  error  network  approve
-    │    │    │        │     timeout   실패
-    │    │    │        │        │        │
-    ▼    ▼    ▼        ▼        ▼        ▼
- Case1  Case5 Case4  Case3   Case3   Case7
- Case2
- Case6
+1. orderTracking 테이블에 기록  (증거 먼저)
+2. Toss API 호출               (실제 주문)
+3. orderTracking 상태 갱신      (결과 반영)
+4. db.transaction {             (원자적 DB 기록)
+     insertTrade
+     openPosition / closePosition / reducePositionQuantity
+   }
 ```
 
----
-
-## 3. 케이스별 상세
-
-### Case 1: Toss filled + DB 트랜잭션 성공 (정상 케이스)
-
-**흐름:**
-1. Toss API → `filled` 응답 (filledPrice 포함)
-2. `db.transaction()` 내에서 `insertTrade` + `openPosition`/`closePosition` 실행
-3. `orderTracking` → `status='filled'`, `filledPrice` 기록
-
-**보상 필요:** 없음. 정상 완료.
+step 1이 먼저인 이유: step 2에서 뭔가 잘못되어도 "주문을 시도했다"는 증거가 남는다.
 
 ---
 
-### Case 2: Toss filled + DB 트랜잭션 실패
+## 케이스별 실제 동작
 
-**시나리오:** 브로커에서 체결 확인되었지만, `insertTrade` 또는 포지션 업데이트 중 DB 에러 발생.
+### Case 1: DB 트랜잭션 내부 실패
 
-**증거:**
-- `orderTracking` 레코드가 `status='filled'`로 남아있으나, `trades` 테이블에 대응 레코드 없음.
+```
+trade 기록 성공 → position 기록 실패
+```
 
-**자동 복구:**
-- `reconcile` cron (10분 간격)이 `autoRecoverFilledOrders()` 호출
-- filled 주문 중 matching trade가 없는 건을 찾아:
-  1. `insertTrade` — 누락된 거래 기록 생성
-  2. `openPosition` / `averageIntoPosition` (buy) 또는 `closePosition` / `reducePositionQuantity` (sell)
-  3. `orderTracking` → `status='recovered'`
-- 결과를 이메일로 통보
+**실제 동작**: `db.transaction()` 안에서 하나라도 실패하면 전체 rollback. trade도 position도 안 남음. 깨끗한 상태.
 
-**수동 개입이 필요한 경우:**
-- `filledPrice`가 0이거나 null인 경우 (Case 6 참조)
-- 자동 복구 자체가 DB 에러로 실패한 경우
+**사용자 영향**: 없음. 다음 cron에서 다시 시도.
 
 ---
 
-### Case 3: Toss 네트워크 에러 / 타임아웃
+### Case 2: Toss에서 체결 + DB 기록 실패
 
-**시나리오:** HTTP 요청이 타임아웃되거나 네트워크 에러로 응답을 받지 못함.
+```
+브로커: 주식 샀음 ✓
+DB: 기록 안 됨 ✗
+```
 
-**처리:**
-- `orderTracking` → `status='error'`
-- DB에 trade/position 변경 없음 (안전)
-- 이메일 알림 발송
+**실제 동작**:
+1. catch 블록에서 이메일 알림 발송 ("거래 기록 실패, 수동 확인 필요")
+2. `orderTracking`에는 `status: 'filled'`로 남아있음 (step 3에서 이미 갱신됨)
+3. **10분 뒤 reconcile cron이 자동 복구**:
+   - `orderTracking`에서 `filled`인데 매칭 trade가 없는 건 발견
+   - 자동으로 `insertTrade` + `openPosition`/`closePosition` 생성
+   - `orderTracking` → `status: 'recovered'`
+   - 복구 결과 이메일 발송
 
-**보상 필요:** 없음 (DB 측은 깨끗함).
+**사용자 영향**: 최대 10분간 포지션이 DB에 안 보임. reconcile cron이 자동 복구.
 
-**주의:** 브로커 측에서 실제로 주문이 접수되었을 수 있다.
-- TODO: Toss API 오픈 후 `getOrderStatus()`로 확인 → 체결되었으면 Case 2 복구 로직 적용
-
----
-
-### Case 4: Toss rejected
-
-**시나리오:** 브로커가 주문을 거부 (잔고 부족, 거래 제한 등).
-
-**처리:**
-- `orderTracking` → `status='rejected'`
-- `pendingOrders` → `status='pending'`으로 되돌림 (재시도 가능)
-- DB에 trade/position 변경 없음
-
-**보상 필요:** 없음.
+**자동 복구 불가한 경우**: `filledPrice`가 없으면 (Case 6) 자동 복구 못 함 → 이메일로 수동 확인 요청.
 
 ---
 
-### Case 5: Toss submitted (미체결)
+### Case 3: Toss API 네트워크 에러 / 타임아웃
 
-**시나리오:** 주문이 접수되었지만 아직 체결되지 않음 (지정가 주문 등).
+```
+브로커: 주문 도착했는지 모름
+DB: 변경 없음 ✓
+```
 
-**처리:**
-- `orderTracking` → `status='submitted'`
-- pending sell guard 활성화 (같은 종목 중복 매도 방지)
-- 30분 타임아웃: `reconcile` cron이 `SUBMITTED_TIMEOUT_MS` 초과 주문을 `status='timeout'`으로 변경
-- 매도 타임아웃 시 긴급 이메일 (브로커에 포지션이 남아있을 수 있음)
+**실제 동작**:
+1. `orderTracking` → `status: 'error'`
+2. trade/position 변경 안 함 (시도 안 함)
+3. 이메일 알림
 
-**보상 필요:**
-- 타임아웃된 매도 주문은 수동 확인 필요 (브로커 측 포지션 상태 확인)
-- TODO: Toss API 오픈 후 자동 취소 (`cancelOrder()`) 구현
+**사용자 영향**: 없음. DB는 깨끗. 단, 브로커에 실제로 주문이 접수됐을 수 있음.
 
----
-
-### Case 6: Toss filled + filledPrice 없음
-
-**시나리오:** 브로커가 체결을 확인했지만 체결가를 응답에 포함하지 않음.
-
-**처리:**
-- 주문 시점의 예상 가격(`expectedPrice`)으로 trade/position 기록
-- `orderTracking` → `status='fill_price_unknown'`
-- 이메일 알림: 실제 체결가 확인 필요
-
-**자동 복구 (TODO):**
-- Toss API 오픈 후: `getOrderStatus(orderId)`로 실제 체결가 조회
-- `trade.price` + `position.avgPrice` 자동 수정
-
-**수동 복구:**
-- 대시보드에서 trade의 price를 수동 수정 (현재 미구현 — 직접 DB 수정 필요)
+**TODO**: Toss API 오픈 후 `getOrderStatus()`로 실제 접수 여부 확인 → 체결됐으면 Case 2 복구 로직 적용.
 
 ---
 
-### Case 7: approve 실패 (pendingOrder 상태 전환 실패)
+### Case 4: Toss가 주문 거부 (rejected)
 
-**시나리오:** `approvePendingOrder()` 호출 후 Toss API 호출 전에 에러 발생,
-또는 Toss API 실패 후 `revertPendingOrder()` 실패.
+```
+브로커: 안 샀음
+DB: 변경 없음 ✓
+```
 
-**처리:**
-- `approvePendingOrder()` 실패 → 주문 미전송, `pendingOrders`는 `pending` 유지
-- Toss 실패 후 revert 실패 → `pendingOrders`가 `approved` 상태로 남지만 주문 미체결
-  - `orderTracking`에 에러 기록이 있으므로 수동 확인으로 식별 가능
+**실제 동작**:
+1. `orderTracking` → `status: 'rejected'`
+2. approve 경로: `revertPendingOrder()` → 상태를 `pending`으로 되돌림 (재시도 가능)
+3. 이메일 알림
+4. trade/position 변경 없음
 
-**보상 필요:**
-- `approved` 상태이지만 `orderTracking`에 대응 `filled` 레코드가 없는 경우 → 수동으로 `pending`으로 되돌림
-
----
-
-## 4. 자동 복구 메커니즘
-
-### reconcile cron (`api/cron/reconcile.ts`)
-
-10분 간격으로 실행되며, 다음 순서로 처리:
-
-1. **타임아웃 처리:** `submitted` 상태인 주문 중 30분 초과 건 → `timeout` + 이메일 알림
-2. **자동 복구:** `autoRecoverFilledOrders()` — filled 주문 중 trade 누락 건 자동 생성
-3. **정합성 검사:** `checkConsistency()` — 불일치 건수 이메일 보고
-
-### autoRecoverFilledOrders (`lib/db/recovery.ts`)
-
-- 지난 24시간 내 `filled` 상태 주문 조회
-- 각 주문에 대해 matching trade 존재 여부 확인
-- 누락된 경우:
-  - `filledPrice > 0` → DB 트랜잭션으로 trade + position 생성 → `status='recovered'`
-  - `filledPrice <= 0` → `failed`로 집계, 수동 확인 요청
-
-### checkConsistency (`lib/db/recovery.ts`)
-
-- filled 주문 중 matching trade 없는 건수 보고 (autoRecoverFilledOrders 이후 실행되므로, 복구 실패 건만 남음)
-- TODO: `filledOrdersWithoutPositions`, `openPositionsWithoutTrades` 체크 추가
+**사용자 영향**: 없음. 사용자가 대시보드에서 다시 승인 가능.
 
 ---
 
-## 5. 수동 복구가 필요한 케이스와 절차
+### Case 5: Toss가 접수만 함 (submitted, 미체결)
 
-| 케이스 | 식별 방법 | 절차 |
-|--------|-----------|------|
-| `filledPrice` 없는 체결 | `order_tracking.status = 'fill_price_unknown'` | 브로커 앱에서 실제 체결가 확인 → DB 직접 수정 (`trades.price`, `positions.avg_price`) |
-| 자동 복구 실패 | 이메일 알림 "자동 복구 실패" | 에러 원인 확인 → DB 직접 수정 또는 재시도 |
-| 매도 타임아웃 | `order_tracking.status = 'timeout'` + `side = 'sell'` | 브로커 앱에서 포지션 상태 확인 → 체결되었으면 수동으로 trade + position 닫기 |
-| 네트워크 에러 후 실제 체결 | `order_tracking.status = 'error'` + 브로커에서 체결 확인 | 수동으로 `insertTrade` + position 업데이트 (또는 `status`를 `filled`로 변경 후 다음 reconcile에서 자동 복구) |
-| approve 후 stuck | `pending_orders.status = 'approved'` + 대응 filled 없음 | `pending_orders.status`를 `pending`으로 수동 변경 |
+```
+브로커: 주문 접수됨, 체결 대기 중
+DB: 변경 없음 ✓ (체결 전이므로)
+```
 
-### 수동 복구 시 주의사항
+**실제 동작**:
+1. `orderTracking` → `status: 'submitted'`
+2. trade/position 변경 안 함
+3. 이메일 알림 ("미체결 주문")
+4. **pending sell guard 활성화**: 다음 cron에서 같은 종목 재매도 방지
+5. **30분 후 reconcile cron**: 타임아웃 처리
+   - 매도 주문 타임아웃: [긴급] 이메일 (브로커에 포지션 남아있을 수 있음)
+   - 매수 주문 타임아웃: 일반 이메일
 
-1. **항상 트랜잭션으로 처리:** trade와 position은 반드시 함께 수정해야 한다.
-2. **orderTracking 상태 업데이트:** 수동 복구 후 `status`를 `recovered`로 변경하여 재처리 방지.
-3. **이중 복구 방지:** 수동 복구 전에 `autoRecoverFilledOrders`가 이미 처리했는지 확인.
+**사용자 영향**: 이메일 받고 브로커 앱에서 직접 확인 필요.
+
+**TODO**: Toss API 오픈 후 `getOrderStatus()`로 체결 확인, `cancelOrder()`로 미체결 취소.
+
+---
+
+### Case 6: Toss 체결 + 체결가 없음
+
+```
+브로커: 주식 샀음 ✓
+응답: filledPrice가 null
+```
+
+**실제 동작**:
+1. 주문 시점의 예상가(분석가/현재가)로 trade + position 기록 (기록 안 하는 것보다 나음)
+2. reason에 "체결가 미확인 — 예상가 $X로 기록" 명시
+3. `orderTracking` → `status: 'fill_price_unknown'`
+4. 이메일 알림 ("실제 체결가 확인하여 수정해주세요")
+
+**사용자 영향**: 포지션은 추적되지만 가격이 정확하지 않음. 수동으로 DB 수정 필요.
+
+**TODO**: Toss API 오픈 후 `getOrderStatus(orderId)`로 실제 체결가 조회 → 자동 수정.
+
+---
+
+### Case 7: approve 실패 (거래 기록 중 에러)
+
+```
+approve 상태 변경: 'approved' ✓
+trade 기록: 실패 ✗
+```
+
+**실제 동작**:
+1. catch 블록에서 `revertPendingOrder()` → 상태를 `pending`으로 되돌림
+2. 이메일 알림
+3. 사용자가 대시보드에서 다시 승인 가능
+
+**auto 모드에서 Toss 성공 + DB 실패**: Case 2와 동일하게 처리. `orderTracking`에 증거 남음 → reconcile cron 자동 복구.
+
+---
+
+## 자동 복구 시스템
+
+### reconcile cron (10분마다 실행)
+
+3단계 순서로 처리:
+
+```
+1단계: 타임아웃 처리
+  - submitted 상태 주문 중 30분 초과 → timeout + 이메일
+
+2단계: 자동 복구 (autoRecoverFilledOrders)
+  - filled 상태인데 trade 없는 건 발견
+  - filledPrice 있으면 → trade + position 자동 생성 → recovered
+  - filledPrice 없으면 → 실패 처리 (수동 확인 필요)
+
+3단계: 정합성 검사 (checkConsistency)
+  - 2단계에서 복구 못 한 건 + 기타 불일치 → 이메일 알림
+```
+
+### 전체 흐름도
+
+```
+Toss API 호출
+  ├─ throw (네트워크) → status='error' + 이메일 → DB 변경 없음 ✅
+  ├─ rejected → status='rejected' + revert + 이메일 → DB 변경 없음 ✅
+  ├─ submitted → status='submitted' + 이메일 + 재매도 방지 → DB 변경 없음 ✅
+  │                                                    └─ 30분 후 timeout
+  └─ filled
+       ├─ filledPrice 있음
+       │    ├─ DB 성공 → trade+position 기록 ✅
+       │    └─ DB 실패 → status='filled' 증거 + 이메일 → 10분 후 자동 복구 ✅
+       └─ filledPrice 없음 → 예상가로 기록 + 이메일 ⚠️ (TODO: 자동 수정)
+```
+
+**✅ = 자동 처리**, **⚠️ = 수동 확인 필요 (Toss API 오픈 후 자동화 예정)**
+
+---
+
+## 수동 복구 절차
+
+| 상황 | 어떻게 알 수 있나 | 뭘 해야 하나 |
+|------|-------------------|-------------|
+| 체결가 없는 거래 | 이메일 + `order_tracking.status = 'fill_price_unknown'` | 브로커 앱에서 실제 가격 확인 → DB의 `trades.price`와 `positions.avg_price` 수정 |
+| 자동 복구 실패 | 이메일 "자동 복구 실패" | 에러 원인 확인 → 수동으로 trade + position 생성 |
+| 매도 타임아웃 | 이메일 [긴급] | 브로커 앱에서 포지션 확인 → 체결됐으면 `order_tracking.status`를 `filled`로 변경 → 다음 reconcile에서 자동 복구 |
+| 네트워크 에러 후 실제 체결 | 브로커 앱에서 직접 확인 | `order_tracking.status`를 `filled`로 + `filledPrice` 설정 → 다음 reconcile에서 자동 복구 |
