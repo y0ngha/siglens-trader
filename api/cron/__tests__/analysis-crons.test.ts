@@ -26,6 +26,13 @@ vi.mock('../../../lib/db/queries', () => ({
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
 }));
 
+const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+const mockReleaseLock = vi.fn<() => Promise<void>>();
+vi.mock('../../../lib/lock', () => ({
+    acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -66,6 +73,8 @@ describe('createAnalysisCronHandler', () => {
         mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockVerifyCronSecret.mockReturnValue(true);
+        mockAcquireLock.mockResolvedValue(true);
+        mockReleaseLock.mockResolvedValue(undefined);
 
         process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
         process.env.OPENAI_API_KEY = 'sk-openai-test';
@@ -88,6 +97,42 @@ describe('createAnalysisCronHandler', () => {
         expect(res.status).toBe(401);
         expect(await res.text()).toBe('Unauthorized');
         expect(mockGetAnalysisConfig).not.toHaveBeenCalled();
+    });
+
+    it('returns skipped response when lock cannot be acquired', async () => {
+        mockAcquireLock.mockResolvedValue(false);
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body).toEqual({ skipped: true, reason: 'another_execution_in_progress' });
+        expect(mockGetAnalysisConfig).not.toHaveBeenCalled();
+    });
+
+    it('uses per-type lock key', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockAcquireLock).toHaveBeenCalledWith('cron:technical:lock');
+    });
+
+    it('releases lock after successful execution', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockReleaseLock).toHaveBeenCalledWith('cron:technical:lock');
+    });
+
+    it('releases lock even when handler throws', async () => {
+        mockGetDb.mockImplementation(() => {
+            throw new Error('DB connection failed');
+        });
+
+        await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
+
+        expect(mockReleaseLock).toHaveBeenCalledWith('cron:technical:lock');
     });
 
     it('skips when config is disabled', async () => {

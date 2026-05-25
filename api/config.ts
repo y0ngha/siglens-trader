@@ -50,6 +50,7 @@ export default async function handler(req: Request): Promise<Response> {
 
         const ALLOWED_CONFIG_KEYS = new Set([
             'trading_mode',
+            'trading_enabled',
             'max_position_size',
             'max_total_exposure',
             'stop_loss_percent',

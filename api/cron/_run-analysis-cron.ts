@@ -7,6 +7,7 @@ import {
     saveAnalysisResult,
 } from '../../lib/db/queries';
 import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types';
+import { acquireLock, releaseLock } from '../../lib/lock';
 
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;
 
@@ -16,47 +17,57 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             return new Response('Unauthorized', { status: 401 });
         }
 
-        const db = getDb();
-        const config = await getAnalysisConfig(db, analysisType);
-        if (!config?.enabled) {
-            return Response.json({ skipped: true, reason: 'disabled' });
+        const LOCK_KEY = `cron:${analysisType}:lock`;
+        const locked = await acquireLock(LOCK_KEY);
+        if (!locked) {
+            return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
         }
 
-        const watchlistItems = await getEnabledWatchlist(db);
-        if (watchlistItems.length === 0) {
-            return Response.json({ skipped: true, reason: 'empty_watchlist' });
-        }
-
-        const cronRunId = `${analysisType}-${crypto.randomUUID()}`;
-        const results: Array<{ symbol: string; status: string; error?: string }> = [];
-
-        const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
-
-        // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
-        for (const item of watchlistItems) {
-            const result = await runner({
-                symbol: item.symbol,
-                companyName: item.companyName,
-                modelId: config.modelId as RunAnalysisOptions['modelId'],
-                userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
-                timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
-            });
-
-            if (result.status === 'done' || result.status === 'cached') {
-                await saveAnalysisResult(db, {
-                    symbol: item.symbol,
-                    analysisType,
-                    result: result.result,
-                    modelId: config.modelId,
-                    analyzedAt: new Date(),
-                    cronRunId,
-                });
+        try {
+            const db = getDb();
+            const config = await getAnalysisConfig(db, analysisType);
+            if (!config?.enabled) {
+                return Response.json({ skipped: true, reason: 'disabled' });
             }
 
-            results.push({ symbol: item.symbol, status: result.status, error: result.error });
-        }
+            const watchlistItems = await getEnabledWatchlist(db);
+            if (watchlistItems.length === 0) {
+                return Response.json({ skipped: true, reason: 'empty_watchlist' });
+            }
 
-        return Response.json({ cronRunId, results });
+            const cronRunId = `${analysisType}-${crypto.randomUUID()}`;
+            const results: Array<{ symbol: string; status: string; error?: string }> = [];
+
+            const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
+
+            // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
+            for (const item of watchlistItems) {
+                const result = await runner({
+                    symbol: item.symbol,
+                    companyName: item.companyName,
+                    modelId: config.modelId as RunAnalysisOptions['modelId'],
+                    userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
+                    timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
+                });
+
+                if (result.status === 'done' || result.status === 'cached') {
+                    await saveAnalysisResult(db, {
+                        symbol: item.symbol,
+                        analysisType,
+                        result: result.result,
+                        modelId: config.modelId,
+                        analyzedAt: new Date(),
+                        cronRunId,
+                    });
+                }
+
+                results.push({ symbol: item.symbol, status: result.status, error: result.error });
+            }
+
+            return Response.json({ cronRunId, results });
+        } finally {
+            await releaseLock(LOCK_KEY);
+        }
     };
 }
 

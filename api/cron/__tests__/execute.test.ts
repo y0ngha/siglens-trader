@@ -86,6 +86,13 @@ vi.mock('../_run-analysis-cron', () => ({
     },
 }));
 
+const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+const mockReleaseLock = vi.fn<() => Promise<void>>();
+vi.mock('../../../lib/lock', () => ({
+    acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -136,6 +143,8 @@ function makeRequest(authorized: boolean): Request {
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
     mockVerifyCronSecret.mockReturnValue(true);
+    mockAcquireLock.mockResolvedValue(true);
+    mockReleaseLock.mockResolvedValue(undefined);
     mockGetConfigValue.mockResolvedValue(null); // All config values default to null
     mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
     mockGetOpenPositions.mockResolvedValue([]);
@@ -197,6 +206,41 @@ describe('execute cron handler', () => {
             expect(res.status).toBe(401);
             expect(await res.text()).toBe('Unauthorized');
             expect(mockGetConfigValue).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Distributed lock
+    // -----------------------------------------------------------------------
+
+    describe('distributed lock', () => {
+        it('returns skipped response when lock cannot be acquired', async () => {
+            mockAcquireLock.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({ skipped: true, reason: 'another_execution_in_progress' });
+            expect(mockGetConfigValue).not.toHaveBeenCalled();
+        });
+
+        it('releases lock after successful execution', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            await handler(makeRequest(true));
+
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+        });
+
+        it('releases lock even when handler throws', async () => {
+            mockGetDb.mockImplementation(() => {
+                throw new Error('DB connection failed');
+            });
+
+            await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
+
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
         });
     });
 
