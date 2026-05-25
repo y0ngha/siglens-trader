@@ -143,13 +143,45 @@ describe('toss-client', () => {
             ).rejects.toThrow('Toss API POST /v1/orders failed: 400 Invalid symbol');
         });
 
-        it('throws with status and body when API returns 500', async () => {
+        it('retries on 5xx and succeeds on second attempt', async () => {
             const { submitOrder } = await import('../toss-client');
-            mockFetch.mockResolvedValueOnce(mockResponse('Internal Server Error', 500));
+            const expectedResponse = { orderId: 'ORD-RETRY', status: 'filled' };
+            mockFetch
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
+                .mockResolvedValueOnce(mockResponse(expectedResponse));
+
+            const result = await submitOrder({
+                symbol: '005930',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 1,
+            });
+
+            expect(result).toEqual(expectedResponse);
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+        });
+
+        it('throws after exhausting all retries on persistent 5xx', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 502))
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 503));
 
             await expect(
                 submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
-            ).rejects.toThrow('Toss API POST /v1/orders failed: 500 Internal Server Error');
+            ).rejects.toThrow('Toss API POST /v1/orders failed: 503 Internal Server Error');
+            expect(mockFetch).toHaveBeenCalledTimes(3);
+        });
+
+        it('does not retry on 4xx errors', async () => {
+            const { submitOrder } = await import('../toss-client');
+            mockFetch.mockResolvedValueOnce(mockResponse('Bad Request', 400));
+
+            await expect(
+                submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
+            ).rejects.toThrow('Toss API POST /v1/orders failed: 400 Bad Request');
+            expect(mockFetch).toHaveBeenCalledTimes(1);
         });
 
         it('propagates network failure from fetch', async () => {

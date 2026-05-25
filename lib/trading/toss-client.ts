@@ -2,6 +2,8 @@ import type { TossOrderRequest, TossOrderResponse, TossBalance } from './types';
 
 const TOSS_BASE_URL = 'https://api.tossinvest.com';
 const FETCH_TIMEOUT_MS = 10_000;
+const MAX_RETRIES = 2;
+const BASE_DELAY_MS = 1000;
 
 async function tossRequest<T>(
     method: string,
@@ -24,19 +26,34 @@ async function tossRequest<T>(
         headers['X-Idempotency-Key'] = idempotencyKey;
     }
 
-    const res = await fetch(`${TOSS_BASE_URL}${path}`, {
-        method,
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    const url = `${TOSS_BASE_URL}${path}`;
 
-    if (!res.ok) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        const res = await fetch(url, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined,
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+
+        if (res.ok) {
+            return res.json() as Promise<T>;
+        }
+
+        // Retry on 5xx server errors
+        if (res.status >= 500 && attempt < MAX_RETRIES) {
+            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+        }
+
+        // Non-retryable error or final attempt
         const text = await res.text();
         throw new Error(`Toss API ${method} ${path} failed: ${res.status} ${text}`);
     }
 
-    return res.json() as Promise<T>;
+    // Unreachable, but satisfies TypeScript
+    throw new Error(`Toss API ${method} ${path} failed after ${MAX_RETRIES + 1} attempts`);
 }
 
 export async function submitOrder(

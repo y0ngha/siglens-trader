@@ -599,6 +599,63 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
+    describe('overallSignal triggers take_profit', () => {
+        it('returns take_profit when overall AI signal is bearish and position has gain', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 105, // +5% gain
+                overallSignal: '종합 분석: 매도 추천. 단기 하락 예상.',
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('AI 종합 분석 매도 신호');
+        });
+
+        it('holds when overall AI signal is bearish but position has no gain', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 98, // -2% loss
+                overallSignal: '하락 전망. 매도 권장.',
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('holds when overall AI signal is not bearish', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 105, // +5% gain
+                overallSignal: '매수 적기. 상승 전망.',
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('holds when overallSignal is undefined', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 105,
+                overallSignal: undefined,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('detects bearish keywords: 약세', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 103,
+                overallSignal: '약세 전환. 조정 국면.',
+            });
+            expect(result.action).toBe('take_profit');
+        });
+
+        it('detects bearish keywords: 하락', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 102,
+                overallSignal: '하락 추세 지속 예상.',
+            });
+            expect(result.action).toBe('take_profit');
+        });
+    });
+
     describe('no conditions met returns hold', () => {
         it('returns hold when position is within normal range', () => {
             const result = evaluateExistingPosition({

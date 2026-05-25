@@ -43,6 +43,7 @@ const mockUpdateNotificationConfig = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetPendingOrderById = vi.fn();
 const mockApprovePendingOrder = vi.fn();
+const mockRevertPendingOrder = vi.fn();
 const mockRejectPendingOrder = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockOpenPosition = vi.fn();
@@ -69,6 +70,7 @@ vi.mock('../../lib/db/queries', () => ({
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getPendingOrderById: (...args: unknown[]) => mockGetPendingOrderById(...args),
     approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
+    revertPendingOrder: (...args: unknown[]) => mockRevertPendingOrder(...args),
     rejectPendingOrder: (...args: unknown[]) => mockRejectPendingOrder(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     openPosition: (...args: unknown[]) => mockOpenPosition(...args),
@@ -81,7 +83,10 @@ vi.mock('../../lib/db/queries', () => ({
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const fakeDb = { fake: 'db' };
+const fakeDb = {
+    fake: 'db',
+    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeDb),
+};
 
 function makeRequest(url: string, method = 'GET', body?: unknown): Request {
     const init: RequestInit = { method };
@@ -753,7 +758,7 @@ describe('POST /api/approve/[id]', () => {
             makeRequest('https://example.com/api/approve/50', 'POST', { action: 'approve' }),
         );
         expect(res.status).toBe(200);
-        expect(mockExecuteBuyOrder).toHaveBeenCalledWith('NVDA', 5);
+        expect(mockExecuteBuyOrder).toHaveBeenCalledWith('NVDA', 5, 'approve-50');
         expect(mockInsertTrade).toHaveBeenCalledWith(
             fakeDb,
             expect.objectContaining({
@@ -807,6 +812,7 @@ describe('POST /api/approve/[id]', () => {
             expiresAt: new Date(Date.now() + 60_000),
         });
         mockApprovePendingOrder.mockResolvedValue(true);
+        mockRevertPendingOrder.mockResolvedValue(true);
         mockGetOpenPositionBySymbol.mockResolvedValue(null);
         mockGetConfigValue.mockResolvedValue('auto');
         mockExecuteBuyOrder.mockRejectedValue(new Error('TOSS_APP_KEY is required'));
@@ -820,6 +826,8 @@ describe('POST /api/approve/[id]', () => {
         // No phantom trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
+        // Order should be reverted for retry
+        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 52);
     });
 
     it('records trade without opening duplicate position for buy', async () => {
@@ -1036,7 +1044,7 @@ describe('POST /api/approve/[id]', () => {
         expect(mockExecuteSellOrder).not.toHaveBeenCalled();
     });
 
-    it('returns 502 when Toss API throws in auto mode (no phantom trade)', async () => {
+    it('returns 502 and reverts order to pending when Toss API throws', async () => {
         mockGetPendingOrderById.mockResolvedValue({
             id: 86,
             symbol: 'META',
@@ -1048,6 +1056,7 @@ describe('POST /api/approve/[id]', () => {
             expiresAt: new Date(Date.now() + 60_000),
         });
         mockApprovePendingOrder.mockResolvedValue(true);
+        mockRevertPendingOrder.mockResolvedValue(true);
         mockGetOpenPositionBySymbol.mockResolvedValue(null);
         mockGetConfigValue.mockResolvedValue('auto');
         mockExecuteBuyOrder.mockRejectedValue(new Error('TOSS_APP_KEY is required'));
@@ -1061,6 +1070,8 @@ describe('POST /api/approve/[id]', () => {
         // No trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
+        // Order should be reverted to pending for retry
+        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 86);
     });
 
     it('rejects a pending order', async () => {

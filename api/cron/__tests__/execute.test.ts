@@ -109,7 +109,10 @@ vi.mock('../../../lib/lock', () => ({
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const fakeDb = { fake: 'db' };
+const fakeDb = {
+    fake: 'db',
+    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeDb),
+};
 const fakeWatchlist = [
     { symbol: 'AAPL', companyName: 'Apple Inc.', enabled: true },
     { symbol: 'TSLA', companyName: 'Tesla Inc.', enabled: true },
@@ -1430,13 +1433,18 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('exposure calculation', () => {
-        it('calculates currentExposure from open positions', async () => {
-            mockGetConfigValue.mockResolvedValue(null);
+        it('calculates currentExposure using current market prices', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                // High loss limit so unrealized PnL check does not short-circuit
+                if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
+                return Promise.resolve(null);
+            });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetOpenPositions.mockResolvedValue([
                 { symbol: 'MSFT', quantity: 5, avgPrice: '300', status: 'open' },
                 { symbol: 'GOOG', quantity: 2, avgPrice: '150', status: 'open' },
             ]);
+            // All symbols return currentPrice: 150 from fakeTechResult
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
@@ -1449,10 +1457,11 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // currentExposure = 5*300 + 2*150 = 1800
+            // currentExposure uses current market price (150) for each position:
+            // MSFT: 5*150 + GOOG: 2*150 = 1050
             expect(mockCalculatePositionSize).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    currentExposure: 1800,
+                    currentExposure: 1050,
                 }),
             );
         });
@@ -1467,6 +1476,8 @@ describe('execute cron handler', () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 if (key === 'max_total_exposure') return Promise.resolve(5000);
+                // High loss limit so unrealized PnL check does not short-circuit
+                if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
@@ -1997,15 +2008,15 @@ describe('execute cron handler', () => {
                 fakeOpenPosition,
                 { ...fakeOpenPosition, id: 2, symbol: 'TSLA' },
             ]);
-            // First position throws
-            mockGetLatestAnalysisResult
-                .mockRejectedValueOnce(new Error('DB error'))
-                .mockRejectedValueOnce(new Error('DB error'))
-                // Second position succeeds
-                .mockImplementation((_db: unknown, _sym: string, type: string) => {
+            // Mock by symbol: AAPL always throws, TSLA always succeeds.
+            // This covers the unrealized PnL check, exposure calc, AND re-evaluation calls.
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, sym: string, type: string) => {
+                    if (sym === 'AAPL') return Promise.reject(new Error('DB error'));
                     if (type === 'technical') return Promise.resolve(fakeTechHealthy);
                     return Promise.resolve(null);
-                });
+                },
+            );
             mockEvaluateExistingPosition.mockReturnValue({
                 action: 'hold',
                 reason: '유지 (조건 미충족)',
@@ -2027,7 +2038,8 @@ describe('execute cron handler', () => {
 
         it('decrements currentExposure when position is closed in dry_run', async () => {
             mockGetOpenPositions
-                .mockResolvedValueOnce([fakeOpenPosition]) // initial
+                .mockResolvedValueOnce([fakeOpenPosition]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition]) // main open positions
                 .mockResolvedValueOnce([]); // after re-evaluation recalc
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
@@ -2067,8 +2079,9 @@ describe('execute cron handler', () => {
                 return Promise.resolve(null);
             });
             mockGetOpenPositions
-                .mockResolvedValueOnce([fakeOpenPosition])
-                .mockResolvedValueOnce([]);
+                .mockResolvedValueOnce([fakeOpenPosition]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition]) // main open positions
+                .mockResolvedValueOnce([]); // recalc after re-evaluation
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
@@ -2102,8 +2115,9 @@ describe('execute cron handler', () => {
                 return Promise.resolve(null);
             });
             mockGetOpenPositions
-                .mockResolvedValueOnce([fakeOpenPosition])
-                .mockResolvedValueOnce([]);
+                .mockResolvedValueOnce([fakeOpenPosition]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition]) // main open positions
+                .mockResolvedValueOnce([]); // recalc after re-evaluation
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
@@ -2219,6 +2233,147 @@ describe('execute cron handler', () => {
                 score: 50,
             });
             expect(mockScoreSignals).toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Stop-loss cooldown
+    // -----------------------------------------------------------------------
+
+    describe('stop-loss cooldown', () => {
+        const fakeOpenPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        };
+
+        const fakeTechWithBearish = {
+            result: {
+                trend: 'bearish',
+                riskLevel: 'high',
+                keyLevels: { currentPrice: 95, support: [90], resistance: [110] },
+                priceTargets: { bullish: { target: 120 } },
+            },
+        };
+
+        it('prevents re-buy of symbol that was stop-lossed in same cron run', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            // Position will be closed by stop-loss, then watchlist has same symbol
+            mockGetOpenPositions
+                .mockResolvedValueOnce([fakeOpenPosition]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition]) // main positions
+                .mockResolvedValueOnce([]); // recalc after closures
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]); // AAPL in watchlist
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+            // Watchlist loop would produce a buy for AAPL
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should have stop_loss for position re-evaluation
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stop_loss',
+                score: 0,
+            });
+            // Should have cooldown instead of buy for watchlist
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'cooldown_after_stop_loss',
+                score: 80,
+            });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Price=0 position alert
+    // -----------------------------------------------------------------------
+
+    describe('price=0 position alert', () => {
+        it('sends error email when position price is 0', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([
+                    { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+                ])
+                .mockResolvedValueOnce([]); // recalc
+            mockGetLatestAnalysisResult.mockResolvedValue({ result: {} }); // no keyLevels => price 0
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'skipped_no_price',
+                score: 0,
+            });
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '가격 데이터 없음: AAPL',
+                expect.stringContaining('수동 확인이 필요합니다'),
+            );
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Semi_auto pending exposure tracking
+    // -----------------------------------------------------------------------
+
+    describe('semi_auto pending exposure tracking', () => {
+        it('increments currentExposure after creating a pending buy order', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('semi_auto');
+                if (key === 'max_total_exposure') return Promise.resolve(5000);
+                if (key === 'max_position_size') return Promise.resolve(1000);
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist); // AAPL + TSLA
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // price 150
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockCalculatePositionSize.mockReturnValue(5);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: '',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingOrders.mockResolvedValue([]);
+
+            await handler(makeRequest(true));
+
+            // After first pending order (AAPL), exposure should include 150 * 5 = 750
+            // So second call to calculatePositionSize should have increased currentExposure
+            expect(mockCalculatePositionSize).toHaveBeenCalledTimes(2);
+            const firstCall = mockCalculatePositionSize.mock.calls[0][0];
+            const secondCall = mockCalculatePositionSize.mock.calls[1][0];
+            expect(secondCall.currentExposure).toBeGreaterThan(firstCall.currentExposure);
         });
     });
 });

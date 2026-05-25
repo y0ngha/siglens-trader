@@ -80,6 +80,19 @@ describe('lock', () => {
             expect(result).toBe(false);
         });
 
+        it('returns false when Redis throws an error (fail closed)', async () => {
+            vi.resetModules();
+            process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
+            process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
+
+            const { acquireLock: freshAcquire } = await import('../lock');
+            mockSet.mockRejectedValue(new Error('Connection refused'));
+
+            const result = await freshAcquire('cron:execute:lock');
+
+            expect(result).toBe(false);
+        });
+
         it('respects custom TTL', async () => {
             vi.resetModules();
             process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
@@ -130,6 +143,21 @@ describe('lock', () => {
                 ['cron:execute:lock'],
                 [expect.any(String)],
             );
+        });
+
+        it('does not throw when Redis errors during release', async () => {
+            vi.resetModules();
+            process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
+            process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
+
+            const { acquireLock: freshAcquire, releaseLock: freshRelease } =
+                await import('../lock');
+            mockSet.mockResolvedValue('OK');
+            mockEval.mockRejectedValue(new Error('Connection lost'));
+
+            await freshAcquire('cron:execute:lock');
+            // Should not throw even though eval fails
+            await expect(freshRelease('cron:execute:lock')).resolves.toBeUndefined();
         });
 
         it('does nothing if lock was never acquired (no owner value)', async () => {

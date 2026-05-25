@@ -174,13 +174,48 @@ export default async function handler(req: Request): Promise<Response> {
             await sendErrorEmail(
                 '일일 손실 한도 초과',
                 `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
-            ).catch(() => {});
+            ).catch((err) => console.error('[email] send failed:', err));
             return Response.json({
                 skipped: true,
                 reason: 'daily_loss_limit_reached',
                 todayPnl,
                 limit: maxDailyLoss,
             });
+        }
+
+        // Circuit breaker: unrealized loss limit
+        // Fetch current prices for all open positions to calculate unrealized PnL.
+        // Failures to fetch individual position prices are silently skipped (best-effort).
+        const preCheckPositions = await getOpenPositions(db);
+        if (preCheckPositions.length > 0) {
+            let unrealizedPnl = 0;
+            for (const pos of preCheckPositions) {
+                try {
+                    const techForPos = await getLatestAnalysisResult(db, pos.symbol, 'technical');
+                    const curPrice = safeAnalysisPrice(techForPos?.result);
+                    if (curPrice > 0) {
+                        const avgP = safeNumber(Number(pos.avgPrice), 0);
+                        unrealizedPnl += (curPrice - avgP) * pos.quantity;
+                    }
+                } catch {
+                    // Skip this position's unrealized PnL — analysis data unavailable
+                }
+            }
+            const totalPnl = todayPnl + unrealizedPnl;
+            if (totalPnl < -maxDailyLoss) {
+                await sendErrorEmail(
+                    '일일 손실 한도 초과 (미실현 포함)',
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+                ).catch((err) => console.error('[email] send failed:', err));
+                return Response.json({
+                    skipped: true,
+                    reason: 'daily_loss_limit_reached',
+                    todayPnl,
+                    unrealizedPnl,
+                    totalPnl,
+                    limit: maxDailyLoss,
+                });
+            }
         }
 
         // Load config
@@ -200,28 +235,41 @@ export default async function handler(req: Request): Promise<Response> {
 
         const watchlistItems = await getEnabledWatchlist(db);
 
-        // Calculate current exposure
+        // Calculate current exposure using current market prices when available,
+        // falling back to avgPrice when no analysis data exists.
         const openPositions = await getOpenPositions(db);
 
         if (watchlistItems.length === 0 && openPositions.length === 0) {
             return Response.json({ skipped: true, reason: 'empty_watchlist' });
         }
 
-        let currentExposure = openPositions.reduce(
-            (sum, p) => sum + safeNumber(Number(p.avgPrice), 0) * p.quantity,
-            0,
-        );
+        let currentExposure = 0;
+        for (const p of openPositions) {
+            let priceForExposure = safeNumber(Number(p.avgPrice), 0);
+            try {
+                const techForExposure = await getLatestAnalysisResult(db, p.symbol, 'technical');
+                const marketPrice = safeAnalysisPrice(techForExposure?.result);
+                if (marketPrice > 0) priceForExposure = marketPrice;
+            } catch {
+                // Fall back to avgPrice when analysis data is unavailable
+            }
+            currentExposure += priceForExposure * p.quantity;
+        }
 
         const cronRunId = `exec-${crypto.randomUUID()}`;
         const overallConfig = await getAnalysisConfig(db, 'overall');
         const decisions: Array<{ symbol: string; action: string; score: number }> = [];
 
+        // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
+        const recentStopLossSymbols = new Set<string>();
+
         // --- Position re-evaluation ---
         for (const position of openPositions) {
             try {
-                const [tech, news] = await Promise.all([
+                const [tech, news, overallResult] = await Promise.all([
                     getLatestAnalysisResult(db, position.symbol, 'technical'),
                     getLatestAnalysisResult(db, position.symbol, 'news'),
+                    getLatestAnalysisResult(db, position.symbol, 'overall'),
                 ]);
 
                 const techResult = tech?.result;
@@ -232,8 +280,16 @@ export default async function handler(req: Request): Promise<Response> {
                         action: 'skipped_no_price',
                         score: 0,
                     });
+                    await sendErrorEmail(
+                        `가격 데이터 없음: ${position.symbol}`,
+                        `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
+                    ).catch((err) => console.error('[email] send failed:', err));
                     continue;
                 }
+
+                const overallSentiment = overallResult?.result
+                    ? safeString(safeRecord(overallResult.result)?.integratedConclusionKo)
+                    : undefined;
 
                 const evaluation = evaluateExistingPosition({
                     avgPrice: safeNumber(Number(position.avgPrice), 0),
@@ -246,26 +302,34 @@ export default async function handler(req: Request): Promise<Response> {
                     targetPrice: safeAnalysisTargetPrice(techResult),
                     technicalTrend: safeAnalysisTrend(techResult),
                     newsSentiment: safeAnalysisSentiment(news?.result),
+                    overallSignal: overallSentiment,
                 });
 
                 if (evaluation.action === 'hold') continue;
+
+                // Track stop-loss closures to prevent same-run re-buy
+                if (evaluation.action === 'stop_loss') {
+                    recentStopLossSymbols.add(position.symbol);
+                }
 
                 // Execute the exit
                 let decisionPushed = false;
                 switch (tradingMode) {
                     case 'dry_run':
-                        await insertTrade(db, {
-                            symbol: position.symbol,
-                            side: 'sell',
-                            orderType: 'market',
-                            quantity: position.quantity,
-                            price: currentPrice,
-                            executedAt: new Date(),
-                            reason: evaluation.reason,
-                            mode: 'dry_run',
-                            cronRunId,
+                        await db.transaction(async (tx) => {
+                            await insertTrade(tx, {
+                                symbol: position.symbol,
+                                side: 'sell',
+                                orderType: 'market',
+                                quantity: position.quantity,
+                                price: currentPrice,
+                                executedAt: new Date(),
+                                reason: evaluation.reason,
+                                mode: 'dry_run',
+                                cronRunId,
+                            });
+                            await closePosition(tx, position.id, currentPrice);
                         });
-                        await closePosition(db, position.id, currentPrice);
                         currentExposure -= currentPrice * position.quantity;
                         if (currentExposure < 0) currentExposure = 0;
                         break;
@@ -287,7 +351,7 @@ export default async function handler(req: Request): Promise<Response> {
                             score: 0,
                             reason: evaluation.reason,
                             approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch(() => {});
+                        }).catch((err) => console.error('[email] send failed:', err));
                         break;
 
                     case 'auto': {
@@ -321,14 +385,14 @@ export default async function handler(req: Request): Promise<Response> {
                             await sendErrorEmail(
                                 `주문 거부: ${position.symbol}`,
                                 orderResult.message ?? '거부 사유 없음',
-                            ).catch(() => {});
+                            ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
                         if (orderResult.status === 'submitted') {
                             await sendErrorEmail(
                                 `미체결 주문: ${position.symbol}`,
                                 `${position.symbol} sell ${position.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch(() => {});
+                            ).catch((err) => console.error('[email] send failed:', err));
                             decisions.push({
                                 symbol: position.symbol,
                                 action: 'order_submitted',
@@ -339,18 +403,20 @@ export default async function handler(req: Request): Promise<Response> {
                         }
                         // status === 'filled' — proceed with trade record + position close
                         const filledSellPrice = orderResult.filledPrice ?? currentPrice;
-                        await insertTrade(db, {
-                            symbol: position.symbol,
-                            side: 'sell',
-                            orderType: 'market',
-                            quantity: position.quantity,
-                            price: filledSellPrice,
-                            executedAt: new Date(),
-                            reason: evaluation.reason,
-                            mode: 'auto',
-                            cronRunId,
+                        await db.transaction(async (tx) => {
+                            await insertTrade(tx, {
+                                symbol: position.symbol,
+                                side: 'sell',
+                                orderType: 'market',
+                                quantity: position.quantity,
+                                price: filledSellPrice,
+                                executedAt: new Date(),
+                                reason: evaluation.reason,
+                                mode: 'auto',
+                                cronRunId,
+                            });
+                            await closePosition(tx, position.id, filledSellPrice);
                         });
-                        await closePosition(db, position.id, filledSellPrice);
                         currentExposure -= filledSellPrice * position.quantity;
                         if (currentExposure < 0) currentExposure = 0;
                         await sendTradeExecutedEmail({
@@ -373,17 +439,27 @@ export default async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await sendErrorEmail(position.symbol, String(err)).catch(() => {});
+                await sendErrorEmail(position.symbol, String(err)).catch((err) =>
+                    console.error('[email] send failed:', err),
+                );
                 decisions.push({ symbol: position.symbol, action: 'error', score: 0 });
             }
         }
 
-        // Recalculate exposure after position closures
+        // Recalculate exposure after position closures using current market prices
         const updatedPositions = await getOpenPositions(db);
-        currentExposure = updatedPositions.reduce(
-            (sum, p) => sum + safeNumber(Number(p.avgPrice), 0) * p.quantity,
-            0,
-        );
+        currentExposure = 0;
+        for (const p of updatedPositions) {
+            let priceForRecalc = safeNumber(Number(p.avgPrice), 0);
+            try {
+                const techForRecalc = await getLatestAnalysisResult(db, p.symbol, 'technical');
+                const recalcPrice = safeAnalysisPrice(techForRecalc?.result);
+                if (recalcPrice > 0) priceForRecalc = recalcPrice;
+            } catch {
+                // Fall back to avgPrice when analysis data is unavailable
+            }
+            currentExposure += priceForRecalc * p.quantity;
+        }
 
         for (const item of watchlistItems) {
             try {
@@ -518,6 +594,16 @@ export default async function handler(req: Request): Promise<Response> {
                     calculatedSize,
                 });
 
+                // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in this run
+                if (decision.action === 'buy' && recentStopLossSymbols.has(item.symbol)) {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: 'cooldown_after_stop_loss',
+                        score: decision.score,
+                    });
+                    continue;
+                }
+
                 // Insufficient balance — signal is buy but position size is 0
                 if (
                     decision.action === 'hold' &&
@@ -539,7 +625,7 @@ export default async function handler(req: Request): Promise<Response> {
                     await sendErrorEmail(
                         `잔고 부족: ${item.symbol}`,
                         `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
-                    ).catch(() => {});
+                    ).catch((err) => console.error('[email] send failed:', err));
 
                     decisions.push({
                         symbol: item.symbol,
@@ -558,39 +644,83 @@ export default async function handler(req: Request): Promise<Response> {
                     continue;
                 }
 
+                // Mode transition guard: re-read volatile config before each trade.
+                // Another admin may have disabled trading or changed mode mid-loop.
+                const currentTradingEnabled =
+                    (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+                if (!currentTradingEnabled) {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: 'trading_disabled_mid_loop',
+                        score: decision.score,
+                    });
+                    continue;
+                }
+                const currentTradingMode =
+                    (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+
                 // Execute based on mode
                 let decisionPushed = false;
-                switch (tradingMode) {
+                switch (currentTradingMode) {
                     case 'dry_run':
-                        await insertTrade(db, {
-                            symbol: item.symbol,
-                            side: decision.action,
-                            orderType: 'market',
-                            quantity: decision.quantity,
-                            price: currentPrice,
-                            executedAt: new Date(),
-                            reason: decision.reason,
-                            mode: 'dry_run',
-                            cronRunId,
-                        });
                         if (decision.action === 'buy') {
                             const existingDryRun = await getOpenPositionBySymbol(db, item.symbol);
-                            if (!existingDryRun) {
-                                await openPosition(db, {
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
                                     symbol: item.symbol,
-                                    side: 'long',
+                                    side: decision.action,
+                                    orderType: 'market',
                                     quantity: decision.quantity,
-                                    avgPrice: currentPrice,
+                                    price: currentPrice,
+                                    executedAt: new Date(),
+                                    reason: decision.reason,
+                                    mode: 'dry_run',
+                                    cronRunId,
                                 });
+                                if (!existingDryRun) {
+                                    await openPosition(tx, {
+                                        symbol: item.symbol,
+                                        side: 'long',
+                                        quantity: decision.quantity,
+                                        avgPrice: currentPrice,
+                                    });
+                                }
+                            });
+                            if (!existingDryRun) {
                                 currentExposure += currentPrice * decision.quantity;
                             }
                         } else if (decision.action === 'sell') {
                             const existingSellPos = await getOpenPositionBySymbol(db, item.symbol);
-                            if (existingSellPos) {
-                                await closePosition(db, existingSellPos.id, currentPrice);
-                            }
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
+                                    symbol: item.symbol,
+                                    side: decision.action,
+                                    orderType: 'market',
+                                    quantity: decision.quantity,
+                                    price: currentPrice,
+                                    executedAt: new Date(),
+                                    reason: decision.reason,
+                                    mode: 'dry_run',
+                                    cronRunId,
+                                });
+                                if (existingSellPos) {
+                                    await closePosition(tx, existingSellPos.id, currentPrice);
+                                }
+                            });
                             currentExposure -= currentPrice * decision.quantity;
                             if (currentExposure < 0) currentExposure = 0;
+                        } else {
+                            await insertTrade(db, {
+                                symbol: item.symbol,
+                                side: decision.action,
+                                orderType: 'market',
+                                quantity: decision.quantity,
+                                price: currentPrice,
+                                executedAt: new Date(),
+                                reason: decision.reason,
+                                mode: 'dry_run',
+                                cronRunId,
+                            });
                         }
                         break;
 
@@ -617,6 +747,10 @@ export default async function handler(req: Request): Promise<Response> {
                             signalScore: decision.score,
                             expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                         });
+                        // Track pending order exposure to prevent over-allocation
+                        if (decision.action === 'buy') {
+                            currentExposure += currentPrice * decision.quantity;
+                        }
                         await sendApprovalRequestEmail({
                             symbol: item.symbol,
                             side: decision.action,
@@ -624,7 +758,7 @@ export default async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                             reason: decision.reason,
                             approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch(() => {});
+                        }).catch((err) => console.error('[email] send failed:', err));
                         break;
                     }
 
@@ -661,14 +795,14 @@ export default async function handler(req: Request): Promise<Response> {
                             await sendErrorEmail(
                                 `주문 거부: ${item.symbol}`,
                                 orderResult.message ?? '거부 사유 없음',
-                            ).catch(() => {});
+                            ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
                         if (orderResult.status === 'submitted') {
                             await sendErrorEmail(
                                 `미체결 주문: ${item.symbol}`,
                                 `${item.symbol} ${decision.action} ${decision.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch(() => {});
+                            ).catch((err) => console.error('[email] send failed:', err));
                             decisions.push({
                                 symbol: item.symbol,
                                 action: 'order_submitted',
@@ -679,35 +813,64 @@ export default async function handler(req: Request): Promise<Response> {
                         }
                         // status === 'filled' — proceed with trade record + position
                         const filledPrice = orderResult.filledPrice ?? currentPrice;
-                        await insertTrade(db, {
-                            symbol: item.symbol,
-                            side: decision.action,
-                            orderType: 'market',
-                            quantity: decision.quantity,
-                            price: filledPrice,
-                            executedAt: new Date(),
-                            reason: decision.reason,
-                            mode: 'auto',
-                            cronRunId,
-                        });
                         if (decision.action === 'buy') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
-                            if (!existingAuto) {
-                                await openPosition(db, {
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
                                     symbol: item.symbol,
-                                    side: 'long',
+                                    side: decision.action,
+                                    orderType: 'market',
                                     quantity: decision.quantity,
-                                    avgPrice: filledPrice,
+                                    price: filledPrice,
+                                    executedAt: new Date(),
+                                    reason: decision.reason,
+                                    mode: 'auto',
+                                    cronRunId,
                                 });
+                                if (!existingAuto) {
+                                    await openPosition(tx, {
+                                        symbol: item.symbol,
+                                        side: 'long',
+                                        quantity: decision.quantity,
+                                        avgPrice: filledPrice,
+                                    });
+                                }
+                            });
+                            if (!existingAuto) {
                                 currentExposure += filledPrice * decision.quantity;
                             }
                         } else if (decision.action === 'sell') {
                             const existingSellPos = await getOpenPositionBySymbol(db, item.symbol);
-                            if (existingSellPos) {
-                                await closePosition(db, existingSellPos.id, filledPrice);
-                            }
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
+                                    symbol: item.symbol,
+                                    side: decision.action,
+                                    orderType: 'market',
+                                    quantity: decision.quantity,
+                                    price: filledPrice,
+                                    executedAt: new Date(),
+                                    reason: decision.reason,
+                                    mode: 'auto',
+                                    cronRunId,
+                                });
+                                if (existingSellPos) {
+                                    await closePosition(tx, existingSellPos.id, filledPrice);
+                                }
+                            });
                             currentExposure -= filledPrice * decision.quantity;
                             if (currentExposure < 0) currentExposure = 0;
+                        } else {
+                            await insertTrade(db, {
+                                symbol: item.symbol,
+                                side: decision.action,
+                                orderType: 'market',
+                                quantity: decision.quantity,
+                                price: filledPrice,
+                                executedAt: new Date(),
+                                reason: decision.reason,
+                                mode: 'auto',
+                                cronRunId,
+                            });
                         }
                         await sendTradeExecutedEmail({
                             symbol: item.symbol,
@@ -729,7 +892,9 @@ export default async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await sendErrorEmail(item.symbol, String(err)).catch(() => {});
+                await sendErrorEmail(item.symbol, String(err)).catch((err) =>
+                    console.error('[email] send failed:', err),
+                );
                 decisions.push({ symbol: item.symbol, action: 'error', score: 0 });
             }
         }

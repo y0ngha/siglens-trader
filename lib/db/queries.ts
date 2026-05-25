@@ -1,5 +1,5 @@
 import { eq, desc, and, sql } from 'drizzle-orm';
-import type { Db } from './index';
+import type { Db, DbOrTx } from './index';
 import {
     watchlist,
     analysisModelConfig,
@@ -143,7 +143,7 @@ export async function getOpenPositionBySymbol(db: Db, symbol: string) {
 }
 
 export async function openPosition(
-    db: Db,
+    db: DbOrTx,
     params: { symbol: string; side: string; quantity: number; avgPrice: number },
 ) {
     return db
@@ -159,7 +159,7 @@ export async function openPosition(
         .returning();
 }
 
-export async function closePosition(db: Db, id: number, closePrice: number) {
+export async function closePosition(db: DbOrTx, id: number, closePrice: number) {
     const result = await db
         .update(positions)
         .set({
@@ -177,7 +177,7 @@ export async function closePosition(db: Db, id: number, closePrice: number) {
 // ---------------------------------------------------------------------------
 
 export async function insertTrade(
-    db: Db,
+    db: DbOrTx,
     params: {
         symbol: string;
         side: string;
@@ -290,6 +290,15 @@ export async function approvePendingOrder(db: Db, id: number) {
         .update(pendingOrders)
         .set({ status: 'approved' })
         .where(and(eq(pendingOrders.id, id), eq(pendingOrders.status, 'pending')))
+        .returning({ id: pendingOrders.id });
+    return result.length > 0;
+}
+
+export async function revertPendingOrder(db: Db, id: number) {
+    const result = await db
+        .update(pendingOrders)
+        .set({ status: 'pending' })
+        .where(and(eq(pendingOrders.id, id), eq(pendingOrders.status, 'approved')))
         .returning({ id: pendingOrders.id });
     return result.length > 0;
 }

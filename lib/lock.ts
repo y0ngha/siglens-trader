@@ -29,13 +29,18 @@ export async function acquireLock(
         console.warn('[lock] Redis not configured — lock disabled (dev mode)');
         return true;
     }
-    const value = crypto.randomUUID();
-    const result = await r.set(key, value, { nx: true, ex: ttlSeconds });
-    if (result === 'OK') {
-        lockValues.set(key, value);
-        return true;
+    try {
+        const value = crypto.randomUUID();
+        const result = await r.set(key, value, { nx: true, ex: ttlSeconds });
+        if (result === 'OK') {
+            lockValues.set(key, value);
+            return true;
+        }
+        return false;
+    } catch (err) {
+        console.error('[lock] Redis error during acquireLock:', err);
+        return false; // Fail closed — don't execute without lock
     }
-    return false;
 }
 
 export async function releaseLock(key: string): Promise<void> {
@@ -43,8 +48,12 @@ export async function releaseLock(key: string): Promise<void> {
     if (!r) return;
     const expectedValue = lockValues.get(key);
     if (!expectedValue) return;
-    // Atomic check-and-delete via Lua script to prevent releasing another owner's lock
-    const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
-    await r.eval(script, [key], [expectedValue]);
+    try {
+        // Atomic check-and-delete via Lua script to prevent releasing another owner's lock
+        const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+        await r.eval(script, [key], [expectedValue]);
+    } catch (err) {
+        console.error('[lock] Redis error during releaseLock:', err);
+    }
     lockValues.delete(key);
 }

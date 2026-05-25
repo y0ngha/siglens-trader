@@ -103,70 +103,81 @@ export function PendingPage() {
             )}
 
             <ul className="space-y-3">
-                {orders.map((order) => (
-                    <li
-                        key={order.id}
-                        className="rounded-lg border border-[#262626] bg-[#141414] p-4"
-                    >
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold">{order.symbol}</span>
-                                <Badge
-                                    label={order.side === 'buy' ? '매수' : '매도'}
-                                    variant={order.side === 'buy' ? 'green' : 'red'}
-                                />
-                            </div>
-                            <span className="text-xs text-neutral-500">
-                                {timeRemaining(order.expiresAt)}
-                            </span>
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-neutral-400 sm:grid-cols-3">
-                            <div>
-                                <span className="block">수량</span>
-                                <span className="text-sm text-[#fafafa]">{order.quantity}</span>
-                            </div>
-                            {order.signalScore && (
-                                <div>
-                                    <span className="block">신호 점수</span>
-                                    <span className="text-sm text-[#fafafa]">
-                                        {order.signalScore}
-                                    </span>
+                {orders.map((order) => {
+                    const isExpired = new Date(order.expiresAt) < new Date();
+                    const isMutating = approveMutation.isPending || rejectMutation.isPending;
+
+                    return (
+                        <li
+                            key={order.id}
+                            className="rounded-lg border border-[#262626] bg-[#141414] p-4"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold">{order.symbol}</span>
+                                    <Badge
+                                        label={order.side === 'buy' ? '매수' : '매도'}
+                                        variant={order.side === 'buy' ? 'green' : 'red'}
+                                    />
                                 </div>
-                            )}
-                            {order.priceLimit && (
+                                <span className="text-xs text-neutral-500">
+                                    {timeRemaining(order.expiresAt)}
+                                </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-neutral-400 sm:grid-cols-3">
                                 <div>
-                                    <span className="block">가격 제한</span>
-                                    <span className="text-sm text-[#fafafa]">
-                                        ${order.priceLimit}
-                                    </span>
+                                    <span className="block">수량</span>
+                                    <span className="text-sm text-[#fafafa]">{order.quantity}</span>
                                 </div>
+                                {order.signalScore && (
+                                    <div>
+                                        <span className="block">신호 점수</span>
+                                        <span className="text-sm text-[#fafafa]">
+                                            {order.signalScore}
+                                        </span>
+                                    </div>
+                                )}
+                                {order.priceLimit && (
+                                    <div>
+                                        <span className="block">가격 제한</span>
+                                        <span className="text-sm text-[#fafafa]">
+                                            ${order.priceLimit}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                            {order.analysisSummary && (
+                                <p className="mt-2 text-xs text-neutral-400">
+                                    {order.analysisSummary}
+                                </p>
                             )}
-                        </div>
-                        {order.analysisSummary && (
-                            <p className="mt-2 text-xs text-neutral-400">{order.analysisSummary}</p>
-                        )}
-                        <div className="mt-3 flex gap-2">
-                            <button
-                                type="button"
-                                onClick={() => approveMutation.mutate(order.id)}
-                                disabled={approveMutation.isPending || rejectMutation.isPending}
-                                className="min-h-[44px] flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
-                                aria-label={`${order.symbol} 승인`}
-                            >
-                                {approveMutation.isPending ? '처리 중...' : '승인'}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => rejectMutation.mutate(order.id)}
-                                disabled={approveMutation.isPending || rejectMutation.isPending}
-                                className="min-h-[44px] flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
-                                aria-label={`${order.symbol} 거부`}
-                            >
-                                {rejectMutation.isPending ? '처리 중...' : '거부'}
-                            </button>
-                        </div>
-                    </li>
-                ))}
+                            <div className="mt-3 flex gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => approveMutation.mutate(order.id)}
+                                    disabled={isExpired || isMutating}
+                                    className="min-h-[44px] flex-1 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
+                                    aria-label={`${order.symbol} 승인`}
+                                >
+                                    {isExpired
+                                        ? '만료됨'
+                                        : approveMutation.isPending
+                                          ? '처리 중...'
+                                          : '승인'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => rejectMutation.mutate(order.id)}
+                                    disabled={isExpired || isMutating}
+                                    className="min-h-[44px] flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                                    aria-label={`${order.symbol} 거부`}
+                                >
+                                    {rejectMutation.isPending ? '처리 중...' : '거부'}
+                                </button>
+                            </div>
+                        </li>
+                    );
+                })}
             </ul>
         </div>
     );

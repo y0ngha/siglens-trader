@@ -2,6 +2,7 @@ import { getDb } from '../_lib/db';
 import { isAuthenticated } from '../_lib/auth';
 import {
     approvePendingOrder,
+    revertPendingOrder,
     rejectPendingOrder,
     getPendingOrderById,
     insertTrade,
@@ -97,8 +98,9 @@ export default async function handler(req: Request): Promise<Response> {
 
         if (tradingMode === 'auto') {
             try {
+                const idempotencyKey = `approve-${id}`;
                 const orderFn = order.side === 'buy' ? executeBuyOrder : executeSellOrder;
-                const result = await orderFn(order.symbol, order.quantity);
+                const result = await orderFn(order.symbol, order.quantity, idempotencyKey);
                 if (result.status === 'rejected') {
                     return Response.json(
                         { error: `Order rejected: ${result.message ?? 'unknown'}` },
@@ -109,11 +111,13 @@ export default async function handler(req: Request): Promise<Response> {
                     filledPrice = result.filledPrice;
                 }
             } catch (err) {
-                // Toss API failed — do NOT record a phantom trade
+                // Toss API failed — revert order status back to pending so user can retry
+                await revertPendingOrder(db, id).catch(() => {});
+
                 await sendErrorEmail(
                     `주문 실행 실패: ${order.symbol}`,
                     `승인된 주문의 실제 실행에 실패했습니다. 재시도하거나 수동으로 처리해주세요.\n오류: ${String(err)}`,
-                ).catch(() => {});
+                ).catch((e) => console.error('[email] send failed:', e));
                 return Response.json(
                     {
                         error: 'Toss API 주문 실행 실패. 거래가 기록되지 않았습니다.',
@@ -124,38 +128,61 @@ export default async function handler(req: Request): Promise<Response> {
             }
         }
 
-        // Record trade (compensating: if this fails, order is approved but no
-        // trade recorded — acceptable, visible in dashboard for manual recovery)
+        // Record trade + update position atomically.
+        // If either fails, both are rolled back — no orphan trade records.
         try {
-            await insertTrade(db, {
-                symbol: order.symbol,
-                side: order.side,
-                orderType: 'market',
-                quantity: order.quantity,
-                price: filledPrice,
-                executedAt: new Date(),
-                reason: order.analysisSummary ?? '수동 승인',
-                mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
-            });
-
-            // Update position
             if (order.side === 'buy') {
-                await openPosition(db, {
-                    symbol: order.symbol,
-                    side: 'long',
-                    quantity: order.quantity,
-                    avgPrice: filledPrice,
+                await db.transaction(async (tx) => {
+                    await insertTrade(tx, {
+                        symbol: order.symbol,
+                        side: order.side,
+                        orderType: 'market',
+                        quantity: order.quantity,
+                        price: filledPrice,
+                        executedAt: new Date(),
+                        reason: order.analysisSummary ?? '수동 승인',
+                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                    });
+                    await openPosition(tx, {
+                        symbol: order.symbol,
+                        side: 'long',
+                        quantity: order.quantity,
+                        avgPrice: filledPrice,
+                    });
                 });
             } else if (order.side === 'sell') {
                 const pos = await getOpenPositionBySymbol(db, order.symbol);
-                if (pos) {
-                    await closePosition(db, pos.id, filledPrice);
-                }
+                await db.transaction(async (tx) => {
+                    await insertTrade(tx, {
+                        symbol: order.symbol,
+                        side: order.side,
+                        orderType: 'market',
+                        quantity: order.quantity,
+                        price: filledPrice,
+                        executedAt: new Date(),
+                        reason: order.analysisSummary ?? '수동 승인',
+                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                    });
+                    if (pos) {
+                        await closePosition(tx, pos.id, filledPrice);
+                    }
+                });
+            } else {
+                await insertTrade(db, {
+                    symbol: order.symbol,
+                    side: order.side,
+                    orderType: 'market',
+                    quantity: order.quantity,
+                    price: filledPrice,
+                    executedAt: new Date(),
+                    reason: order.analysisSummary ?? '수동 승인',
+                    mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                });
             }
         } catch (err) {
-            // Compensating: email alert about partial failure
+            // Transaction rolled back — email alert about failure
             await sendErrorEmail(`승인 후 거래 기록 실패: ${order.symbol}`, String(err)).catch(
-                () => {},
+                (emailErr) => console.error('[email] send failed:', emailErr),
             );
             return Response.json(
                 { error: 'Trade recording failed after approval' },

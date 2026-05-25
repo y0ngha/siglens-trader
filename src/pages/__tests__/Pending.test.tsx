@@ -311,7 +311,39 @@ describe('PendingPage', () => {
         renderWithQuery(<PendingPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('만료됨')).toBeInTheDocument();
+            expect(screen.getAllByText('만료됨').length).toBeGreaterThanOrEqual(1);
+        });
+    });
+
+    it('disables approve/reject buttons for expired orders', async () => {
+        mockedApi.getPending.mockResolvedValue([
+            {
+                ...mockOrders[0],
+                expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 승인')).toBeDisabled();
+        });
+        expect(screen.getByLabelText('AAPL 거부')).toBeDisabled();
+    });
+
+    it('shows "만료됨" text on approve button for expired orders', async () => {
+        mockedApi.getPending.mockResolvedValue([
+            {
+                ...mockOrders[0],
+                expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<PendingPage />);
+
+        await waitFor(() => {
+            const approveBtn = screen.getByLabelText('AAPL 승인');
+            expect(approveBtn).toHaveTextContent('만료됨');
         });
     });
 
