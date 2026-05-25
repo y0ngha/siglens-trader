@@ -30,8 +30,13 @@ async function tossRequest<T>(method: string, path: string, body?: unknown): Pro
 }
 
 export async function submitOrder(req: TossOrderRequest): Promise<TossOrderResponse> {
+    const accountNo = process.env.TOSS_ACCOUNT_NO;
+    if (!accountNo) {
+        throw new Error('TOSS_ACCOUNT_NO is required');
+    }
+
     return tossRequest<TossOrderResponse>('POST', '/v1/orders', {
-        accountNo: process.env.TOSS_ACCOUNT_NO,
+        accountNo,
         symbol: req.symbol,
         side: req.side,
         orderType: req.orderType,
@@ -42,5 +47,9 @@ export async function submitOrder(req: TossOrderRequest): Promise<TossOrderRespo
 
 export async function getBalances(): Promise<TossBalance[]> {
     const accountNo = process.env.TOSS_ACCOUNT_NO;
+    if (!accountNo) {
+        throw new Error('TOSS_ACCOUNT_NO is required');
+    }
+
     return tossRequest<TossBalance[]>('GET', `/v1/accounts/${accountNo}/balances`);
 }

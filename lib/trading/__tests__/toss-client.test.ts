@@ -97,6 +97,15 @@ describe('toss-client', () => {
             ).rejects.toThrow('TOSS_APP_KEY and TOSS_SECRET_KEY are required');
         });
 
+        it('throws when TOSS_ACCOUNT_NO is missing', async () => {
+            vi.stubEnv('TOSS_ACCOUNT_NO', '');
+            const { submitOrder } = await import('../toss-client');
+
+            await expect(
+                submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
+            ).rejects.toThrow('TOSS_ACCOUNT_NO is required');
+        });
+
         it('throws with status and body when API returns 400', async () => {
             const { submitOrder } = await import('../toss-client');
             mockFetch.mockResolvedValueOnce(mockResponse('Invalid symbol', 400));
@@ -172,6 +181,13 @@ describe('toss-client', () => {
 
             expect(result).toEqual([]);
         });
+
+        it('throws when TOSS_ACCOUNT_NO is missing', async () => {
+            vi.stubEnv('TOSS_ACCOUNT_NO', '');
+            const { getBalances } = await import('../toss-client');
+
+            await expect(getBalances()).rejects.toThrow('TOSS_ACCOUNT_NO is required');
+        });
     });
 });
 
@@ -185,6 +201,76 @@ describe('order', () => {
 
     afterEach(() => {
         vi.unstubAllEnvs();
+    });
+
+    describe('executeBuyOrder — input validation', () => {
+        it('throws when symbol is empty string', async () => {
+            const { executeBuyOrder } = await import('../order');
+            await expect(executeBuyOrder('', 10)).rejects.toThrow('Invalid symbol');
+        });
+
+        it('throws when quantity is 0', async () => {
+            const { executeBuyOrder } = await import('../order');
+            await expect(executeBuyOrder('005930', 0)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is negative', async () => {
+            const { executeBuyOrder } = await import('../order');
+            await expect(executeBuyOrder('005930', -5)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is NaN', async () => {
+            const { executeBuyOrder } = await import('../order');
+            await expect(executeBuyOrder('005930', NaN)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is a float', async () => {
+            const { executeBuyOrder } = await import('../order');
+            await expect(executeBuyOrder('005930', 2.5)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+    });
+
+    describe('executeSellOrder — input validation', () => {
+        it('throws when symbol is empty string', async () => {
+            const { executeSellOrder } = await import('../order');
+            await expect(executeSellOrder('', 10)).rejects.toThrow('Invalid symbol');
+        });
+
+        it('throws when quantity is 0', async () => {
+            const { executeSellOrder } = await import('../order');
+            await expect(executeSellOrder('005930', 0)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is negative', async () => {
+            const { executeSellOrder } = await import('../order');
+            await expect(executeSellOrder('005930', -5)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is NaN', async () => {
+            const { executeSellOrder } = await import('../order');
+            await expect(executeSellOrder('005930', NaN)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
+
+        it('throws when quantity is a float', async () => {
+            const { executeSellOrder } = await import('../order');
+            await expect(executeSellOrder('005930', 2.5)).rejects.toThrow(
+                'Quantity must be a positive integer',
+            );
+        });
     });
 
     describe('executeBuyOrder', () => {

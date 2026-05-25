@@ -121,6 +121,36 @@ describe('calculatePositionSize', () => {
             // budget = min(1000, 50000) = 1000; shares = floor(1000/0.5) = 2000
             expect(result).toBe(2000);
         });
+
+        it('returns 0 when price is NaN', () => {
+            const result = calculatePositionSize({
+                price: NaN,
+                maxPositionSize: 10_000,
+                maxTotalExposure: 50_000,
+                currentExposure: 0,
+            });
+            expect(result).toBe(0);
+        });
+
+        it('returns 0 when price is Infinity', () => {
+            const result = calculatePositionSize({
+                price: Infinity,
+                maxPositionSize: 10_000,
+                maxTotalExposure: 50_000,
+                currentExposure: 0,
+            });
+            expect(result).toBe(0);
+        });
+
+        it('returns 0 when price is -Infinity', () => {
+            const result = calculatePositionSize({
+                price: -Infinity,
+                maxPositionSize: 10_000,
+                maxTotalExposure: 50_000,
+                currentExposure: 0,
+            });
+            expect(result).toBe(0);
+        });
     });
 });
 
@@ -181,6 +211,32 @@ describe('shouldStopLoss', () => {
             expect(shouldStopLoss(100, 100.01, 0)).toBe(false);
         });
     });
+
+    describe('NaN / invalid input protection', () => {
+        it('returns false when avgPrice is 0 (division by zero)', () => {
+            expect(shouldStopLoss(0, 95, 5)).toBe(false);
+        });
+
+        it('returns false when avgPrice is NaN', () => {
+            expect(shouldStopLoss(NaN, 95, 5)).toBe(false);
+        });
+
+        it('returns false when avgPrice is negative', () => {
+            expect(shouldStopLoss(-100, 95, 5)).toBe(false);
+        });
+
+        it('returns false when avgPrice is Infinity', () => {
+            expect(shouldStopLoss(Infinity, 95, 5)).toBe(false);
+        });
+
+        it('returns false when currentPrice is NaN', () => {
+            expect(shouldStopLoss(100, NaN, 5)).toBe(false);
+        });
+
+        it('returns false when currentPrice is Infinity', () => {
+            expect(shouldStopLoss(100, Infinity, 5)).toBe(false);
+        });
+    });
 });
 
 describe('shouldTakeProfit', () => {
@@ -231,6 +287,32 @@ describe('shouldTakeProfit', () => {
 
         it('does not trigger when price has decreased', () => {
             expect(shouldTakeProfit(100, 99.99, 0)).toBe(false);
+        });
+    });
+
+    describe('NaN / invalid input protection', () => {
+        it('returns false when avgPrice is 0 (division by zero)', () => {
+            expect(shouldTakeProfit(0, 110, 10)).toBe(false);
+        });
+
+        it('returns false when avgPrice is NaN', () => {
+            expect(shouldTakeProfit(NaN, 110, 10)).toBe(false);
+        });
+
+        it('returns false when avgPrice is negative', () => {
+            expect(shouldTakeProfit(-100, 110, 10)).toBe(false);
+        });
+
+        it('returns false when avgPrice is Infinity', () => {
+            expect(shouldTakeProfit(Infinity, 110, 10)).toBe(false);
+        });
+
+        it('returns false when currentPrice is NaN', () => {
+            expect(shouldTakeProfit(100, NaN, 10)).toBe(false);
+        });
+
+        it('returns false when currentPrice is Infinity', () => {
+            expect(shouldTakeProfit(100, Infinity, 10)).toBe(false);
         });
     });
 });
@@ -440,6 +522,80 @@ describe('evaluateExistingPosition', () => {
                 technicalTrend: 'bullish',
             });
             expect(result.action).toBe('hold');
+        });
+    });
+
+    describe('NaN / invalid input protection', () => {
+        it('returns hold with reason when avgPrice is 0', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 0,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 매수가');
+        });
+
+        it('returns hold with reason when avgPrice is NaN', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: NaN,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 매수가');
+        });
+
+        it('returns hold with reason when avgPrice is negative', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: -100,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 매수가');
+        });
+
+        it('returns hold with reason when avgPrice is Infinity', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: Infinity,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 매수가');
+        });
+
+        it('returns hold with reason when currentPrice is 0', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 0,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 현재가');
+        });
+
+        it('returns hold with reason when currentPrice is NaN', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: NaN,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 현재가');
+        });
+
+        it('returns hold with reason when currentPrice is negative', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: -50,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 현재가');
+        });
+
+        it('returns hold with reason when currentPrice is Infinity', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: Infinity,
+            });
+            expect(result.action).toBe('hold');
+            expect(result.reason).toContain('유효하지 않은 현재가');
         });
     });
 

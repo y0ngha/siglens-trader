@@ -32,7 +32,7 @@ interface PositionSizeParams {
 }
 
 export function calculatePositionSize(params: PositionSizeParams): number {
-    if (params.price <= 0) return 0;
+    if (!Number.isFinite(params.price) || params.price <= 0) return 0;
     const remainingExposure = Math.max(0, params.maxTotalExposure - params.currentExposure);
     const budget = Math.min(params.maxPositionSize, remainingExposure);
     return Math.floor(budget / params.price);
@@ -43,6 +43,8 @@ export function shouldStopLoss(
     currentPrice: number,
     stopLossPercent: number,
 ): boolean {
+    if (!Number.isFinite(avgPrice) || avgPrice <= 0) return false;
+    if (!Number.isFinite(currentPrice)) return false;
     const lossPercent = ((avgPrice - currentPrice) / avgPrice) * 100;
     return lossPercent >= stopLossPercent;
 }
@@ -52,6 +54,8 @@ export function shouldTakeProfit(
     currentPrice: number,
     takeProfitPercent: number,
 ): boolean {
+    if (!Number.isFinite(avgPrice) || avgPrice <= 0) return false;
+    if (!Number.isFinite(currentPrice)) return false;
     const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
     return gainPercent >= takeProfitPercent;
 }
@@ -70,6 +74,14 @@ export function shouldTakeProfit(
  */
 export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
     const { avgPrice, currentPrice, stopLossPercent, takeProfitPercent } = params;
+
+    // Guard: invalid avgPrice or currentPrice — cannot evaluate, hold by default
+    if (!Number.isFinite(avgPrice) || avgPrice <= 0) {
+        return { action: 'hold', reason: '유효하지 않은 매수가' };
+    }
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        return { action: 'hold', reason: '유효하지 않은 현재가' };
+    }
 
     // 1. Fixed stop loss check (only when enabled)
     if (params.fixedExitEnabled && shouldStopLoss(avgPrice, currentPrice, stopLossPercent)) {

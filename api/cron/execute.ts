@@ -32,6 +32,76 @@ import {
 import type { ScoreWeights } from '../../lib/strategy/types';
 import { resolveApiKey } from './_run-analysis-cron';
 import { acquireLock, releaseLock } from '../../lib/lock';
+import { isFinitePositive, safeNumber } from '../../lib/validation';
+
+// ---------------------------------------------------------------------------
+// Safe extraction helpers for untyped AI analysis results
+// ---------------------------------------------------------------------------
+
+function safeRecord(value: unknown): Record<string, unknown> | null {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    return null;
+}
+
+function safeAnalysisPrice(result: unknown): number {
+    const r = safeRecord(result);
+    if (!r) return 0;
+    const keyLevels = safeRecord(r.keyLevels);
+    if (!keyLevels) return 0;
+    const price = keyLevels.currentPrice;
+    return isFinitePositive(price) ? price : 0;
+}
+
+function safeString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+}
+
+function safeAnalysisTrend(result: unknown): string | undefined {
+    const r = safeRecord(result);
+    return r ? safeString(r.trend) : undefined;
+}
+
+function safeAnalysisSentiment(result: unknown): string | undefined {
+    const r = safeRecord(result);
+    return r ? safeString(r.overallSentiment) : undefined;
+}
+
+function safeNumberArray(value: unknown): number[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const nums = value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    return nums.length > 0 ? nums : undefined;
+}
+
+function safeAnalysisSupport(result: unknown): number | undefined {
+    const r = safeRecord(result);
+    if (!r) return undefined;
+    const keyLevels = safeRecord(r.keyLevels);
+    if (!keyLevels) return undefined;
+    const levels = safeNumberArray(keyLevels.support);
+    return levels?.[0];
+}
+
+function safeAnalysisResistance(result: unknown): number | undefined {
+    const r = safeRecord(result);
+    if (!r) return undefined;
+    const keyLevels = safeRecord(r.keyLevels);
+    if (!keyLevels) return undefined;
+    const levels = safeNumberArray(keyLevels.resistance);
+    return levels?.[0];
+}
+
+function safeAnalysisTargetPrice(result: unknown): number | undefined {
+    const r = safeRecord(result);
+    if (!r) return undefined;
+    const priceTargets = safeRecord(r.priceTargets);
+    if (!priceTargets) return undefined;
+    const bullish = safeRecord(priceTargets.bullish);
+    if (!bullish) return undefined;
+    const target = bullish.target;
+    return isFinitePositive(target) ? target : undefined;
+}
 
 export default async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
@@ -106,8 +176,8 @@ export default async function handler(req: Request): Promise<Response> {
                     getLatestAnalysisResult(db, position.symbol, 'news'),
                 ]);
 
-                const techResult = tech?.result as any;
-                const currentPrice: number = techResult?.keyLevels?.currentPrice ?? 0;
+                const techResult = tech?.result;
+                const currentPrice = safeAnalysisPrice(techResult);
                 if (currentPrice === 0) {
                     decisions.push({
                         symbol: position.symbol,
@@ -118,16 +188,16 @@ export default async function handler(req: Request): Promise<Response> {
                 }
 
                 const evaluation = evaluateExistingPosition({
-                    avgPrice: Number(position.avgPrice),
+                    avgPrice: safeNumber(Number(position.avgPrice), 0),
                     currentPrice,
                     stopLossPercent,
                     takeProfitPercent,
                     fixedExitEnabled,
-                    supportLevel: techResult?.keyLevels?.support?.[0],
-                    resistanceLevel: techResult?.keyLevels?.resistance?.[0],
-                    targetPrice: techResult?.priceTargets?.bullish?.target,
-                    technicalTrend: techResult?.trend,
-                    newsSentiment: (news?.result as any)?.overallSentiment,
+                    supportLevel: safeAnalysisSupport(techResult),
+                    resistanceLevel: safeAnalysisResistance(techResult),
+                    targetPrice: safeAnalysisTargetPrice(techResult),
+                    technicalTrend: safeAnalysisTrend(techResult),
+                    newsSentiment: safeAnalysisSentiment(news?.result),
                 });
 
                 if (evaluation.action === 'hold') continue;
@@ -288,11 +358,11 @@ export default async function handler(req: Request): Promise<Response> {
                 // Score signals
                 const signalScore = scoreSignals(
                     {
-                        technical: (tech?.result as any) ?? null,
-                        news: (news?.result as any) ?? null,
-                        options: (options?.result as any) ?? null,
-                        fundamental: (fundamental?.result as any) ?? null,
-                        overall: (overall as any) ?? null,
+                        technical: (tech?.result ?? null) as any,
+                        news: (news?.result ?? null) as any,
+                        options: (options?.result ?? null) as any,
+                        fundamental: (fundamental?.result ?? null) as any,
+                        overall: (overall ?? null) as any,
                     },
                     weights,
                     buyThreshold,
@@ -301,7 +371,7 @@ export default async function handler(req: Request): Promise<Response> {
 
                 // Position + pricing
                 const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
-                const currentPrice = (tech?.result as any)?.keyLevels?.currentPrice ?? 0;
+                const currentPrice = safeAnalysisPrice(tech?.result);
 
                 if (currentPrice === 0) {
                     decisions.push({ symbol: item.symbol, action: 'skipped_no_price', score: 0 });

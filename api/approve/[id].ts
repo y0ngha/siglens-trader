@@ -60,6 +60,9 @@ export default async function handler(req: Request): Promise<Response> {
 
         // Execute the trade
         const price = Number(order.priceLimit ?? 0);
+        if (!Number.isFinite(price) || price <= 0) {
+            return Response.json({ error: 'Order has no valid price limit' }, { status: 400 });
+        }
         await insertTrade(db, {
             symbol: order.symbol,
             side: order.side,
