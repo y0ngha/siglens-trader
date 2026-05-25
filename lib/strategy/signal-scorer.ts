@@ -1,4 +1,4 @@
-import type { ScoreWeights, SignalScore, TradingSignal } from './types';
+import type { ScoreWeights, SignalDirection, SignalScore } from './types';
 
 export interface ActionRecommendation {
     action: 'buy' | 'hold' | 'wait';
@@ -167,7 +167,7 @@ function determineSignal(
     score: number,
     buyThreshold: number,
     sellThreshold: number,
-): TradingSignal {
+): SignalDirection {
     if (score >= buyThreshold) return 'buy';
     if (score <= sellThreshold) return 'sell';
     return 'hold';

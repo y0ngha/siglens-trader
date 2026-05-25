@@ -1,3 +1,7 @@
+/** Signal direction emitted by the scoring engine (buy / sell / hold). */
+export type SignalDirection = 'buy' | 'sell' | 'hold';
+
+/** Trade action including the derived `average_in` produced by the decision layer. */
 export type TradingSignal = 'buy' | 'sell' | 'hold' | 'average_in';
 
 export interface SignalScore {
@@ -9,7 +13,7 @@ export interface SignalScore {
         fundamental: number;
         overall: number;
     };
-    signal: TradingSignal;
+    signal: SignalDirection;
 }
 
 export interface ScoreWeights {

@@ -9,6 +9,7 @@ import {
     openPosition,
     getOpenPositionBySymbol,
     closePosition,
+    reducePositionQuantity,
     getConfigValue,
     createOrderTracking,
     updateOrderTracking,
@@ -185,7 +186,24 @@ export default async function handler(req: Request): Promise<Response> {
                 });
             } else if (order.side === 'sell') {
                 const pos = await getOpenPositionBySymbol(db, order.symbol);
-                if (pos) {
+                if (!pos) {
+                    // No position to sell — record trade but warn
+                    await insertTrade(db, {
+                        symbol: order.symbol,
+                        side: 'sell',
+                        orderType: 'market',
+                        quantity: actualQuantity,
+                        price: filledPrice,
+                        executedAt: new Date(),
+                        reason: `${order.analysisSummary ?? '수동 승인'} (포지션 미확인 — 수동 확인 필요)`,
+                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                    });
+                    await sendErrorEmail(
+                        `포지션 미확인 매도: ${order.symbol}`,
+                        `${order.symbol} 매도가 승인되었으나 DB에 해당 포지션이 없습니다. 수동 확인이 필요합니다.`,
+                    ).catch((e) => console.error('[email]', e));
+                } else if (actualQuantity >= pos.quantity) {
+                    // Full close
                     await db.transaction(async (tx) => {
                         const closed = await closePosition(tx, pos.id, filledPrice);
                         if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
@@ -201,15 +219,19 @@ export default async function handler(req: Request): Promise<Response> {
                         });
                     });
                 } else {
-                    await insertTrade(db, {
-                        symbol: order.symbol,
-                        side: order.side,
-                        orderType: 'market',
-                        quantity: actualQuantity,
-                        price: filledPrice,
-                        executedAt: new Date(),
-                        reason: order.analysisSummary ?? '수동 승인',
-                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                    // Partial close
+                    await db.transaction(async (tx) => {
+                        await reducePositionQuantity(tx, pos.id, actualQuantity);
+                        await insertTrade(tx, {
+                            symbol: order.symbol,
+                            side: order.side,
+                            orderType: 'market',
+                            quantity: actualQuantity,
+                            price: filledPrice,
+                            executedAt: new Date(),
+                            reason: `${order.analysisSummary ?? '수동 승인'} (부분 매도)`,
+                            mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                        });
                     });
                 }
             } else {

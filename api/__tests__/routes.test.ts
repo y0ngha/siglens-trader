@@ -53,6 +53,7 @@ const mockDismissTrade = vi.fn();
 const mockCreateOrderTracking = vi.fn().mockResolvedValue([]);
 const mockUpdateOrderTracking = vi.fn().mockResolvedValue([]);
 const mockAverageIntoPosition = vi.fn().mockResolvedValue(undefined);
+const mockReducePositionQuantity = vi.fn().mockResolvedValue(true);
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
@@ -83,6 +84,7 @@ vi.mock('../../lib/db/queries', () => ({
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
+    reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1036,7 @@ describe('POST /api/approve/[id]', () => {
         mockGetOpenPositionBySymbol.mockResolvedValue({
             id: 99,
             symbol: 'NVDA',
+            quantity: 10,
             status: 'open',
         });
         mockClosePosition.mockResolvedValue(true);

@@ -3506,6 +3506,73 @@ describe('execute cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Fix: No-position sell in auto mode records trade + sends alert
+    // -----------------------------------------------------------------------
+
+    describe('no-position sell trade recording in auto mode', () => {
+        it('records trade and sends alert when position disappears after broker fill', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+            // First call: position exists (guard check passes), second call: position gone
+            mockGetOpenPositionBySymbol
+                .mockResolvedValueOnce({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 10,
+                    avgPrice: '140',
+                    status: 'open',
+                })
+                .mockResolvedValueOnce(null); // disappeared by execution time
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-2',
+                status: 'filled',
+                filledPrice: 148,
+                filledQuantity: 10,
+            });
+
+            await handler(makeRequest(true));
+
+            // Should record the trade even without a position
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 10,
+                    price: 148,
+                    reason: expect.stringContaining('포지션 미확인'),
+                    mode: 'auto',
+                }),
+            );
+            // Should send error email
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '포지션 미확인 매도 체결: AAPL',
+                expect.stringContaining('DB에 포지션이 없습니다'),
+            );
+            // Should NOT try to close/reduce a non-existent position
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Fix: Partial sell exposure adjustment in !filledPrice auto path
     // -----------------------------------------------------------------------
 

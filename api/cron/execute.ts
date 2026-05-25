@@ -1168,6 +1168,23 @@ export default async function handler(req: Request): Promise<Response> {
                                     }
                                     throw txErr;
                                 }
+                            } else {
+                                // Position disappeared between guard check and fill — record trade + alert
+                                await insertTrade(db, {
+                                    symbol: item.symbol,
+                                    side: 'sell',
+                                    orderType: 'market',
+                                    quantity: actualQuantity,
+                                    price: filledPrice,
+                                    executedAt: new Date(),
+                                    reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
+                                    mode: 'auto',
+                                    cronRunId,
+                                });
+                                await sendErrorEmail(
+                                    `포지션 미확인 매도 체결: ${item.symbol}`,
+                                    `${item.symbol} ${actualQuantity}주가 체결되었으나 DB에 포지션이 없습니다.`,
+                                ).catch((e) => console.error('[email]', e));
                             }
                         } else {
                             await insertTrade(db, {

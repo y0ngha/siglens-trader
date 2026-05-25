@@ -27,6 +27,7 @@ const mockGetConfigValue = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
 const mockAverageIntoPosition = vi.fn();
+const mockReducePositionQuantity = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
     revertPendingOrder: (...args: unknown[]) => mockRevertPendingOrder(...args),
@@ -36,6 +37,7 @@ vi.mock('../../../lib/db/queries', () => ({
     openPosition: (...args: unknown[]) => mockOpenPosition(...args),
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
+    reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
@@ -109,6 +111,7 @@ function setupDefaults() {
     mockCreateOrderTracking.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
     mockAverageIntoPosition.mockResolvedValue(undefined);
+    mockReducePositionQuantity.mockResolvedValue(true);
     mockSendErrorEmail.mockResolvedValue(undefined);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
@@ -288,7 +291,7 @@ describe('approve handler', () => {
     // -----------------------------------------------------------------------
 
     describe('transaction safety: closePosition false', () => {
-        it('returns success with position_already_closed note on sell', async () => {
+        it('returns success with position_already_closed note on full sell', async () => {
             mockGetPendingOrderById.mockResolvedValue(fakeSellOrder);
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
@@ -304,6 +307,91 @@ describe('approve handler', () => {
 
             expect(body.note).toBe('position_already_closed');
             expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Partial sell: reducePositionQuantity
+    // -----------------------------------------------------------------------
+
+    describe('partial sell support', () => {
+        it('reduces position quantity when sell quantity < position quantity', async () => {
+            const partialSellOrder = {
+                ...fakeSellOrder,
+                quantity: 4, // selling 4 of 10 shares
+            };
+            mockGetPendingOrderById.mockResolvedValue(partialSellOrder);
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            const body = await res.json();
+
+            expect(body.success).toBe(true);
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 4);
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 4,
+                    reason: expect.stringContaining('부분 매도'),
+                }),
+            );
+        });
+
+        it('closes position fully when sell quantity >= position quantity', async () => {
+            mockGetPendingOrderById.mockResolvedValue(fakeSellOrder); // quantity: 10
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            const body = await res.json();
+
+            expect(body.success).toBe(true);
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 155);
+            expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // No-position sell: record trade + alert
+    // -----------------------------------------------------------------------
+
+    describe('no-position sell guard', () => {
+        it('records trade with warning and sends error email when no position exists', async () => {
+            mockGetPendingOrderById.mockResolvedValue(fakeSellOrder);
+            mockGetOpenPositionBySymbol.mockResolvedValue(null); // no position
+
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            const body = await res.json();
+
+            expect(body.success).toBe(true);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    reason: expect.stringContaining('포지션 미확인'),
+                }),
+            );
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '포지션 미확인 매도: AAPL',
+                expect.stringContaining('DB에 해당 포지션이 없습니다'),
+            );
         });
     });
 

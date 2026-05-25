@@ -627,38 +627,63 @@ describe('Trades queries', () => {
     });
 
     describe('getTodayRealizedPnl', () => {
-        it('returns net cash flow from today trades (sells positive, buys negative)', async () => {
-            const db = createMockDb([{ pnl: -250.5 }]);
+        it('sums closed-position PnL and partial-sell PnL', async () => {
+            const db = createMockDb([{ pnl: 300 }]);
+            // Override db.execute for the partial-sell query
+            db.execute = vi.fn().mockResolvedValue([{ pnl: 150 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
+            // closedPnl=300 + partialPnl=150 = 450
+            expect(result).toBe(450);
             expect(db._chain.from).toHaveBeenCalled();
             expect(db._chain.where).toHaveBeenCalled();
-            expect(result).toBe(-250.5);
+            expect(db.execute).toHaveBeenCalled();
         });
 
-        it('returns 0 when no trades today', async () => {
+        it('returns 0 when no closed positions and no partial sells', async () => {
             const db = createMockDb([{ pnl: 0 }]);
+            db.execute = vi.fn().mockResolvedValue([{ pnl: 0 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
             expect(result).toBe(0);
         });
 
-        it('returns 0 when result is null', async () => {
+        it('returns 0 when results are null', async () => {
             const db = createMockDb([{ pnl: null }]);
+            db.execute = vi.fn().mockResolvedValue([{ pnl: null }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
             expect(result).toBe(0);
         });
 
-        it('returns positive PnL for profitable day (net sells > net buys)', async () => {
+        it('returns only closed PnL when no partial sells exist', async () => {
             const db = createMockDb([{ pnl: 1200 }]);
+            db.execute = vi.fn().mockResolvedValue([{ pnl: 0 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
             expect(result).toBe(1200);
+        });
+
+        it('returns only partial-sell PnL when no positions were fully closed', async () => {
+            const db = createMockDb([{ pnl: 0 }]);
+            db.execute = vi.fn().mockResolvedValue([{ pnl: 250 }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(result).toBe(250);
+        });
+
+        it('handles negative PnL from losing positions', async () => {
+            const db = createMockDb([{ pnl: -400 }]);
+            db.execute = vi.fn().mockResolvedValue([{ pnl: -100 }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(result).toBe(-500);
         });
     });
 });

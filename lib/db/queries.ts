@@ -264,31 +264,57 @@ export async function getTodayTradeCount(db: Db) {
 }
 
 /**
- * Returns today's realized PnL as net cash flow from all executed trades today.
- * Sells add money (positive), buys subtract money (negative).
- * This captures partial sells correctly because each sell trade contributes
- * its `price * quantity` to the sum — unlike the previous position-based approach
- * which only counted fully closed positions.
+ * Returns today's realized PnL from two sources:
  *
- * Skipped and dry_run trades are excluded.
+ * 1. Fully closed positions: `(closePrice - avgPrice) * quantity` for long positions
+ *    (or inverted for short). This captures the actual realized profit when a
+ *    position is closed entirely.
+ *
+ * 2. Partial sells against still-open positions: `(sellPrice - avgPrice) * quantity`.
+ *    This captures profit from today's sell trades where the position remains open
+ *    (reduced quantity). Joined against the position's current avgPrice.
+ *
+ * The previous net-cash-flow approach (sell=+revenue, buy=-cost) triggered
+ * false alarms on buy-heavy days because buys lowered the PnL even though
+ * they represent unrealized positions, not losses.
+ *
+ * Skipped and dry_run trades are excluded from the partial-sell calculation.
  */
 export async function getTodayRealizedPnl(db: Db): Promise<number> {
-    const rows = await db
+    // PnL from positions fully closed today
+    const closedRows = await db
         .select({
             pnl: sql<number>`COALESCE(SUM(
                 CASE
-                    WHEN ${trades.side} = 'sell' THEN ${trades.price}::numeric * ${trades.quantity}
-                    WHEN ${trades.side} = 'buy' THEN -${trades.price}::numeric * ${trades.quantity}
-                    ELSE 0
+                    WHEN ${positions.side} = 'short' THEN (${positions.avgPrice}::numeric - ${positions.closePrice}::numeric) * ${positions.quantity}
+                    ELSE (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
                 END
             ), 0)`,
         })
-        .from(trades)
+        .from(positions)
         .where(
-            sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
-                AND ${trades.mode} NOT IN ('skipped', 'dry_run')`,
+            and(
+                eq(positions.status, 'closed'),
+                sql`${positions.closedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
+            ),
         );
-    return Number(rows[0]?.pnl ?? 0);
+
+    // PnL from partial sells (position still open, reduced quantity)
+    const partialRows = await db.execute(sql`
+        SELECT COALESCE(SUM(
+            (t.price::numeric - p.avg_price::numeric) * t.quantity
+        ), 0) as pnl
+        FROM trades t
+        INNER JOIN positions p ON t.symbol = p.symbol AND p.status = 'open'
+        WHERE t.side = 'sell'
+        AND t.mode NOT IN ('skipped', 'dry_run')
+        AND t.executed_at AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
+    `);
+
+    const closedPnl = Number(closedRows[0]?.pnl ?? 0);
+    const partialPnl = Number((partialRows as any)[0]?.pnl ?? 0);
+
+    return closedPnl + partialPnl;
 }
 
 // ---------------------------------------------------------------------------
