@@ -241,6 +241,10 @@ export function SettingsPage() {
                 <div className="mt-3">
                     <TickerSearch
                         onSelect={(result) => {
+                            if (configData.watchlist.length >= 5) {
+                                setSaveMessage('감시 종목은 최대 5개까지 설정 가능합니다');
+                                return;
+                            }
                             if (configData.watchlist.some((w) => w.symbol === result.symbol)) {
                                 setSaveMessage('이미 등록된 종목입니다');
                                 return;

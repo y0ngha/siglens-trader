@@ -76,6 +76,11 @@ export function StatusPage() {
         queryFn: ({ signal }) => api.getTrades(signal),
     });
 
+    const { data: configData } = useQuery({
+        queryKey: ['config'],
+        queryFn: ({ signal }) => api.getConfig(signal),
+    });
+
     if (isLoading) return <LoadingSkeleton />;
     if (error) return <ErrorMessage error={error as Error} />;
     if (!data) return null;
@@ -85,6 +90,19 @@ export function StatusPage() {
     const { totalInvested, currentValue, pnlPercent } = computePortfolio(openPositions);
     const recentTrades = (trades ?? []).slice(0, MAX_RECENT_TRADES);
     const skippedTrades = (trades ?? []).filter((t) => t.mode === 'skipped');
+    const cashBalance = data.cashBalance;
+    const totalAssets = currentValue + (cashBalance ?? 0);
+
+    const configEntries = configData as
+        | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
+        | undefined;
+    const watchlistItems = configEntries?.watchlist ?? [];
+    const takeProfitPercent = Number(
+        configEntries?.config?.find((c) => c.key === 'take_profit_percent')?.value ?? 5,
+    );
+    const stopLossPercent = Number(
+        configEntries?.config?.find((c) => c.key === 'stop_loss_percent')?.value ?? 3,
+    );
 
     return (
         <div className="space-y-4">
@@ -134,6 +152,31 @@ export function StatusPage() {
                                     {data.todayTrades}
                                 </span>
                             </div>
+                            <div className="px-4 py-2.5">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs text-neutral-400">감시 종목</span>
+                                    <span className="font-mono text-sm font-medium">
+                                        {watchlistItems.length}종목
+                                    </span>
+                                </div>
+                                {watchlistItems.length > 0 && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                        {watchlistItems.slice(0, 5).map((w) => (
+                                            <span
+                                                key={w.symbol}
+                                                className="rounded bg-[#262626] px-1.5 py-0.5 text-[10px] font-medium"
+                                            >
+                                                {w.symbol}
+                                            </span>
+                                        ))}
+                                        {watchlistItems.length > 5 && (
+                                            <span className="text-[10px] text-neutral-500">
+                                                +{watchlistItems.length - 5}개
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -141,27 +184,30 @@ export function StatusPage() {
                     <div className="space-y-2">
                         <h2 className="text-xs font-medium text-neutral-500">계좌 상태</h2>
                         <div className="divide-y divide-[#262626] rounded-lg border border-[#262626] bg-[#141414]">
-                            <div className="flex items-center justify-between px-4 py-2.5">
-                                <span className="text-xs text-neutral-400">보유 종목</span>
-                                <div className="flex flex-wrap justify-end gap-1">
-                                    {openPositions.length > 0 ? (
-                                        openPositions.map((p) => (
+                            <div className="px-4 py-2.5">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs text-neutral-400">보유 종목</span>
+                                    <span className="font-mono text-sm font-medium">
+                                        {openPositions.length}종목
+                                    </span>
+                                </div>
+                                {openPositions.length > 0 && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                        {openPositions.slice(0, 5).map((p) => (
                                             <span
                                                 key={p.id}
-                                                className="inline-flex items-center gap-1 rounded bg-[#262626] px-1.5 py-0.5 text-xs font-medium"
+                                                className="rounded bg-[#262626] px-1.5 py-0.5 text-[10px] font-medium"
                                             >
                                                 {p.symbol}
-                                                <span
-                                                    className={`text-[10px] ${p.side === 'long' ? 'text-green-400' : 'text-red-400'}`}
-                                                >
-                                                    {p.side === 'long' ? 'L' : 'S'}
-                                                </span>
                                             </span>
-                                        ))
-                                    ) : (
-                                        <span className="text-xs text-neutral-500">없음</span>
-                                    )}
-                                </div>
+                                        ))}
+                                        {openPositions.length > 5 && (
+                                            <span className="text-[10px] text-neutral-500">
+                                                +{openPositions.length - 5}개
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                             <div className="flex items-center justify-between px-4 py-2.5">
                                 <span className="text-xs text-neutral-400">총 투자 금액</span>
@@ -193,7 +239,12 @@ export function StatusPage() {
                             </div>
                             <div className="flex items-center justify-between px-4 py-2.5">
                                 <span className="text-xs text-neutral-400">보유 현금</span>
-                                <span className="font-mono text-sm text-neutral-500">&mdash;</span>
+                                <span
+                                    className="font-mono text-sm font-medium"
+                                    data-testid="cash-balance"
+                                >
+                                    {cashBalance != null ? formatUsd(cashBalance) : '—'}
+                                </span>
                             </div>
                             <div className="flex items-center justify-between px-4 py-2.5">
                                 <span className="text-xs text-neutral-400">총 자산</span>
@@ -201,10 +252,43 @@ export function StatusPage() {
                                     className="font-mono text-sm font-medium"
                                     data-testid="total-assets"
                                 >
-                                    {formatUsd(currentValue)}
+                                    {formatUsd(totalAssets)}
                                 </span>
                             </div>
                         </div>
+
+                        {/* 포지션별 목표 */}
+                        {openPositions.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                                <span className="text-xs text-neutral-400">포지션별 목표</span>
+                                {openPositions.slice(0, 3).map((p) => {
+                                    const avg = Number(p.avgPrice);
+                                    const tp = avg * (1 + takeProfitPercent / 100);
+                                    const sl = avg * (1 - stopLossPercent / 100);
+                                    return (
+                                        <div
+                                            key={p.id}
+                                            className="flex items-center justify-between text-[11px]"
+                                        >
+                                            <span className="font-medium">{p.symbol}</span>
+                                            <div className="flex gap-3">
+                                                <span className="text-green-400">
+                                                    ↑${tp.toFixed(2)}
+                                                </span>
+                                                <span className="text-red-400">
+                                                    ↓${sl.toFixed(2)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                                {openPositions.length > 3 && (
+                                    <span className="text-[10px] text-neutral-500">
+                                        +{openPositions.length - 3}개 포지션
+                                    </span>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* 경고: 잔고 부족으로 미실행된 거래 */}

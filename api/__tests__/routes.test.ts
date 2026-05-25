@@ -333,7 +333,8 @@ describe('POST /api/config', () => {
     });
 
     it('handles watchlist add', async () => {
-        mockAddToWatchlist.mockResolvedValue([{ id: 1, symbol: 'AAPL' }]);
+        mockGetAllWatchlist.mockResolvedValue([{ id: 1, symbol: 'NVDA' }]);
+        mockAddToWatchlist.mockResolvedValue([{ id: 2, symbol: 'AAPL' }]);
 
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {

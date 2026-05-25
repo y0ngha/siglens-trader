@@ -111,6 +111,13 @@ export default async function handler(req: Request): Promise<Response> {
                             { status: 400 },
                         );
                     }
+                    const currentWatchlist = await getAllWatchlist(db);
+                    if (currentWatchlist.length >= 5) {
+                        return Response.json(
+                            { error: '감시 종목은 최대 5개까지 설정 가능합니다' },
+                            { status: 400 },
+                        );
+                    }
                     const result = await addToWatchlist(db, symbol, companyName);
                     return Response.json({ success: true, data: result });
                 }

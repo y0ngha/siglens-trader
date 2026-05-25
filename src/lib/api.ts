@@ -16,6 +16,7 @@ export interface StatusResponse {
     tradingMode: string;
     activePositions: number;
     todayTrades: number;
+    cashBalance?: number;
 }
 
 export interface Position {

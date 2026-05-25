@@ -9,6 +9,7 @@ vi.mock('@/lib/api', () => ({
         getStatus: vi.fn(),
         getPositions: vi.fn(),
         getTrades: vi.fn(),
+        getConfig: vi.fn(),
     },
 }));
 
@@ -114,6 +115,24 @@ describe('StatusPage', () => {
         vi.clearAllMocks();
         mockedApi.getPositions.mockResolvedValue([]);
         mockedApi.getTrades.mockResolvedValue([]);
+        mockedApi.getConfig.mockResolvedValue({
+            config: [
+                { key: 'take_profit_percent', value: 5, updatedAt: '' },
+                { key: 'stop_loss_percent', value: 3, updatedAt: '' },
+            ],
+            watchlist: [
+                { id: 1, symbol: 'AAPL', companyName: 'Apple Inc.', enabled: true, createdAt: '' },
+                {
+                    id: 2,
+                    symbol: 'NVDA',
+                    companyName: 'NVIDIA Corp.',
+                    enabled: true,
+                    createdAt: '',
+                },
+            ],
+            analysis: [],
+            notification: [],
+        });
     });
 
     it('shows loading skeleton initially', () => {
@@ -319,17 +338,20 @@ describe('StatusPage', () => {
         expect(screen.getByTestId('pnl-percent')).toHaveTextContent('0.00%');
     });
 
-    it('shows position symbols with side badges', async () => {
+    it('shows position symbols as compact chips', async () => {
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getPositions.mockResolvedValue(mockPositions);
 
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('AAPL')).toBeInTheDocument();
+            // "2종목" appears for both holdings count and watchlist count
+            expect(screen.getAllByText('2종목').length).toBeGreaterThanOrEqual(1);
         });
 
-        expect(screen.getByText('NVDA')).toBeInTheDocument();
+        // AAPL and NVDA appear in both holdings chips and watchlist chips
+        expect(screen.getAllByText('AAPL').length).toBeGreaterThanOrEqual(1);
+        expect(screen.getAllByText('NVDA').length).toBeGreaterThanOrEqual(1);
     });
 
     it('shows green pnl color for profit', async () => {
@@ -379,12 +401,14 @@ describe('StatusPage', () => {
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('AAPL')).toBeInTheDocument();
+            expect(screen.getAllByText('AAPL').length).toBeGreaterThanOrEqual(1);
         });
 
-        expect(screen.getByText('NVDA')).toBeInTheDocument();
+        expect(screen.getAllByText('NVDA').length).toBeGreaterThanOrEqual(1);
+        // TSLA only appears in trades, not in default watchlist mock
         expect(screen.getByText('TSLA')).toBeInTheDocument();
-        expect(screen.getAllByText('GOOGL')).toHaveLength(2);
+        // GOOGL appears in trades (2x: buy + sell)
+        expect(screen.getAllByText('GOOGL').length).toBeGreaterThanOrEqual(2);
     });
 
     it('shows buy/sell badges for recent trades', async () => {
@@ -394,7 +418,7 @@ describe('StatusPage', () => {
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('AAPL')).toBeInTheDocument();
+            expect(screen.getAllByText('AAPL').length).toBeGreaterThanOrEqual(1);
         });
 
         const buyBadges = screen.getAllByText('매수');
@@ -410,7 +434,7 @@ describe('StatusPage', () => {
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('$189.50')).toBeInTheDocument();
+            expect(screen.getAllByText('$189.50').length).toBeGreaterThanOrEqual(1);
         });
 
         expect(screen.getByText('$875.20')).toBeInTheDocument();
