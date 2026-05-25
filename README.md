@@ -1,8 +1,42 @@
 # siglens-trader
 
+<div align="center">
+
+![Vercel](https://img.shields.io/badge/Vercel-000000?style=flat&logo=vercel&logoColor=white)
+![Upstash](https://img.shields.io/badge/Upstash-00E9A3?style=flat&logo=upstash&logoColor=white)
+![Neon](https://img.shields.io/badge/Neon-00E599?style=flat&logo=neon&logoColor=black)
+![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?style=flat&logo=cloudflare&logoColor=white)
+![Resend](https://img.shields.io/badge/Resend-000000?style=flat&logo=resend&logoColor=white)
+
+![React](https://img.shields.io/badge/React-19.2-61dafb?logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)
+![Node.js](https://img.shields.io/badge/node-%3E%3D25.2.1-green)
+
+## Siglens 분석 사이트 기반 작동
+
+[![Website](https://img.shields.io/badge/Website-siglens.io-blue?style=for-the-badge)](https://siglens.io)
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/y0ngha/siglens)
+
+
 US 주식 자동매매 시스템. AI 분석 결과를 기반으로 매매 신호를 생성하고, 설정된 모드에 따라 자동으로 주문을 실행한다.
 
-> **902개 테스트** (42개 테스트 파일) | Opus 4.7 감사 10라운드, 150건 이상 수정 완료 | 4개 에이전트 2회 연속 APPROVE
+</div>
+
+## 제품 화면
+
+<p align="center">
+  <img src="images/1.png" alt="siglens-trader product screenshot 1" width="48%" />
+  <img src="images/2.png" alt="siglens-trader product screenshot 2" width="48%" />
+  <img src="images/3.png" alt="siglens-trader product screenshot 3" width="48%" />
+  <img src="images/4.png" alt="siglens-trader product screenshot 4" width="48%" />
+  <img src="images/5.png" alt="siglens-trader product screenshot 5" width="48%" />
+  <img src="images/6.png" alt="siglens-trader product screenshot 6" width="48%" />
+</p>
+
+## 문서
+
+- [배포 가이드](docs/DEPLOYMENT.md)
+- [보상 트랜잭션 설계](docs/COMPENSATING_TRANSACTIONS.md)
 
 ## 동작 원리
 
