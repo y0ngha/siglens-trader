@@ -888,6 +888,7 @@ describe('POST /api/approve/[id]', () => {
         mockGetOpenPositionBySymbol.mockResolvedValue(null);
         mockGetConfigValue.mockResolvedValue('dry_run');
         mockInsertTrade.mockRejectedValue(new Error('DB write failed'));
+        mockRevertPendingOrder.mockResolvedValue(true);
         mockSendErrorEmail.mockResolvedValue(undefined);
 
         const res = await handler(

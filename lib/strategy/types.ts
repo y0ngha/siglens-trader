@@ -1,4 +1,4 @@
-export type TradingSignal = 'buy' | 'sell' | 'hold';
+export type TradingSignal = 'buy' | 'sell' | 'hold' | 'average_in';
 
 export interface SignalScore {
     total: number; // 0-100

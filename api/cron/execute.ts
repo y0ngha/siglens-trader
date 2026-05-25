@@ -38,100 +38,22 @@ import {
 import type { ScoreWeights } from '../../lib/strategy/types';
 import { resolveApiKey } from './_run-analysis-cron';
 import { acquireLock, releaseLock } from '../../lib/lock';
-import { isFinitePositive, safeNumber } from '../../lib/validation';
+import { safeNumber } from '../../lib/validation';
+import {
+    safeRecord,
+    safeString,
+    safeAnalysisPrice,
+    safeAnalysisTrend,
+    safeAnalysisSentiment,
+    safeAnalysisSupport,
+    safeAnalysisResistance,
+    safeAnalysisTargetPrice,
+    safeArray,
+    safeActionRecommendation,
+} from '../../lib/strategy/safe-extract';
 
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
-
-// ---------------------------------------------------------------------------
-// Safe extraction helpers for untyped AI analysis results
-// ---------------------------------------------------------------------------
-
-function safeRecord(value: unknown): Record<string, unknown> | null {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-    }
-    return null;
-}
-
-function safeAnalysisPrice(result: unknown): number {
-    const r = safeRecord(result);
-    if (!r) return 0;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return 0;
-    const price = keyLevels.currentPrice;
-    return isFinitePositive(price) ? price : 0;
-}
-
-function safeString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
-}
-
-function safeAnalysisTrend(result: unknown): string | undefined {
-    const r = safeRecord(result);
-    return r ? safeString(r.trend) : undefined;
-}
-
-function safeAnalysisSentiment(result: unknown): string | undefined {
-    const r = safeRecord(result);
-    return r ? safeString(r.overallSentiment) : undefined;
-}
-
-function safeNumberArray(value: unknown): number[] | undefined {
-    if (!Array.isArray(value)) return undefined;
-    const nums = value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-    return nums.length > 0 ? nums : undefined;
-}
-
-function safeAnalysisSupport(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return undefined;
-    const levels = safeNumberArray(keyLevels.support);
-    return levels?.[0];
-}
-
-function safeAnalysisResistance(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return undefined;
-    const levels = safeNumberArray(keyLevels.resistance);
-    return levels?.[0];
-}
-
-function safeAnalysisTargetPrice(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const priceTargets = safeRecord(r.priceTargets);
-    if (!priceTargets) return undefined;
-    const bullish = safeRecord(priceTargets.bullish);
-    if (!bullish) return undefined;
-    const target = bullish.target;
-    return isFinitePositive(target) ? target : undefined;
-}
-
-function safeArray(obj: unknown, key: string): unknown[] | undefined {
-    const r = safeRecord(obj);
-    if (!r) return undefined;
-    const val = r[key];
-    return Array.isArray(val) ? val : undefined;
-}
-
-function safeActionRecommendation(
-    obj: unknown,
-): { action: 'buy' | 'hold' | 'wait'; confidence: number } | undefined {
-    const r = safeRecord(obj);
-    if (!r) return undefined;
-    const rec = safeRecord(r.actionRecommendation);
-    if (!rec) return undefined;
-    const action = safeString(rec.action);
-    if (action !== 'buy' && action !== 'hold' && action !== 'wait') return undefined;
-    const confidence =
-        typeof rec.confidence === 'number' && Number.isFinite(rec.confidence) ? rec.confidence : 0;
-    return { action, confidence };
-}
 
 export default async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
@@ -139,10 +61,12 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     const LOCK_KEY = 'cron:execute:lock';
+    let lockAcquired = false;
     const locked = await acquireLock(LOCK_KEY);
     if (!locked) {
         return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
     }
+    lockAcquired = true;
 
     try {
         const db = getDb();
@@ -272,6 +196,13 @@ export default async function handler(req: Request): Promise<Response> {
                     getLatestAnalysisResult(db, position.symbol, 'news'),
                     getLatestAnalysisResult(db, position.symbol, 'overall'),
                 ]);
+
+                // Staleness check: skip position if technical analysis is too old
+                const techAge = tech ? Date.now() - new Date(tech.analyzedAt).getTime() : Infinity;
+                if (techAge > MAX_ANALYSIS_AGE_MS) {
+                    decisions.push({ symbol: position.symbol, action: 'stale_analysis', score: 0 });
+                    continue;
+                }
 
                 const techResult = tech?.result;
                 const currentPrice = safeAnalysisPrice(techResult);
@@ -650,7 +581,10 @@ export default async function handler(req: Request): Promise<Response> {
                 });
 
                 // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in this run
-                if (decision.action === 'buy' && recentStopLossSymbols.has(item.symbol)) {
+                if (
+                    (decision.action === 'buy' || decision.action === 'average_in') &&
+                    recentStopLossSymbols.has(item.symbol)
+                ) {
                     decisions.push({
                         symbol: item.symbol,
                         action: 'cooldown_after_stop_loss',
@@ -717,12 +651,13 @@ export default async function handler(req: Request): Promise<Response> {
                 let decisionPushed = false;
                 switch (tradingMode) {
                     case 'dry_run':
-                        if (decision.action === 'buy') {
+                        if (decision.action === 'buy' || decision.action === 'average_in') {
+                            const dryRunSide = 'buy';
                             const existingDryRun = await getOpenPositionBySymbol(db, item.symbol);
                             await db.transaction(async (tx) => {
                                 await insertTrade(tx, {
                                     symbol: item.symbol,
-                                    side: decision.action,
+                                    side: dryRunSide,
                                     orderType: 'market',
                                     quantity: decision.quantity,
                                     price: currentPrice,
@@ -830,9 +765,11 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
+                        const pendingSide =
+                            decision.action === 'average_in' ? 'buy' : decision.action;
                         await insertPendingOrder(db, {
                             symbol: item.symbol,
-                            side: decision.action,
+                            side: pendingSide,
                             quantity: decision.quantity,
                             priceLimit: currentPrice,
                             analysisSummary: decision.reason,
@@ -840,12 +777,12 @@ export default async function handler(req: Request): Promise<Response> {
                             expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                         });
                         // Track pending order exposure to prevent over-allocation
-                        if (decision.action === 'buy') {
+                        if (decision.action === 'buy' || decision.action === 'average_in') {
                             currentExposure += currentPrice * decision.quantity;
                         }
                         await sendApprovalRequestEmail({
                             symbol: item.symbol,
-                            side: decision.action,
+                            side: pendingSide,
                             quantity: decision.quantity,
                             score: decision.score,
                             reason: decision.reason,
@@ -855,17 +792,20 @@ export default async function handler(req: Request): Promise<Response> {
                     }
 
                     case 'auto': {
-                        const idempotencyKey = `${cronRunId}-${item.symbol}-${decision.action}`;
+                        const autoSide = decision.action === 'average_in' ? 'buy' : decision.action;
+                        const idempotencyKey = `${cronRunId}-${item.symbol}-${autoSide}`;
                         await createOrderTracking(db, {
                             idempotencyKey,
                             symbol: item.symbol,
-                            side: decision.action,
+                            side: autoSide,
                             quantity: decision.quantity,
                             status: 'submitted',
                             cronRunId,
                         });
                         const orderFn =
-                            decision.action === 'buy' ? executeBuyOrder : executeSellOrder;
+                            decision.action === 'buy' || decision.action === 'average_in'
+                                ? executeBuyOrder
+                                : executeSellOrder;
                         const orderResult = await orderFn(
                             item.symbol,
                             decision.quantity,
@@ -921,14 +861,15 @@ export default async function handler(req: Request): Promise<Response> {
                             break;
                         }
                         const filledPrice = orderResult.filledPrice;
-                        if (decision.action === 'buy') {
+                        const actualQuantity = orderResult.filledQuantity ?? decision.quantity;
+                        if (decision.action === 'buy' || decision.action === 'average_in') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
                             await db.transaction(async (tx) => {
                                 await insertTrade(tx, {
                                     symbol: item.symbol,
-                                    side: decision.action,
+                                    side: autoSide,
                                     orderType: 'market',
-                                    quantity: decision.quantity,
+                                    quantity: actualQuantity,
                                     price: filledPrice,
                                     executedAt: new Date(),
                                     reason: decision.reason,
@@ -939,19 +880,19 @@ export default async function handler(req: Request): Promise<Response> {
                                     await averageIntoPosition(
                                         tx,
                                         existingAuto.id,
-                                        decision.quantity,
+                                        actualQuantity,
                                         filledPrice,
                                     );
                                 } else {
                                     await openPosition(tx, {
                                         symbol: item.symbol,
                                         side: 'long',
-                                        quantity: decision.quantity,
+                                        quantity: actualQuantity,
                                         avgPrice: filledPrice,
                                     });
                                 }
                             });
-                            currentExposure += filledPrice * decision.quantity;
+                            currentExposure += filledPrice * actualQuantity;
                         } else if (decision.action === 'sell') {
                             const existingSellPos = await getOpenPositionBySymbol(db, item.symbol);
                             if (existingSellPos) {
@@ -965,9 +906,9 @@ export default async function handler(req: Request): Promise<Response> {
                                         if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
                                         await insertTrade(tx, {
                                             symbol: item.symbol,
-                                            side: decision.action,
+                                            side: autoSide,
                                             orderType: 'market',
-                                            quantity: decision.quantity,
+                                            quantity: actualQuantity,
                                             price: filledPrice,
                                             executedAt: new Date(),
                                             reason: decision.reason,
@@ -975,7 +916,7 @@ export default async function handler(req: Request): Promise<Response> {
                                             cronRunId,
                                         });
                                     });
-                                    currentExposure -= filledPrice * decision.quantity;
+                                    currentExposure -= filledPrice * actualQuantity;
                                     if (currentExposure < 0) currentExposure = 0;
                                 } catch (txErr) {
                                     if (
@@ -995,9 +936,9 @@ export default async function handler(req: Request): Promise<Response> {
                             } else {
                                 await insertTrade(db, {
                                     symbol: item.symbol,
-                                    side: decision.action,
+                                    side: autoSide,
                                     orderType: 'market',
-                                    quantity: decision.quantity,
+                                    quantity: actualQuantity,
                                     price: filledPrice,
                                     executedAt: new Date(),
                                     reason: decision.reason,
@@ -1008,9 +949,9 @@ export default async function handler(req: Request): Promise<Response> {
                         } else {
                             await insertTrade(db, {
                                 symbol: item.symbol,
-                                side: decision.action,
+                                side: autoSide,
                                 orderType: 'market',
-                                quantity: decision.quantity,
+                                quantity: actualQuantity,
                                 price: filledPrice,
                                 executedAt: new Date(),
                                 reason: decision.reason,
@@ -1020,8 +961,8 @@ export default async function handler(req: Request): Promise<Response> {
                         }
                         await sendTradeExecutedEmail({
                             symbol: item.symbol,
-                            side: decision.action,
-                            quantity: decision.quantity,
+                            side: autoSide,
+                            quantity: actualQuantity,
                             price: filledPrice,
                             reason: decision.reason,
                             mode: 'auto',
@@ -1047,6 +988,6 @@ export default async function handler(req: Request): Promise<Response> {
 
         return Response.json({ cronRunId, tradingMode, decisions });
     } finally {
-        await releaseLock(LOCK_KEY);
+        if (lockAcquired) await releaseLock(LOCK_KEY);
     }
 }

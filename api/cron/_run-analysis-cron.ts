@@ -18,10 +18,12 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
         }
 
         const LOCK_KEY = `cron:${analysisType}:lock`;
+        let lockAcquired = false;
         const locked = await acquireLock(LOCK_KEY);
         if (!locked) {
             return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
         }
+        lockAcquired = true;
 
         try {
             const db = getDb();
@@ -66,7 +68,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
 
             return Response.json({ cronRunId, results });
         } finally {
-            await releaseLock(LOCK_KEY);
+            if (lockAcquired) await releaseLock(LOCK_KEY);
         }
     };
 }

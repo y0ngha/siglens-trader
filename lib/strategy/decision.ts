@@ -29,6 +29,16 @@ export function makeTradeDecision(ctx: DecisionContext): TradeDecision {
         };
     }
 
+    if (signalScore.signal === 'buy' && hasOpenPosition && calculatedSize > 0) {
+        return {
+            action: 'average_in',
+            symbol,
+            score: signalScore.total,
+            reason: buildReason(signalScore, 'AVERAGE_IN'),
+            quantity: calculatedSize,
+        };
+    }
+
     if (signalScore.signal === 'sell' && hasOpenPosition) {
         return {
             action: 'sell',
@@ -50,6 +60,13 @@ export function makeTradeDecision(ctx: DecisionContext): TradeDecision {
 
 function buildReason(score: SignalScore, action: string): string {
     const { components } = score;
-    const actionKo = action === 'BUY' ? '매수' : action === 'SELL' ? '매도' : '대기';
+    const actionKo =
+        action === 'BUY'
+            ? '매수'
+            : action === 'SELL'
+              ? '매도'
+              : action === 'AVERAGE_IN'
+                ? '추가 매수'
+                : '대기';
     return `신호 ${score.total}/100 — ${actionKo} (기술:${components.technical}, 뉴스:${components.news}, 옵션:${components.options}, 펀더멘털:${components.fundamental}, 종합:${components.overall})`;
 }

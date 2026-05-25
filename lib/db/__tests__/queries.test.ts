@@ -73,10 +73,11 @@ function createMockDb(resolvedValue: unknown = []) {
         insert: vi.fn().mockReturnValue(chainMethods),
         update: vi.fn().mockReturnValue(chainMethods),
         delete: vi.fn().mockReturnValue(chainMethods),
+        execute: vi.fn().mockResolvedValue(resolvedValue),
         _chain: chainMethods,
     };
 
-    return db as unknown as Db & { _chain: typeof chainMethods };
+    return db as unknown as Db & { _chain: typeof chainMethods; execute: ReturnType<typeof vi.fn> };
 }
 
 // ---------------------------------------------------------------------------
@@ -467,39 +468,24 @@ describe('Positions queries', () => {
     });
 
     describe('averageIntoPosition', () => {
-        it('reads current position, calculates weighted average, and updates', async () => {
-            const existingPos = {
-                id: 1,
-                symbol: 'AAPL',
-                quantity: 10,
-                avgPrice: '140',
-                status: 'open',
-            };
-            const db = createMockDb([existingPos]);
+        it('executes atomic SQL update with correct parameters', async () => {
+            const db = createMockDb();
 
             await averageIntoPosition(db as unknown as Db, 1, 5, 150);
 
-            // Should select the position first
-            expect(db._chain.limit).toHaveBeenCalledWith(1);
-            // Should update with new quantity and weighted avg price
-            // newQty = 10 + 5 = 15
-            // newAvg = (10*140 + 5*150) / 15 = 2150/15 = 143.333...
-            expect(db._chain.set).toHaveBeenCalledWith({
-                quantity: 15,
-                avgPrice: expect.stringContaining('143.333'),
-            });
+            // Should use db.execute for atomic SQL update
+            expect(db.execute).toHaveBeenCalledTimes(1);
+            // No select/update chain should be used
+            expect(db.select).not.toHaveBeenCalled();
         });
 
-        it('does nothing when position not found', async () => {
-            const db = createMockDb([]);
+        it('executes atomic update even when position may not exist (WHERE clause handles it)', async () => {
+            const db = createMockDb();
 
             await averageIntoPosition(db as unknown as Db, 999, 5, 150);
 
-            // Should try to select but not update
-            expect(db._chain.limit).toHaveBeenCalledWith(1);
-            // set should not be called beyond the select chain
-            // (since createMockDb chains all methods, we can only verify
-            // the function returns early by checking no update call happens)
+            // Should still call execute — the WHERE clause filters non-existent/closed positions
+            expect(db.execute).toHaveBeenCalledTimes(1);
         });
     });
 });

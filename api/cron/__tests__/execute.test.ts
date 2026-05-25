@@ -2698,4 +2698,130 @@ describe('execute cron handler', () => {
             });
         });
     });
+
+    // -----------------------------------------------------------------------
+    // Unrealized PnL breaker
+    // -----------------------------------------------------------------------
+
+    describe('unrealized PnL breaker', () => {
+        it('halts trading when realized + unrealized PnL exceeds daily loss limit', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'max_daily_loss_usd') return Promise.resolve(500);
+                return Promise.resolve(null);
+            });
+            // Realized loss: -200
+            mockGetTodayRealizedPnl.mockResolvedValue(-200);
+            // Open positions with unrealized loss
+            mockGetOpenPositions.mockResolvedValue([
+                { symbol: 'AAPL', quantity: 10, avgPrice: '150', status: 'open' },
+            ]);
+            // Current price = 115, unrealized = (115 - 150) * 10 = -350
+            mockGetLatestAnalysisResult.mockResolvedValue({
+                result: { keyLevels: { currentPrice: 115 } },
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // totalPnl = -200 + (-350) = -550 < -500 -> halts
+            expect(body.skipped).toBe(true);
+            expect(body.reason).toBe('daily_loss_limit_reached');
+            expect(body.todayPnl).toBe(-200);
+            expect(body.unrealizedPnl).toBe(-350);
+            expect(body.totalPnl).toBe(-550);
+        });
+
+        it('sends error email with correct amounts when unrealized PnL triggers halt', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'max_daily_loss_usd') return Promise.resolve(300);
+                return Promise.resolve(null);
+            });
+            mockGetTodayRealizedPnl.mockResolvedValue(-100);
+            mockGetOpenPositions.mockResolvedValue([
+                { symbol: 'TSLA', quantity: 5, avgPrice: '200', status: 'open' },
+            ]);
+            // Current price = 150, unrealized = (150 - 200) * 5 = -250
+            // total = -100 + (-250) = -350 < -300 limit -> halts
+            mockGetLatestAnalysisResult.mockResolvedValue({
+                result: { keyLevels: { currentPrice: 150 } },
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '일일 손실 한도 초과 (미실현 포함)',
+                expect.stringContaining('$100.00'),
+            );
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '일일 손실 한도 초과 (미실현 포함)',
+                expect.stringContaining('$250.00'),
+            );
+        });
+
+        it('uses conservative behavior when price fetch fails for some positions', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'max_daily_loss_usd') return Promise.resolve(500);
+                return Promise.resolve(null);
+            });
+            mockGetTodayRealizedPnl.mockResolvedValue(-400);
+            mockGetOpenPositions.mockResolvedValue([
+                { symbol: 'AAPL', quantity: 10, avgPrice: '150', status: 'open' },
+                { symbol: 'TSLA', quantity: 5, avgPrice: '200', status: 'open' },
+            ]);
+            // AAPL fails to fetch price, TSLA succeeds with small gain
+            mockGetLatestAnalysisResult.mockImplementation((_db: unknown, sym: string) => {
+                if (sym === 'AAPL') return Promise.reject(new Error('API error'));
+                // TSLA at 210, unrealized = (210 - 200) * 5 = +50
+                return Promise.resolve({
+                    result: { keyLevels: { currentPrice: 210 } },
+                });
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // AAPL price fetch failed -> unrealized for AAPL = 0 (skipped)
+            // TSLA unrealized = +50
+            // totalPnl = -400 + 50 = -350, still under 500 limit
+            // Should proceed (not halt)
+            expect(body.skipped).not.toBe(true);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Position re-evaluation staleness check
+    // -----------------------------------------------------------------------
+
+    describe('position re-evaluation staleness', () => {
+        it('skips position re-evaluation when analysis is stale', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([
+                    { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+                ])
+                .mockResolvedValueOnce([]); // recalc
+            // Analysis is 5 hours old (over 4-hour limit)
+            mockGetLatestAnalysisResult.mockResolvedValue({
+                result: { keyLevels: { currentPrice: 95 }, trend: 'bearish' },
+                analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'stale_analysis',
+                score: 0,
+            });
+            // Should not evaluate the position
+            expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+        });
+    });
 });

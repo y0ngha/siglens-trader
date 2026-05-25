@@ -131,6 +131,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         if (gainPercent > 0) {
             return { action: 'take_profit', reason: '뉴스 악재 + 수익 구간 — 선제 익절' };
         }
+        return { action: 'stop_loss', reason: '뉴스 악재 + 손실 구간 — 손절' };
     }
 
     // 7. Overall AI signal suggests exit

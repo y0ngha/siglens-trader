@@ -504,14 +504,16 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('선제 익절');
         });
 
-        it('holds when news is bearish but not in profit', () => {
+        it('returns stop_loss when news is bearish and not in profit', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 99, // -1% (not in profit, but above stop loss)
                 newsSentiment: 'bearish',
                 technicalTrend: 'neutral',
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('뉴스 악재');
+            expect(result.reason).toContain('손절');
         });
 
         it('holds when news is bearish but trend is bullish (override)', () => {

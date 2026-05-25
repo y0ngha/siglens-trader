@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
     pgTable,
     serial,
@@ -7,6 +8,7 @@ import {
     numeric,
     jsonb,
     timestamp,
+    uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 export const watchlist = pgTable('watchlist', {
@@ -37,17 +39,25 @@ export const analysisResults = pgTable('analysis_results', {
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const positions = pgTable('positions', {
-    id: serial('id').primaryKey(),
-    symbol: text('symbol').notNull(),
-    side: text('side').notNull(),
-    quantity: integer('quantity').notNull(),
-    avgPrice: numeric('avg_price').notNull(),
-    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
-    closedAt: timestamp('closed_at', { withTimezone: true }),
-    closePrice: numeric('close_price'),
-    status: text('status').default('open').notNull(),
-});
+export const positions = pgTable(
+    'positions',
+    {
+        id: serial('id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        side: text('side').notNull(),
+        quantity: integer('quantity').notNull(),
+        avgPrice: numeric('avg_price').notNull(),
+        openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+        closedAt: timestamp('closed_at', { withTimezone: true }),
+        closePrice: numeric('close_price'),
+        status: text('status').default('open').notNull(),
+    },
+    (table) => [
+        uniqueIndex('idx_positions_symbol_open')
+            .on(table.symbol)
+            .where(sql`status = 'open'`),
+    ],
+);
 
 export const trades = pgTable('trades', {
     id: serial('id').primaryKey(),

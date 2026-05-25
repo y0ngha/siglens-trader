@@ -174,7 +174,8 @@ export async function closePosition(db: DbOrTx, id: number, closePrice: number) 
 
 /**
  * Average into an existing open position by adding quantity at a new price.
- * Updates quantity and avgPrice using the weighted average formula.
+ * Uses a single atomic SQL UPDATE with full NUMERIC precision to avoid
+ * read-then-write race conditions.
  */
 export async function averageIntoPosition(
     db: DbOrTx,
@@ -182,23 +183,12 @@ export async function averageIntoPosition(
     additionalQuantity: number,
     additionalPrice: number,
 ) {
-    const rows = await db
-        .select()
-        .from(positions)
-        .where(and(eq(positions.id, positionId), eq(positions.status, 'open')))
-        .limit(1);
-    const pos = rows[0];
-    if (!pos) return;
-
-    const oldQty = pos.quantity;
-    const oldAvg = Number(pos.avgPrice);
-    const newQty = oldQty + additionalQuantity;
-    const newAvg = (oldQty * oldAvg + additionalQuantity * additionalPrice) / newQty;
-
-    await db
-        .update(positions)
-        .set({ quantity: newQty, avgPrice: String(newAvg) })
-        .where(eq(positions.id, positionId));
+    return db.execute(sql`
+        UPDATE positions
+        SET quantity = quantity + ${additionalQuantity},
+            avg_price = ((quantity * avg_price::numeric + ${additionalQuantity} * ${additionalPrice}) / (quantity + ${additionalQuantity}))::text
+        WHERE id = ${positionId} AND status = 'open'
+    `);
 }
 
 // ---------------------------------------------------------------------------

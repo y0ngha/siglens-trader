@@ -73,6 +73,7 @@ export default async function handler(req: Request): Promise<Response> {
 
         // Determine trading mode and attempt real execution when applicable
         let filledPrice = price;
+        let actualQuantity = order.quantity;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
 
         if (tradingMode === 'auto') {
@@ -102,6 +103,17 @@ export default async function handler(req: Request): Promise<Response> {
                         { status: 422 },
                     );
                 }
+                if (result.status === 'submitted') {
+                    return Response.json(
+                        {
+                            accepted: true,
+                            status: 'submitted',
+                            message:
+                                '주문이 접수되었으나 아직 체결되지 않았습니다. 추후 확인이 필요합니다.',
+                        },
+                        { status: 202 },
+                    );
+                }
                 if (result.status === 'filled') {
                     if (!result.filledPrice) {
                         await updateOrderTracking(db, idempotencyKey, {
@@ -119,6 +131,7 @@ export default async function handler(req: Request): Promise<Response> {
                         );
                     }
                     filledPrice = result.filledPrice;
+                    actualQuantity = result.filledQuantity ?? order.quantity;
                 }
             } catch (err) {
                 // Toss API failed — revert order status back to pending so user can retry
@@ -148,7 +161,7 @@ export default async function handler(req: Request): Promise<Response> {
                         symbol: order.symbol,
                         side: order.side,
                         orderType: 'market',
-                        quantity: order.quantity,
+                        quantity: actualQuantity,
                         price: filledPrice,
                         executedAt: new Date(),
                         reason: existingPos
@@ -157,12 +170,12 @@ export default async function handler(req: Request): Promise<Response> {
                         mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
                     });
                     if (existingPos) {
-                        await averageIntoPosition(tx, existingPos.id, order.quantity, filledPrice);
+                        await averageIntoPosition(tx, existingPos.id, actualQuantity, filledPrice);
                     } else {
                         await openPosition(tx, {
                             symbol: order.symbol,
                             side: 'long',
-                            quantity: order.quantity,
+                            quantity: actualQuantity,
                             avgPrice: filledPrice,
                         });
                     }
@@ -177,7 +190,7 @@ export default async function handler(req: Request): Promise<Response> {
                             symbol: order.symbol,
                             side: order.side,
                             orderType: 'market',
-                            quantity: order.quantity,
+                            quantity: actualQuantity,
                             price: filledPrice,
                             executedAt: new Date(),
                             reason: order.analysisSummary ?? '수동 승인',
@@ -189,7 +202,7 @@ export default async function handler(req: Request): Promise<Response> {
                         symbol: order.symbol,
                         side: order.side,
                         orderType: 'market',
-                        quantity: order.quantity,
+                        quantity: actualQuantity,
                         price: filledPrice,
                         executedAt: new Date(),
                         reason: order.analysisSummary ?? '수동 승인',
@@ -201,7 +214,7 @@ export default async function handler(req: Request): Promise<Response> {
                     symbol: order.symbol,
                     side: order.side,
                     orderType: 'market',
-                    quantity: order.quantity,
+                    quantity: actualQuantity,
                     price: filledPrice,
                     executedAt: new Date(),
                     reason: order.analysisSummary ?? '수동 승인',
@@ -217,7 +230,9 @@ export default async function handler(req: Request): Promise<Response> {
                     note: 'position_already_closed',
                 });
             }
-            // Transaction rolled back — email alert about failure
+            // Transaction rolled back — revert order status so user can retry
+            await revertPendingOrder(db, id).catch(() => {});
+            // Email alert about failure
             await sendErrorEmail(`승인 후 거래 기록 실패: ${order.symbol}`, String(err)).catch(
                 (emailErr) => console.error('[email] send failed:', emailErr),
             );

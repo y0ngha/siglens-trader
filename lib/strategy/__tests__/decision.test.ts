@@ -59,12 +59,28 @@ describe('makeTradeDecision', () => {
             expect(result.quantity).toBe(42);
         });
 
-        it('is blocked when already has an open position — returns hold', () => {
+        it('returns average_in when buy signal with existing position and calculatedSize > 0', () => {
             const ctx = createContext({
                 signalScore: createSignalScore({ signal: 'buy', total: 85 }),
                 hasOpenPosition: true,
                 positionQuantity: 20,
                 calculatedSize: 10,
+            });
+
+            const result = makeTradeDecision(ctx);
+
+            expect(result.action).toBe('average_in');
+            expect(result.quantity).toBe(10);
+            expect(result.score).toBe(85);
+            expect(result.reason).toContain('추가 매수');
+        });
+
+        it('returns hold when buy signal with existing position but calculatedSize is 0', () => {
+            const ctx = createContext({
+                signalScore: createSignalScore({ signal: 'buy', total: 85 }),
+                hasOpenPosition: true,
+                positionQuantity: 20,
+                calculatedSize: 0,
             });
 
             const result = makeTradeDecision(ctx);
