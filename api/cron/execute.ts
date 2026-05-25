@@ -38,6 +38,7 @@ import {
 import type { ScoreWeights } from '../../lib/strategy/types';
 import { resolveApiKey } from './_run-analysis-cron';
 import { acquireLock, releaseLock } from '../../lib/lock';
+import { fetchLivePrice } from '../../lib/data/live-price';
 import { safeNumber } from '../../lib/validation';
 import {
     safeRecord,
@@ -116,8 +117,9 @@ export default async function handler(req: Request): Promise<Response> {
             let unrealizedPnl = 0;
             for (const pos of preCheckPositions) {
                 try {
+                    const livePreCheck = await fetchLivePrice(pos.symbol).catch(() => null);
                     const techForPos = await getLatestAnalysisResult(db, pos.symbol, 'technical');
-                    const curPrice = safeAnalysisPrice(techForPos?.result);
+                    const curPrice = livePreCheck ?? safeAnalysisPrice(techForPos?.result);
                     if (curPrice > 0) {
                         const avgP = safeNumber(Number(pos.avgPrice), 0);
                         unrealizedPnl += (curPrice - avgP) * pos.quantity;
@@ -172,9 +174,18 @@ export default async function handler(req: Request): Promise<Response> {
         for (const p of openPositions) {
             let priceForExposure = safeNumber(Number(p.avgPrice), 0);
             try {
-                const techForExposure = await getLatestAnalysisResult(db, p.symbol, 'technical');
-                const marketPrice = safeAnalysisPrice(techForExposure?.result);
-                if (marketPrice > 0) priceForExposure = marketPrice;
+                const liveExposure = await fetchLivePrice(p.symbol).catch(() => null);
+                if (liveExposure && liveExposure > 0) {
+                    priceForExposure = liveExposure;
+                } else {
+                    const techForExposure = await getLatestAnalysisResult(
+                        db,
+                        p.symbol,
+                        'technical',
+                    );
+                    const marketPrice = safeAnalysisPrice(techForExposure?.result);
+                    if (marketPrice > 0) priceForExposure = marketPrice;
+                }
             } catch {
                 // Fall back to avgPrice when analysis data is unavailable
             }
@@ -205,7 +216,8 @@ export default async function handler(req: Request): Promise<Response> {
                 }
 
                 const techResult = tech?.result;
-                const currentPrice = safeAnalysisPrice(techResult);
+                const livePricePos = await fetchLivePrice(position.symbol).catch(() => null);
+                const currentPrice = livePricePos ?? safeAnalysisPrice(techResult);
                 if (currentPrice <= 0) {
                     decisions.push({
                         symbol: position.symbol,
@@ -463,9 +475,14 @@ export default async function handler(req: Request): Promise<Response> {
         for (const p of updatedPositions) {
             let priceForRecalc = safeNumber(Number(p.avgPrice), 0);
             try {
-                const techForRecalc = await getLatestAnalysisResult(db, p.symbol, 'technical');
-                const recalcPrice = safeAnalysisPrice(techForRecalc?.result);
-                if (recalcPrice > 0) priceForRecalc = recalcPrice;
+                const liveRecalc = await fetchLivePrice(p.symbol).catch(() => null);
+                if (liveRecalc && liveRecalc > 0) {
+                    priceForRecalc = liveRecalc;
+                } else {
+                    const techForRecalc = await getLatestAnalysisResult(db, p.symbol, 'technical');
+                    const recalcPrice = safeAnalysisPrice(techForRecalc?.result);
+                    if (recalcPrice > 0) priceForRecalc = recalcPrice;
+                }
             } catch {
                 // Fall back to avgPrice when analysis data is unavailable
             }
@@ -571,7 +588,8 @@ export default async function handler(req: Request): Promise<Response> {
 
                 // Position + pricing
                 const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
-                const currentPrice = safeAnalysisPrice(tech?.result);
+                const livePriceWatch = await fetchLivePrice(item.symbol).catch(() => null);
+                const currentPrice = livePriceWatch ?? safeAnalysisPrice(tech?.result);
 
                 if (currentPrice <= 0) {
                     decisions.push({ symbol: item.symbol, action: 'skipped_no_price', score: 0 });
