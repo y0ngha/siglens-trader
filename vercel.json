@@ -5,7 +5,7 @@
         }
     },
     "ignoreCommand": "git log -1 --pretty=%B | grep -q '^chore: release' && exit 1 || exit 0",
-    "buildCommand": "vite build",
+    "buildCommand": "yarn build",
     "outputDirectory": "dist",
     "framework": "vite",
     "functions": {
