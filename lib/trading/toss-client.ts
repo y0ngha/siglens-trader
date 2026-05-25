@@ -1,3 +1,8 @@
+// TODO: Toss Securities Open API가 오픈되면 실제 endpoint/auth/response 형식으로 교체 필요
+// TODO: OAuth2 토큰 갱신 구현 필요
+// TODO: getOrderStatus(orderId) API 추가 — submitted 주문 상태 조회용
+// TODO: cancelOrder(orderId) API 추가 — 미체결 주문 취소용
+// TODO: getBalances()를 reconciliation cron에서 호출하여 broker ↔ DB 정합성 확인
 import type { TossOrderRequest, TossOrderResponse, TossBalance } from './types';
 
 const TOSS_BASE_URL = 'https://api.tossinvest.com';

@@ -1,3 +1,6 @@
+// TODO: Toss API 오픈 후 — getOrderStatus()로 submitted 주문의 실제 broker 상태 조회
+// TODO: 체결 확인 시 position/trade 자동 생성, 미체결 시 cancelOrder() 호출
+// TODO: getBalances()로 broker 잔고와 DB positions 비교 → 불일치 시 알림
 import { verifyCronSecret } from '../_lib/cron-auth';
 import { getDb } from '../_lib/db';
 import { acquireLock, releaseLock } from '../../lib/lock';
