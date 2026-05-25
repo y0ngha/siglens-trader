@@ -432,6 +432,8 @@ export default async function handler(req: Request): Promise<Response> {
                                     cronRunId,
                                 });
                             });
+                            currentExposure -= currentPrice * actualExitQty;
+                            if (currentExposure < 0) currentExposure = 0;
                             await sendErrorEmail(
                                 `체결가 누락: ${position.symbol}`,
                                 `${position.symbol} 매도가 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
@@ -709,8 +711,7 @@ export default async function handler(req: Request): Promise<Response> {
 
                 // Per-symbol exposure cap for average_in
                 if (decision.action === 'average_in' && existingPosition) {
-                    const existingExposure =
-                        Number(existingPosition.avgPrice) * existingPosition.quantity;
+                    const existingExposure = currentPrice * existingPosition.quantity;
                     const remainingSymbolBudget = Math.max(0, maxPositionSize - existingExposure);
                     const cappedSize = Math.floor(remainingSymbolBudget / currentPrice);
                     if (cappedSize <= 0) {
@@ -855,17 +856,13 @@ export default async function handler(req: Request): Promise<Response> {
                                     }
                                 }
                             } else {
-                                await insertTrade(db, {
+                                // Position disappeared between guard check and execution — skip
+                                decisions.push({
                                     symbol: item.symbol,
-                                    side: decision.action,
-                                    orderType: 'market',
-                                    quantity: decision.quantity,
-                                    price: currentPrice,
-                                    executedAt: new Date(),
-                                    reason: decision.reason,
-                                    mode: 'dry_run',
-                                    cronRunId,
+                                    action: 'no_position_to_sell',
+                                    score: decision.score,
                                 });
+                                decisionPushed = true;
                             }
                         } else {
                             await insertTrade(db, {

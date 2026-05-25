@@ -185,7 +185,7 @@ export async function reducePositionQuantity(
     const result = await db.execute(sql`
         UPDATE positions
         SET quantity = quantity - ${soldQuantity}
-        WHERE id = ${id} AND status = 'open' AND quantity > ${soldQuantity}
+        WHERE id = ${id} AND status = 'open' AND quantity >= ${soldQuantity}
         RETURNING id
     `);
     return (result as any).length > 0 || (result as any).rowCount > 0;
@@ -264,27 +264,29 @@ export async function getTodayTradeCount(db: Db) {
 }
 
 /**
- * Returns today's realized PnL, accounting for position direction (long vs short).
- * TODO: Currently only 'long' positions are used. When short-selling is enabled,
- *       add a CHECK constraint on positions.side IN ('long', 'short').
+ * Returns today's realized PnL as net cash flow from all executed trades today.
+ * Sells add money (positive), buys subtract money (negative).
+ * This captures partial sells correctly because each sell trade contributes
+ * its `price * quantity` to the sum — unlike the previous position-based approach
+ * which only counted fully closed positions.
+ *
+ * Skipped and dry_run trades are excluded.
  */
 export async function getTodayRealizedPnl(db: Db): Promise<number> {
     const rows = await db
         .select({
             pnl: sql<number>`COALESCE(SUM(
                 CASE
-                    WHEN ${positions.side} = 'short'
-                    THEN (${positions.avgPrice}::numeric - ${positions.closePrice}::numeric) * ${positions.quantity}
-                    ELSE (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
+                    WHEN ${trades.side} = 'sell' THEN ${trades.price}::numeric * ${trades.quantity}
+                    WHEN ${trades.side} = 'buy' THEN -${trades.price}::numeric * ${trades.quantity}
+                    ELSE 0
                 END
             ), 0)`,
         })
-        .from(positions)
+        .from(trades)
         .where(
-            and(
-                eq(positions.status, 'closed'),
-                sql`${positions.closedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
-            ),
+            sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                AND ${trades.mode} NOT IN ('skipped', 'dry_run')`,
         );
     return Number(rows[0]?.pnl ?? 0);
 }

@@ -627,7 +627,7 @@ describe('Trades queries', () => {
     });
 
     describe('getTodayRealizedPnl', () => {
-        it('returns realized PnL from closed positions today', async () => {
+        it('returns net cash flow from today trades (sells positive, buys negative)', async () => {
             const db = createMockDb([{ pnl: -250.5 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
@@ -637,7 +637,7 @@ describe('Trades queries', () => {
             expect(result).toBe(-250.5);
         });
 
-        it('returns 0 when no closed positions today', async () => {
+        it('returns 0 when no trades today', async () => {
             const db = createMockDb([{ pnl: 0 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
@@ -653,7 +653,7 @@ describe('Trades queries', () => {
             expect(result).toBe(0);
         });
 
-        it('returns positive PnL for profitable day', async () => {
+        it('returns positive PnL for profitable day (net sells > net buys)', async () => {
             const db = createMockDb([{ pnl: 1200 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);

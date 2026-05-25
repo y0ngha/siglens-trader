@@ -421,6 +421,17 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('익절');
         });
 
+        it('returns take_profit when price is below support level and at break-even', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 98,
+                currentPrice: 98,
+                supportLevel: 99,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('지지선 이탈이나 수익 구간');
+        });
+
         it('holds when price is above support level', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
@@ -431,11 +442,22 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
-    describe('technical trend reversal triggers stop_loss', () => {
-        it('returns stop_loss when trend is bearish', () => {
+    describe('technical trend reversal triggers exit', () => {
+        it('returns take_profit when trend is bearish and at break-even', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
-                currentPrice: 100, // no loss
+                currentPrice: 100, // break-even (gainPercent === 0)
+                technicalTrend: 'bearish',
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('기술적 추세 반전');
+            expect(result.reason).toContain('수익 구간 익절');
+        });
+
+        it('returns stop_loss when trend is bearish and in loss', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 99, // -1% loss
                 technicalTrend: 'bearish',
             });
             expect(result.action).toBe('stop_loss');
@@ -508,6 +530,18 @@ describe('evaluateExistingPosition', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 105, // +5% gain (in profit)
+                newsSentiment: 'bearish',
+                technicalTrend: 'neutral',
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('뉴스 악재');
+            expect(result.reason).toContain('선제 익절');
+        });
+
+        it('returns take_profit when news is bearish and at break-even', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 100, // break-even (gainPercent === 0)
                 newsSentiment: 'bearish',
                 technicalTrend: 'neutral',
             });
@@ -624,6 +658,17 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('take_profit');
             expect(result.reason).toContain('AI 종합 분석 매도 신호');
+        });
+
+        it('returns take_profit when overall AI signal is bearish and at break-even', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 100, // break-even (gainPercent === 0)
+                overallSignal: '종합 분석: 매도 추천.',
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('AI 종합 분석 매도 신호');
+            expect(result.reason).toContain('수익 구간 익절');
         });
 
         it('returns stop_loss when overall AI signal is bearish and position has loss', () => {

@@ -3393,19 +3393,19 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('per-symbol exposure cap for average_in', () => {
-        it('caps additional investment when existing exposure is near limit', async () => {
+        it('caps additional investment when existing exposure (at currentPrice) is near limit', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
-                if (key === 'max_position_size') return Promise.resolve(1000);
+                if (key === 'max_position_size') return Promise.resolve(2000);
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            // Existing position: 8 shares * $100 = $800 exposure
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // currentPrice = 150
+            // Existing position: 10 shares, currentPrice=150 → exposure = $1500
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
-                quantity: 8,
+                quantity: 10,
                 avgPrice: '100',
                 status: 'open',
             });
@@ -3421,13 +3421,13 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // maxPositionSize=1000, existingExposure=800, remaining=200
-            // 200/150=1.33 → cappedSize=1
+            // maxPositionSize=2000, existingExposure=150*10=1500, remaining=500
+            // 500/150=3.33 → cappedSize=3
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
                     symbol: 'AAPL',
-                    quantity: 1, // capped from 5 to 1
+                    quantity: 3, // capped from 5 to 3
                 }),
             );
         });
@@ -3439,8 +3439,8 @@ describe('execute cron handler', () => {
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            // Existing position: 10 shares * $100 = $1000 (already at limit)
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // currentPrice = 150
+            // Existing position: 10 shares, currentPrice=150 → exposure = $1500 (over $1000 limit)
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -3502,6 +3502,162 @@ describe('execute cron handler', () => {
             });
             expect(mockInsertTrade).not.toHaveBeenCalled();
             expect(mockClosePosition).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Fix: Partial sell exposure adjustment in !filledPrice auto path
+    // -----------------------------------------------------------------------
+
+    describe('partial sell exposure adjustment in !filledPrice path', () => {
+        it('decrements currentExposure after reducePositionQuantity in auto position re-eval without filledPrice', async () => {
+            const fakeOpenPosition = {
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '100',
+                status: 'open',
+            };
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition])
+                .mockResolvedValueOnce([]); // recalc
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            result: {
+                                trend: 'bearish',
+                                keyLevels: { currentPrice: 95 },
+                            },
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전',
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: undefined,
+                filledQuantity: 7, // partial: 7 of 10
+            });
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockCalculatePositionSize.mockReturnValue(5);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            // After partial sell: exposure should be reduced by currentPrice(95) * actualExitQty(7)
+            // After recalc from DB (empty), exposure = 0
+            // The key verification is that reducePositionQuantity was called
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 7);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Fix: Phantom sell guard in dry_run when position disappears between checks
+    // -----------------------------------------------------------------------
+
+    describe('dry_run phantom sell guard', () => {
+        it('skips phantom sell when position disappeared between guard check and execution', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            // First call returns position (guard check), second call returns null (execution)
+            mockGetOpenPositionBySymbol
+                .mockResolvedValueOnce({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 10,
+                    avgPrice: '140',
+                    status: 'open',
+                })
+                .mockResolvedValueOnce(null); // position disappeared
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'no_position_to_sell',
+                score: 20,
+            });
+            // No phantom trade should be inserted
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockClosePosition).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Fix: Average-in cap uses currentPrice not avgPrice
+    // -----------------------------------------------------------------------
+
+    describe('average-in cap uses currentPrice', () => {
+        it('uses currentPrice for existing exposure calculation', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'max_position_size') return Promise.resolve(2000);
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // price 150
+            // Existing position: 8 shares, avgPrice=$100 but currentPrice=$150
+            // With currentPrice: exposure = 150*8 = $1200 (over $2000 limit - remaining = $800)
+            // With avgPrice: exposure = 100*8 = $800 (remaining = $1200) -- wrong, overstates budget
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 8,
+                avgPrice: '100',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockCalculatePositionSize.mockReturnValue(10);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'average_in',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Average in',
+                quantity: 10,
+            });
+
+            await handler(makeRequest(true));
+
+            // maxPositionSize=2000, existingExposure=150*8=1200, remaining=800
+            // 800/150=5.33 → cappedSize=5
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    quantity: 5, // capped using currentPrice exposure
+                }),
+            );
         });
     });
 

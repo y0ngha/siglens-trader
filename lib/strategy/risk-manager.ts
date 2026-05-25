@@ -92,7 +92,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     // 2. Dynamic stop loss: price broke below key support
     if (params.supportLevel && currentPrice < params.supportLevel) {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
-        if (gainPercent > 0) {
+        if (gainPercent >= 0) {
             return {
                 action: 'take_profit',
                 reason: `지지선 이탈이나 수익 구간 — 익절 (지지: $${params.supportLevel})`,
@@ -107,7 +107,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     // 3. Technical trend reversal
     if (params.technicalTrend === 'bearish') {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
-        if (gainPercent > 0) {
+        if (gainPercent >= 0) {
             return { action: 'take_profit', reason: '기술적 추세 반전 — 수익 구간 익절' };
         }
         return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
@@ -136,7 +136,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     // 6. News-driven exit
     if (params.newsSentiment === 'bearish' && params.technicalTrend !== 'bullish') {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
-        if (gainPercent > 0) {
+        if (gainPercent >= 0) {
             return { action: 'take_profit', reason: '뉴스 악재 + 수익 구간 — 선제 익절' };
         }
         return { action: 'stop_loss', reason: '뉴스 악재 + 손실 구간 — 손절' };
@@ -148,7 +148,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         const isBearish = bearishKeywords.some((k) => params.overallSignal!.includes(k));
         if (isBearish) {
             const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
-            if (gainPercent > 0) {
+            if (gainPercent >= 0) {
                 return { action: 'take_profit', reason: 'AI 종합 분석 매도 신호 — 수익 구간 익절' };
             }
             return { action: 'stop_loss', reason: 'AI 종합 분석 매도 신호 — 손실 구간 손절' };
