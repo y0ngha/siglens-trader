@@ -224,6 +224,23 @@ export async function getTodayTradeCount(db: Db) {
     return Number(rows[0]?.count ?? 0);
 }
 
+export async function getTodayRealizedPnl(db: Db): Promise<number> {
+    const rows = await db
+        .select({
+            pnl: sql<number>`COALESCE(SUM(
+                (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
+            ), 0)`,
+        })
+        .from(positions)
+        .where(
+            and(
+                eq(positions.status, 'closed'),
+                sql`${positions.closedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
+            ),
+        );
+    return Number(rows[0]?.pnl ?? 0);
+}
+
 // ---------------------------------------------------------------------------
 // Pending orders
 // ---------------------------------------------------------------------------
@@ -256,7 +273,11 @@ export async function insertPendingOrder(
 }
 
 export async function getPendingOrders(db: Db) {
-    return db.select().from(pendingOrders).where(eq(pendingOrders.status, 'pending'));
+    return db
+        .select()
+        .from(pendingOrders)
+        .where(and(eq(pendingOrders.status, 'pending'), sql`${pendingOrders.expiresAt} > now()`))
+        .orderBy(desc(pendingOrders.createdAt));
 }
 
 export async function getPendingOrderById(db: Db, id: number) {
@@ -280,6 +301,13 @@ export async function rejectPendingOrder(db: Db, id: number) {
         .where(and(eq(pendingOrders.id, id), eq(pendingOrders.status, 'pending')))
         .returning({ id: pendingOrders.id });
     return result.length > 0;
+}
+
+export async function expireOldPendingOrders(db: Db) {
+    return db
+        .update(pendingOrders)
+        .set({ status: 'expired' })
+        .where(and(eq(pendingOrders.status, 'pending'), sql`${pendingOrders.expiresAt} <= now()`));
 }
 
 // ---------------------------------------------------------------------------

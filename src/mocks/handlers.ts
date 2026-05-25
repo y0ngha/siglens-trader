@@ -608,7 +608,10 @@ export const handlers = [
 
     // Pending orders
     http.get('/api/pending', () => {
-        return HttpResponse.json(pendingOrders.filter((o) => o.status === 'pending'));
+        const now = new Date();
+        return HttpResponse.json(
+            pendingOrders.filter((o) => o.status === 'pending' && new Date(o.expiresAt) > now),
+        );
     }),
 
     // Approve/reject order → approved adds trade record

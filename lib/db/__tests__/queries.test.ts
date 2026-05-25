@@ -21,8 +21,10 @@ import {
     insertTrade,
     getRecentTrades,
     getTodayTradeCount,
+    getTodayRealizedPnl,
     insertPendingOrder,
     getPendingOrders,
+    expireOldPendingOrders,
     approvePendingOrder,
     rejectPendingOrder,
     getNotificationConfig,
@@ -570,6 +572,42 @@ describe('Trades queries', () => {
             expect(result).toBe(0);
         });
     });
+
+    describe('getTodayRealizedPnl', () => {
+        it('returns realized PnL from closed positions today', async () => {
+            const db = createMockDb([{ pnl: -250.5 }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(db._chain.from).toHaveBeenCalled();
+            expect(db._chain.where).toHaveBeenCalled();
+            expect(result).toBe(-250.5);
+        });
+
+        it('returns 0 when no closed positions today', async () => {
+            const db = createMockDb([{ pnl: 0 }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(result).toBe(0);
+        });
+
+        it('returns 0 when result is null', async () => {
+            const db = createMockDb([{ pnl: null }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(result).toBe(0);
+        });
+
+        it('returns positive PnL for profitable day', async () => {
+            const db = createMockDb([{ pnl: 1200 }]);
+
+            const result = await getTodayRealizedPnl(db as unknown as Db);
+
+            expect(result).toBe(1200);
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -632,14 +670,29 @@ describe('Pending orders queries', () => {
     });
 
     describe('getPendingOrders', () => {
-        it('filters by status=pending', async () => {
+        it('filters by status=pending and excludes expired, ordered by createdAt desc', async () => {
             const mockRows = [{ id: 1, status: 'pending' }];
             const db = createMockDb(mockRows);
 
             const result = await getPendingOrders(db as unknown as Db);
 
             expect(db._chain.where).toHaveBeenCalled();
+            expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+
+    describe('expireOldPendingOrders', () => {
+        it('updates expired pending orders to status=expired', async () => {
+            const db = createMockDb([]);
+
+            await expireOldPendingOrders(db as unknown as Db);
+
+            expect(
+                (db as unknown as { update: ReturnType<typeof vi.fn> }).update,
+            ).toHaveBeenCalled();
+            expect(db._chain.set).toHaveBeenCalledWith({ status: 'expired' });
+            expect(db._chain.where).toHaveBeenCalled();
         });
     });
 

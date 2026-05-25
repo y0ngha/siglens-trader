@@ -529,7 +529,7 @@ export function SettingsPage() {
                             [
                                 'max_daily_loss_usd',
                                 '일일 최대 손실 한도 ($)',
-                                '하루 최대 허용 손실 금액 (향후 지원 예정)',
+                                '오늘 실현 손실이 이 금액을 초과하면 매매 중지',
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (

@@ -14,6 +14,8 @@ import {
     insertPendingOrder,
     getPendingOrders,
     getTodayTradeCount,
+    getTodayRealizedPnl,
+    expireOldPendingOrders,
     createOrderTracking,
     updateOrderTracking,
 } from '../../lib/db/queries';
@@ -150,6 +152,9 @@ export default async function handler(req: Request): Promise<Response> {
             return Response.json({ skipped: true, reason: 'trading_disabled' });
         }
 
+        // Clean up expired pending orders
+        await expireOldPendingOrders(db);
+
         // Circuit breaker: daily trade limit
         const maxTradesPerDay = (await getConfigValue<number>(db, 'max_trades_per_day')) ?? 20;
         const todayTradeCount = await getTodayTradeCount(db);
@@ -159,6 +164,22 @@ export default async function handler(req: Request): Promise<Response> {
                 reason: 'daily_trade_limit_reached',
                 todayCount: todayTradeCount,
                 limit: maxTradesPerDay,
+            });
+        }
+
+        // Circuit breaker: daily loss limit
+        const maxDailyLoss = (await getConfigValue<number>(db, 'max_daily_loss_usd')) ?? 500;
+        const todayPnl = await getTodayRealizedPnl(db);
+        if (todayPnl < -maxDailyLoss) {
+            await sendErrorEmail(
+                '일일 손실 한도 초과',
+                `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+            ).catch(() => {});
+            return Response.json({
+                skipped: true,
+                reason: 'daily_loss_limit_reached',
+                todayPnl,
+                limit: maxDailyLoss,
             });
         }
 
