@@ -111,7 +111,7 @@ All crons run during US market hours (KST 22:00~05:59, Mon-Fri):
 ## Commands
 
 ```bash
-yarn dev              # Vite dev server (port 4300)
+yarn dev              # Vite dev server (port 6270)
 yarn dev:mock         # Vite dev with MSW mocking (no backend needed)
 yarn build            # tsc -b && vite build
 yarn typecheck        # tsc --noEmit

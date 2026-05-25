@@ -180,7 +180,7 @@ export default defineConfig({
         },
     },
     server: {
-        port: 4300,
+        port: 6270,
     },
 });
 ```

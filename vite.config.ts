@@ -88,7 +88,7 @@ export default defineConfig(({ mode }) => {
             },
         },
         server: {
-            port: 4300,
+            port: 6270,
         },
     };
 });
