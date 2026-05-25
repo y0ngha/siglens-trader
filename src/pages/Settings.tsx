@@ -98,6 +98,9 @@ export function SettingsPage() {
     // Local state for trading mode (explicit save pattern)
     const [pendingMode, setPendingMode] = useState<string | null>(null);
 
+    // Confirmation step before enabling auto mode
+    const [confirmAutoMode, setConfirmAutoMode] = useState(false);
+
     // Local state for risk inputs (to allow typing without immediate API calls)
     const [riskOverrides, setRiskOverrides] = useState<Record<string, string>>({});
 
@@ -237,11 +240,15 @@ export function SettingsPage() {
                             '매매 신호 발생 시 이메일 알림을 보내고, 대시보드에서 직접 승인해야 주문이 실행됩니다.'}
                         {currentMode === 'auto' && '매매 신호 발생 시 즉시 주문을 실행합니다.'}
                     </p>
-                    {modeChanged && (
+                    {modeChanged && !confirmAutoMode && (
                         <div className="mt-2 flex items-center gap-2">
                             <button
                                 type="button"
                                 onClick={() => {
+                                    if (pendingMode === 'auto') {
+                                        setConfirmAutoMode(true);
+                                        return;
+                                    }
                                     mutate({
                                         type: 'config',
                                         key: 'trading_mode',
@@ -260,6 +267,41 @@ export function SettingsPage() {
                             >
                                 취소
                             </button>
+                        </div>
+                    )}
+                    {confirmAutoMode && (
+                        <div className="mt-2 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                            <p className="text-sm text-red-400">
+                                자동 모드에서는 매매 신호 발생 시 즉시 주문이 실행됩니다.
+                                계속하시겠습니까?
+                            </p>
+                            <div className="mt-2 flex gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        mutate({
+                                            type: 'config',
+                                            key: 'trading_mode',
+                                            value: 'auto',
+                                        });
+                                        setConfirmAutoMode(false);
+                                        setPendingMode(null);
+                                    }}
+                                    className="rounded bg-red-600 px-3 py-1.5 text-sm text-white"
+                                >
+                                    확인, 자동 모드 활성화
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setConfirmAutoMode(false);
+                                        setPendingMode(null);
+                                    }}
+                                    className="rounded border border-[#262626] px-3 py-1.5 text-sm text-neutral-400"
+                                >
+                                    취소
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>

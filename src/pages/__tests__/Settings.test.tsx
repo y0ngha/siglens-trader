@@ -321,8 +321,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('설정')).toBeInTheDocument();
         });
 
+        // Use semi_auto to test error without confirmation step
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
-        await user.selectOptions(select, 'auto');
+        await user.selectOptions(select, 'semi_auto');
 
         const saveButton = screen.getByText('저장');
         await user.click(saveButton);
@@ -344,13 +345,121 @@ describe('SettingsPage', () => {
         });
 
         const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
-        await user.selectOptions(select, 'auto');
+        await user.selectOptions(select, 'semi_auto');
 
         const saveButton = screen.getByText('저장');
         await user.click(saveButton);
 
         await waitFor(() => {
             expect(screen.getByText('저장되었습니다')).toBeInTheDocument();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Auto mode confirmation dialog
+    // -----------------------------------------------------------------------
+
+    it('shows confirmation dialog when saving auto mode', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'auto');
+
+        const saveButton = screen.getByText('저장');
+        await user.click(saveButton);
+
+        // Should show confirmation dialog, not save yet
+        expect(
+            screen.getByText(/자동 모드에서는 매매 신호 발생 시 즉시 주문이 실행됩니다/),
+        ).toBeInTheDocument();
+        expect(screen.getByText('확인, 자동 모드 활성화')).toBeInTheDocument();
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('saves auto mode after confirmation', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'auto');
+
+        await user.click(screen.getByText('저장'));
+
+        // Confirm
+        await user.click(screen.getByText('확인, 자동 모드 활성화'));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'trading_mode',
+            value: 'auto',
+        });
+    });
+
+    it('cancels auto mode confirmation and reverts', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'auto');
+
+        await user.click(screen.getByText('저장'));
+
+        // Cancel the confirmation
+        await user.click(screen.getByText('취소'));
+
+        // Confirmation dialog should disappear
+        expect(
+            screen.queryByText(/자동 모드에서는 매매 신호 발생 시 즉시 주문이 실행됩니다/),
+        ).not.toBeInTheDocument();
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('does not show confirmation for semi_auto mode', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('설정')).toBeInTheDocument();
+        });
+
+        const select = screen.getByDisplayValue('모의투자 (DRY_RUN)');
+        await user.selectOptions(select, 'semi_auto');
+
+        await user.click(screen.getByText('저장'));
+
+        // Should directly save without confirmation
+        expect(
+            screen.queryByText(/자동 모드에서는 매매 신호 발생 시 즉시 주문이 실행됩니다/),
+        ).not.toBeInTheDocument();
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'trading_mode',
+            value: 'semi_auto',
         });
     });
 

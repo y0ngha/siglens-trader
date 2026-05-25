@@ -824,3 +824,109 @@ describe('POST /api/approve/[id]', () => {
         expect(mockRejectPendingOrder).toHaveBeenCalledWith(fakeDb, 7);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Health endpoint
+// ---------------------------------------------------------------------------
+
+describe('GET /api/health', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../health')).default;
+    });
+
+    it('returns 200 with status ok', async () => {
+        const res = await handler(makeRequest('https://example.com/api/health'));
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data.status).toBe('ok');
+        expect(data.version).toBe('0.1.0');
+        expect(typeof data.timestamp).toBe('string');
+    });
+
+    it('rejects non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/health', 'POST'));
+        expect(res.status).toBe(405);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Analysis type allowlist
+// ---------------------------------------------------------------------------
+
+describe('POST /api/config — analysis type allowlist', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../config')).default;
+    });
+
+    it('rejects unknown analysis type', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'analysis',
+                analysisType: 'astrology',
+                updates: { enabled: true },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('Unknown analysis type');
+    });
+
+    it('accepts valid analysis types', async () => {
+        mockUpdateAnalysisConfig.mockResolvedValue(undefined);
+
+        for (const analysisType of ['technical', 'news', 'options', 'fundamental', 'overall']) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'analysis',
+                    analysisType,
+                    updates: { enabled: true },
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+        expect(mockUpdateAnalysisConfig).toHaveBeenCalledTimes(5);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Notification channel allowlist
+// ---------------------------------------------------------------------------
+
+describe('POST /api/config — notification channel allowlist', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../config')).default;
+    });
+
+    it('rejects unknown notification channel', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'notification',
+                channel: 'sms',
+                updates: { enabled: true },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('Unknown notification channel');
+    });
+
+    it('accepts email channel', async () => {
+        mockUpdateNotificationConfig.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'notification',
+                channel: 'email',
+                updates: { enabled: true },
+            }),
+        );
+        expect(res.status).toBe(200);
+    });
+});

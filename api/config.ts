@@ -166,6 +166,16 @@ export default async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
+                const ALLOWED_ANALYSIS_TYPES = new Set([
+                    'technical',
+                    'news',
+                    'options',
+                    'fundamental',
+                    'overall',
+                ]);
+                if (!ALLOWED_ANALYSIS_TYPES.has(analysisType)) {
+                    return Response.json({ error: 'Unknown analysis type' }, { status: 400 });
+                }
                 await updateAnalysisConfig(
                     db,
                     analysisType,
@@ -179,6 +189,13 @@ export default async function handler(req: Request): Promise<Response> {
                 if (typeof channel !== 'string' || !updates || typeof updates !== 'object') {
                     return Response.json(
                         { error: 'Missing "channel" or "updates"' },
+                        { status: 400 },
+                    );
+                }
+                const ALLOWED_CHANNELS = new Set(['email']);
+                if (!ALLOWED_CHANNELS.has(channel)) {
+                    return Response.json(
+                        { error: 'Unknown notification channel' },
                         { status: 400 },
                     );
                 }

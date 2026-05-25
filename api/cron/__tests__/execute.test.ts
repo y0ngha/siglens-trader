@@ -26,6 +26,7 @@ const mockClosePosition = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertPendingOrder = vi.fn();
+const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
@@ -41,6 +42,7 @@ vi.mock('../../../lib/db/queries', () => ({
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
+    getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
@@ -171,6 +173,7 @@ function setupDefaults() {
     });
     mockInsertTrade.mockResolvedValue([]);
     mockInsertPendingOrder.mockResolvedValue([]);
+    mockGetPendingOrders.mockResolvedValue([]);
     mockGetTodayTradeCount.mockResolvedValue(0);
     mockSaveAnalysisResult.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
@@ -606,6 +609,52 @@ describe('execute cron handler', () => {
 
             expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+        });
+
+        it('skips inserting pending order when one already exists for the symbol', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingOrders.mockResolvedValue([
+                { id: 99, symbol: 'AAPL', status: 'pending', side: 'buy' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertPendingOrder).not.toHaveBeenCalled();
+            expect(mockSendApprovalRequestEmail).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_exists',
+                score: 80,
+            });
+        });
+
+        it('inserts pending order when existing pending is for a different symbol', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingOrders.mockResolvedValue([
+                { id: 99, symbol: 'TSLA', status: 'pending', side: 'buy' },
+            ]);
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertPendingOrder).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ symbol: 'AAPL' }),
+            );
         });
     });
 

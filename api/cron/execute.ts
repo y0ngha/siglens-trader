@@ -12,6 +12,7 @@ import {
     saveAnalysisResult,
     insertTrade,
     insertPendingOrder,
+    getPendingOrders,
     getTodayTradeCount,
     createOrderTracking,
     updateOrderTracking,
@@ -516,7 +517,19 @@ export default async function handler(req: Request): Promise<Response> {
                         }
                         break;
 
-                    case 'semi_auto':
+                    case 'semi_auto': {
+                        // Prevent duplicate pending orders for the same symbol
+                        const existingPending = (await getPendingOrders(db)).find(
+                            (o) => o.symbol === item.symbol && o.status === 'pending',
+                        );
+                        if (existingPending) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'pending_exists',
+                                score: decision.score,
+                            });
+                            break;
+                        }
                         await insertPendingOrder(db, {
                             symbol: item.symbol,
                             side: decision.action,
@@ -535,6 +548,7 @@ export default async function handler(req: Request): Promise<Response> {
                             approveUrl: 'https://auto-trade.siglens.io/pending',
                         }).catch(() => {});
                         break;
+                    }
 
                     case 'auto': {
                         const idempotencyKey = `${cronRunId}-${item.symbol}-${decision.action}`;
