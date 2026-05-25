@@ -364,13 +364,12 @@ export function SettingsPage() {
                 </ul>
             </section>
 
-            {/* Risk */}
+            {/* Fixed Stop-Loss / Take-Profit */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
-                <h2 className="text-sm font-semibold">리스크 관리</h2>
-                <div className="mt-3 flex items-center justify-between">
+                <div className="flex items-center justify-between">
                     <div>
-                        <span className="text-xs text-neutral-400">고정 손절/익절</span>
-                        <p className="text-[10px] text-neutral-600">
+                        <h2 className="text-sm font-semibold">고정 손절/익절</h2>
+                        <p className="mt-0.5 text-[10px] text-neutral-600">
                             OFF 시 AI 분석 기반으로만 판단합니다
                         </p>
                     </div>
@@ -393,50 +392,24 @@ export function SettingsPage() {
                         {fixedExitEnabled ? 'ON' : 'OFF'}
                     </button>
                 </div>
-                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div
+                    className={`mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 ${!fixedExitEnabled ? 'pointer-events-none opacity-40' : ''}`}
+                >
                     {(
                         [
                             [
-                                'max_position_size',
-                                '종목당 최대 투자 금액 ($)',
-                                '한 종목에 투자할 수 있는 최대 금액',
-                            ],
-                            [
-                                'max_total_exposure',
-                                '전체 투자 한도 ($)',
-                                '모든 종목 합산 최대 투자 금액',
-                            ],
-                            [
                                 'stop_loss_percent',
                                 '손절선 (%)',
-                                '평균 매입가 대비 하락 시 자동 매도',
+                                '매입가 대비 이 비율 이상 하락 시 매도',
                             ],
                             [
                                 'take_profit_percent',
                                 '익절선 (%)',
-                                '평균 매입가 대비 상승 시 자동 매도',
-                            ],
-                            [
-                                'buy_threshold',
-                                '매수 신호 기준 (점)',
-                                'AI 분석 점수가 이 값 이상이면 매수',
-                            ],
-                            [
-                                'sell_threshold',
-                                '매도 신호 기준 (점)',
-                                'AI 분석 점수가 이 값 이하이면 매도',
+                                '매입가 대비 이 비율 이상 상승 시 매도',
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (
-                        <div
-                            key={key}
-                            className={
-                                (key === 'stop_loss_percent' || key === 'take_profit_percent') &&
-                                !fixedExitEnabled
-                                    ? 'pointer-events-none opacity-40'
-                                    : ''
-                            }
-                        >
+                        <div key={key}>
                             <label className="text-xs text-neutral-400">{label}</label>
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
@@ -453,34 +426,110 @@ export function SettingsPage() {
                         </div>
                     ))}
                 </div>
-                {hasRiskChanges && (
-                    <div className="mt-3 flex items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={() => {
-                                for (const [key, val] of Object.entries(riskOverrides)) {
-                                    mutate(
-                                        { type: 'config', key, value: Number(val) },
-                                        { showMessage: false },
-                                    );
-                                }
-                                setRiskOverrides({});
-                                setSaveMessage('리스크 설정이 저장되었습니다');
-                            }}
-                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-                        >
-                            저장
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setRiskOverrides({})}
-                            className="rounded-lg border border-[#262626] px-4 py-2 text-sm text-neutral-400 hover:text-neutral-200"
-                        >
-                            취소
-                        </button>
-                    </div>
-                )}
             </section>
+
+            {/* Investment Limits */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <h2 className="text-sm font-semibold">투자 관리</h2>
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {(
+                        [
+                            [
+                                'max_position_size',
+                                '종목당 최대 투자 금액 ($)',
+                                '한 종목에 투자할 수 있는 최대 금액',
+                            ],
+                            [
+                                'max_total_exposure',
+                                '전체 투자 한도 ($)',
+                                '모든 종목 합산 최대 투자 금액',
+                            ],
+                        ] as const
+                    ).map(([key, label, helper]) => (
+                        <div key={key}>
+                            <label className="text-xs text-neutral-400">{label}</label>
+                            <p className="text-[10px] text-neutral-600">{helper}</p>
+                            <input
+                                type="number"
+                                className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                                value={getRiskValue(key)}
+                                onChange={(e) =>
+                                    setRiskOverrides((prev) => ({
+                                        ...prev,
+                                        [key]: e.target.value,
+                                    }))
+                                }
+                            />
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            {/* AI Signal Thresholds */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <h2 className="text-sm font-semibold">AI 매매 신호 기준</h2>
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {(
+                        [
+                            [
+                                'buy_threshold',
+                                '매수 신호 기준 (점)',
+                                'AI 분석 점수가 이 값 이상이면 매수',
+                            ],
+                            [
+                                'sell_threshold',
+                                '매도 신호 기준 (점)',
+                                'AI 분석 점수가 이 값 이하이면 매도',
+                            ],
+                        ] as const
+                    ).map(([key, label, helper]) => (
+                        <div key={key}>
+                            <label className="text-xs text-neutral-400">{label}</label>
+                            <p className="text-[10px] text-neutral-600">{helper}</p>
+                            <input
+                                type="number"
+                                className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                                value={getRiskValue(key)}
+                                onChange={(e) =>
+                                    setRiskOverrides((prev) => ({
+                                        ...prev,
+                                        [key]: e.target.value,
+                                    }))
+                                }
+                            />
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            {/* Save button for all risk/investment/threshold changes */}
+            {hasRiskChanges && (
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            for (const [key, val] of Object.entries(riskOverrides)) {
+                                mutate(
+                                    { type: 'config', key, value: Number(val) },
+                                    { showMessage: false },
+                                );
+                            }
+                            setRiskOverrides({});
+                            setSaveMessage('설정이 저장되었습니다');
+                        }}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                    >
+                        저장
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setRiskOverrides({})}
+                        className="rounded-lg border border-[#262626] px-4 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+                    >
+                        취소
+                    </button>
+                </div>
+            )}
 
             {/* Notifications */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">

@@ -117,7 +117,9 @@ describe('SettingsPage', () => {
         expect(screen.getByText('일반')).toBeInTheDocument();
         expect(screen.getByText('감시 종목')).toBeInTheDocument();
         expect(screen.getByText('분석 설정')).toBeInTheDocument();
-        expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
+        expect(screen.getByText('투자 관리')).toBeInTheDocument();
+        expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
         expect(screen.getByText('알림')).toBeInTheDocument();
     });
 
@@ -433,7 +435,7 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         const stopLossInput = screen.getByDisplayValue('5');
@@ -458,18 +460,15 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         const stopLossInput = screen.getByDisplayValue('5');
         await user.clear(stopLossInput);
         await user.type(stopLossInput, '7');
 
-        // Save button should appear in risk section (after the toggle button)
-        const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        const buttons = Array.from(riskSection.querySelectorAll('button'));
-        const saveButton = buttons.find((b) => b.textContent === '저장');
-        expect(saveButton).toBeTruthy();
+        // Save button should appear (floating below sections)
+        expect(screen.getByRole('button', { name: '저장' })).toBeInTheDocument();
     });
 
     it('saves all changed risk values when save button is clicked', async () => {
@@ -486,7 +485,7 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         const stopLossInput = screen.getByDisplayValue('5');
@@ -497,11 +496,7 @@ describe('SettingsPage', () => {
         await user.clear(takeProfitInput);
         await user.type(takeProfitInput, '15');
 
-        // Click save in the risk section (find by text, not first button)
-        const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        const buttons = Array.from(riskSection.querySelectorAll('button'));
-        const saveButton = buttons.find((b) => b.textContent === '저장')!;
-        await user.click(saveButton);
+        await user.click(screen.getByRole('button', { name: '저장' }));
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
@@ -638,23 +633,18 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         const buyThresholdInput = screen.getByDisplayValue('0.7');
         await user.clear(buyThresholdInput);
         await user.type(buyThresholdInput, '0.8');
 
-        const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        const buttons = Array.from(riskSection.querySelectorAll('button'));
-        const cancelButton = buttons.find((b) => b.textContent === '취소')!;
-        await user.click(cancelButton);
+        await user.click(screen.getByRole('button', { name: '취소' }));
 
-        // Buttons should disappear (only toggle remains)
-        const remainingButtons = riskSection.querySelectorAll('button');
-        const buttonTexts = Array.from(remainingButtons).map((b) => b.textContent);
-        expect(buttonTexts).not.toContain('저장');
-        expect(buttonTexts).not.toContain('취소');
+        // Save/cancel buttons should disappear
+        expect(screen.queryByRole('button', { name: '저장' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: '취소' })).not.toBeInTheDocument();
 
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
@@ -677,7 +667,7 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
@@ -712,15 +702,13 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        // stop_loss_percent and take_profit_percent containers should have opacity-40
+        // The grid containing stop_loss and take_profit inputs should be greyed out
         const stopLossInput = screen.getByDisplayValue('5');
-        const takeProfitInput = screen.getByDisplayValue('10');
-
-        expect(stopLossInput.closest('div')).toHaveClass('opacity-40');
-        expect(takeProfitInput.closest('div')).toHaveClass('opacity-40');
+        const gridContainer = stopLossInput.closest('.grid');
+        expect(gridContainer).toHaveClass('opacity-40');
     });
 
     it('does not grey out stop_loss and take_profit inputs when fixed exit is enabled', async () => {
@@ -735,13 +723,11 @@ describe('SettingsPage', () => {
         renderWithQuery(<SettingsPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
         const stopLossInput = screen.getByDisplayValue('5');
-        const takeProfitInput = screen.getByDisplayValue('10');
-
-        expect(stopLossInput.closest('div')).not.toHaveClass('opacity-40');
-        expect(takeProfitInput.closest('div')).not.toHaveClass('opacity-40');
+        const gridContainer = stopLossInput.closest('.grid');
+        expect(gridContainer).not.toHaveClass('opacity-40');
     });
 });
