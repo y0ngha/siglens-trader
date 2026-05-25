@@ -31,6 +31,7 @@ const mockConfig = {
         { key: 'take_profit_percent', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'buy_threshold', value: 0.7, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'sell_threshold', value: -0.7, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'fixed_exit_enabled', value: false, updatedAt: '2026-01-01T00:00:00Z' },
     ],
     watchlist: [
         {
@@ -445,7 +446,13 @@ describe('SettingsPage', () => {
 
     it('shows save button when risk values are changed', async () => {
         const user = userEvent.setup();
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        const enabledConfig = {
+            ...mockConfig,
+            config: mockConfig.config.map((c) =>
+                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
+            ),
+        };
+        mockedApi.getConfig.mockResolvedValue(enabledConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
@@ -458,14 +465,22 @@ describe('SettingsPage', () => {
         await user.clear(stopLossInput);
         await user.type(stopLossInput, '7');
 
-        // Save button should appear in risk section
+        // Save button should appear in risk section (after the toggle button)
         const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        expect(riskSection.querySelector('button')).toHaveTextContent('저장');
+        const buttons = Array.from(riskSection.querySelectorAll('button'));
+        const saveButton = buttons.find((b) => b.textContent === '저장');
+        expect(saveButton).toBeTruthy();
     });
 
     it('saves all changed risk values when save button is clicked', async () => {
         const user = userEvent.setup();
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        const enabledConfig = {
+            ...mockConfig,
+            config: mockConfig.config.map((c) =>
+                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
+            ),
+        };
+        mockedApi.getConfig.mockResolvedValue(enabledConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
@@ -482,9 +497,10 @@ describe('SettingsPage', () => {
         await user.clear(takeProfitInput);
         await user.type(takeProfitInput, '15');
 
-        // Click save in the risk section
+        // Click save in the risk section (find by text, not first button)
         const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        const saveButton = riskSection.querySelector('button')!;
+        const buttons = Array.from(riskSection.querySelectorAll('button'));
+        const saveButton = buttons.find((b) => b.textContent === '저장')!;
         await user.click(saveButton);
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
@@ -630,12 +646,13 @@ describe('SettingsPage', () => {
         await user.type(buyThresholdInput, '0.8');
 
         const riskSection = screen.getByText('리스크 관리').closest('section')!;
-        const cancelButton = riskSection.querySelectorAll('button')[1];
+        const buttons = Array.from(riskSection.querySelectorAll('button'));
+        const cancelButton = buttons.find((b) => b.textContent === '취소')!;
         await user.click(cancelButton);
 
-        // Buttons should disappear
-        const buttons = riskSection.querySelectorAll('button');
-        const buttonTexts = Array.from(buttons).map((b) => b.textContent);
+        // Buttons should disappear (only toggle remains)
+        const remainingButtons = riskSection.querySelectorAll('button');
+        const buttonTexts = Array.from(remainingButtons).map((b) => b.textContent);
         expect(buttonTexts).not.toContain('저장');
         expect(buttonTexts).not.toContain('취소');
 
@@ -652,5 +669,79 @@ describe('SettingsPage', () => {
         });
 
         expect(screen.getByLabelText('종목 검색')).toBeInTheDocument();
+    });
+
+    it('renders fixed exit toggle in risk section showing OFF by default', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
+        expect(screen.getByText('OFF 시 AI 분석 기반으로만 판단합니다')).toBeInTheDocument();
+        expect(screen.getByLabelText('고정 손절/익절 활성화')).toHaveTextContent('OFF');
+    });
+
+    it('toggles fixed exit enabled on click and calls API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
+        });
+
+        const toggleButton = screen.getByLabelText('고정 손절/익절 활성화');
+        await user.click(toggleButton);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'fixed_exit_enabled',
+            value: true,
+        });
+    });
+
+    it('greys out stop_loss and take_profit inputs when fixed exit is disabled', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        // stop_loss_percent and take_profit_percent containers should have opacity-40
+        const stopLossInput = screen.getByDisplayValue('5');
+        const takeProfitInput = screen.getByDisplayValue('10');
+
+        expect(stopLossInput.closest('div')).toHaveClass('opacity-40');
+        expect(takeProfitInput.closest('div')).toHaveClass('opacity-40');
+    });
+
+    it('does not grey out stop_loss and take_profit inputs when fixed exit is enabled', async () => {
+        const enabledConfig = {
+            ...mockConfig,
+            config: mockConfig.config.map((c) =>
+                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
+            ),
+        };
+        mockedApi.getConfig.mockResolvedValue(enabledConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('리스크 관리')).toBeInTheDocument();
+        });
+
+        const stopLossInput = screen.getByDisplayValue('5');
+        const takeProfitInput = screen.getByDisplayValue('10');
+
+        expect(stopLossInput.closest('div')).not.toHaveClass('opacity-40');
+        expect(takeProfitInput.closest('div')).not.toHaveClass('opacity-40');
     });
 });

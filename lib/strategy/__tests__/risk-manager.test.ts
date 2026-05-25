@@ -243,10 +243,43 @@ describe('evaluateExistingPosition', () => {
         takeProfitPercent: 10,
     };
 
-    describe('fixed stop loss triggers', () => {
-        it('returns stop_loss when loss exceeds stopLossPercent', () => {
+    const enabledParams: EvaluatePositionParams = {
+        ...baseParams,
+        fixedExitEnabled: true,
+    };
+
+    describe('fixedExitEnabled: false (default) — fixed checks skipped', () => {
+        it('does NOT trigger fixed stop loss even when loss exceeds threshold', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
+                currentPrice: 94, // -6% loss, threshold is 5%
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('does NOT trigger fixed take profit even when gain exceeds threshold', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 112, // +12% gain, threshold is 10%
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('dynamic checks still work when fixed exit is disabled', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 98,
+                supportLevel: 99,
+            });
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('지지선 이탈');
+        });
+    });
+
+    describe('fixedExitEnabled: true — fixed checks active', () => {
+        it('returns stop_loss when loss exceeds stopLossPercent', () => {
+            const result = evaluateExistingPosition({
+                ...enabledParams,
                 currentPrice: 94, // -6% loss, threshold is 5%
             });
             expect(result.action).toBe('stop_loss');
@@ -256,10 +289,28 @@ describe('evaluateExistingPosition', () => {
 
         it('returns stop_loss when loss exactly equals stopLossPercent', () => {
             const result = evaluateExistingPosition({
-                ...baseParams,
+                ...enabledParams,
                 currentPrice: 95, // exactly -5%
             });
             expect(result.action).toBe('stop_loss');
+        });
+
+        it('returns take_profit when gain exceeds takeProfitPercent', () => {
+            const result = evaluateExistingPosition({
+                ...enabledParams,
+                currentPrice: 112, // +12% gain, threshold is 10%
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('고정 익절선');
+            expect(result.reason).toContain('+10%');
+        });
+
+        it('returns take_profit when gain exactly equals takeProfitPercent', () => {
+            const result = evaluateExistingPosition({
+                ...enabledParams,
+                currentPrice: 110, // exactly +10%
+            });
+            expect(result.action).toBe('take_profit');
         });
     });
 
@@ -267,7 +318,7 @@ describe('evaluateExistingPosition', () => {
         it('returns stop_loss when price is below support level', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
-                currentPrice: 98, // above fixed stop loss (5% = $95)
+                currentPrice: 98,
                 supportLevel: 99,
             });
             expect(result.action).toBe('stop_loss');
@@ -311,26 +362,6 @@ describe('evaluateExistingPosition', () => {
                 technicalTrend: 'bullish',
             });
             expect(result.action).toBe('hold');
-        });
-    });
-
-    describe('fixed take profit triggers', () => {
-        it('returns take_profit when gain exceeds takeProfitPercent', () => {
-            const result = evaluateExistingPosition({
-                ...baseParams,
-                currentPrice: 112, // +12% gain, threshold is 10%
-            });
-            expect(result.action).toBe('take_profit');
-            expect(result.reason).toContain('고정 익절선');
-            expect(result.reason).toContain('+10%');
-        });
-
-        it('returns take_profit when gain exactly equals takeProfitPercent', () => {
-            const result = evaluateExistingPosition({
-                ...baseParams,
-                currentPrice: 110, // exactly +10%
-            });
-            expect(result.action).toBe('take_profit');
         });
     });
 
@@ -429,9 +460,9 @@ describe('evaluateExistingPosition', () => {
     });
 
     describe('priority order', () => {
-        it('fixed stop loss takes priority over support break', () => {
+        it('fixed stop loss takes priority over support break (when enabled)', () => {
             const result = evaluateExistingPosition({
-                ...baseParams,
+                ...enabledParams,
                 currentPrice: 90, // -10% (exceeds both stop loss and support break)
                 supportLevel: 95,
             });
@@ -454,7 +485,7 @@ describe('evaluateExistingPosition', () => {
             // Edge case: price is +12% (above TP) and trend reversed
             // Since position is profitable, bearish trend triggers take_profit instead of stop_loss
             const result = evaluateExistingPosition({
-                ...baseParams,
+                ...enabledParams,
                 currentPrice: 112, // +12% gain (above 10% TP)
                 technicalTrend: 'bearish',
             });
@@ -463,14 +494,26 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('수익 구간 익절');
         });
 
-        it('fixed take profit takes priority over resistance approach', () => {
+        it('fixed take profit takes priority over resistance approach (when enabled)', () => {
             const result = evaluateExistingPosition({
-                ...baseParams,
+                ...enabledParams,
                 currentPrice: 111, // +11% (exceeds 10% TP)
                 resistanceLevel: 112,
             });
             expect(result.action).toBe('take_profit');
             expect(result.reason).toContain('고정 익절선');
+        });
+
+        it('falls through to dynamic check when fixed exit is disabled', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                fixedExitEnabled: false,
+                currentPrice: 90, // -10% (would trigger fixed SL if enabled)
+                supportLevel: 95, // also below support
+            });
+            // Should hit support break (step 2) instead of fixed SL (step 1)
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('지지선 이탈');
         });
     });
 });

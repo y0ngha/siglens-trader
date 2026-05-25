@@ -32,6 +32,7 @@ export async function seed() {
             key: 'score_weights',
             value: { technical: 8, news: 6, options: 5, fundamental: 4, overall: 3 },
         },
+        { key: 'fixed_exit_enabled', value: false },
     ];
     for (const d of defaults) {
         await db

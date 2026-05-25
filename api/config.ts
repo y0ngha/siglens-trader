@@ -58,6 +58,7 @@ export default async function handler(req: Request): Promise<Response> {
             'sell_threshold',
             'analysis_timeframe',
             'score_weights',
+            'fixed_exit_enabled',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([

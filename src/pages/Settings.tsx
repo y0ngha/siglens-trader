@@ -110,6 +110,9 @@ export function SettingsPage() {
     const currentMode = pendingMode ?? tradingMode;
     const modeChanged = pendingMode !== null && pendingMode !== tradingMode;
 
+    const fixedExitEnabled =
+        getConfigValue(configData.config, 'fixed_exit_enabled', false) === true;
+
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
         max_total_exposure: 25000,
@@ -365,6 +368,32 @@ export function SettingsPage() {
             {/* Risk */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
                 <h2 className="text-sm font-semibold">리스크 관리</h2>
+                <div className="mt-3 flex items-center justify-between">
+                    <div>
+                        <span className="text-xs text-neutral-400">고정 손절/익절</span>
+                        <p className="text-[10px] text-neutral-600">
+                            OFF 시 AI 분석 기반으로만 판단합니다
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            mutate({
+                                type: 'config',
+                                key: 'fixed_exit_enabled',
+                                value: !fixedExitEnabled,
+                            });
+                        }}
+                        className={`min-h-[44px] min-w-[44px] rounded border px-2 py-1 text-xs ${
+                            fixedExitEnabled
+                                ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                : 'border-[#262626] bg-[#0a0a0a] text-neutral-500'
+                        }`}
+                        aria-label={`고정 손절/익절 ${fixedExitEnabled ? '비활성화' : '활성화'}`}
+                    >
+                        {fixedExitEnabled ? 'ON' : 'OFF'}
+                    </button>
+                </div>
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {(
                         [
@@ -392,7 +421,15 @@ export function SettingsPage() {
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (
-                        <div key={key}>
+                        <div
+                            key={key}
+                            className={
+                                (key === 'stop_loss_percent' || key === 'take_profit_percent') &&
+                                !fixedExitEnabled
+                                    ? 'pointer-events-none opacity-40'
+                                    : ''
+                            }
+                        >
                             <label className="text-xs text-neutral-400">{label}</label>
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input

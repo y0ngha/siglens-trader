@@ -30,12 +30,12 @@ Priority-weighted average of 5 analysis axes (weights sum to 26):
 ## Position Re-evaluation Priority
 
 When evaluating an existing position, checks fire in this order:
-1. Fixed stop loss % breach → stop_loss
-2. Price below key support level → stop_loss
-3. Technical trend reversal (bearish) → take_profit if in profit, stop_loss if in loss
-4. Fixed take profit % reached → take_profit
-5. Approaching resistance (98%) or target price (95%) → take_profit
-6. Bearish news + non-bullish trend + profit zone → take_profit
+1. Fixed stop loss % breach → stop_loss (**only when `fixedExitEnabled` is true**)
+2. Price below key support level → stop_loss (always active)
+3. Technical trend reversal (bearish) → take_profit if in profit, stop_loss if in loss (always active)
+4. Fixed take profit % reached → take_profit (**only when `fixedExitEnabled` is true**)
+5. Approaching resistance (98%) or target price (95%) → take_profit (always active)
+6. Bearish news + non-bullish trend + profit zone → take_profit (always active)
 7. None of the above → hold
 
 ## Trade Decision Logic

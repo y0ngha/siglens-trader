@@ -8,6 +8,8 @@ export interface EvaluatePositionParams {
     currentPrice: number;
     stopLossPercent: number;
     takeProfitPercent: number;
+    /** When true, fixed stop-loss and take-profit checks are active. Default: false. */
+    fixedExitEnabled?: boolean;
     /** from keyLevels.support[0] */
     supportLevel?: number;
     /** from keyLevels.resistance[0] */
@@ -55,22 +57,22 @@ export function shouldTakeProfit(
 }
 
 /**
- * Evaluates an existing open position using both fixed thresholds and dynamic
- * analysis-derived levels to decide whether to hold, take profit, or stop loss.
+ * Evaluates an existing open position using dynamic analysis-derived levels
+ * (and optionally fixed thresholds) to decide whether to hold, take profit, or stop loss.
  *
  * Priority order:
- * 1. Fixed stop loss (hard floor)
- * 2. Dynamic stop loss (support level break)
- * 3. Technical trend reversal (bearish)
- * 4. Fixed take profit
- * 5. Dynamic take profit (resistance / target approach)
- * 6. News-driven preemptive exit (bearish news + profit zone)
+ * 1. Fixed stop loss (only when fixedExitEnabled)
+ * 2. Dynamic stop loss (support level break) — always active
+ * 3. Technical trend reversal (bearish) — always active
+ * 4. Fixed take profit (only when fixedExitEnabled)
+ * 5. Dynamic take profit (resistance / target approach) — always active
+ * 6. News-driven preemptive exit (bearish news + profit zone) — always active
  */
 export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
     const { avgPrice, currentPrice, stopLossPercent, takeProfitPercent } = params;
 
-    // 1. Fixed stop loss check (hard floor)
-    if (shouldStopLoss(avgPrice, currentPrice, stopLossPercent)) {
+    // 1. Fixed stop loss check (only when enabled)
+    if (params.fixedExitEnabled && shouldStopLoss(avgPrice, currentPrice, stopLossPercent)) {
         return { action: 'stop_loss', reason: `고정 손절선 도달 (-${stopLossPercent}%)` };
     }
 
@@ -91,8 +93,8 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
     }
 
-    // 4. Fixed take profit check
-    if (shouldTakeProfit(avgPrice, currentPrice, takeProfitPercent)) {
+    // 4. Fixed take profit check (only when enabled)
+    if (params.fixedExitEnabled && shouldTakeProfit(avgPrice, currentPrice, takeProfitPercent)) {
         return { action: 'take_profit', reason: `고정 익절선 도달 (+${takeProfitPercent}%)` };
     }
 

@@ -50,6 +50,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     const stopLossPercent = (await getConfigValue<number>(db, 'stop_loss_percent')) ?? 5;
     const takeProfitPercent = (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
+    const fixedExitEnabled = (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
 
     const watchlistItems = await getEnabledWatchlist(db);
 
@@ -89,6 +90,7 @@ export default async function handler(req: Request): Promise<Response> {
                 currentPrice,
                 stopLossPercent,
                 takeProfitPercent,
+                fixedExitEnabled,
                 supportLevel: techResult?.keyLevels?.support?.[0],
                 resistanceLevel: techResult?.keyLevels?.resistance?.[0],
                 targetPrice: techResult?.priceTargets?.bullish?.target,

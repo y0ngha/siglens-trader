@@ -1145,6 +1145,55 @@ describe('execute cron handler', () => {
             mockGetEnabledWatchlist.mockResolvedValue([]);
         });
 
+        it('passes fixedExitEnabled to evaluateExistingPosition', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'fixed_exit_enabled') return Promise.resolve(true);
+                return Promise.resolve(null);
+            });
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'hold',
+                reason: '유지 (조건 미충족)',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    fixedExitEnabled: true,
+                }),
+            );
+        });
+
+        it('defaults fixedExitEnabled to false when config not set', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'hold',
+                reason: '유지 (조건 미충족)',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    fixedExitEnabled: false,
+                }),
+            );
+        });
+
         it('sells position in dry_run when trend is bearish', async () => {
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockImplementation(

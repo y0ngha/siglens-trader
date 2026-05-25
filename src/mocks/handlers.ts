@@ -9,7 +9,7 @@ function genId() {
 
 interface ConfigEntry {
     key: string;
-    value: string | number;
+    value: string | number | boolean;
     updatedAt: string;
 }
 
@@ -22,6 +22,7 @@ const configEntries: ConfigEntry[] = [
     { key: 'buy_threshold', value: 70, updatedAt: new Date().toISOString() },
     { key: 'sell_threshold', value: 30, updatedAt: new Date().toISOString() },
     { key: 'analysis_timeframe', value: '1Day', updatedAt: new Date().toISOString() },
+    { key: 'fixed_exit_enabled', value: false, updatedAt: new Date().toISOString() },
 ];
 
 let watchlist = [
@@ -632,12 +633,12 @@ export const handlers = [
                 const value = body.value;
                 const entry = configEntries.find((c) => c.key === key);
                 if (entry) {
-                    entry.value = value as string | number;
+                    entry.value = value as string | number | boolean;
                     entry.updatedAt = new Date().toISOString();
                 } else {
                     configEntries.push({
                         key,
-                        value: value as string | number,
+                        value: value as string | number | boolean,
                         updatedAt: new Date().toISOString(),
                     });
                 }
