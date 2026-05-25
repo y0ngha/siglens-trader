@@ -81,7 +81,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return { action: 'stop_loss', reason: '유효하지 않은 매수가 — 수동 확인 필요' };
     }
     if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
-        return { action: 'hold', reason: '유효하지 않은 현재가' };
+        return { action: 'stop_loss', reason: '유효하지 않은 현재가 — 수동 확인 필요' };
     }
 
     // 1. Fixed stop loss check (only when enabled)
@@ -151,6 +151,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             if (gainPercent > 0) {
                 return { action: 'take_profit', reason: 'AI 종합 분석 매도 신호 — 수익 구간 익절' };
             }
+            return { action: 'stop_loss', reason: 'AI 종합 분석 매도 신호 — 손실 구간 손절' };
         }
     }
 

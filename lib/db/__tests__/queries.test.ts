@@ -18,6 +18,7 @@ import {
     getOpenPositionBySymbol,
     openPosition,
     closePosition,
+    reducePositionQuantity,
     averageIntoPosition,
     insertTrade,
     getRecentTrades,
@@ -464,6 +465,34 @@ describe('Positions queries', () => {
                 }),
             );
             expect(db._chain.where).toHaveBeenCalled();
+        });
+    });
+
+    describe('reducePositionQuantity', () => {
+        it('executes atomic SQL update to reduce quantity', async () => {
+            const db = createMockDb([{ id: 1 }]);
+
+            const result = await reducePositionQuantity(db as unknown as Db, 1, 3);
+
+            expect(db.execute).toHaveBeenCalledTimes(1);
+            expect(result).toBe(true);
+        });
+
+        it('returns false when no rows matched', async () => {
+            const db = createMockDb([]);
+
+            const result = await reducePositionQuantity(db as unknown as Db, 999, 5);
+
+            expect(db.execute).toHaveBeenCalledTimes(1);
+            expect(result).toBe(false);
+        });
+
+        it('returns true when rowCount is returned instead of array', async () => {
+            const db = createMockDb({ rowCount: 1 } as any);
+
+            const result = await reducePositionQuantity(db as unknown as Db, 1, 2);
+
+            expect(result).toBe(true);
         });
     });
 

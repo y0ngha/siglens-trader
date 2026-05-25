@@ -173,6 +173,25 @@ export async function closePosition(db: DbOrTx, id: number, closePrice: number) 
 }
 
 /**
+ * Reduce an open position's quantity after a partial sell.
+ * Only updates if the position is open and has more shares than `soldQuantity`.
+ * Returns true if the update matched a row, false otherwise.
+ */
+export async function reducePositionQuantity(
+    db: DbOrTx,
+    id: number,
+    soldQuantity: number,
+): Promise<boolean> {
+    const result = await db.execute(sql`
+        UPDATE positions
+        SET quantity = quantity - ${soldQuantity}
+        WHERE id = ${id} AND status = 'open' AND quantity > ${soldQuantity}
+        RETURNING id
+    `);
+    return (result as any).length > 0 || (result as any).rowCount > 0;
+}
+
+/**
  * Average into an existing open position by adding quantity at a new price.
  * Uses a single atomic SQL UPDATE with full NUMERIC precision to avoid
  * read-then-write race conditions.

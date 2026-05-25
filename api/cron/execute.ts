@@ -9,6 +9,7 @@ import {
     getOpenPositionBySymbol,
     openPosition,
     closePosition,
+    reducePositionQuantity,
     saveAnalysisResult,
     insertTrade,
     insertPendingOrder,
@@ -18,6 +19,7 @@ import {
     expireOldPendingOrders,
     createOrderTracking,
     updateOrderTracking,
+    getPendingSubmittedOrders,
     averageIntoPosition,
 } from '../../lib/db/queries';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall';
@@ -199,9 +201,38 @@ export default async function handler(req: Request): Promise<Response> {
         // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
         const recentStopLossSymbols = new Set<string>();
 
+        // --- Price cache: batch fetch all needed symbols once ---
+        const priceCache = new Map<string, number>();
+        const allSymbols = new Set<string>();
+        for (const p of openPositions) allSymbols.add(p.symbol);
+        for (const w of watchlistItems) allSymbols.add(w.symbol);
+        for (const sym of allSymbols) {
+            const price = await fetchLivePrice(sym).catch(() => null);
+            if (price) priceCache.set(sym, price);
+        }
+
+        // Fetch pending submitted orders once for sell-guard checks
+        const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
+
         // --- Position re-evaluation ---
         for (const position of openPositions) {
             try {
+                // Skip position if there's a pending submitted sell order
+                const hasPendingSell = pendingSubmittedOrders.some(
+                    (o) =>
+                        o.symbol === position.symbol &&
+                        o.side === 'sell' &&
+                        o.status === 'submitted',
+                );
+                if (hasPendingSell) {
+                    decisions.push({
+                        symbol: position.symbol,
+                        action: 'pending_sell_in_progress',
+                        score: 0,
+                    });
+                    continue;
+                }
+
                 const [tech, news, overallResult] = await Promise.all([
                     getLatestAnalysisResult(db, position.symbol, 'technical'),
                     getLatestAnalysisResult(db, position.symbol, 'news'),
@@ -216,8 +247,8 @@ export default async function handler(req: Request): Promise<Response> {
                 }
 
                 const techResult = tech?.result;
-                const livePricePos = await fetchLivePrice(position.symbol).catch(() => null);
-                const currentPrice = livePricePos ?? safeAnalysisPrice(techResult);
+                const currentPrice =
+                    priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
                 if (currentPrice <= 0) {
                     decisions.push({
                         symbol: position.symbol,
@@ -372,19 +403,28 @@ export default async function handler(req: Request): Promise<Response> {
                             break;
                         }
                         // status === 'filled' — close at estimated price if filledPrice missing
+                        const actualExitQty = orderResult.filledQuantity ?? position.quantity;
                         if (!orderResult.filledPrice) {
                             await updateOrderTracking(db, exitIdempotencyKey, {
                                 status: 'fill_price_unknown',
                                 resolvedAt: new Date(),
                             });
                             await db.transaction(async (tx) => {
-                                const closed = await closePosition(tx, position.id, currentPrice);
-                                if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                if (actualExitQty >= position.quantity) {
+                                    const closed = await closePosition(
+                                        tx,
+                                        position.id,
+                                        currentPrice,
+                                    );
+                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                } else {
+                                    await reducePositionQuantity(tx, position.id, actualExitQty);
+                                }
                                 await insertTrade(tx, {
                                     symbol: position.symbol,
                                     side: 'sell',
                                     orderType: 'market',
-                                    quantity: position.quantity,
+                                    quantity: actualExitQty,
                                     price: currentPrice,
                                     executedAt: new Date(),
                                     reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
@@ -407,17 +447,21 @@ export default async function handler(req: Request): Promise<Response> {
                         const filledSellPrice = orderResult.filledPrice;
                         try {
                             await db.transaction(async (tx) => {
-                                const closed = await closePosition(
-                                    tx,
-                                    position.id,
-                                    filledSellPrice,
-                                );
-                                if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                if (actualExitQty >= position.quantity) {
+                                    const closed = await closePosition(
+                                        tx,
+                                        position.id,
+                                        filledSellPrice,
+                                    );
+                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                } else {
+                                    await reducePositionQuantity(tx, position.id, actualExitQty);
+                                }
                                 await insertTrade(tx, {
                                     symbol: position.symbol,
                                     side: 'sell',
                                     orderType: 'market',
-                                    quantity: position.quantity,
+                                    quantity: actualExitQty,
                                     price: filledSellPrice,
                                     executedAt: new Date(),
                                     reason: evaluation.reason,
@@ -425,7 +469,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     cronRunId,
                                 });
                             });
-                            currentExposure -= filledSellPrice * position.quantity;
+                            currentExposure -= filledSellPrice * actualExitQty;
                         } catch (txErr) {
                             if (
                                 txErr instanceof Error &&
@@ -445,7 +489,7 @@ export default async function handler(req: Request): Promise<Response> {
                         await sendTradeExecutedEmail({
                             symbol: position.symbol,
                             side: 'sell',
-                            quantity: position.quantity,
+                            quantity: actualExitQty,
                             price: filledSellPrice,
                             reason: evaluation.reason,
                             mode: 'auto',
@@ -469,22 +513,22 @@ export default async function handler(req: Request): Promise<Response> {
             }
         }
 
-        // Recalculate exposure after position closures using current market prices
+        // Recalculate exposure after position closures using cached market prices
         const updatedPositions = await getOpenPositions(db);
         currentExposure = 0;
         for (const p of updatedPositions) {
             let priceForRecalc = safeNumber(Number(p.avgPrice), 0);
-            try {
-                const liveRecalc = await fetchLivePrice(p.symbol).catch(() => null);
-                if (liveRecalc && liveRecalc > 0) {
-                    priceForRecalc = liveRecalc;
-                } else {
+            const cachedRecalc = priceCache.get(p.symbol);
+            if (cachedRecalc && cachedRecalc > 0) {
+                priceForRecalc = cachedRecalc;
+            } else {
+                try {
                     const techForRecalc = await getLatestAnalysisResult(db, p.symbol, 'technical');
                     const recalcPrice = safeAnalysisPrice(techForRecalc?.result);
                     if (recalcPrice > 0) priceForRecalc = recalcPrice;
+                } catch {
+                    // Fall back to avgPrice when analysis data is unavailable
                 }
-            } catch {
-                // Fall back to avgPrice when analysis data is unavailable
             }
             currentExposure += priceForRecalc * p.quantity;
         }
@@ -588,8 +632,7 @@ export default async function handler(req: Request): Promise<Response> {
 
                 // Position + pricing
                 const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
-                const livePriceWatch = await fetchLivePrice(item.symbol).catch(() => null);
-                const currentPrice = livePriceWatch ?? safeAnalysisPrice(tech?.result);
+                const currentPrice = priceCache.get(item.symbol) ?? safeAnalysisPrice(tech?.result);
 
                 if (currentPrice <= 0) {
                     decisions.push({ symbol: item.symbol, action: 'skipped_no_price', score: 0 });
@@ -615,7 +658,7 @@ export default async function handler(req: Request): Promise<Response> {
                 }
 
                 // Make decision
-                const decision = makeTradeDecision({
+                let decision = makeTradeDecision({
                     symbol: item.symbol,
                     signalScore,
                     hasOpenPosition: !!existingPosition,
@@ -634,6 +677,51 @@ export default async function handler(req: Request): Promise<Response> {
                         score: decision.score,
                     });
                     continue;
+                }
+
+                // Pending sell guard: skip sell if there's a submitted sell order in flight
+                if (decision.action === 'sell') {
+                    const hasPendingSellWatch = pendingSubmittedOrders.some(
+                        (o) =>
+                            o.symbol === item.symbol &&
+                            o.side === 'sell' &&
+                            o.status === 'submitted',
+                    );
+                    if (hasPendingSellWatch) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'pending_sell_in_progress',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+                }
+
+                // Sell without position guard: no phantom trade when no position exists
+                if (decision.action === 'sell' && !existingPosition) {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: 'no_position_to_sell',
+                        score: decision.score,
+                    });
+                    continue;
+                }
+
+                // Per-symbol exposure cap for average_in
+                if (decision.action === 'average_in' && existingPosition) {
+                    const existingExposure =
+                        Number(existingPosition.avgPrice) * existingPosition.quantity;
+                    const remainingSymbolBudget = Math.max(0, maxPositionSize - existingExposure);
+                    const cappedSize = Math.floor(remainingSymbolBudget / currentPrice);
+                    if (cappedSize <= 0) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'symbol_limit_reached',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+                    decision = { ...decision, quantity: cappedSize };
                 }
 
                 // Insufficient balance — signal is buy but position size is 0
@@ -943,12 +1031,20 @@ export default async function handler(req: Request): Promise<Response> {
                                 );
                                 if (existingSellEstimated) {
                                     await db.transaction(async (tx) => {
-                                        const closed = await closePosition(
-                                            tx,
-                                            existingSellEstimated.id,
-                                            currentPrice,
-                                        );
-                                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                        if (estimatedQty >= existingSellEstimated.quantity) {
+                                            const closed = await closePosition(
+                                                tx,
+                                                existingSellEstimated.id,
+                                                currentPrice,
+                                            );
+                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                        } else {
+                                            await reducePositionQuantity(
+                                                tx,
+                                                existingSellEstimated.id,
+                                                estimatedQty,
+                                            );
+                                        }
                                         await insertTrade(tx, {
                                             symbol: item.symbol,
                                             side: autoSide,
@@ -963,18 +1059,6 @@ export default async function handler(req: Request): Promise<Response> {
                                     });
                                     currentExposure -= currentPrice * estimatedQty;
                                     if (currentExposure < 0) currentExposure = 0;
-                                } else {
-                                    await insertTrade(db, {
-                                        symbol: item.symbol,
-                                        side: autoSide,
-                                        orderType: 'market',
-                                        quantity: estimatedQty,
-                                        price: currentPrice,
-                                        executedAt: new Date(),
-                                        reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                        mode: 'auto',
-                                        cronRunId,
-                                    });
                                 }
                             }
                             await sendErrorEmail(
@@ -1044,12 +1128,20 @@ export default async function handler(req: Request): Promise<Response> {
                             if (existingSellPos) {
                                 try {
                                     await db.transaction(async (tx) => {
-                                        const closed = await closePosition(
-                                            tx,
-                                            existingSellPos.id,
-                                            filledPrice,
-                                        );
-                                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                        if (actualQuantity >= existingSellPos.quantity) {
+                                            const closed = await closePosition(
+                                                tx,
+                                                existingSellPos.id,
+                                                filledPrice,
+                                            );
+                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                        } else {
+                                            await reducePositionQuantity(
+                                                tx,
+                                                existingSellPos.id,
+                                                actualQuantity,
+                                            );
+                                        }
                                         await insertTrade(tx, {
                                             symbol: item.symbol,
                                             side: autoSide,
@@ -1079,18 +1171,6 @@ export default async function handler(req: Request): Promise<Response> {
                                     }
                                     throw txErr;
                                 }
-                            } else {
-                                await insertTrade(db, {
-                                    symbol: item.symbol,
-                                    side: autoSide,
-                                    orderType: 'market',
-                                    quantity: actualQuantity,
-                                    price: filledPrice,
-                                    executedAt: new Date(),
-                                    reason: tradeReason,
-                                    mode: 'auto',
-                                    cronRunId,
-                                });
                             }
                         } else {
                             await insertTrade(db, {

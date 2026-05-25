@@ -577,39 +577,40 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('유효하지 않은 매수가');
         });
 
-        it('returns hold with reason when currentPrice is 0', () => {
+        it('returns stop_loss with reason when currentPrice is 0', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 0,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
+            expect(result.reason).toContain('수동 확인 필요');
         });
 
-        it('returns hold with reason when currentPrice is NaN', () => {
+        it('returns stop_loss with reason when currentPrice is NaN', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: NaN,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
         });
 
-        it('returns hold with reason when currentPrice is negative', () => {
+        it('returns stop_loss with reason when currentPrice is negative', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: -50,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
         });
 
-        it('returns hold with reason when currentPrice is Infinity', () => {
+        it('returns stop_loss with reason when currentPrice is Infinity', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: Infinity,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
         });
     });
@@ -625,13 +626,15 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('AI 종합 분석 매도 신호');
         });
 
-        it('holds when overall AI signal is bearish but position has no gain', () => {
+        it('returns stop_loss when overall AI signal is bearish and position has loss', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 98, // -2% loss
                 overallSignal: '하락 전망. 매도 권장.',
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('AI 종합 분석 매도 신호');
+            expect(result.reason).toContain('손실 구간 손절');
         });
 
         it('holds when overall AI signal is not bearish', () => {
