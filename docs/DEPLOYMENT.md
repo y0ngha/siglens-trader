@@ -71,9 +71,11 @@ TOSS_ACCOUNT_NO=
 | `/api/cron/news` | 매시 정각 | 뉴스 분석 |
 | `/api/cron/options` | 매시 정각 | 옵션 분석 |
 | `/api/cron/fundamental` | 하루 1회 (KST 22:00) | 펀더멘털 분석 |
-| `/api/cron/execute` | 매시 7분 (분석 후 offset) | 매매 판단/실행 |
+| `/api/cron/execute` | 매시 7분 (분석 후 offset) | 매매 판단/실행 (분산 락 사용) |
+| `/api/cron/reconcile` | 10분 간격 | 미체결 주문 타임아웃(30분) + DB 정합성 검사 |
 
 스케줄 상세: `0 22-23,0-5 * * 1-5` (KST 22:00~05:59, 월~금 = US 장중)
+reconcile: `*/10 22-23,0-5 * * 1-5` (10분 간격, 장중 시간대)
 
 Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
 
@@ -195,6 +197,7 @@ UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 | GET | `/api/pending` | 승인 대기 주문 |
 | POST | `/api/approve/:id` | 주문 승인/거절 |
 | GET | `/api/search?q=` | 종목 검색 (FMP) |
+| GET | `/api/health` | 헬스체크 (인증 불필요, `?deep=true`로 DB 정합성 포함) |
 
 ### Cron API (CRON_SECRET 인증)
 
@@ -204,7 +207,33 @@ UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 | GET | `/api/cron/news` | 뉴스 분석 실행 |
 | GET | `/api/cron/options` | 옵션 분석 실행 |
 | GET | `/api/cron/fundamental` | 펀더멘털 분석 실행 |
-| GET | `/api/cron/execute` | 매매 판단 + 실행 |
+| GET | `/api/cron/execute` | 매매 판단 + 실행 (분산 락, 서킷 브레이커 포함) |
+| GET | `/api/cron/reconcile` | 미체결 주문 타임아웃 + DB 정합성 검사 |
+
+---
+
+## 11. 새 환경변수 (감사 후 추가)
+
+execute cron과 reconcile cron에서 사용하는 설정값은 DB `config` 테이블에 저장된다:
+
+| Config Key | 기본값 | 설명 |
+|------------|--------|------|
+| `trading_enabled` | `true` | 킬 스위치 — `false`면 모든 매매 즉시 중단 |
+| `max_trades_per_day` | `20` | 일일 최대 거래 횟수 |
+| `max_daily_loss_usd` | `500` | 일일 최대 허용 손실 (실현 + 미실현 합산) |
+| `fixed_exit_enabled` | `false` | 고정 손절/익절 비율 활성화 |
+
+Redis 분산 락을 위해 기존 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`이 반드시 설정되어야 한다. 미설정 시 락이 비활성화되어 동시 실행 위험이 있다 (dev 모드에서는 warning 출력 후 진행).
+
+---
+
+## 12. 마이그레이션 참고
+
+`order_tracking` 테이블이 추가되었다. 배포 전 반드시 마이그레이션을 실행할 것:
+
+```bash
+yarn db:migrate
+```
 
 ---
 
@@ -219,3 +248,6 @@ UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 | 이메일 안 옴 | RESEND_API_KEY 미설정 | Resend 대시보드 확인 |
 | Access 거부 | Cloudflare policy 미적용 | Zero Trust 설정 재확인 |
 | Config 400 | 허용되지 않은 key | ALLOWED_CONFIG_KEYS 확인 (api/config.ts) |
+| Execute skipped (locked) | 이전 execute cron이 아직 실행 중 | Redis 락 TTL (15분) 만료 대기, 또는 수동 키 삭제 |
+| Reconcile 이메일 폭발 | 다수 주문 30분 타임아웃 | broker 연결 상태 확인, 수동 주문 상태 업데이트 |
+| 일일 손실 한도 초과 | 당일 실현+미실현 손실 합산 초과 | `max_daily_loss_usd` 조정 또는 다음 거래일까지 대기 |

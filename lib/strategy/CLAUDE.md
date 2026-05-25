@@ -6,15 +6,16 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal) + constants (DEFAULT_WEIGHTS: `{technical:8, news:6, options:5, fundamental:4, overall:3}`, DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{technical:8, news:6, options:5, fundamental:4, overall:3}`, DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. |
-| `decision.ts` | Combines signal score + position state → buy/sell/hold. Generates human-readable `reason` string with component breakdown. |
+| `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
+| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisTargetPrice`, `safeActionRecommendation`. Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. |
 
 ## Rules
 
 - **100% test coverage required.** Every change must maintain this.
-- **No imports from `lib/data/`, `lib/trading/`, `lib/db/`, or any external package.**
+- **No imports from `lib/data/`, `lib/trading/`, `lib/db/`, or any external package.** Exception: `safe-extract.ts` imports `isFinitePositive` from `lib/validation.ts` (pure utility, no I/O).
 - Pure functions only — given inputs, return deterministic outputs.
 - All thresholds and weights must be parameterized (not hardcoded).
 
@@ -42,8 +43,27 @@ When evaluating an existing position, checks fire in this order:
 
 ```
 signal === 'buy' && !hasOpenPosition && calculatedSize > 0 → BUY
+signal === 'buy' && hasOpenPosition && calculatedSize > 0  → AVERAGE_IN (추가 매수)
 signal === 'sell' && hasOpenPosition → SELL (full position)
 otherwise → HOLD
 ```
 
 Special case: if signal is 'buy' but calculatedSize is 0 (exposure limit reached), the execute cron records a "skipped" trade with reason.
+
+### Average-in Logic
+
+When a buy signal fires for a symbol that already has an open position, the decision layer emits `average_in` instead of `buy`. The execute cron then:
+1. Caps the additional quantity by per-symbol exposure limit (`maxPositionSize - currentExposure`)
+2. Calls `averageIntoPosition()` with atomic SQL to compute new weighted average price
+3. Wraps trade insert + position update in a DB transaction
+
+### Partial Fill Handling
+
+When broker returns `filledQuantity < requestedQuantity`:
+- `reducePositionQuantity()` decrements the open position by the sold quantity (SQL `quantity - soldQuantity WHERE quantity >= soldQuantity`)
+- If `filledQuantity >= positionQuantity`, full close via `closePosition()`
+- Email alert sent for partial fills
+
+### Stop-loss Cooldown
+
+Symbols closed by stop-loss during a cron run are tracked in `recentStopLossSymbols` (in-memory Set). Buy/average_in signals for these symbols are suppressed during the same run to prevent stop-loss → immediate re-buy loops.

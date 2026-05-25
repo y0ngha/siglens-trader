@@ -66,6 +66,11 @@ The handlers in `src/mocks/handlers.ts` provide full in-memory state for all das
 - Position close, order approve/reject
 - Ticker search passes through to real API
 
+## New UI Features (Audit)
+
+- **Auto mode confirmation dialog**: Browser `confirm()` prompt when switching trading mode to `auto`, preventing accidental activation of live trading
+- **Trade-based PnL display**: Status page shows realized PnL based on trade calculations (not net cash flow)
+
 ## Design
 
 - Minimal, dark, no unnecessary chrome

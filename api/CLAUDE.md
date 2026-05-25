@@ -16,7 +16,9 @@ api/
 │   ├── news.ts        # hourly — news analysis
 │   ├── options.ts     # hourly — options analysis
 │   ├── fundamental.ts # daily — fundamental analysis
-│   └── execute.ts     # hourly +7min — trade execution + position re-evaluation
+│   ├── execute.ts     # hourly +7min — trade execution + position re-evaluation
+│   └── reconcile.ts   # every 10min — order timeout + DB consistency check
+├── health.ts          # GET /api/health (no auth, optional ?deep=true for DB check)
 ├── status.ts          # GET /api/status
 ├── positions.ts       # GET /api/positions
 ├── positions/[id]/
@@ -56,12 +58,50 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 
 ## Execute Cron Flow
 
-1. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
-2. Recalculate exposure after any closures
-3. Score signals for watchlist symbols (runs overall analysis if stale >2h)
-4. Make trade decisions
-5. Handle skipped trades (exposure limit exceeded) with notification
-6. Execute per mode (dry_run → DB only, semi_auto → pending + email, auto → Toss API)
+1. Acquire distributed lock (`cron:execute:lock`, 15min TTL)
+2. Circuit breaker checks: kill switch → daily trade limit → daily loss limit (realized + unrealized)
+3. Expire old pending orders
+4. Fetch live prices for all symbols (FMP quote API, cached per run)
+5. Fetch pending submitted orders (for sell-guard checks)
+6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
+   - Skip positions with pending sell in-flight
+   - Track stop-loss closures for cooldown
+7. Recalculate exposure after any closures (using market prices)
+8. Score signals for watchlist symbols (runs overall analysis if stale >2h)
+9. Make trade decisions (buy/sell/hold/average_in)
+   - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
+   - Pending sell guard: skip sell if submitted sell order exists
+   - Per-symbol exposure cap for average_in
+   - Re-check kill switch before each trade
+10. Execute per mode:
+    - `dry_run` → DB transaction (trade + position atomically)
+    - `semi_auto` → pending order + email notification
+    - `auto` → order tracking + Toss API + DB transaction + email
+11. Release lock in `finally` block
+
+## Reconcile Cron Flow
+
+1. Acquire lock (`cron:reconcile:lock`, 5min TTL)
+2. Query all `submitted` orders from `order_tracking`
+3. For orders older than 30 minutes: mark `timeout`, send email (urgent for sells)
+4. Run DB consistency check (`checkConsistency`) — find filled orders without matching trades
+5. If inconsistencies found, send alert email
+
+## Circuit Breakers
+
+| Breaker | Config Key | Default | Behavior |
+|---------|-----------|---------|----------|
+| Kill switch | `trading_enabled` | `true` | Re-checked before each trade in the loop |
+| Daily trade limit | `max_trades_per_day` | `20` | Checked at start + before each trade |
+| Daily loss limit | `max_daily_loss_usd` | `500` | Realized PnL + unrealized PnL (live prices) |
+
+## Order Lifecycle
+
+```
+createOrderTracking(submitted) → API call → updateOrderTracking(filled/rejected/error)
+                                                      ↓ (if stays submitted)
+                                          reconcile cron → timeout after 30min → email alert
+```
 
 ## Rules
 
@@ -70,3 +110,6 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 - Cron functions have `maxDuration: 800` (Vercel Pro).
 - All errors caught per-symbol in execute cron — one failure doesn't stop the loop.
 - Position close uses atomic DB update (`WHERE status = 'open'`) — returns 409 on race condition.
+- Execute and reconcile crons use distributed locks (Redis SETNX) — concurrent invocations return `{ skipped: true }`.
+- Trade + position mutations are wrapped in DB transactions for atomicity.
+- `health.ts` requires no authentication — designed for uptime monitoring services.
