@@ -96,7 +96,8 @@ export function StatusPage() {
     const configEntries = configData as
         | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
         | undefined;
-    const watchlistItems = configEntries?.watchlist ?? [];
+    const watchlistItems =
+        (configEntries?.watchlist as { symbol: string; enabled?: boolean }[] | undefined) ?? [];
     const takeProfitPercent = Number(
         configEntries?.config?.find((c) => c.key === 'take_profit_percent')?.value ?? 5,
     );
@@ -164,7 +165,11 @@ export function StatusPage() {
                                         {watchlistItems.slice(0, 5).map((w) => (
                                             <span
                                                 key={w.symbol}
-                                                className="rounded bg-[#262626] px-1.5 py-0.5 text-[10px] font-medium"
+                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                                    w.enabled !== false
+                                                        ? 'bg-green-500/10 text-green-400'
+                                                        : 'bg-red-500/10 text-red-400'
+                                                }`}
                                             >
                                                 {w.symbol}
                                             </span>
@@ -193,14 +198,23 @@ export function StatusPage() {
                                 </div>
                                 {openPositions.length > 0 && (
                                     <div className="mt-1 flex flex-wrap gap-1">
-                                        {openPositions.slice(0, 5).map((p) => (
-                                            <span
-                                                key={p.id}
-                                                className="rounded bg-[#262626] px-1.5 py-0.5 text-[10px] font-medium"
-                                            >
-                                                {p.symbol}
-                                            </span>
-                                        ))}
+                                        {openPositions.slice(0, 5).map((p) => {
+                                            const cur = Number(p.currentPrice ?? p.avgPrice);
+                                            const avg = Number(p.avgPrice);
+                                            const profitable = cur >= avg;
+                                            return (
+                                                <span
+                                                    key={p.id}
+                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                                        profitable
+                                                            ? 'bg-green-500/10 text-green-400'
+                                                            : 'bg-red-500/10 text-red-400'
+                                                    }`}
+                                                >
+                                                    {p.symbol}
+                                                </span>
+                                            );
+                                        })}
                                         {openPositions.length > 5 && (
                                             <span className="text-[10px] text-neutral-500">
                                                 +{openPositions.length - 5}개
@@ -259,33 +273,52 @@ export function StatusPage() {
 
                         {/* 포지션별 목표 */}
                         {openPositions.length > 0 && (
-                            <div className="mt-2 space-y-1">
-                                <span className="text-xs text-neutral-400">포지션별 목표</span>
-                                {openPositions.slice(0, 3).map((p) => {
-                                    const avg = Number(p.avgPrice);
-                                    const tp = avg * (1 + takeProfitPercent / 100);
-                                    const sl = avg * (1 - stopLossPercent / 100);
-                                    return (
-                                        <div
-                                            key={p.id}
-                                            className="flex items-center justify-between text-[11px]"
-                                        >
-                                            <span className="font-medium">{p.symbol}</span>
-                                            <div className="flex gap-3">
-                                                <span className="text-green-400">
-                                                    ↑${tp.toFixed(2)}
-                                                </span>
-                                                <span className="text-red-400">
-                                                    ↓${sl.toFixed(2)}
-                                                </span>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                                {openPositions.length > 3 && (
-                                    <span className="text-[10px] text-neutral-500">
-                                        +{openPositions.length - 3}개 포지션
-                                    </span>
+                            <div className="rounded-lg border border-[#262626] bg-[#141414]">
+                                <table className="w-full text-[11px]">
+                                    <thead>
+                                        <tr className="border-b border-[#262626] text-neutral-500">
+                                            <th className="px-3 py-2 text-left font-medium">
+                                                종목
+                                            </th>
+                                            <th className="px-3 py-2 text-right font-medium">
+                                                매수가
+                                            </th>
+                                            <th className="px-3 py-2 text-right font-medium">
+                                                익절 목표
+                                            </th>
+                                            <th className="px-3 py-2 text-right font-medium">
+                                                손절 라인
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-[#262626]">
+                                        {openPositions.slice(0, 5).map((p) => {
+                                            const avg = Number(p.avgPrice);
+                                            const tp = avg * (1 + takeProfitPercent / 100);
+                                            const sl = avg * (1 - stopLossPercent / 100);
+                                            return (
+                                                <tr key={p.id}>
+                                                    <td className="px-3 py-2 font-medium">
+                                                        {p.symbol}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right font-mono text-neutral-300">
+                                                        ${avg.toFixed(2)}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right font-mono text-green-400">
+                                                        ${tp.toFixed(2)}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right font-mono text-red-400">
+                                                        ${sl.toFixed(2)}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                                {openPositions.length > 5 && (
+                                    <div className="border-t border-[#262626] px-3 py-1.5 text-center text-[10px] text-neutral-500">
+                                        +{openPositions.length - 5}개 포지션
+                                    </div>
                                 )}
                             </div>
                         )}
