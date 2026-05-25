@@ -77,8 +77,8 @@ export default async function handler(req: Request): Promise<Response> {
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
 
         if (tradingMode === 'auto') {
+            const idempotencyKey = `approve-${id}`;
             try {
-                const idempotencyKey = `approve-${id}`;
                 await createOrderTracking(db, {
                     idempotencyKey,
                     symbol: order.symbol,
@@ -98,6 +98,7 @@ export default async function handler(req: Request): Promise<Response> {
                 });
 
                 if (result.status === 'rejected') {
+                    await revertPendingOrder(db, id).catch(() => {});
                     return Response.json(
                         { error: `Order rejected: ${result.message ?? 'unknown'}` },
                         { status: 422 },
@@ -116,25 +117,27 @@ export default async function handler(req: Request): Promise<Response> {
                 }
                 if (result.status === 'filled') {
                     if (!result.filledPrice) {
+                        // Record at estimated price rather than leaving position untracked
+                        filledPrice = price;
                         await updateOrderTracking(db, idempotencyKey, {
                             status: 'fill_price_unknown',
                         });
                         await sendErrorEmail(
                             `체결가 누락: ${order.symbol}`,
-                            `${order.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 수동 확인이 필요합니다.`,
+                            `${order.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 예상가 $${price}로 기록합니다.`,
                         ).catch((e) => console.error('[email]', e));
-                        return Response.json(
-                            {
-                                error: 'Order filled but no fill price returned — manual reconciliation needed',
-                            },
-                            { status: 502 },
-                        );
+                        // Continue to trade recording below with estimated price
+                    } else {
+                        filledPrice = result.filledPrice;
                     }
-                    filledPrice = result.filledPrice;
                     actualQuantity = result.filledQuantity ?? order.quantity;
                 }
             } catch (err) {
-                // Toss API failed — revert order status back to pending so user can retry
+                // Toss API failed — mark order tracking as error and revert pending status
+                await updateOrderTracking(db, idempotencyKey, {
+                    status: 'error',
+                    resolvedAt: new Date(),
+                }).catch(() => {});
                 await revertPendingOrder(db, id).catch(() => {});
 
                 await sendErrorEmail(

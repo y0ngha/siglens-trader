@@ -91,6 +91,13 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
 
     // 2. Dynamic stop loss: price broke below key support
     if (params.supportLevel && currentPrice < params.supportLevel) {
+        const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+        if (gainPercent > 0) {
+            return {
+                action: 'take_profit',
+                reason: `지지선 이탈이나 수익 구간 — 익절 (지지: $${params.supportLevel})`,
+            };
+        }
         return {
             action: 'stop_loss',
             reason: `지지선 이탈 (지지: $${params.supportLevel}, 현재: $${currentPrice})`,

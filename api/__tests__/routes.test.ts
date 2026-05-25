@@ -111,6 +111,9 @@ beforeEach(() => {
     vi.resetAllMocks();
     mockGetDb.mockReturnValue(fakeDb);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    mockCreateOrderTracking.mockResolvedValue([]);
+    mockUpdateOrderTracking.mockResolvedValue([]);
+    mockRevertPendingOrder.mockResolvedValue(true);
 });
 
 describe('GET /api/status', () => {

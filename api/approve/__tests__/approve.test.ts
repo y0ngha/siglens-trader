@@ -192,11 +192,34 @@ describe('approve handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Rejected order reverts to pending
+    // -----------------------------------------------------------------------
+
+    describe('rejected order revert', () => {
+        it('reverts pending order when Toss API rejects', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'rejected',
+                message: 'Insufficient funds',
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(422);
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // filledPrice missing in auto mode
     // -----------------------------------------------------------------------
 
     describe('filledPrice missing in auto mode', () => {
-        it('returns error when filledPrice is undefined', async () => {
+        it('records trade at estimated price when filledPrice is undefined', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
@@ -209,7 +232,10 @@ describe('approve handler', () => {
 
             const res = await handler(makeApproveRequest(1, 'approve'));
 
-            expect(res.status).toBe(502);
+            // Should succeed (not 502) — trade recorded at estimated price
+            expect(res.status).toBe(200);
+            const body = await res.json();
+            expect(body.success).toBe(true);
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
                 'approve-1',
@@ -217,9 +243,43 @@ describe('approve handler', () => {
             );
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결가 누락'),
-                expect.stringContaining('수동 확인이 필요합니다'),
+                expect.stringContaining('예상가 $150로 기록합니다'),
             );
-            expect(mockInsertTrade).not.toHaveBeenCalled();
+            // Trade should be inserted at priceLimit (150)
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    price: 150,
+                }),
+            );
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // API error updates orderTracking to error
+    // -----------------------------------------------------------------------
+
+    describe('API error updates orderTracking', () => {
+        it('marks orderTracking as error when Toss API throws', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockExecuteBuyOrder.mockRejectedValue(new Error('Network timeout'));
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(502);
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'approve-1',
+                expect.objectContaining({
+                    status: 'error',
+                    resolvedAt: expect.any(Date),
+                }),
+            );
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
         });
     });
 

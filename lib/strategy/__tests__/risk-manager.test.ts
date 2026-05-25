@@ -396,8 +396,8 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
-    describe('support level break triggers stop_loss', () => {
-        it('returns stop_loss when price is below support level', () => {
+    describe('support level break', () => {
+        it('returns stop_loss when price is below support level and in loss', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 98,
@@ -407,6 +407,18 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('지지선 이탈');
             expect(result.reason).toContain('$99');
             expect(result.reason).toContain('$98');
+        });
+
+        it('returns take_profit when price is below support level but in profit', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 80,
+                currentPrice: 98,
+                supportLevel: 99,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('지지선 이탈이나 수익 구간');
+            expect(result.reason).toContain('익절');
         });
 
         it('holds when price is above support level', () => {
@@ -686,15 +698,27 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('고정 손절선');
         });
 
-        it('support break takes priority over trend reversal', () => {
+        it('support break takes priority over trend reversal (loss zone)', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
-                currentPrice: 97, // above fixed stop loss at 95
+                currentPrice: 97, // above fixed stop loss at 95, in loss zone
                 supportLevel: 98, // below support
                 technicalTrend: 'bearish',
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('지지선 이탈');
+        });
+
+        it('support break in profit zone returns take_profit before trend check', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 80, // bought at 80
+                currentPrice: 97, // in profit zone
+                supportLevel: 98, // below support
+                technicalTrend: 'bearish',
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('지지선 이탈이나 수익 구간');
         });
 
         it('trend reversal takes priority over fixed take profit (profitable = take_profit)', () => {

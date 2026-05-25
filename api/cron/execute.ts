@@ -206,7 +206,7 @@ export default async function handler(req: Request): Promise<Response> {
 
                 const techResult = tech?.result;
                 const currentPrice = safeAnalysisPrice(techResult);
-                if (currentPrice === 0) {
+                if (currentPrice <= 0) {
                     decisions.push({
                         symbol: position.symbol,
                         action: 'skipped_no_price',
@@ -313,11 +313,20 @@ export default async function handler(req: Request): Promise<Response> {
                             status: 'submitted',
                             cronRunId,
                         });
-                        const orderResult = await executeSellOrder(
-                            position.symbol,
-                            position.quantity,
-                            exitIdempotencyKey,
-                        );
+                        let orderResult;
+                        try {
+                            orderResult = await executeSellOrder(
+                                position.symbol,
+                                position.quantity,
+                                exitIdempotencyKey,
+                            );
+                        } catch (apiErr) {
+                            await updateOrderTracking(db, exitIdempotencyKey, {
+                                status: 'error',
+                                resolvedAt: new Date(),
+                            }).catch(() => {});
+                            throw apiErr;
+                        }
                         await updateOrderTracking(db, exitIdempotencyKey, {
                             tossOrderId: orderResult.orderId,
                             status: orderResult.status,
@@ -564,7 +573,7 @@ export default async function handler(req: Request): Promise<Response> {
                 const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
                 const currentPrice = safeAnalysisPrice(tech?.result);
 
-                if (currentPrice === 0) {
+                if (currentPrice <= 0) {
                     decisions.push({ symbol: item.symbol, action: 'skipped_no_price', score: 0 });
                     continue;
                 }
@@ -822,11 +831,20 @@ export default async function handler(req: Request): Promise<Response> {
                             decision.action === 'buy' || decision.action === 'average_in'
                                 ? executeBuyOrder
                                 : executeSellOrder;
-                        const orderResult = await orderFn(
-                            item.symbol,
-                            decision.quantity,
-                            idempotencyKey,
-                        );
+                        let orderResult;
+                        try {
+                            orderResult = await orderFn(
+                                item.symbol,
+                                decision.quantity,
+                                idempotencyKey,
+                            );
+                        } catch (apiErr) {
+                            await updateOrderTracking(db, idempotencyKey, {
+                                status: 'error',
+                                resolvedAt: new Date(),
+                            }).catch(() => {});
+                            throw apiErr;
+                        }
                         await updateOrderTracking(db, idempotencyKey, {
                             tossOrderId: orderResult.orderId,
                             status: orderResult.status,
@@ -956,6 +974,21 @@ export default async function handler(req: Request): Promise<Response> {
                         const filledPrice = orderResult.filledPrice;
                         const actualQuantity = orderResult.filledQuantity ?? decision.quantity;
                         const quantityEstimated = !orderResult.filledQuantity;
+                        if (
+                            orderResult.filledQuantity &&
+                            orderResult.filledQuantity < decision.quantity
+                        ) {
+                            await sendErrorEmail(
+                                `부분 체결: ${item.symbol}`,
+                                `${item.symbol} ${decision.quantity}주 중 ${actualQuantity}주만 체결되었습니다. 나머지 ${decision.quantity - actualQuantity}주는 미체결.`,
+                            ).catch((e) => console.error('[email]', e));
+                        }
+                        if (!orderResult.filledQuantity) {
+                            await sendErrorEmail(
+                                `체결 수량 누락: ${item.symbol}`,
+                                `${item.symbol} 주문이 체결되었으나 체결 수량이 반환되지 않았습니다. 요청 수량 ${decision.quantity}주로 기록합니다.`,
+                            ).catch((e) => console.error('[email]', e));
+                        }
                         const tradeReason = `${decision.reason}${quantityEstimated ? ' (수량 미확인 — 요청 수량으로 기록)' : ''}`;
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
