@@ -32,6 +32,7 @@ const mockGetTodayRealizedPnl = vi.fn();
 const mockExpireOldPendingOrders = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
+const mockAverageIntoPosition = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -50,6 +51,7 @@ vi.mock('../../../lib/db/queries', () => ({
     expireOldPendingOrders: (...args: unknown[]) => mockExpireOldPendingOrders(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
+    averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
 }));
 
 const mockRunOverallAnalysis = vi.fn();
@@ -196,6 +198,7 @@ function setupDefaults() {
     });
     mockCreateOrderTracking.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
+    mockAverageIntoPosition.mockResolvedValue(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -908,7 +911,7 @@ describe('execute cron handler', () => {
             });
         });
 
-        it('uses currentPrice when filledPrice is undefined', async () => {
+        it('records fill_price_unknown when filledPrice is undefined', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -923,14 +926,32 @@ describe('execute cron handler', () => {
                 filledPrice: undefined,
             });
 
-            await handler(makeRequest(true));
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
 
-            expect(mockInsertTrade).toHaveBeenCalledWith(
+            // Should not insert trade or open position
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+
+            // Should update order tracking with fill_price_unknown
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
-                expect.objectContaining({
-                    price: 150, // fallback to currentPrice
-                }),
+                expect.any(String),
+                expect.objectContaining({ status: 'fill_price_unknown' }),
             );
+
+            // Should send error email
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                expect.stringContaining('체결가 누락'),
+                expect.stringContaining('수동 확인이 필요합니다'),
+            );
+
+            // Should record as fill_price_unknown in decisions
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'fill_price_unknown',
+                score: 80,
+            });
         });
 
         it('records order_submitted when buy order status is submitted and sends alert email', async () => {
@@ -2374,6 +2395,307 @@ describe('execute cron handler', () => {
             const firstCall = mockCalculatePositionSize.mock.calls[0][0];
             const secondCall = mockCalculatePositionSize.mock.calls[1][0];
             expect(secondCall.currentExposure).toBeGreaterThan(firstCall.currentExposure);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Transaction safety: closePosition false → no trade recorded
+    // -----------------------------------------------------------------------
+
+    describe('transaction safety: closePosition false', () => {
+        const fakeOpenPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        };
+
+        it('records already_closed when closePosition returns false in dry_run position re-evaluation', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition])
+                .mockResolvedValueOnce([]); // recalc
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            result: {
+                                trend: 'bearish',
+                                keyLevels: { currentPrice: 95 },
+                            },
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+            mockClosePosition.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Trade should NOT be inserted (transaction rolled back)
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'already_closed',
+                score: 0,
+            });
+        });
+
+        it('records already_closed when closePosition returns false in auto mode watchlist sell', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: 148,
+            });
+            mockClosePosition.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'already_closed',
+                score: 20,
+            });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Mode snapshot: no mid-loop mode change
+    // -----------------------------------------------------------------------
+
+    describe('mode snapshot', () => {
+        it('uses trading_mode from run start, not per-symbol re-read', async () => {
+            // Set up: trading_mode starts as 'dry_run', but would return 'auto' if re-read
+            let configCallCount = 0;
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') {
+                    configCallCount++;
+                    // If the code reads mode per-symbol (wrong), later calls would get 'auto'
+                    // If mode is snapshot (correct), only one read happens
+                    return Promise.resolve(configCallCount === 1 ? 'dry_run' : 'auto');
+                }
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Should use dry_run from snapshot — no Toss API call
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(body.tradingMode).toBe('dry_run');
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Position averaging on duplicate buy
+    // -----------------------------------------------------------------------
+
+    describe('position averaging', () => {
+        it('averages into existing position on duplicate buy in dry_run', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+
+            await handler(makeRequest(true));
+
+            // Should call averageIntoPosition instead of openPosition
+            expect(mockAverageIntoPosition).toHaveBeenCalledWith(fakeDb, 1, 5, 150);
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            // Trade should still be inserted
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 5,
+                }),
+            );
+        });
+
+        it('opens new position when no existing position in dry_run', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetOpenPositionBySymbol.mockResolvedValue(null);
+
+            await handler(makeRequest(true));
+
+            expect(mockOpenPosition).toHaveBeenCalled();
+            expect(mockAverageIntoPosition).not.toHaveBeenCalled();
+        });
+
+        it('averages into existing position on duplicate buy in auto mode', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: 151,
+            });
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockAverageIntoPosition).toHaveBeenCalledWith(fakeDb, 1, 5, 151);
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // filledPrice missing in position re-evaluation auto mode
+    // -----------------------------------------------------------------------
+
+    describe('filledPrice missing in position re-evaluation', () => {
+        it('records fill_price_unknown when filledPrice is undefined in auto sell', async () => {
+            const fakeOpenPosition = {
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '100',
+                status: 'open',
+            };
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([fakeOpenPosition])
+                .mockResolvedValueOnce([]); // recalc
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            result: {
+                                trend: 'bearish',
+                                keyLevels: { currentPrice: 95 },
+                            },
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전',
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                filledPrice: undefined,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'fill_price_unknown' }),
+            );
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'fill_price_unknown',
+                score: 0,
+            });
         });
     });
 });

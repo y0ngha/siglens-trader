@@ -40,8 +40,10 @@ async function tossRequest<T>(
             return res.json() as Promise<T>;
         }
 
-        // Retry on 5xx server errors
-        if (res.status >= 500 && attempt < MAX_RETRIES) {
+        // Retry only non-mutating (GET) requests on 5xx server errors.
+        // POST (order submission) must NOT retry to prevent double execution.
+        const shouldRetry = method === 'GET' && res.status >= 500 && attempt < MAX_RETRIES;
+        if (shouldRetry) {
             const delay = BASE_DELAY_MS * Math.pow(2, attempt);
             await new Promise((resolve) => setTimeout(resolve, delay));
             continue;

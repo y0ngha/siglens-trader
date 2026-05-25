@@ -10,6 +10,9 @@ import {
     getOpenPositionBySymbol,
     closePosition,
     getConfigValue,
+    createOrderTracking,
+    updateOrderTracking,
+    averageIntoPosition,
 } from '../../lib/db/queries';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/order';
 import { sendErrorEmail } from '../../lib/notification/email';
@@ -68,30 +71,6 @@ export default async function handler(req: Request): Promise<Response> {
             return Response.json({ error: 'Order was already processed' }, { status: 409 });
         }
 
-        // Check duplicate position for buy orders
-        if (order.side === 'buy') {
-            const existingPos = await getOpenPositionBySymbol(db, order.symbol);
-            if (existingPos) {
-                // Position already exists — record trade but don't open a duplicate position
-                await insertTrade(db, {
-                    symbol: order.symbol,
-                    side: order.side,
-                    orderType: 'market',
-                    quantity: order.quantity,
-                    price,
-                    executedAt: new Date(),
-                    reason: `${order.analysisSummary ?? '수동 승인'} (기존 포지션에 추가)`,
-                    mode: 'semi_auto',
-                });
-                return Response.json({
-                    success: true,
-                    action,
-                    id,
-                    note: 'trade_recorded_position_exists',
-                });
-            }
-        }
-
         // Determine trading mode and attempt real execution when applicable
         let filledPrice = price;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
@@ -99,15 +78,46 @@ export default async function handler(req: Request): Promise<Response> {
         if (tradingMode === 'auto') {
             try {
                 const idempotencyKey = `approve-${id}`;
+                await createOrderTracking(db, {
+                    idempotencyKey,
+                    symbol: order.symbol,
+                    side: order.side,
+                    quantity: order.quantity,
+                    status: 'submitted',
+                });
+
                 const orderFn = order.side === 'buy' ? executeBuyOrder : executeSellOrder;
                 const result = await orderFn(order.symbol, order.quantity, idempotencyKey);
+
+                await updateOrderTracking(db, idempotencyKey, {
+                    tossOrderId: result.orderId,
+                    status: result.status,
+                    filledPrice: result.filledPrice ?? undefined,
+                    resolvedAt: result.status !== 'submitted' ? new Date() : undefined,
+                });
+
                 if (result.status === 'rejected') {
                     return Response.json(
                         { error: `Order rejected: ${result.message ?? 'unknown'}` },
                         { status: 422 },
                     );
                 }
-                if (result.status === 'filled' && result.filledPrice) {
+                if (result.status === 'filled') {
+                    if (!result.filledPrice) {
+                        await updateOrderTracking(db, idempotencyKey, {
+                            status: 'fill_price_unknown',
+                        });
+                        await sendErrorEmail(
+                            `체결가 누락: ${order.symbol}`,
+                            `${order.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 수동 확인이 필요합니다.`,
+                        ).catch((e) => console.error('[email]', e));
+                        return Response.json(
+                            {
+                                error: 'Order filled but no fill price returned — manual reconciliation needed',
+                            },
+                            { status: 502 },
+                        );
+                    }
                     filledPrice = result.filledPrice;
                 }
             } catch (err) {
@@ -132,6 +142,7 @@ export default async function handler(req: Request): Promise<Response> {
         // If either fails, both are rolled back — no orphan trade records.
         try {
             if (order.side === 'buy') {
+                const existingPos = await getOpenPositionBySymbol(db, order.symbol);
                 await db.transaction(async (tx) => {
                     await insertTrade(tx, {
                         symbol: order.symbol,
@@ -140,20 +151,41 @@ export default async function handler(req: Request): Promise<Response> {
                         quantity: order.quantity,
                         price: filledPrice,
                         executedAt: new Date(),
-                        reason: order.analysisSummary ?? '수동 승인',
+                        reason: existingPos
+                            ? `${order.analysisSummary ?? '수동 승인'} (기존 포지션에 추가)`
+                            : (order.analysisSummary ?? '수동 승인'),
                         mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
                     });
-                    await openPosition(tx, {
-                        symbol: order.symbol,
-                        side: 'long',
-                        quantity: order.quantity,
-                        avgPrice: filledPrice,
-                    });
+                    if (existingPos) {
+                        await averageIntoPosition(tx, existingPos.id, order.quantity, filledPrice);
+                    } else {
+                        await openPosition(tx, {
+                            symbol: order.symbol,
+                            side: 'long',
+                            quantity: order.quantity,
+                            avgPrice: filledPrice,
+                        });
+                    }
                 });
             } else if (order.side === 'sell') {
                 const pos = await getOpenPositionBySymbol(db, order.symbol);
-                await db.transaction(async (tx) => {
-                    await insertTrade(tx, {
+                if (pos) {
+                    await db.transaction(async (tx) => {
+                        const closed = await closePosition(tx, pos.id, filledPrice);
+                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                        await insertTrade(tx, {
+                            symbol: order.symbol,
+                            side: order.side,
+                            orderType: 'market',
+                            quantity: order.quantity,
+                            price: filledPrice,
+                            executedAt: new Date(),
+                            reason: order.analysisSummary ?? '수동 승인',
+                            mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                        });
+                    });
+                } else {
+                    await insertTrade(db, {
                         symbol: order.symbol,
                         side: order.side,
                         orderType: 'market',
@@ -163,10 +195,7 @@ export default async function handler(req: Request): Promise<Response> {
                         reason: order.analysisSummary ?? '수동 승인',
                         mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
                     });
-                    if (pos) {
-                        await closePosition(tx, pos.id, filledPrice);
-                    }
-                });
+                }
             } else {
                 await insertTrade(db, {
                     symbol: order.symbol,
@@ -180,6 +209,14 @@ export default async function handler(req: Request): Promise<Response> {
                 });
             }
         } catch (err) {
+            if (err instanceof Error && err.message === 'POSITION_ALREADY_CLOSED') {
+                return Response.json({
+                    success: true,
+                    action,
+                    id,
+                    note: 'position_already_closed',
+                });
+            }
             // Transaction rolled back — email alert about failure
             await sendErrorEmail(`승인 후 거래 기록 실패: ${order.symbol}`, String(err)).catch(
                 (emailErr) => console.error('[email] send failed:', emailErr),

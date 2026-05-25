@@ -50,6 +50,9 @@ const mockOpenPosition = vi.fn();
 const mockGetOpenPositionBySymbol = vi.fn();
 const mockClosePosition = vi.fn();
 const mockDismissTrade = vi.fn();
+const mockCreateOrderTracking = vi.fn().mockResolvedValue([]);
+const mockUpdateOrderTracking = vi.fn().mockResolvedValue([]);
+const mockAverageIntoPosition = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
@@ -77,6 +80,9 @@ vi.mock('../../lib/db/queries', () => ({
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
     dismissTrade: (...args: unknown[]) => mockDismissTrade(...args),
+    createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
+    updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
+    averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -830,7 +836,7 @@ describe('POST /api/approve/[id]', () => {
         expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 52);
     });
 
-    it('records trade without opening duplicate position for buy', async () => {
+    it('averages into existing position for duplicate buy', async () => {
         mockGetPendingOrderById.mockResolvedValue({
             id: 60,
             symbol: 'AAPL',
@@ -855,14 +861,15 @@ describe('POST /api/approve/[id]', () => {
         expect(res.status).toBe(200);
 
         const data = await res.json();
-        expect(data.note).toBe('trade_recorded_position_exists');
+        expect(data.success).toBe(true);
         expect(mockInsertTrade).toHaveBeenCalledWith(
             fakeDb,
             expect.objectContaining({
                 reason: expect.stringContaining('기존 포지션에 추가'),
             }),
         );
-        // Must not open a new position
+        // Should average into existing position, not open new one
+        expect(mockAverageIntoPosition).toHaveBeenCalledWith(fakeDb, 1, 3, 195);
         expect(mockOpenPosition).not.toHaveBeenCalled();
     });
 
@@ -1025,7 +1032,7 @@ describe('POST /api/approve/[id]', () => {
             symbol: 'NVDA',
             status: 'open',
         });
-        mockClosePosition.mockResolvedValue(undefined);
+        mockClosePosition.mockResolvedValue(true);
 
         const res = await handler(
             makeRequest('https://example.com/api/approve/85', 'POST', { action: 'approve' }),

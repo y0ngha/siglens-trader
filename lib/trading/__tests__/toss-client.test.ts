@@ -143,35 +143,14 @@ describe('toss-client', () => {
             ).rejects.toThrow('Toss API POST /v1/orders failed: 400 Invalid symbol');
         });
 
-        it('retries on 5xx and succeeds on second attempt', async () => {
+        it('does NOT retry POST on 5xx — throws immediately to prevent double execution', async () => {
             const { submitOrder } = await import('../toss-client');
-            const expectedResponse = { orderId: 'ORD-RETRY', status: 'filled' };
-            mockFetch
-                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
-                .mockResolvedValueOnce(mockResponse(expectedResponse));
-
-            const result = await submitOrder({
-                symbol: '005930',
-                side: 'buy',
-                orderType: 'market',
-                quantity: 1,
-            });
-
-            expect(result).toEqual(expectedResponse);
-            expect(mockFetch).toHaveBeenCalledTimes(2);
-        });
-
-        it('throws after exhausting all retries on persistent 5xx', async () => {
-            const { submitOrder } = await import('../toss-client');
-            mockFetch
-                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
-                .mockResolvedValueOnce(mockResponse('Internal Server Error', 502))
-                .mockResolvedValueOnce(mockResponse('Internal Server Error', 503));
+            mockFetch.mockResolvedValueOnce(mockResponse('Internal Server Error', 500));
 
             await expect(
                 submitOrder({ symbol: '005930', side: 'buy', orderType: 'market', quantity: 1 }),
-            ).rejects.toThrow('Toss API POST /v1/orders failed: 503 Internal Server Error');
-            expect(mockFetch).toHaveBeenCalledTimes(3);
+            ).rejects.toThrow('Toss API POST /v1/orders failed: 500 Internal Server Error');
+            expect(mockFetch).toHaveBeenCalledTimes(1);
         });
 
         it('does not retry on 4xx errors', async () => {
@@ -270,6 +249,40 @@ describe('toss-client', () => {
             await expect(getBalances()).rejects.toThrow(
                 'Toss API GET /v1/accounts/1234567890/balances failed: 401 Unauthorized',
             );
+        });
+
+        it('retries GET on 5xx and succeeds on second attempt', async () => {
+            const { getBalances } = await import('../toss-client');
+            const expectedBalances: TossBalance[] = [
+                {
+                    symbol: '005930',
+                    quantity: 10,
+                    avgPrice: 70000,
+                    currentPrice: 72000,
+                    pnl: 20000,
+                },
+            ];
+            mockFetch
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
+                .mockResolvedValueOnce(mockResponse(expectedBalances));
+
+            const result = await getBalances();
+
+            expect(result).toEqual(expectedBalances);
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+        });
+
+        it('throws after exhausting all GET retries on persistent 5xx', async () => {
+            const { getBalances } = await import('../toss-client');
+            mockFetch
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 500))
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 502))
+                .mockResolvedValueOnce(mockResponse('Internal Server Error', 503));
+
+            await expect(getBalances()).rejects.toThrow(
+                /Toss API GET .* failed: 503 Internal Server Error/,
+            );
+            expect(mockFetch).toHaveBeenCalledTimes(3);
         });
 
         it('returns empty array when API responds with empty list', async () => {

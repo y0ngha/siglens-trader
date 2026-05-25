@@ -18,6 +18,7 @@ import {
     getOpenPositionBySymbol,
     openPosition,
     closePosition,
+    averageIntoPosition,
     insertTrade,
     getRecentTrades,
     getTodayTradeCount,
@@ -462,6 +463,43 @@ describe('Positions queries', () => {
                 }),
             );
             expect(db._chain.where).toHaveBeenCalled();
+        });
+    });
+
+    describe('averageIntoPosition', () => {
+        it('reads current position, calculates weighted average, and updates', async () => {
+            const existingPos = {
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            };
+            const db = createMockDb([existingPos]);
+
+            await averageIntoPosition(db as unknown as Db, 1, 5, 150);
+
+            // Should select the position first
+            expect(db._chain.limit).toHaveBeenCalledWith(1);
+            // Should update with new quantity and weighted avg price
+            // newQty = 10 + 5 = 15
+            // newAvg = (10*140 + 5*150) / 15 = 2150/15 = 143.333...
+            expect(db._chain.set).toHaveBeenCalledWith({
+                quantity: 15,
+                avgPrice: expect.stringContaining('143.333'),
+            });
+        });
+
+        it('does nothing when position not found', async () => {
+            const db = createMockDb([]);
+
+            await averageIntoPosition(db as unknown as Db, 999, 5, 150);
+
+            // Should try to select but not update
+            expect(db._chain.limit).toHaveBeenCalledWith(1);
+            // set should not be called beyond the select chain
+            // (since createMockDb chains all methods, we can only verify
+            // the function returns early by checking no update call happens)
         });
     });
 });
