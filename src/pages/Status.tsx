@@ -130,6 +130,14 @@ export function StatusPage() {
                 </div>
             </div>
 
+            {data.tradingEnabled === false && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3">
+                    <span className="text-sm font-medium text-red-400">
+                        자동매매가 비활성화되었습니다. 설정에서 다시 활성화할 수 있습니다.
+                    </span>
+                </div>
+            )}
+
             <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr]">
                 {/* Left column: 상태 지표 + 계좌 상태 + 경고 */}
                 <div className="space-y-4">
@@ -161,9 +169,27 @@ export function StatusPage() {
                                 </span>
                             </div>
                             <div className="flex items-center justify-between px-4 py-2.5">
+                                <span className="text-xs text-neutral-400">자동매매</span>
+                                <span
+                                    className={`text-sm font-medium ${
+                                        data.tradingEnabled === false
+                                            ? 'text-red-400'
+                                            : 'text-green-400'
+                                    }`}
+                                >
+                                    {data.tradingEnabled === false ? 'OFF' : 'ON'}
+                                </span>
+                            </div>
+                            <div className="flex items-center justify-between px-4 py-2.5">
                                 <span className="text-xs text-neutral-400">오늘 거래</span>
                                 <span className="font-mono text-sm font-medium">
                                     {data.todayTrades}
+                                    {data.maxTradesPerDay != null && (
+                                        <span className="text-neutral-500">
+                                            {' '}
+                                            / {data.maxTradesPerDay}
+                                        </span>
+                                    )}
                                 </span>
                             </div>
                             <div className="px-4 py-2.5">

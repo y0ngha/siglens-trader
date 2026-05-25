@@ -32,6 +32,9 @@ const mockConfig = {
         { key: 'buy_threshold', value: 0.7, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'sell_threshold', value: -0.7, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'fixed_exit_enabled', value: false, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'max_daily_loss_usd', value: 500, updatedAt: '2026-01-01T00:00:00Z' },
     ],
     watchlist: [
         {
@@ -114,6 +117,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('설정')).toBeInTheDocument();
         });
 
+        expect(screen.getByText('시스템 제어')).toBeInTheDocument();
         expect(screen.getByText('일반')).toBeInTheDocument();
         expect(screen.getByText('감시 종목')).toBeInTheDocument();
         expect(screen.getByText('분석 설정')).toBeInTheDocument();
@@ -729,5 +733,79 @@ describe('SettingsPage', () => {
         const stopLossInput = screen.getByDisplayValue('5');
         const gridContainer = stopLossInput.closest('.grid');
         expect(gridContainer).not.toHaveClass('opacity-40');
+    });
+
+    // -----------------------------------------------------------------------
+    // Kill switch (trading_enabled)
+    // -----------------------------------------------------------------------
+
+    it('shows kill switch toggle in system control section as ON', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 제어')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('자동매매 활성화')).toBeInTheDocument();
+        expect(screen.getByText('OFF 시 모든 자동 매매가 중지됩니다')).toBeInTheDocument();
+        expect(screen.getByLabelText('자동매매 비활성화')).toHaveTextContent('ON');
+    });
+
+    it('toggles kill switch off and calls API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 제어')).toBeInTheDocument();
+        });
+
+        const toggleButton = screen.getByLabelText('자동매매 비활성화');
+        await user.click(toggleButton);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'trading_enabled',
+            value: false,
+        });
+    });
+
+    it('shows kill switch as OFF when trading_enabled is false', async () => {
+        const disabledConfig = {
+            ...mockConfig,
+            config: mockConfig.config.map((c) =>
+                c.key === 'trading_enabled' ? { ...c, value: false } : c,
+            ),
+        };
+        mockedApi.getConfig.mockResolvedValue(disabledConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 제어')).toBeInTheDocument();
+        });
+
+        expect(screen.getByLabelText('자동매매 활성화')).toHaveTextContent('OFF');
+    });
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker config fields
+    // -----------------------------------------------------------------------
+
+    it('displays max_trades_per_day and max_daily_loss_usd in investment section', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('일일 최대 거래 횟수')).toBeInTheDocument();
+        expect(screen.getByText('일일 최대 손실 한도 ($)')).toBeInTheDocument();
     });
 });

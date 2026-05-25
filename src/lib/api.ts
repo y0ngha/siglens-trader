@@ -17,6 +17,8 @@ export interface StatusResponse {
     activePositions: number;
     todayTrades: number;
     cashBalance?: number;
+    tradingEnabled?: boolean;
+    maxTradesPerDay?: number;
 }
 
 export interface Position {

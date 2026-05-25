@@ -26,6 +26,7 @@ const mockClosePosition = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertPendingOrder = vi.fn();
+const mockGetTodayTradeCount = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -38,6 +39,7 @@ vi.mock('../../../lib/db/queries', () => ({
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
+    getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
 }));
 
 const mockRunOverallAnalysis = vi.fn();
@@ -165,6 +167,7 @@ function setupDefaults() {
     });
     mockInsertTrade.mockResolvedValue([]);
     mockInsertPendingOrder.mockResolvedValue([]);
+    mockGetTodayTradeCount.mockResolvedValue(0);
     mockSaveAnalysisResult.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
@@ -241,6 +244,176 @@ describe('execute cron handler', () => {
             await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
 
             expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Circuit breakers
+    // -----------------------------------------------------------------------
+
+    describe('circuit breakers', () => {
+        describe('kill switch (trading_enabled)', () => {
+            it('returns skipped response when trading_enabled is false', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_enabled') return Promise.resolve(false);
+                    return Promise.resolve(null);
+                });
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({ skipped: true, reason: 'trading_disabled' });
+                expect(mockGetEnabledWatchlist).not.toHaveBeenCalled();
+            });
+
+            it('proceeds when trading_enabled is true', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_enabled') return Promise.resolve(true);
+                    return Promise.resolve(null);
+                });
+                mockGetEnabledWatchlist.mockResolvedValue([]);
+                mockGetOpenPositions.mockResolvedValue([]);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
+            });
+
+            it('defaults to enabled when trading_enabled is not set', async () => {
+                mockGetConfigValue.mockResolvedValue(null);
+                mockGetEnabledWatchlist.mockResolvedValue([]);
+                mockGetOpenPositions.mockResolvedValue([]);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
+            });
+
+            it('releases lock when trading is disabled', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_enabled') return Promise.resolve(false);
+                    return Promise.resolve(null);
+                });
+
+                await handler(makeRequest(true));
+
+                expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+            });
+        });
+
+        describe('daily trade limit', () => {
+            it('returns skipped response when daily trade limit is reached', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(10);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayTradeCount.mockResolvedValue(10);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({
+                    skipped: true,
+                    reason: 'daily_trade_limit_reached',
+                    todayCount: 10,
+                    limit: 10,
+                });
+            });
+
+            it('returns skipped when today count exceeds limit', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(5);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayTradeCount.mockResolvedValue(7);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({
+                    skipped: true,
+                    reason: 'daily_trade_limit_reached',
+                    todayCount: 7,
+                    limit: 5,
+                });
+            });
+
+            it('proceeds when under the daily limit', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(20);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayTradeCount.mockResolvedValue(5);
+                mockGetEnabledWatchlist.mockResolvedValue([]);
+                mockGetOpenPositions.mockResolvedValue([]);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
+            });
+
+            it('uses default limit of 20 when not configured', async () => {
+                mockGetConfigValue.mockResolvedValue(null);
+                mockGetTodayTradeCount.mockResolvedValue(20);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body).toEqual({
+                    skipped: true,
+                    reason: 'daily_trade_limit_reached',
+                    todayCount: 20,
+                    limit: 20,
+                });
+            });
+
+            it('releases lock when daily limit is reached', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(5);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayTradeCount.mockResolvedValue(5);
+
+                await handler(makeRequest(true));
+
+                expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+            });
+
+            it('skips remaining symbols when in-loop daily limit is reached', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_mode') return Promise.resolve('dry_run');
+                    if (key === 'max_trades_per_day') return Promise.resolve(5);
+                    return Promise.resolve(null);
+                });
+                // First call: under limit (pre-loop check). Second+ calls: at limit (in-loop check)
+                mockGetTodayTradeCount
+                    .mockResolvedValueOnce(4) // pre-loop check — under limit
+                    .mockResolvedValueOnce(5) // in-loop check for AAPL — at limit
+                    .mockResolvedValueOnce(5); // in-loop check for TSLA — at limit
+
+                mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
+                mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+                mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body.decisions).toContainEqual({
+                    symbol: 'AAPL',
+                    action: 'daily_limit',
+                    score: 0,
+                });
+                expect(body.decisions).toContainEqual({
+                    symbol: 'TSLA',
+                    action: 'daily_limit',
+                    score: 0,
+                });
+                // No trades should be inserted since we hit the limit
+                expect(mockInsertTrade).not.toHaveBeenCalled();
+            });
         });
     });
 

@@ -115,6 +115,8 @@ describe('GET /api/status', () => {
             tradingMode: 'live',
             activePositions: 2,
             todayTrades: 5,
+            tradingEnabled: 'live',
+            maxTradesPerDay: 'live',
         });
     });
 
@@ -126,6 +128,8 @@ describe('GET /api/status', () => {
         const res = await handler(makeRequest('https://example.com/api/status'));
         const data = await res.json();
         expect(data.tradingMode).toBe('dry_run');
+        expect(data.tradingEnabled).toBe(true);
+        expect(data.maxTradesPerDay).toBe(20);
     });
 });
 

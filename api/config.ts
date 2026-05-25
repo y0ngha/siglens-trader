@@ -60,6 +60,8 @@ export default async function handler(req: Request): Promise<Response> {
             'analysis_timeframe',
             'score_weights',
             'fixed_exit_enabled',
+            'max_trades_per_day',
+            'max_daily_loss_usd',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -69,6 +71,8 @@ export default async function handler(req: Request): Promise<Response> {
             'take_profit_percent',
             'buy_threshold',
             'sell_threshold',
+            'max_trades_per_day',
+            'max_daily_loss_usd',
         ]);
 
         switch (payload.type) {

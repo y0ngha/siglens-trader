@@ -12,6 +12,7 @@ import {
     saveAnalysisResult,
     insertTrade,
     insertPendingOrder,
+    getTodayTradeCount,
 } from '../../lib/db/queries';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall';
 import { scoreSignals } from '../../lib/strategy/signal-scorer';
@@ -45,6 +46,24 @@ export default async function handler(req: Request): Promise<Response> {
 
     try {
         const db = getDb();
+
+        // Circuit breaker: kill switch
+        const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+        if (!tradingEnabled) {
+            return Response.json({ skipped: true, reason: 'trading_disabled' });
+        }
+
+        // Circuit breaker: daily trade limit
+        const maxTradesPerDay = (await getConfigValue<number>(db, 'max_trades_per_day')) ?? 20;
+        const todayTradeCount = await getTodayTradeCount(db);
+        if (todayTradeCount >= maxTradesPerDay) {
+            return Response.json({
+                skipped: true,
+                reason: 'daily_trade_limit_reached',
+                todayCount: todayTradeCount,
+                limit: maxTradesPerDay,
+            });
+        }
 
         // Load config
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
@@ -295,6 +314,17 @@ export default async function handler(req: Request): Promise<Response> {
                     maxTotalExposure,
                     currentExposure,
                 });
+
+                // Circuit breaker: re-check daily trade limit before each trade
+                const currentDayCount = await getTodayTradeCount(db);
+                if (currentDayCount >= maxTradesPerDay) {
+                    decisions.push({
+                        symbol: item.symbol,
+                        action: 'daily_limit',
+                        score: 0,
+                    });
+                    continue;
+                }
 
                 // Make decision
                 const decision = makeTradeDecision({

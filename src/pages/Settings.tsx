@@ -110,6 +110,8 @@ export function SettingsPage() {
     const currentMode = pendingMode ?? tradingMode;
     const modeChanged = pendingMode !== null && pendingMode !== tradingMode;
 
+    const tradingEnabled = getConfigValue(configData.config, 'trading_enabled', true) === true;
+
     const fixedExitEnabled =
         getConfigValue(configData.config, 'fixed_exit_enabled', false) === true;
 
@@ -120,6 +122,8 @@ export function SettingsPage() {
         take_profit_percent: 10,
         buy_threshold: 0.7,
         sell_threshold: -0.7,
+        max_trades_per_day: 20,
+        max_daily_loss_usd: 500,
     };
 
     function getRiskValue(key: string): string {
@@ -180,6 +184,37 @@ export function SettingsPage() {
                     {saveMessage}
                 </div>
             )}
+
+            {/* System Control — Kill Switch */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <h2 className="text-sm font-semibold">시스템 제어</h2>
+                <div className="mt-3 flex items-center justify-between">
+                    <div>
+                        <span className="text-xs text-neutral-400">자동매매 활성화</span>
+                        <p className="text-[10px] text-neutral-600">
+                            OFF 시 모든 자동 매매가 중지됩니다
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            mutate({
+                                type: 'config',
+                                key: 'trading_enabled',
+                                value: !tradingEnabled,
+                            });
+                        }}
+                        className={`min-h-[44px] min-w-[44px] rounded border px-2 py-1 text-xs ${
+                            tradingEnabled
+                                ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                : 'border-red-500/30 bg-red-500/10 text-red-400'
+                        }`}
+                        aria-label={`자동매매 ${tradingEnabled ? '비활성화' : '활성화'}`}
+                    >
+                        {tradingEnabled ? 'ON' : 'OFF'}
+                    </button>
+                </div>
+            </section>
 
             {/* General */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
@@ -443,6 +478,16 @@ export function SettingsPage() {
                                 'max_total_exposure',
                                 '전체 투자 한도 ($)',
                                 '모든 종목 합산 최대 투자 금액',
+                            ],
+                            [
+                                'max_trades_per_day',
+                                '일일 최대 거래 횟수',
+                                '하루 최대 거래 횟수 (초과 시 자동 매매 중단)',
+                            ],
+                            [
+                                'max_daily_loss_usd',
+                                '일일 최대 손실 한도 ($)',
+                                '하루 최대 허용 손실 금액 (향후 지원 예정)',
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (

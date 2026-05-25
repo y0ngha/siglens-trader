@@ -33,6 +33,9 @@ export async function seed() {
             value: { technical: 8, news: 6, options: 5, fundamental: 4, overall: 3 },
         },
         { key: 'fixed_exit_enabled', value: false },
+        { key: 'trading_enabled', value: true },
+        { key: 'max_trades_per_day', value: 20 },
+        { key: 'max_daily_loss_usd', value: 500 },
     ];
     for (const d of defaults) {
         await db

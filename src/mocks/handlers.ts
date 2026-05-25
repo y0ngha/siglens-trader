@@ -23,6 +23,9 @@ const configEntries: ConfigEntry[] = [
     { key: 'sell_threshold', value: 30, updatedAt: new Date().toISOString() },
     { key: 'analysis_timeframe', value: '1Day', updatedAt: new Date().toISOString() },
     { key: 'fixed_exit_enabled', value: false, updatedAt: new Date().toISOString() },
+    { key: 'trading_enabled', value: true, updatedAt: new Date().toISOString() },
+    { key: 'max_trades_per_day', value: 20, updatedAt: new Date().toISOString() },
+    { key: 'max_daily_loss_usd', value: 500, updatedAt: new Date().toISOString() },
 ];
 
 let watchlist = [
@@ -525,12 +528,16 @@ export const handlers = [
         todayStart.setHours(0, 0, 0, 0);
         const todayCount = trades.filter((t) => new Date(t.executedAt) >= todayStart).length;
         const mode = configEntries.find((c) => c.key === 'trading_mode');
+        const tradingEnabled = configEntries.find((c) => c.key === 'trading_enabled');
+        const maxTradesPerDay = configEntries.find((c) => c.key === 'max_trades_per_day');
         return HttpResponse.json({
             running: true,
             tradingMode: (mode?.value as string) ?? 'dry_run',
             activePositions: openCount,
             todayTrades: todayCount,
             cashBalance: 2000,
+            tradingEnabled: (tradingEnabled?.value as boolean) ?? true,
+            maxTradesPerDay: (maxTradesPerDay?.value as number) ?? 20,
         });
     }),
 
