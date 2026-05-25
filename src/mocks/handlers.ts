@@ -141,7 +141,18 @@ const positions = [
     },
 ];
 
-const trades = [
+const trades: {
+    id: number;
+    symbol: string;
+    side: string;
+    orderType: string;
+    quantity: number;
+    price: string;
+    executedAt: string;
+    reason: string;
+    mode: string;
+    dismissedAt: string | null;
+}[] = [
     {
         id: 1,
         symbol: 'AAPL',
@@ -152,6 +163,7 @@ const trades = [
         executedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
         reason: '신호 78/100 — 매수 (기술:85, 뉴스:70, 옵션:75, 펀더멘털:65, 종합:72)',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 2,
@@ -163,6 +175,7 @@ const trades = [
         executedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
         reason: '신호 82/100 — 매수 (기술:90, 뉴스:80, 옵션:70, 펀더멘털:75, 종합:80)',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 3,
@@ -174,6 +187,7 @@ const trades = [
         executedAt: new Date(Date.now() - 6 * 3600000).toISOString(),
         reason: '신호 22/100 — 매도 (기술:15, 뉴스:28, 옵션:20, 펀더멘털:30, 종합:18)',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 4,
@@ -185,6 +199,7 @@ const trades = [
         executedAt: new Date(Date.now() - 7 * 86400000).toISOString(),
         reason: '신호 73/100 — 매수 (기술:80, 뉴스:68, 옵션:65, 펀더멘털:70, 종합:72)',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 5,
@@ -196,6 +211,7 @@ const trades = [
         executedAt: new Date(Date.now() - 4 * 86400000).toISOString(),
         reason: '신호 28/100 — 매도 (기술:20, 뉴스:35, 옵션:30, 펀더멘털:40, 종합:25)',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 6,
@@ -207,6 +223,7 @@ const trades = [
         executedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
         reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
         mode: 'skipped',
+        dismissedAt: null,
     },
 ];
 
@@ -538,6 +555,7 @@ export const handlers = [
             executedAt: new Date().toISOString(),
             reason: '수동 청산',
             mode: 'semi_auto',
+            dismissedAt: null,
         });
         return HttpResponse.json({ success: true });
     }),
@@ -545,6 +563,17 @@ export const handlers = [
     // Trades
     http.get('/api/trades', () => {
         return HttpResponse.json([...trades].reverse());
+    }),
+
+    // Dismiss alert
+    http.post('/api/trades', async ({ request }) => {
+        const body = (await request.json()) as { action: string; id: number };
+        if (body.action === 'dismiss') {
+            const trade = trades.find((t) => t.id === body.id);
+            if (trade) trade.dismissedAt = new Date().toISOString();
+            return HttpResponse.json({ success: true });
+        }
+        return HttpResponse.json({ error: 'Invalid action' }, { status: 400 });
     }),
 
     // Analysis results
@@ -594,6 +623,7 @@ export const handlers = [
                 executedAt: new Date().toISOString(),
                 reason: order.analysisSummary ?? '승인됨',
                 mode: 'semi_auto',
+                dismissedAt: null,
             });
             // If buy, add to positions
             if (order.side === 'buy') {

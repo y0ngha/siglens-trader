@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { Position } from '@/lib/api';
 import { ErrorMessage } from '@/components/ErrorMessage';
@@ -60,10 +60,17 @@ function computePortfolio(positions: Position[]) {
 }
 
 export function StatusPage() {
+    const queryClient = useQueryClient();
+
     const { data, isLoading, error } = useQuery({
         queryKey: ['status'],
         queryFn: ({ signal }) => api.getStatus(signal),
         refetchInterval: 30_000,
+    });
+
+    const dismissMutation = useMutation({
+        mutationFn: (id: number) => api.dismissAlert(id),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['trades'] }),
     });
 
     const { data: positions } = useQuery({
@@ -91,7 +98,10 @@ export function StatusPage() {
     const recentTrades = (trades ?? []).slice(0, MAX_RECENT_TRADES);
     const ALERT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
     const skippedTrades = (trades ?? []).filter(
-        (t) => t.mode === 'skipped' && Date.now() - new Date(t.executedAt).getTime() < ALERT_TTL_MS,
+        (t) =>
+            t.mode === 'skipped' &&
+            !t.dismissedAt &&
+            Date.now() - new Date(t.executedAt).getTime() < ALERT_TTL_MS,
     );
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
@@ -352,13 +362,27 @@ export function StatusPage() {
                                         key={trade.id}
                                         className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2"
                                     >
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs font-medium text-yellow-400">
-                                                {trade.symbol}
-                                            </span>
-                                            <span className="text-[10px] text-yellow-500/70">
-                                                잔고 부족
-                                            </span>
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-xs font-medium text-yellow-400">
+                                                    {trade.symbol}
+                                                </span>
+                                                <span className="text-[10px] text-yellow-500/70">
+                                                    잔고 부족
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[10px] text-yellow-500/50">
+                                                    {timeAgo(trade.executedAt)}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => dismissMutation.mutate(trade.id)}
+                                                    className="rounded px-2 py-0.5 text-[10px] text-yellow-400 hover:bg-yellow-500/10"
+                                                >
+                                                    확인
+                                                </button>
+                                            </div>
                                         </div>
                                         <p className="mt-0.5 text-[11px] text-yellow-500/60">
                                             {trade.reason}

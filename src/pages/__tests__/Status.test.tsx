@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { StatusPage } from '../Status';
@@ -10,6 +11,7 @@ vi.mock('@/lib/api', () => ({
         getPositions: vi.fn(),
         getTrades: vi.fn(),
         getConfig: vi.fn(),
+        dismissAlert: vi.fn(),
     },
 }));
 
@@ -63,6 +65,7 @@ const mockTrades = [
         executedAt: '2026-05-24T14:30:00Z',
         reason: null,
         mode: 'paper',
+        dismissedAt: null,
     },
     {
         id: 2,
@@ -74,6 +77,7 @@ const mockTrades = [
         executedAt: '2026-05-23T10:00:00Z',
         reason: null,
         mode: 'paper',
+        dismissedAt: null,
     },
     {
         id: 3,
@@ -85,6 +89,7 @@ const mockTrades = [
         executedAt: '2026-05-22T15:00:00Z',
         reason: null,
         mode: 'paper',
+        dismissedAt: null,
     },
     {
         id: 4,
@@ -96,6 +101,7 @@ const mockTrades = [
         executedAt: '2026-05-21T09:00:00Z',
         reason: null,
         mode: 'paper',
+        dismissedAt: null,
     },
     {
         id: 5,
@@ -107,6 +113,7 @@ const mockTrades = [
         executedAt: '2026-05-20T12:00:00Z',
         reason: null,
         mode: 'paper',
+        dismissedAt: null,
     },
 ];
 
@@ -452,6 +459,7 @@ describe('StatusPage', () => {
             executedAt: new Date(Date.now() - i * 3600000).toISOString(),
             reason: null,
             mode: 'paper',
+            dismissedAt: null,
         }));
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getTrades.mockResolvedValue(manyTrades);
@@ -492,6 +500,7 @@ describe('StatusPage', () => {
                 executedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), // 1 hour ago (within 24h TTL)
                 reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
                 mode: 'skipped',
+                dismissedAt: null,
             },
         ]);
 
@@ -537,6 +546,7 @@ describe('StatusPage', () => {
                 executedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), // 25 hours ago (beyond 24h TTL)
                 reason: '잔고 부족 — 미실행',
                 mode: 'skipped',
+                dismissedAt: null,
             },
         ]);
 
@@ -561,6 +571,7 @@ describe('StatusPage', () => {
             executedAt: new Date(Date.now() - i * 3600000).toISOString(),
             reason: '잔고 부족 — 미실행',
             mode: 'skipped',
+            dismissedAt: null,
         }));
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getTrades.mockResolvedValue(skippedTrades);
@@ -578,6 +589,118 @@ describe('StatusPage', () => {
         // SYM5 and SYM6 appear only in recent trades, not in the alert
         expect(screen.getAllByText('SYM5')).toHaveLength(1); // recent trades only
         expect(screen.getAllByText('SYM6')).toHaveLength(1); // recent trades only
+    });
+
+    // --- Dismiss alert tests ---
+
+    it('shows dismiss button on skipped trade alerts', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+                reason: '잔고 부족',
+                mode: 'skipped',
+                dismissedAt: null,
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('경고')).toBeInTheDocument();
+        });
+
+        expect(screen.getByRole('button', { name: '확인' })).toBeInTheDocument();
+    });
+
+    it('calls dismissAlert API when dismiss button is clicked', async () => {
+        const user = userEvent.setup();
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+                reason: '잔고 부족',
+                mode: 'skipped',
+                dismissedAt: null,
+            },
+        ]);
+        mockedApi.dismissAlert.mockResolvedValue({ success: true });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: '확인' })).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { name: '확인' }));
+
+        expect(mockedApi.dismissAlert).toHaveBeenCalledWith(10);
+    });
+
+    it('hides dismissed alerts from the alert section', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+                reason: '잔고 부족',
+                mode: 'skipped',
+                dismissedAt: '2026-05-25T00:00:00Z',
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        // The alert section should not appear since the only skipped trade is dismissed
+        expect(screen.queryByText('경고')).not.toBeInTheDocument();
+    });
+
+    it('shows relative time on skipped trade alerts', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getTrades.mockResolvedValue([
+            {
+                id: 10,
+                symbol: 'META',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 0,
+                price: '520.00',
+                executedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
+                reason: '잔고 부족',
+                mode: 'skipped',
+                dismissedAt: null,
+            },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('경고')).toBeInTheDocument();
+        });
+
+        // "2시간 전" appears in both the alert section and recent trades section
+        expect(screen.getAllByText('2시간 전')).toHaveLength(2);
     });
 
     // --- Responsive layout tests ---

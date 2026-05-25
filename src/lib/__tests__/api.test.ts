@@ -207,6 +207,23 @@ describe('api', () => {
         });
     });
 
+    describe('dismissAlert', () => {
+        it('sends POST with dismiss action and trade id', async () => {
+            mockOk({ success: true });
+
+            await api.dismissAlert(42);
+
+            expect(mockFetch).toHaveBeenCalledWith(
+                '/api/trades',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'dismiss', id: 42 }),
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+            );
+        });
+    });
+
     describe('error handling', () => {
         it('throws with status code for non-ok responses', async () => {
             mockError(403, 'Forbidden');

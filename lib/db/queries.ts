@@ -209,6 +209,10 @@ export async function getRecentTrades(db: Db, limit = 50) {
     return db.select().from(trades).orderBy(desc(trades.executedAt)).limit(limit);
 }
 
+export async function dismissTrade(db: Db, id: number) {
+    return db.update(trades).set({ dismissedAt: new Date() }).where(eq(trades.id, id));
+}
+
 export async function getTodayTradeCount(db: Db) {
     const rows = await db
         .select({ count: sql<number>`count(*)` })

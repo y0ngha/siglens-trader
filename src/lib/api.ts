@@ -40,6 +40,7 @@ export interface Trade {
     executedAt: string;
     reason: string | null;
     mode: string;
+    dismissedAt: string | null;
 }
 
 export interface PendingOrder {
@@ -84,6 +85,11 @@ export const api = {
     closePosition: (id: number) => fetchJson(`/positions/${id}/close`, { method: 'POST' }),
     triggerAnalysis: (symbol: string) =>
         fetchJson('/analysis/trigger', { method: 'POST', body: JSON.stringify({ symbol }) }),
+    dismissAlert: (id: number) =>
+        fetchJson<{ success: boolean }>('/trades', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'dismiss', id }),
+        }),
     searchTickers: (query: string, signal?: AbortSignal) =>
         fetchJson<TickerSearchResult[]>(`/search?q=${encodeURIComponent(query)}`, { signal }),
 };

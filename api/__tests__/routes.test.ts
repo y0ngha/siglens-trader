@@ -36,6 +36,7 @@ const mockInsertTrade = vi.fn();
 const mockOpenPosition = vi.fn();
 const mockGetOpenPositionBySymbol = vi.fn();
 const mockClosePosition = vi.fn();
+const mockDismissTrade = vi.fn();
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
@@ -61,6 +62,7 @@ vi.mock('../../lib/db/queries', () => ({
     openPosition: (...args: unknown[]) => mockOpenPosition(...args),
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
+    dismissTrade: (...args: unknown[]) => mockDismissTrade(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -156,7 +158,7 @@ describe('GET /api/trades', () => {
         handler = (await import('../trades')).default;
     });
 
-    it('rejects non-GET methods', async () => {
+    it('rejects unsupported methods', async () => {
         const res = await handler(makeRequest('https://example.com/api/trades', 'PUT'));
         expect(res.status).toBe(405);
     });
@@ -169,6 +171,48 @@ describe('GET /api/trades', () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual(tradeList);
         expect(mockGetRecentTrades).toHaveBeenCalledWith(fakeDb, 100);
+    });
+});
+
+describe('POST /api/trades (dismiss)', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../trades')).default;
+    });
+
+    it('dismisses a trade by id', async () => {
+        mockDismissTrade.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/trades', 'POST', { action: 'dismiss', id: 42 }),
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ success: true });
+        expect(mockDismissTrade).toHaveBeenCalledWith(fakeDb, 42);
+    });
+
+    it('rejects invalid action', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/trades', 'POST', { action: 'unknown', id: 1 }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects missing id', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/trades', 'POST', { action: 'dismiss' }),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects invalid JSON body', async () => {
+        const req = new Request('https://example.com/api/trades', {
+            method: 'POST',
+            body: 'not json',
+        });
+        const res = await handler(req);
+        expect(res.status).toBe(400);
     });
 });
 

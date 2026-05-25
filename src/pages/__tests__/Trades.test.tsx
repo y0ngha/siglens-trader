@@ -31,6 +31,7 @@ const mockTrades = [
         executedAt: '2026-05-24T09:30:00Z',
         reason: 'RSI oversold signal',
         mode: 'dry_run',
+        dismissedAt: null,
     },
     {
         id: 2,
@@ -42,6 +43,7 @@ const mockTrades = [
         executedAt: '2026-05-24T10:00:00Z',
         reason: null,
         mode: 'semi_auto',
+        dismissedAt: null,
     },
     {
         id: 3,
@@ -53,6 +55,7 @@ const mockTrades = [
         executedAt: '2026-05-24T11:00:00Z',
         reason: 'Breakout detected',
         mode: 'auto',
+        dismissedAt: null,
     },
     {
         id: 4,
@@ -64,6 +67,7 @@ const mockTrades = [
         executedAt: '2026-05-24T12:00:00Z',
         reason: '잔고 부족 — 신호 75/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행',
         mode: 'skipped',
+        dismissedAt: null,
     },
 ];
 
@@ -285,6 +289,7 @@ describe('TradesPage', () => {
             executedAt: `2026-05-24T0${String(9 + Math.floor(i / 6)).padStart(1, '0')}:${String((i % 6) * 10).padStart(2, '0')}:00Z`,
             reason: null,
             mode: 'dry_run',
+            dismissedAt: null,
         }));
         mockedApi.getTrades.mockResolvedValue(manyTrades);
 
@@ -309,6 +314,7 @@ describe('TradesPage', () => {
             executedAt: `2026-05-24T0${String(9 + Math.floor(i / 6)).padStart(1, '0')}:${String((i % 6) * 10).padStart(2, '0')}:00Z`,
             reason: null,
             mode: 'dry_run',
+            dismissedAt: null,
         }));
         mockedApi.getTrades.mockResolvedValue(manyTrades);
 
