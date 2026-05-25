@@ -10,7 +10,7 @@ src/
 ├── App.tsx            # Router shell with lazy-loaded pages
 ├── index.css          # Tailwind + body styles + PWA safe area
 ├── pages/             # Route components
-│   ├── Status.tsx     # System status overview
+│   ├── Status.tsx     # System status + portfolio + position targets + alerts
 │   ├── Positions.tsx  # Open positions list (with manual close)
 │   ├── Trades.tsx     # Trade history with reasons (includes skipped trades)
 │   ├── Analysis.tsx   # Latest analysis results per symbol (with trigger)
@@ -38,6 +38,9 @@ src/
 - TanStack Query for all server state. 10s refetch interval, 5s staleTime.
 - Dark theme: bg #0a0a0a, surface #141414, border #262626, text #fafafa.
 - Mobile-first: `min-h-dvh`, safe area padding, 44px touch targets.
+- Watchlist max 5 items (enforced in Settings + server).
+- Trading mode and risk settings require explicit "저장" button (not auto-save).
+- Status page: portfolio overview, position targets table (buy/current/TP/SL), watchlist ON/OFF color badges, skipped trade alerts.
 
 ## React Query Pattern
 

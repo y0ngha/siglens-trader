@@ -273,53 +273,68 @@ export function StatusPage() {
 
                         {/* 포지션별 목표 */}
                         {openPositions.length > 0 && (
-                            <div className="rounded-lg border border-[#262626] bg-[#141414]">
-                                <table className="w-full text-[11px]">
-                                    <thead>
-                                        <tr className="border-b border-[#262626] text-neutral-500">
-                                            <th className="px-3 py-2 text-left font-medium">
-                                                종목
-                                            </th>
-                                            <th className="px-3 py-2 text-right font-medium">
-                                                매수가
-                                            </th>
-                                            <th className="px-3 py-2 text-right font-medium">
-                                                익절 목표
-                                            </th>
-                                            <th className="px-3 py-2 text-right font-medium">
-                                                손절 라인
-                                            </th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-[#262626]">
-                                        {openPositions.slice(0, 5).map((p) => {
-                                            const avg = Number(p.avgPrice);
-                                            const tp = avg * (1 + takeProfitPercent / 100);
-                                            const sl = avg * (1 - stopLossPercent / 100);
-                                            return (
-                                                <tr key={p.id}>
-                                                    <td className="px-3 py-2 font-medium">
-                                                        {p.symbol}
-                                                    </td>
-                                                    <td className="px-3 py-2 text-right font-mono text-neutral-300">
-                                                        ${avg.toFixed(2)}
-                                                    </td>
-                                                    <td className="px-3 py-2 text-right font-mono text-green-400">
-                                                        ${tp.toFixed(2)}
-                                                    </td>
-                                                    <td className="px-3 py-2 text-right font-mono text-red-400">
-                                                        ${sl.toFixed(2)}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                                {openPositions.length > 5 && (
-                                    <div className="border-t border-[#262626] px-3 py-1.5 text-center text-[10px] text-neutral-500">
-                                        +{openPositions.length - 5}개 포지션
-                                    </div>
-                                )}
+                            <div className="space-y-2">
+                                <h2 className="text-xs font-medium text-neutral-500">
+                                    포지션별 목표
+                                </h2>
+                                <div className="rounded-lg border border-[#262626] bg-[#141414]">
+                                    <table className="w-full text-[11px]">
+                                        <thead>
+                                            <tr className="border-b border-[#262626] text-neutral-500">
+                                                <th className="px-3 py-2 text-left font-medium">
+                                                    종목
+                                                </th>
+                                                <th className="px-3 py-2 text-right font-medium">
+                                                    매수가
+                                                </th>
+                                                <th className="px-3 py-2 text-right font-medium">
+                                                    현재가
+                                                </th>
+                                                <th className="px-3 py-2 text-right font-medium">
+                                                    익절
+                                                </th>
+                                                <th className="px-3 py-2 text-right font-medium">
+                                                    손절
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-[#262626]">
+                                            {openPositions.slice(0, 5).map((p) => {
+                                                const avg = Number(p.avgPrice);
+                                                const cur = Number(p.currentPrice ?? p.avgPrice);
+                                                const tp = avg * (1 + takeProfitPercent / 100);
+                                                const sl = avg * (1 - stopLossPercent / 100);
+                                                const profitable = cur >= avg;
+                                                return (
+                                                    <tr key={p.id}>
+                                                        <td className="px-3 py-2 font-medium">
+                                                            {p.symbol}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right font-mono text-neutral-300">
+                                                            ${avg.toFixed(2)}
+                                                        </td>
+                                                        <td
+                                                            className={`px-3 py-2 text-right font-mono ${profitable ? 'text-green-400' : 'text-red-400'}`}
+                                                        >
+                                                            ${cur.toFixed(2)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right font-mono text-green-400">
+                                                            ${tp.toFixed(2)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right font-mono text-red-400">
+                                                            ${sl.toFixed(2)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                    {openPositions.length > 5 && (
+                                        <div className="border-t border-[#262626] px-3 py-1.5 text-center text-[10px] text-neutral-500">
+                                            +{openPositions.length - 5}개 포지션
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
