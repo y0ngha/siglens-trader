@@ -632,18 +632,23 @@ export const handlers = [
                 mode: 'semi_auto',
                 dismissedAt: null,
             });
-            // If buy, add to positions
+            // If buy, add to positions — skip if an open position already exists
             if (order.side === 'buy') {
-                positions.push({
-                    id: genId(),
-                    symbol: order.symbol,
-                    side: 'long',
-                    quantity: order.quantity,
-                    avgPrice: order.priceLimit ?? '0',
-                    currentPrice: order.priceLimit ?? '0',
-                    openedAt: new Date().toISOString(),
-                    status: 'open',
-                });
+                const existing = positions.find(
+                    (p) => p.symbol === order.symbol && p.status === 'open',
+                );
+                if (!existing) {
+                    positions.push({
+                        id: genId(),
+                        symbol: order.symbol,
+                        side: 'long',
+                        quantity: order.quantity,
+                        avgPrice: order.priceLimit ?? '0',
+                        currentPrice: order.priceLimit ?? '0',
+                        openedAt: new Date().toISOString(),
+                        status: 'open',
+                    });
+                }
             }
         }
 
