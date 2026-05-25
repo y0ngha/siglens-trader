@@ -23,6 +23,9 @@ interface NavItem {
     badge?: number;
 }
 
+const INVESTMENT_DISCLAIMER =
+    '본 서비스는 Siglens의 분석 결과를 바탕으로 이용자가 설정한 값에 따라 자동 매매를 진행하는 서비스입니다. 모든 투자 판단, 설정값 구성, 자동 매매 실행 및 그 결과에 대한 책임은 이용자 본인에게 있으며, Siglens 및 Siglens Trader는 투자 손실이나 기타 불이익에 대해 책임을 지지 않습니다.';
+
 export function App() {
     const { data: pendingOrders } = useQuery({
         queryKey: ['pending'],
@@ -41,11 +44,11 @@ export function App() {
 
     return (
         <BrowserRouter>
-            <div className="flex min-h-dvh flex-col bg-[#0a0a0a] text-[#fafafa]">
+            <div className="flex min-h-dvh w-full max-w-full flex-col overflow-x-clip bg-[#0a0a0a] text-[#fafafa]">
                 {/* Desktop top nav — hidden on mobile */}
                 <DesktopNav navItems={navItems} />
 
-                <main className="flex-1 p-3 pb-20 sm:p-4 sm:pb-4">
+                <main className="min-w-0 flex-1 p-3 pb-20 sm:p-4 sm:pb-4">
                     <Suspense fallback={<LoadingSpinner />}>
                         <Routes>
                             <Route path="/" element={<StatusPage />} />
@@ -57,6 +60,12 @@ export function App() {
                         </Routes>
                     </Suspense>
                 </main>
+
+                <footer className="max-w-full min-w-0 border-t border-[#262626] px-4 pt-4 pb-24 text-center text-[11px] leading-5 text-neutral-500 sm:pb-4 sm:text-xs">
+                    <p className="mx-auto max-w-5xl [overflow-wrap:anywhere] break-words">
+                        {INVESTMENT_DISCLAIMER}
+                    </p>
+                </footer>
 
                 {/* Mobile bottom tab bar — hidden on desktop */}
                 <MobileNav navItems={navItems} />
