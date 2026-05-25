@@ -6,7 +6,7 @@ import { getDb } from '../_lib/db';
 import { acquireLock, releaseLock } from '../../lib/lock';
 import { getPendingSubmittedOrders, updateOrderTracking } from '../../lib/db/queries';
 import { sendErrorEmail } from '../../lib/notification/email';
-import { checkConsistency } from '../../lib/db/recovery';
+import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery';
 
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
@@ -55,6 +55,18 @@ export default async function handler(req: Request): Promise<Response> {
             }
         }
 
+        // TODO: Toss API 오픈 후 — fill_price_unknown 상태 주문에 대해
+        // getOrderStatus(orderId)로 실제 체결가 조회 → trade.price + position.avgPrice 자동 수정
+
+        // Auto-recover filled orders without matching trades
+        const recovery = await autoRecoverFilledOrders(db);
+        if (recovery.recovered > 0 || recovery.failed > 0) {
+            await sendErrorEmail(
+                `자동 복구 결과: ${recovery.recovered}건 성공, ${recovery.failed}건 실패`,
+                recovery.details.join('\n'),
+            ).catch((e) => console.error('[email]', e));
+        }
+
         // DB consistency check
         const consistency = await checkConsistency(db);
         if (consistency.alerts.length > 0) {
@@ -67,6 +79,10 @@ export default async function handler(req: Request): Promise<Response> {
         return Response.json({
             processed: results.length,
             results,
+            recovery: {
+                recovered: recovery.recovered,
+                failed: recovery.failed,
+            },
             consistency: {
                 filledOrdersWithoutTrades: consistency.filledOrdersWithoutTrades,
                 alertCount: consistency.alerts.length,

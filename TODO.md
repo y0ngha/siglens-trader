@@ -7,6 +7,7 @@
 - [ ] `auto` 모드 실전 테스트 (소액)
 - [ ] reconcile cron에서 `getOrderStatus()` 호출하여 submitted 주문의 실제 broker 상태 조회 → 체결/취소 반영
 - [ ] reconcile cron에서 `getBalances()` 호출하여 broker 잔고와 DB positions 비교 → 불일치 시 알림
+- [ ] Toss API 오픈 후: `getOrderStatus(orderId)`로 `fill_price_unknown` 상태 주문의 실제 체결가 조회 → DB 자동 수정 (reconcile cron에서)
 - [ ] Price=0 연속 발생 카운터 — 동일 종목에서 가격 데이터 누락이 N회 연속되면 이메일 에스컬레이션 (현재는 매번 동일한 이메일 발송)
 - [ ] `recovery.ts`의 TODO 완성: `filledOrdersWithoutPositions`, `openPositionsWithoutTrades` 체크 구현
 

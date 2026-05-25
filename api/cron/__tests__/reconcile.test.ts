@@ -35,8 +35,10 @@ vi.mock('../../../lib/notification/email', () => ({
 }));
 
 const mockCheckConsistency = vi.fn();
+const mockAutoRecoverFilledOrders = vi.fn();
 vi.mock('../../../lib/db/recovery', () => ({
     checkConsistency: (...args: unknown[]) => mockCheckConsistency(...args),
+    autoRecoverFilledOrders: (...args: unknown[]) => mockAutoRecoverFilledOrders(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,11 @@ function setupDefaults() {
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    mockAutoRecoverFilledOrders.mockResolvedValue({
+        recovered: 0,
+        failed: 0,
+        details: [],
+    });
     mockCheckConsistency.mockResolvedValue({
         filledOrdersWithoutTrades: 0,
         filledOrdersWithoutPositions: 0,
