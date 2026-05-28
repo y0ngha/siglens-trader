@@ -1,1 +1,6 @@
-yarn format:check && yarn typecheck
+#!/bin/sh
+set -e
+
+echo "Running staged pre-commit checks..."
+
+yarn lint-staged
