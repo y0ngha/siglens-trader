@@ -40,6 +40,7 @@ import {
 import type { ScoreWeights } from '../../lib/strategy/types';
 import { resolveApiKey } from './_run-analysis-cron';
 import { acquireLock, releaseLock } from '../../lib/lock';
+import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 import { fetchLivePrice } from '../../lib/data/live-price';
 import { safeNumber } from '../../lib/validation';
 import {
@@ -61,6 +62,11 @@ const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
 export default async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
         return new Response('Unauthorized', { status: 401 });
+    }
+
+    // Skip trade execution outside the U.S. regular session (cron schedule is a static approximation)
+    if (!isEtRegularSessionOpen(new Date())) {
+        return Response.json({ skipped: true, reason: 'market_closed' });
     }
 
     const LOCK_KEY = 'cron:execute:lock';

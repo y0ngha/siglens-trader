@@ -8,6 +8,7 @@ import {
 } from '../../lib/db/queries';
 import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types';
 import { acquireLock, releaseLock } from '../../lib/lock';
+import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;
 
@@ -15,6 +16,11 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
     return async function handler(req: Request): Promise<Response> {
         if (!verifyCronSecret(req)) {
             return new Response('Unauthorized', { status: 401 });
+        }
+
+        // Skip LLM/API work outside the U.S. regular session (cron schedule is a static approximation)
+        if (!isEtRegularSessionOpen(new Date())) {
+            return Response.json({ skipped: true, reason: 'market_closed' });
         }
 
         const LOCK_KEY = `cron:${analysisType}:lock`;

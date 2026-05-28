@@ -116,6 +116,12 @@ vi.mock('../../../lib/lock', () => ({
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
+const mockIsEtRegularSessionOpen = vi.fn<(now: Date) => boolean>();
+vi.mock('@y0ngha/siglens-core', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@y0ngha/siglens-core')>()),
+    isEtRegularSessionOpen: (...args: [Date]) => mockIsEtRegularSessionOpen(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -169,6 +175,7 @@ function makeRequest(authorized: boolean): Request {
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
     mockVerifyCronSecret.mockReturnValue(true);
+    mockIsEtRegularSessionOpen.mockReturnValue(true);
     mockAcquireLock.mockResolvedValue(true);
     mockReleaseLock.mockResolvedValue(undefined);
     mockGetConfigValue.mockResolvedValue(null); // All config values default to null
@@ -241,6 +248,23 @@ describe('execute cron handler', () => {
 
             expect(res.status).toBe(401);
             expect(await res.text()).toBe('Unauthorized');
+            expect(mockGetConfigValue).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Market hours
+    // -----------------------------------------------------------------------
+
+    describe('market hours', () => {
+        it('skips before acquiring the lock when the U.S. regular session is closed', async () => {
+            mockIsEtRegularSessionOpen.mockReturnValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({ skipped: true, reason: 'market_closed' });
+            expect(mockAcquireLock).not.toHaveBeenCalled();
             expect(mockGetConfigValue).not.toHaveBeenCalled();
         });
     });
