@@ -4007,14 +4007,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@y0ngha/siglens-core@npm:0.14.0":
-  version: 0.14.0
-  resolution: "@y0ngha/siglens-core@npm:0.14.0::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F0.14.0%2Fd765ebc7dae789c1bfa1be128e05bbc7ccabc7b1"
+"@y0ngha/siglens-core@npm:0.21.1":
+  version: 0.21.1
+  resolution: "@y0ngha/siglens-core@npm:0.21.1::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F0.21.1%2F1dfd2ace8f6b5eb6ace329db431e4b2c1438473d"
   dependencies:
     jsonrepair: "npm:^3.14.0"
   peerDependencies:
     "@upstash/redis": ^1.37.0
-  checksum: 10c0/b25d87086b6cea1a4f13592cc72a6385fc52d76f7b2cea159646b4a2a8c15e66e49b35422ea814f7c121f3cb0bf1131b98164a49137dea8e54c7499996093db3
+  checksum: 10c0/073aa6b7cb1be7279d281c26598bd298665691d3425a1d39991cf4c656a31984948084ef544441f9ad532ced92f7c24a56c4e6887451182c5e31f7da877499bc
   languageName: node
   linkType: hard
 
@@ -10183,7 +10183,7 @@ __metadata:
     "@vercel/functions": "npm:^3.4.3"
     "@vitejs/plugin-react": "npm:^4.5.2"
     "@vitest/coverage-v8": "npm:^3.2.4"
-    "@y0ngha/siglens-core": "npm:0.14.0"
+    "@y0ngha/siglens-core": "npm:0.21.1"
     clsx: "npm:^2.1.1"
     drizzle-kit: "npm:^0.31.10"
     drizzle-orm: "npm:^0.45.2"
