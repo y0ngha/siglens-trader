@@ -25,10 +25,12 @@ vi.mock('../../../lib/lock', () => ({
 const mockGetPendingSubmittedOrders = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
 const mockGetOpenPositions = vi.fn();
+const mockGetConfigValue = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
+    getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
 }));
 
 const mockGetOrder = vi.fn();
@@ -92,6 +94,8 @@ function setupDefaults() {
     mockGetOrder.mockResolvedValue(null);
     mockCancelOrder.mockResolvedValue(undefined);
     mockGetHoldings.mockResolvedValue([]);
+    // Default to 'auto' so existing holdings tests exercise the real broker path.
+    mockGetConfigValue.mockResolvedValue('auto');
 }
 
 /** Order submitted 90 min ago (> 30 min timeout window). */
@@ -852,6 +856,57 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '보유 정합성 불일치 (1건)',
                 expect.stringContaining('NVDA'),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('dry_run mode → getHoldings NOT called, no mismatch email, mismatchCount 0', async () => {
+            // In dry_run the DB positions are simulated, so comparing them against
+            // the real broker account would produce constant false-positive alerts.
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockGetOpenPositions.mockResolvedValue([{ symbol: 'AAPL', quantity: '10' }]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'AAPL',
+                    quantity: 5, // would be a mismatch if the gate were absent
+                    avgPrice: 180,
+                    currentPrice: 190,
+                    pnl: 50,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetHoldings).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(body.holdings).toEqual({ mismatchCount: 0 });
+        });
+
+        it('auto mode → getHoldings IS called and mismatch alert fires', async () => {
+            mockGetConfigValue.mockResolvedValue('auto');
+            mockGetOpenPositions.mockResolvedValue([{ symbol: 'AAPL', quantity: '10' }]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'AAPL',
+                    quantity: 7,
+                    avgPrice: 180,
+                    currentPrice: 190,
+                    pnl: 70,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetHoldings).toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '보유 정합성 불일치 (1건)',
+                expect.stringContaining('AAPL'),
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
         });
