@@ -13,7 +13,8 @@ export type TossOrderStatus =
     | 'REJECTED'
     | 'CANCEL_REJECTED'
     | 'REPLACE_REJECTED'
-    | 'REPLACED';
+    | 'REPLACED'
+    | (string & {}); // 토스가 신규/미지정 상태코드를 반환해도 허용 (mapStatus 기본분기 → pending)
 
 // issueOrder 입력 (저수준)
 export interface IssueOrderRequest {

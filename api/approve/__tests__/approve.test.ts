@@ -202,12 +202,12 @@ describe('approve handler', () => {
             );
         });
 
-        it('records trade at avgFilledPrice with actualQuantity from filledQuantity (filled)', async () => {
+        it('records trade at avgFilledPrice with integer order.quantity on clean full fill (filled)', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
             });
-            // partial-ish fill quantity but terminal 'filled' status: actualQuantity follows filledQuantity
+            // clean full fill: filledQuantity == order.quantity (5), price present → book at real fill price
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 clientOrderId: 'approve-1',
@@ -355,11 +355,11 @@ describe('approve handler', () => {
     });
 
     // -----------------------------------------------------------------------
-    // filledPrice missing in auto mode
+    // Clean-full-fill guard in auto mode (Blocker fix)
     // -----------------------------------------------------------------------
 
-    describe('filledPrice missing in auto mode', () => {
-        it('records trade at estimated price when avgFilledPrice is null', async () => {
+    describe('clean-full-fill guard in auto mode', () => {
+        it('avgFilledPrice null → needs_review + 202 + NO trade recorded', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
@@ -374,26 +374,104 @@ describe('approve handler', () => {
 
             const res = await handler(makeApproveRequest(1, 'approve'));
 
-            // Should succeed (not 502) — trade recorded at estimated price
-            expect(res.status).toBe(200);
+            expect(res.status).toBe(202);
             const body = await res.json();
-            expect(body.success).toBe(true);
+            expect(body.accepted).toBe(true);
+            expect(body.status).toBe('needs_review');
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
                 'approve-1',
-                expect.objectContaining({ status: 'fill_price_unknown' }),
+                expect.objectContaining({ status: 'needs_review' }),
             );
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
-                expect.stringContaining('체결가 누락'),
-                expect.stringContaining('예상가 $150로 기록합니다'),
+                expect.stringContaining('체결 수동확인 필요'),
+                expect.any(String),
             );
-            // Trade should be inserted at priceLimit (150)
+            // NO trade must be booked
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+        });
+
+        it('fractional filledQuantity (9.5 of 10) → needs_review + 202 + NO trade', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetPendingOrderById.mockResolvedValue({ ...fakeBuyOrder, quantity: 10 });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'filled',
+                filledQuantity: 9.5,
+                avgFilledPrice: 150,
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(202);
+            const body = await res.json();
+            expect(body.status).toBe('needs_review');
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                expect.stringContaining('체결 수동확인 필요'),
+                expect.stringContaining('9.5'),
+            );
+        });
+
+        it('short fill (filledQuantity 7 of 10) → needs_review + 202 + NO trade', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetPendingOrderById.mockResolvedValue({ ...fakeBuyOrder, quantity: 10 });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'filled',
+                filledQuantity: 7,
+                avgFilledPrice: 150,
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(202);
+            const body = await res.json();
+            expect(body.status).toBe('needs_review');
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+        });
+
+        it('clean full fill (10/10 + price present) → trade booked at avgFilledPrice with integer quantity', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetPendingOrderById.mockResolvedValue({ ...fakeBuyOrder, quantity: 10 });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'filled',
+                filledQuantity: 10,
+                avgFilledPrice: 153.75,
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(200);
+            const body = await res.json();
+            expect(body.success).toBe(true);
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
                     symbol: 'AAPL',
-                    price: 150,
+                    quantity: 10, // integer order.quantity, not filledQuantity
+                    price: 153.75,
                 }),
+            );
+            expect(mockOpenPosition).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ quantity: 10, avgPrice: 153.75 }),
             );
         });
     });

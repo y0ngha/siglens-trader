@@ -317,6 +317,25 @@ describe('tossFetch', () => {
         );
     });
 
+    it('parseError: OAuth2 string-error body → TossApiError.code === error string', async () => {
+        // OAuth2: { "error": "invalid_grant", "error_description": "Token has been expired or revoked" }
+        // Both the initial 401 and the post-refresh retry return the same OAuth2 error body
+        // so we can assert on the final thrown error.
+        const oauthBody = {
+            error: 'invalid_grant',
+            error_description: 'Token has been expired or revoked',
+        };
+        mockFetch
+            .mockResolvedValueOnce(res(oauthBody, 401)) // first attempt
+            .mockResolvedValueOnce(res(oauthBody, 401)); // retry after forceRefresh
+        const { tossFetch, TossApiError } = await import('../client');
+        const err = (await tossFetch('GET', '/api/v1/test').catch((e) => e)) as TossApiError;
+        expect(err).toBeInstanceOf(TossApiError);
+        expect(err.code).toBe('invalid_grant');
+        expect(err.message).toBe('Token has been expired or revoked');
+        expect(err.status).toBe(401);
+    });
+
     it('resolveAccountSeq: Redis 캐시 히트 시 accounts API 호출 생략', async () => {
         // Redis가 설정된 것처럼 env 세팅 후 Redis mock 주입
         vi.stubEnv('UPSTASH_REDIS_REST_URL', 'https://fake.upstash.io');

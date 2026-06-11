@@ -60,7 +60,11 @@ export async function resolveAccountSeq(): Promise<number> {
 function parseError(status: number, text: string): TossApiError {
     try {
         const json = JSON.parse(text);
-        const e = json.error ?? json; // OAuth2 error는 {error, error_description}
+        const e = json.error ?? json;
+        if (typeof e === 'string') {
+            // OAuth2 스타일 { error: "invalid_grant", error_description: "..." }
+            return new TossApiError(e, json.error_description ?? text, status);
+        }
         const code = e.code ?? e.error ?? `http-${status}`;
         const message = e.message ?? e.error_description ?? text;
         return new TossApiError(code, message, status, e.data);

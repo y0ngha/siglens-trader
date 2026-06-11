@@ -228,12 +228,17 @@ export default async function handler(req: Request): Promise<Response> {
         }
 
         // Holdings reconciliation — compare broker holdings vs DB open positions.
+        // Filter to US-only: the system trades only US equities; Korean/manual holdings
+        // would cause constant false-positive "broker holding without DB position" alerts.
         let holdingsMismatchCount = 0;
         const holdings = await getHoldings().catch(() => null);
         if (holdings) {
+            const usHoldings = holdings.filter(
+                (h) => h.currency === 'USD' || h.marketCountry === 'US',
+            );
             const openPositions = await getOpenPositions(db);
             const mismatches: string[] = [];
-            const brokerBySymbol = new Map(holdings.map((h) => [h.symbol, h]));
+            const brokerBySymbol = new Map(usHoldings.map((h) => [h.symbol, h]));
 
             for (const pos of openPositions) {
                 const dbQty = Number(pos.quantity);
@@ -248,7 +253,7 @@ export default async function handler(req: Request): Promise<Response> {
 
             // Broker holdings with no matching open DB position.
             const dbSymbols = new Set(openPositions.map((p) => p.symbol));
-            for (const h of holdings) {
+            for (const h of usHoldings) {
                 if (h.quantity > HOLDINGS_QTY_EPSILON && !dbSymbols.has(h.symbol)) {
                     mismatches.push(`${h.symbol}: 브로커 ${h.quantity}주 보유 but DB 포지션 없음`);
                 }

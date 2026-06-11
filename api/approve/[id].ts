@@ -120,21 +120,34 @@ export default async function handler(req: Request): Promise<Response> {
                         { status: 202 },
                     );
                 }
-                // result.status === 'filled' — record trade/position below at the real fill price
-                if (result.avgFilledPrice == null) {
-                    // 이례적: 체결됐으나 체결가 누락 → 예상가로 기록 (수동 확인 필요)
-                    filledPrice = price;
+                // result.status === 'filled' — only auto-book a clean full fill.
+                // If NOT clean (null price, fractional qty, or short fill) → needs_review + alert.
+                const filledQ = result.filledQuantity ?? order.quantity;
+                const cleanFullFill =
+                    result.avgFilledPrice != null &&
+                    Number.isInteger(order.quantity) &&
+                    Math.abs(filledQ - order.quantity) < 1e-6;
+                if (!cleanFullFill) {
                     await updateOrderTracking(db, idempotencyKey, {
-                        status: 'fill_price_unknown',
+                        status: 'needs_review',
+                        filledPrice: result.avgFilledPrice ?? undefined,
+                        resolvedAt: new Date(),
                     });
                     await sendErrorEmail(
-                        `체결가 누락: ${order.symbol}`,
-                        `${order.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 예상가 $${price}로 기록합니다.`,
+                        `체결 수동확인 필요: ${order.symbol}`,
+                        `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${order.quantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                     ).catch((e) => console.error('[email]', e));
-                } else {
-                    filledPrice = result.avgFilledPrice;
+                    return Response.json(
+                        {
+                            accepted: true,
+                            status: 'needs_review',
+                            message: '체결이 예상과 달라 수동 확인이 필요합니다.',
+                        },
+                        { status: 202 },
+                    );
                 }
-                actualQuantity = result.filledQuantity ?? order.quantity;
+                filledPrice = result.avgFilledPrice!; // non-null: cleanFullFill requires avgFilledPrice != null
+                actualQuantity = order.quantity; // integer, == filledQ
             } catch (err) {
                 // Toss API failed — mark order tracking as error and revert pending status
                 await updateOrderTracking(db, idempotencyKey, {

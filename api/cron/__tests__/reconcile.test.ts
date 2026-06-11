@@ -798,5 +798,62 @@ describe('reconcile cron handler', () => {
             expect(mockGetOpenPositions).not.toHaveBeenCalled();
             expect(body.holdings).toEqual({ mismatchCount: 0 });
         });
+
+        it('non-US holding (KRW/KR) with no DB position → NOT treated as mismatch (filtered out)', async () => {
+            // Korean stock with no matching DB position should be silently ignored.
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: '005930', // Samsung KRX
+                    quantity: 100,
+                    avgPrice: 70000,
+                    currentPrice: 72000,
+                    pnl: 200000,
+                    marketCountry: 'KR',
+                    currency: 'KRW',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(body.holdings).toEqual({ mismatchCount: 0 });
+        });
+
+        it('US holding with no DB position → still triggers mismatch alert', async () => {
+            // A US holding with no DB position is a genuine discrepancy and must alert.
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'NVDA',
+                    quantity: 3,
+                    avgPrice: 900,
+                    currentPrice: 920,
+                    pnl: 60,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+                {
+                    symbol: '005930', // non-US — must be filtered
+                    quantity: 50,
+                    avgPrice: 70000,
+                    currentPrice: 72000,
+                    pnl: 100000,
+                    marketCountry: 'KR',
+                    currency: 'KRW',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Only NVDA (US) triggers the mismatch; Samsung must be silently dropped.
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '보유 정합성 불일치 (1건)',
+                expect.stringContaining('NVDA'),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
     });
 });
