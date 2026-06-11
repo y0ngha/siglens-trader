@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { TossApiError } from '../client';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
-const mockGetAccessToken = vi.fn(async () => 'tok-abc');
-const mockForceRefreshToken = vi.fn(async () => 'tok-refreshed');
+const { mockGetAccessToken, mockForceRefreshToken } = vi.hoisted(() => ({
+    mockGetAccessToken: vi.fn(async (): Promise<string> => 'tok-abc'),
+    mockForceRefreshToken: vi.fn(async (_staleToken?: string): Promise<string> => 'tok-refreshed'),
+}));
 vi.mock('../token', () => ({
-    getAccessToken: (...a: unknown[]) => mockGetAccessToken(...a),
-    forceRefreshToken: (...a: unknown[]) => mockForceRefreshToken(...a),
+    getAccessToken: mockGetAccessToken,
+    forceRefreshToken: mockForceRefreshToken,
 }));
 
 function res(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -80,7 +83,9 @@ describe('tossFetch', () => {
             ),
         );
         const { tossFetch, TossApiError } = await import('../client');
-        const err = await tossFetch('POST', '/api/v1/orders', { body: {} }).catch((e) => e);
+        const err = (await tossFetch('POST', '/api/v1/orders', { body: {} }).catch(
+            (e) => e,
+        )) as TossApiError;
         expect(err).toBeInstanceOf(TossApiError);
         expect(err.code).toBe('insufficient-buying-power');
         expect(err.status).toBe(422);
@@ -175,9 +180,9 @@ describe('tossFetch', () => {
     it('worst: 409 idempotency-key-conflict는 재시도 없이 throw', async () => {
         mockFetch.mockResolvedValueOnce(res({ error: { code: 'idempotency-key-conflict' } }, 409));
         const { tossFetch, TossApiError } = await import('../client');
-        const err = await tossFetch('POST', '/api/v1/orders', {
+        const err = (await tossFetch('POST', '/api/v1/orders', {
             body: { clientOrderId: 'c1' },
-        }).catch((e) => e);
+        }).catch((e) => e)) as TossApiError;
         expect(err).toBeInstanceOf(TossApiError);
         expect(err.code).toBe('idempotency-key-conflict');
         expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -186,9 +191,9 @@ describe('tossFetch', () => {
     it('worst: 비JSON 바디 5xx는 TossApiError(code=http-500)로 throw', async () => {
         mockFetch.mockResolvedValueOnce(res('Internal Server Error', 500));
         const { tossFetch, TossApiError } = await import('../client');
-        const err = await tossFetch('POST', '/api/v1/orders', { body: { symbol: 'A' } }).catch(
+        const err = (await tossFetch('POST', '/api/v1/orders', { body: { symbol: 'A' } }).catch(
             (e) => e,
-        );
+        )) as TossApiError;
         expect(err).toBeInstanceOf(TossApiError);
         expect(err.code).toBe('http-500');
     });
@@ -199,7 +204,7 @@ describe('tossFetch', () => {
             .mockResolvedValueOnce(res({ error: { code: 'unauthorized' } }, 401))
             .mockResolvedValueOnce(res({ error: { code: 'unauthorized' } }, 401));
         const { tossFetch, TossApiError } = await import('../client');
-        const err = await tossFetch('GET', '/api/v1/test').catch((e) => e);
+        const err = (await tossFetch('GET', '/api/v1/test').catch((e) => e)) as TossApiError;
         expect(err).toBeInstanceOf(TossApiError);
         expect(mockForceRefreshToken).toHaveBeenCalledOnce();
         expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -256,7 +261,7 @@ describe('tossFetch', () => {
         // error is an object but has neither code, message — test fallback branches
         mockFetch.mockResolvedValueOnce(res({ error: { requestId: 'r1' } }, 400));
         const { tossFetch, TossApiError } = await import('../client');
-        const err = await tossFetch('GET', '/api/v1/test').catch((e) => e);
+        const err = (await tossFetch('GET', '/api/v1/test').catch((e) => e)) as TossApiError;
         expect(err).toBeInstanceOf(TossApiError);
         // code falls back to http-400 since no .code or .error
         expect(err.code).toBe('http-400');
