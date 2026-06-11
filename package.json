@@ -49,6 +49,7 @@
         "react-router": "^7.6.2",
         "resend": "^6.12.2",
         "tailwind-merge": "^3.5.0",
+        "ws": "^8.21.0",
         "yahoo-finance2": "3.14.1"
     },
     "devDependencies": {
@@ -62,6 +63,7 @@
         "@types/node": "^25.9.1",
         "@types/react": "^19",
         "@types/react-dom": "^19",
+        "@types/ws": "^8.18.1",
         "@vitejs/plugin-react": "^4.5.2",
         "@vitest/coverage-v8": "3.2.4",
         "drizzle-kit": "^0.31.10",
