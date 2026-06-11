@@ -268,57 +268,38 @@ export async function getTodayTradeCount(db: Db) {
 }
 
 /**
- * Returns today's realized PnL from two sources:
+ * Returns today's realized PnL by summing the `realized_pnl` recorded on each
+ * of today's sell trades.
  *
- * 1. Fully closed positions: `(closePrice - avgPrice) * quantity` for long positions
- *    (or inverted for short). This captures the actual realized profit when a
- *    position is closed entirely.
+ * Realized PnL is now recorded per-sell-trade at execution time as
+ * `(sellPrice − cost basis) × soldQuantity`, where cost basis is the closing
+ * position's avgPrice at the moment of the sell. This function simply sums those
+ * per-trade values for today's non-dry/non-skipped sells.
  *
- * 2. Partial sells against still-open positions: `(sellPrice - avgPrice) * quantity`.
- *    This captures profit from today's sell trades where the position remains open
- *    (reduced quantity). Joined against the position's current avgPrice.
+ * This replaces the prior two-query approach (closed-position PnL + a
+ * trades⋈positions join for partial sells), which could:
+ *   - double-count a sell that both closed a position AND matched the open-join, and
+ *   - misattribute PnL when a symbol was sold then re-opened the same day (the
+ *     join picked up the *new* position's avgPrice).
+ * Recording PnL at the sell site eliminates both classes of error.
  *
- * The previous net-cash-flow approach (sell=+revenue, buy=-cost) triggered
- * false alarms on buy-heavy days because buys lowered the PnL even though
- * they represent unrealized positions, not losses.
+ * Excludes 'skipped' and 'dry_run' trades. Rows with a null `realized_pnl`
+ * (sells booked before this column existed, or anomaly sells with no known
+ * position) are excluded.
  *
- * Skipped and dry_run trades are excluded from the partial-sell calculation.
+ * Deploy-day caveat: sell trades booked before the realized_pnl column was
+ * populated carry null and are skipped — a negligible one-day edge.
  */
 export async function getTodayRealizedPnl(db: Db): Promise<number> {
-    // PnL from positions fully closed today
-    const closedRows = await db
-        .select({
-            pnl: sql<number>`COALESCE(SUM(
-                CASE
-                    WHEN ${positions.side} = 'short' THEN (${positions.avgPrice}::numeric - ${positions.closePrice}::numeric) * ${positions.quantity}
-                    ELSE (${positions.closePrice}::numeric - ${positions.avgPrice}::numeric) * ${positions.quantity}
-                END
-            ), 0)`,
-        })
-        .from(positions)
-        .where(
-            and(
-                eq(positions.status, 'closed'),
-                sql`${positions.closedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
-            ),
-        );
-
-    // PnL from partial sells (position still open, reduced quantity)
-    const partialRows = await db.execute(sql`
-        SELECT COALESCE(SUM(
-            (t.price::numeric - p.avg_price::numeric) * t.quantity
-        ), 0) as pnl
-        FROM trades t
-        INNER JOIN positions p ON t.symbol = p.symbol AND p.status = 'open'
-        WHERE t.side = 'sell'
-        AND t.mode NOT IN ('skipped', 'dry_run')
-        AND t.executed_at AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
+    const rows = await db.execute(sql`
+        SELECT COALESCE(SUM(realized_pnl::numeric), 0) as pnl
+        FROM trades
+        WHERE side = 'sell'
+          AND mode NOT IN ('skipped', 'dry_run')
+          AND realized_pnl IS NOT NULL
+          AND executed_at AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
     `);
-
-    const closedPnl = Number(closedRows[0]?.pnl ?? 0);
-    const partialPnl = Number((partialRows as any)[0]?.pnl ?? 0);
-
-    return closedPnl + partialPnl;
+    return Number((rows as unknown as Array<{ pnl: number }>)[0]?.pnl ?? 0);
 }
 
 // ---------------------------------------------------------------------------

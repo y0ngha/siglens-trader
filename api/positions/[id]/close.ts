@@ -56,6 +56,7 @@ export default async function handler(req: Request): Promise<Response> {
                 executedAt: new Date(),
                 reason: '수동 청산',
                 mode: 'semi_auto',
+                realizedPnl: (closePrice - Number(position.avgPrice)) * position.quantity,
             });
         });
     } catch (err) {

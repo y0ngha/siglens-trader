@@ -20,6 +20,22 @@ vi.mock('../queries', () => ({
     updateOrderTracking: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Flatten a drizzle SQL template (captured from a mock .where() call) to its
+// literal text — including bound column references like client_order_id /
+// executed_at — so we can assert which WHERE branch was built.
+function sqlText(arg: unknown): string {
+    const chunks = (arg as { queryChunks?: unknown[] } | undefined)?.queryChunks ?? [];
+    return chunks
+        .map((c) => {
+            const cv = (c as { value?: unknown }).value;
+            if (Array.isArray(cv)) return cv.join('');
+            // Column reference chunks expose their underlying name.
+            const col = c as { name?: string };
+            return typeof col.name === 'string' ? col.name : '';
+        })
+        .join(' ');
+}
+
 const mockInsertTrade = vi.mocked(insertTrade);
 const mockOpenPosition = vi.mocked(openPosition);
 const mockClosePosition = vi.mocked(closePosition);
@@ -111,6 +127,54 @@ describe('checkConsistency', () => {
 
         expect(report.filledOrdersWithoutTrades).toBe(0);
         expect(report.alerts).toHaveLength(0);
+    });
+
+    it('order WITH clientOrderId + matching trade by client_order_id → consistent', async () => {
+        const filledOrders = [
+            {
+                id: 1,
+                idempotencyKey: 'exec-abc-AAPL-buy',
+                symbol: 'AAPL',
+                side: 'buy',
+                clientOrderId: 'uuid-co-1',
+                submittedAt: new Date('2026-05-24T10:00:00Z'),
+            },
+        ];
+
+        mockDb.where
+            .mockResolvedValueOnce(filledOrders) // filled orders query
+            .mockResolvedValueOnce([{ id: 10, clientOrderId: 'uuid-co-1' }]); // precise match
+
+        const report = await checkConsistency(mockDb as any);
+
+        expect(report.filledOrdersWithoutTrades).toBe(0);
+        expect(report.alerts).toHaveLength(0);
+        // The matching-trade query must use a precise client_order_id WHERE clause.
+        const matchSql = sqlText(mockDb.where.mock.calls[1]?.[0]);
+        expect(matchSql).toContain('client_order_id');
+        expect(matchSql).not.toContain('executed_at');
+    });
+
+    it('order WITHOUT clientOrderId → falls back to loose symbol+side+executedAt match', async () => {
+        const filledOrders = [
+            {
+                id: 2,
+                idempotencyKey: 'exec-def-TSLA-sell',
+                symbol: 'TSLA',
+                side: 'sell',
+                clientOrderId: null,
+                submittedAt: new Date('2026-05-24T11:00:00Z'),
+            },
+        ];
+
+        mockDb.where.mockResolvedValueOnce(filledOrders).mockResolvedValueOnce([{ id: 11 }]); // loose match found
+
+        const report = await checkConsistency(mockDb as any);
+
+        expect(report.filledOrdersWithoutTrades).toBe(0);
+        const matchSql = sqlText(mockDb.where.mock.calls[1]?.[0]);
+        expect(matchSql).toContain('executed_at');
+        expect(matchSql).not.toContain('client_order_id');
     });
 
     it('handles mixed results — some with trades, some without', async () => {
@@ -472,6 +536,119 @@ describe('autoRecoverFilledOrders', () => {
             mockDb,
             'exec-abc-AAPL-sell',
             expect.objectContaining({ status: 'recovered' }),
+        );
+    });
+
+    it('order WITH clientOrderId + matching trade (precise) → skips, no double-book', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 1,
+            idempotencyKey: 'exec-abc-AAPL-buy',
+            symbol: 'AAPL',
+            side: 'buy',
+            quantity: 5,
+            filledPrice: '150.00',
+            clientOrderId: 'uuid-co-precise',
+            submittedAt: new Date('2026-05-24T10:00:00Z'),
+            resolvedAt: new Date('2026-05-24T10:01:00Z'),
+            cronRunId: 'run-1',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        // precise client_order_id match found
+        mockDb.limit.mockResolvedValueOnce([{ id: 10, clientOrderId: 'uuid-co-precise' }]);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result).toEqual({ recovered: 0, failed: 0, details: [] });
+        expect(mockDb.transaction).not.toHaveBeenCalled();
+        expect(mockInsertTrade).not.toHaveBeenCalled();
+        // matching-trade pre-check used the precise client_order_id branch
+        const matchSql = sqlText(mockDb.where.mock.calls[1]?.[0]);
+        expect(matchSql).toContain('client_order_id');
+        expect(matchSql).not.toContain('executed_at');
+    });
+
+    it('order WITH clientOrderId + NO match → books trade carrying clientOrderId + realizedPnl (sell)', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 2,
+            idempotencyKey: 'exec-def-TSLA-sell',
+            symbol: 'TSLA',
+            side: 'sell',
+            quantity: 10,
+            filledPrice: '250.00',
+            clientOrderId: 'uuid-co-sell',
+            submittedAt: new Date('2026-05-24T11:00:00Z'),
+            resolvedAt: new Date('2026-05-24T11:01:00Z'),
+            cronRunId: 'run-2',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]); // no precise match
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+
+        // open long position @ 200 → realizedPnl = (250 - 200) * 10 = 500
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 7,
+            symbol: 'TSLA',
+            quantity: 10,
+            avgPrice: '200.00',
+            status: 'open',
+        } as any);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(1);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                symbol: 'TSLA',
+                side: 'sell',
+                clientOrderId: 'uuid-co-sell',
+                realizedPnl: 500,
+            }),
+        );
+        expect(mockClosePosition).toHaveBeenCalledWith(expect.anything(), 7, 250);
+        // pre-check used precise branch
+        const matchSql = sqlText(mockDb.where.mock.calls[1]?.[0]);
+        expect(matchSql).toContain('client_order_id');
+    });
+
+    it('recovered buy carries clientOrderId but no realizedPnl', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 3,
+            idempotencyKey: 'exec-ghi-MSFT-buy',
+            symbol: 'MSFT',
+            side: 'buy',
+            quantity: 4,
+            filledPrice: '300.00',
+            clientOrderId: 'uuid-co-buy',
+            submittedAt: new Date('2026-05-24T12:00:00Z'),
+            resolvedAt: new Date('2026-05-24T12:01:00Z'),
+            cronRunId: 'run-3',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce(null as any);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(1);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                side: 'buy',
+                clientOrderId: 'uuid-co-buy',
+                realizedPnl: undefined,
+            }),
         );
     });
 });

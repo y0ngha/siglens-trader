@@ -35,7 +35,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `averageIntoPosition(db, positionId, qty, price)` | Atomic weighted-average price update via SQL (no read-then-write) |
 | `reducePositionQuantity(db, id, soldQty)` | Atomic position quantity reduction for partial sells |
 | `getTodayTradeCount(db)` | Count today's non-skipped trades (NY timezone) |
-| `getTodayRealizedPnl(db)` | Trade-based PnL: closed position PnL + partial sell PnL |
+| `getTodayRealizedPnl(db)` | Sums per-sell `realized_pnl` (recorded at execution as (sellPrice − cost basis) × qty) for today's non-dry/non-skipped sells |
 | `createOrderTracking(db, params)` | Insert order tracking record with idempotency key |
 | `updateOrderTracking(db, key, updates)` | Update order status/price by idempotency key |
 | `getPendingSubmittedOrders(db)` | Get all orders in 'submitted' status |
@@ -62,7 +62,8 @@ await db.transaction(async (tx) => {
 - `approvePendingOrder()` and `rejectPendingOrder()` similarly use atomic WHERE (`status = 'pending'`).
 - `averageIntoPosition()` computes new avg price atomically in SQL — no read-then-write race.
 - `reducePositionQuantity()` uses `WHERE quantity >= soldQuantity` to prevent negative quantities.
-- `getTodayRealizedPnl()` uses trade-based calculation (not net cash flow) to avoid false alarms on buy-heavy days.
+- `getTodayRealizedPnl()` sums each sell trade's recorded `realized_pnl` (single query) — avoids false alarms on buy-heavy days and the prior positions-join double-counting / same-symbol-reopen misattribution. Sell trades booked before the `realized_pnl` column existed carry null and are excluded (negligible deploy-day edge).
+- `checkConsistency()` / `autoRecoverFilledOrders()` match a booked trade by `client_order_id` when the order has one (precise), else fall back to the loose symbol+side+executed-after condition.
 
 ## Commands
 

@@ -77,8 +77,13 @@ export default async function handler(req: Request): Promise<Response> {
         let actualQuantity = order.quantity;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
 
+        // Facade-order idempotency key (== Toss clientOrderId) for the auto path.
+        // Threaded onto the booked trade so reconcile can match by client_order_id.
+        // Only meaningful in 'auto' mode (a real Toss order was placed); undefined otherwise.
+        const idempotencyKey = `approve-${id}`;
+        const bookingClientOrderId = tradingMode === 'auto' ? idempotencyKey : undefined;
+
         if (tradingMode === 'auto') {
-            const idempotencyKey = `approve-${id}`;
             try {
                 await createOrderTracking(db, {
                     idempotencyKey,
@@ -187,6 +192,7 @@ export default async function handler(req: Request): Promise<Response> {
                             ? `${order.analysisSummary ?? '수동 승인'} (기존 포지션에 추가)`
                             : (order.analysisSummary ?? '수동 승인'),
                         mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                        clientOrderId: bookingClientOrderId,
                     });
                     if (existingPos) {
                         await averageIntoPosition(tx, existingPos.id, actualQuantity, filledPrice);
@@ -212,6 +218,7 @@ export default async function handler(req: Request): Promise<Response> {
                         executedAt: new Date(),
                         reason: `${order.analysisSummary ?? '수동 승인'} (포지션 미확인 — 수동 확인 필요)`,
                         mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                        clientOrderId: bookingClientOrderId,
                     });
                     await sendErrorEmail(
                         `포지션 미확인 매도: ${order.symbol}`,
@@ -231,6 +238,8 @@ export default async function handler(req: Request): Promise<Response> {
                             executedAt: new Date(),
                             reason: order.analysisSummary ?? '수동 승인',
                             mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                            clientOrderId: bookingClientOrderId,
+                            realizedPnl: (filledPrice - Number(pos.avgPrice)) * actualQuantity,
                         });
                     });
                 } else {
@@ -246,6 +255,8 @@ export default async function handler(req: Request): Promise<Response> {
                             executedAt: new Date(),
                             reason: `${order.analysisSummary ?? '수동 승인'} (부분 매도)`,
                             mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                            clientOrderId: bookingClientOrderId,
+                            realizedPnl: (filledPrice - Number(pos.avgPrice)) * actualQuantity,
                         });
                     });
                 }
@@ -259,6 +270,7 @@ export default async function handler(req: Request): Promise<Response> {
                     executedAt: new Date(),
                     reason: order.analysisSummary ?? '수동 승인',
                     mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                    clientOrderId: bookingClientOrderId,
                 });
             }
         } catch (err) {

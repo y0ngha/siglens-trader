@@ -141,7 +141,11 @@ describe('POST /api/positions/[id]/close', () => {
         expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 5, 155.25);
         expect(mockInsertTrade).toHaveBeenCalledWith(
             fakeDb,
-            expect.objectContaining({ price: 155.25 }),
+            expect.objectContaining({
+                price: 155.25,
+                // realized PnL on manual close: (closePrice 155.25 − avgPrice 150.5) × 10
+                realizedPnl: 47.5,
+            }),
         );
     });
 
