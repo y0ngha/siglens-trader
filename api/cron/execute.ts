@@ -26,7 +26,8 @@ import { runOverallAnalysis } from '../../lib/analysis/run-overall';
 import { scoreSignals } from '../../lib/strategy/signal-scorer';
 import { calculatePositionSize, evaluateExistingPosition } from '../../lib/strategy/risk-manager';
 import { makeTradeDecision } from '../../lib/strategy/decision';
-import { executeBuyOrder, executeSellOrder } from '../../lib/trading/order';
+import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
+import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account';
 import {
     sendTradeExecutedEmail,
     sendApprovalRequestEmail,
@@ -168,6 +169,15 @@ export default async function handler(req: Request): Promise<Response> {
         const takeProfitPercent = (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
         const fixedExitEnabled = (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
 
+        // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
+        // gated by wall-clock at entry; this catches holidays the static schedule misses.
+        if (tradingMode !== 'dry_run') {
+            const marketOpen = await isUsMarketOpen().catch(() => true); // 조회 실패 시 기존 시간기반 동작 유지
+            if (!marketOpen) {
+                return Response.json({ skipped: true, reason: 'us-market-holiday' });
+            }
+        }
+
         const watchlistItems = await getEnabledWatchlist(db);
 
         // Calculate current exposure using current market prices when available,
@@ -217,6 +227,15 @@ export default async function handler(req: Request): Promise<Response> {
             if (price) priceCache.set(sym, price);
         }
 
+        // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
+        // null => guard disabled (fetch failed or non-auto mode) — fall back to prior behavior.
+        const usdBuyingPower =
+            tradingMode === 'auto' ? await getBuyingPower('USD').catch(() => null) : null;
+        // Running balance: optimistically decremented after each live buy so multiple
+        // buys in one run don't all authorize against the same un-decremented cash.
+        // null => guard disabled. Reconcile/next-run corrects against broker reality.
+        let remainingBuyingPower: number | null = usdBuyingPower;
+
         // Fetch pending submitted orders once for sell-guard checks
         const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
 
@@ -228,7 +247,7 @@ export default async function handler(req: Request): Promise<Response> {
                     (o) =>
                         o.symbol === position.symbol &&
                         o.side === 'sell' &&
-                        o.status === 'submitted',
+                        ['submitted', 'pending', 'partial'].includes(o.status),
                 );
                 if (hasPendingSell) {
                     decisions.push({
@@ -353,12 +372,34 @@ export default async function handler(req: Request): Promise<Response> {
                         break;
 
                     case 'auto': {
+                        // Sellable-quantity guard: confirm broker holds enough shares.
+                        let sellQty = position.quantity;
+                        const sellable = await getSellableQuantity(position.symbol).catch(
+                            () => null,
+                        );
+                        if (sellable != null) {
+                            // Clamp first, then reject — a fractional sellable (0<x<1)
+                            // floors to 0 and must not produce a 0-qty order.
+                            const clamped = Math.min(sellQty, Math.floor(sellable));
+                            if (clamped <= 0) {
+                                decisions.push({
+                                    symbol: position.symbol,
+                                    action: 'skipped_not_sellable',
+                                    score: 0,
+                                });
+                                decisionPushed = true;
+                                break;
+                            }
+                            sellQty = clamped;
+                        }
                         const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
+                        const clientOrderId = crypto.randomUUID();
                         await createOrderTracking(db, {
                             idempotencyKey: exitIdempotencyKey,
+                            clientOrderId,
                             symbol: position.symbol,
                             side: 'sell',
-                            quantity: position.quantity,
+                            quantity: sellQty,
                             status: 'submitted',
                             cronRunId,
                         });
@@ -366,8 +407,8 @@ export default async function handler(req: Request): Promise<Response> {
                         try {
                             orderResult = await executeSellOrder(
                                 position.symbol,
-                                position.quantity,
-                                exitIdempotencyKey,
+                                sellQty,
+                                clientOrderId,
                             );
                         } catch (apiErr) {
                             await updateOrderTracking(db, exitIdempotencyKey, {
@@ -376,13 +417,25 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
-                        await updateOrderTracking(db, exitIdempotencyKey, {
-                            tossOrderId: orderResult.orderId,
-                            status: orderResult.status,
-                            filledPrice: orderResult.filledPrice ?? undefined,
-                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
-                        });
-                        if (orderResult.status === 'rejected') {
+                        // Early status write for non-filled outcomes only. For 'filled' the
+                        // ONLY status write happens inside the booking tx (clean fill) or the
+                        // needs_review write below — never here — so 'filled' can't exist
+                        // without its trade.
+                        if (orderResult.status !== 'filled') {
+                            const exitResolved =
+                                orderResult.status !== 'pending' &&
+                                orderResult.status !== 'partial';
+                            await updateOrderTracking(db, exitIdempotencyKey, {
+                                tossOrderId: orderResult.orderId || undefined,
+                                status: orderResult.status,
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
+                                resolvedAt: exitResolved ? new Date() : undefined,
+                            });
+                        }
+                        if (
+                            orderResult.status === 'rejected' ||
+                            orderResult.status === 'canceled'
+                        ) {
                             decisions.push({
                                 symbol: position.symbol,
                                 action: 'order_rejected',
@@ -391,68 +444,66 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${position.symbol}`,
-                                orderResult.message ?? '거부 사유 없음',
+                                orderResult.rejectReason ?? '거부 사유 없음',
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'submitted') {
-                            await sendErrorEmail(
-                                `미체결 주문: ${position.symbol}`,
-                                `${position.symbol} sell ${position.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch((err) => console.error('[email] send failed:', err));
+                        // pending/partial: NO trade, NO position mutation, NO exposure change.
+                        // Reconcile owns final booking (single source of truth → no double-count).
+                        // partial differs only in tracking status + notification text.
+                        if (orderResult.status === 'pending' || orderResult.status === 'partial') {
+                            if (orderResult.status === 'partial') {
+                                await sendErrorEmail(
+                                    `부분 체결: ${position.symbol}`,
+                                    `${position.symbol} sell ${orderResult.filledQuantity ?? '?'} / ${sellQty}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            } else {
+                                await sendErrorEmail(
+                                    `미체결 주문: ${position.symbol}`,
+                                    `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            }
                             decisions.push({
                                 symbol: position.symbol,
-                                action: 'order_submitted',
+                                action:
+                                    orderResult.status === 'partial'
+                                        ? 'order_partial'
+                                        : 'order_submitted',
                                 score: 0,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — close at estimated price if filledPrice missing
-                        const actualExitQty = orderResult.filledQuantity ?? position.quantity;
-                        if (!orderResult.filledPrice) {
+                        // status === 'filled' — auto-book ONLY a clean full fill:
+                        // broker filled qty == intended integer qty (within epsilon) AND a
+                        // real fill price is present. Any other outcome (short/fractional
+                        // fill or missing price) is routed to needs_review (no auto-book).
+                        const filledQ = orderResult.filledQuantity ?? sellQty;
+                        const cleanFullFill =
+                            orderResult.avgFilledPrice != null &&
+                            Number.isInteger(sellQty) &&
+                            Math.abs(filledQ - sellQty) < 1e-6;
+                        if (!cleanFullFill) {
+                            // 단축/소수점 체결 또는 체결가 누락 → 자동 기록하지 않고 수동 검토로
                             await updateOrderTracking(db, exitIdempotencyKey, {
-                                status: 'fill_price_unknown',
+                                status: 'needs_review',
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            await db.transaction(async (tx) => {
-                                if (actualExitQty >= position.quantity) {
-                                    const closed = await closePosition(
-                                        tx,
-                                        position.id,
-                                        currentPrice,
-                                    );
-                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
-                                } else {
-                                    await reducePositionQuantity(tx, position.id, actualExitQty);
-                                }
-                                await insertTrade(tx, {
-                                    symbol: position.symbol,
-                                    side: 'sell',
-                                    orderType: 'market',
-                                    quantity: actualExitQty,
-                                    price: currentPrice,
-                                    executedAt: new Date(),
-                                    reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                    mode: 'auto',
-                                    cronRunId,
-                                });
-                            });
-                            currentExposure -= currentPrice * actualExitQty;
-                            if (currentExposure < 0) currentExposure = 0;
                             await sendErrorEmail(
-                                `체결가 누락: ${position.symbol}`,
-                                `${position.symbol} 매도가 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
+                                `체결 수동확인 필요: ${position.symbol}`,
+                                `sell 주문이 예상과 다르게 체결됨 (의도 ${sellQty}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: position.symbol,
-                                action: evaluation.action,
+                                action: 'needs_review',
                                 score: 0,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        const filledSellPrice = orderResult.filledPrice;
+                        const filledSellPrice = orderResult.avgFilledPrice!;
+                        const actualExitQty = sellQty;
                         try {
                             await db.transaction(async (tx) => {
                                 if (actualExitQty >= position.quantity) {
@@ -475,6 +526,14 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: evaluation.reason,
                                     mode: 'auto',
                                     cronRunId,
+                                });
+                                // ATOMIC: mark filled inside the same tx so 'filled' never
+                                // exists without its trade (double-book race guard).
+                                await updateOrderTracking(tx, exitIdempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice: filledSellPrice,
+                                    resolvedAt: new Date(),
                                 });
                             });
                             currentExposure -= filledSellPrice * actualExitQty;
@@ -693,12 +752,32 @@ export default async function handler(req: Request): Promise<Response> {
                         (o) =>
                             o.symbol === item.symbol &&
                             o.side === 'sell' &&
-                            o.status === 'submitted',
+                            ['submitted', 'pending', 'partial'].includes(o.status),
                     );
                     if (hasPendingSellWatch) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'pending_sell_in_progress',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+                }
+
+                // Pending buy guard: skip buy/average_in if an in-flight buy order exists
+                // for this symbol. With per-run random clientOrderIds, re-submitting an
+                // unfilled (pending/partial/submitted) buy would double-submit.
+                if (decision.action === 'buy' || decision.action === 'average_in') {
+                    const hasPendingBuy = pendingSubmittedOrders.some(
+                        (o) =>
+                            o.symbol === item.symbol &&
+                            o.side === 'buy' &&
+                            ['submitted', 'pending', 'partial'].includes(o.status),
+                    );
+                    if (hasPendingBuy) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'pending_order_in_progress',
                             score: decision.score,
                         });
                         continue;
@@ -927,26 +1006,63 @@ export default async function handler(req: Request): Promise<Response> {
 
                     case 'auto': {
                         const autoSide = decision.action === 'average_in' ? 'buy' : decision.action;
+                        const isBuyOrder =
+                            decision.action === 'buy' || decision.action === 'average_in';
+                        let autoQuantity = decision.quantity;
+
+                        // Buying-power guard (BUY/average_in): skip if cost exceeds remaining
+                        // USD cash (running balance, decremented after each live buy this run).
+                        if (
+                            isBuyOrder &&
+                            remainingBuyingPower != null &&
+                            currentPrice * autoQuantity > remainingBuyingPower
+                        ) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'skipped_insufficient_cash',
+                                score: decision.score,
+                            });
+                            decisionPushed = true;
+                            break;
+                        }
+
+                        // Sellable-quantity guard (SELL): skip if none sellable, clamp if short.
+                        if (decision.action === 'sell') {
+                            const sellable = await getSellableQuantity(item.symbol).catch(
+                                () => null,
+                            );
+                            if (sellable != null) {
+                                // Clamp first, then reject — a fractional sellable (0<x<1)
+                                // floors to 0 and must not produce a 0-qty order.
+                                const clamped = Math.min(autoQuantity, Math.floor(sellable));
+                                if (clamped <= 0) {
+                                    decisions.push({
+                                        symbol: item.symbol,
+                                        action: 'skipped_not_sellable',
+                                        score: decision.score,
+                                    });
+                                    decisionPushed = true;
+                                    break;
+                                }
+                                autoQuantity = clamped;
+                            }
+                        }
+
                         const idempotencyKey = `${cronRunId}-${item.symbol}-${autoSide}`;
+                        const clientOrderId = crypto.randomUUID();
                         await createOrderTracking(db, {
                             idempotencyKey,
+                            clientOrderId,
                             symbol: item.symbol,
                             side: autoSide,
-                            quantity: decision.quantity,
+                            quantity: autoQuantity,
                             status: 'submitted',
                             cronRunId,
                         });
-                        const orderFn =
-                            decision.action === 'buy' || decision.action === 'average_in'
-                                ? executeBuyOrder
-                                : executeSellOrder;
+                        const orderFn = isBuyOrder ? executeBuyOrder : executeSellOrder;
                         let orderResult;
                         try {
-                            orderResult = await orderFn(
-                                item.symbol,
-                                decision.quantity,
-                                idempotencyKey,
-                            );
+                            orderResult = await orderFn(item.symbol, autoQuantity, clientOrderId);
                         } catch (apiErr) {
                             await updateOrderTracking(db, idempotencyKey, {
                                 status: 'error',
@@ -954,13 +1070,25 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
-                        await updateOrderTracking(db, idempotencyKey, {
-                            tossOrderId: orderResult.orderId,
-                            status: orderResult.status,
-                            filledPrice: orderResult.filledPrice ?? undefined,
-                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
-                        });
-                        if (orderResult.status === 'rejected') {
+                        // Early status write for non-filled outcomes only. For 'filled' the
+                        // ONLY status write happens inside the booking tx (clean fill) or the
+                        // needs_review write below — never here — so 'filled' can't exist
+                        // without its trade.
+                        if (orderResult.status !== 'filled') {
+                            const autoResolved =
+                                orderResult.status !== 'pending' &&
+                                orderResult.status !== 'partial';
+                            await updateOrderTracking(db, idempotencyKey, {
+                                tossOrderId: orderResult.orderId || undefined,
+                                status: orderResult.status,
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
+                                resolvedAt: autoResolved ? new Date() : undefined,
+                            });
+                        }
+                        if (
+                            orderResult.status === 'rejected' ||
+                            orderResult.status === 'canceled'
+                        ) {
                             decisions.push({
                                 symbol: item.symbol,
                                 action: 'order_rejected',
@@ -969,132 +1097,73 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${item.symbol}`,
-                                orderResult.message ?? '거부 사유 없음',
+                                orderResult.rejectReason ?? '거부 사유 없음',
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'submitted') {
-                            await sendErrorEmail(
-                                `미체결 주문: ${item.symbol}`,
-                                `${item.symbol} ${decision.action} ${decision.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch((err) => console.error('[email] send failed:', err));
+                        // Order is live (filled/partial/pending) and will consume cash —
+                        // optimistically decrement the running balance so subsequent buys
+                        // this run see reduced cash. Uses request qty (filled qty unknown for pending).
+                        if (isBuyOrder && remainingBuyingPower != null) {
+                            remainingBuyingPower -= currentPrice * autoQuantity;
+                        }
+                        // pending/partial: NO trade, NO position mutation, NO exposure change.
+                        // Reconcile owns final booking (single source of truth → no double-count).
+                        // partial differs only in tracking status + notification text.
+                        if (orderResult.status === 'pending' || orderResult.status === 'partial') {
+                            if (orderResult.status === 'partial') {
+                                await sendErrorEmail(
+                                    `부분 체결: ${item.symbol}`,
+                                    `${item.symbol} ${orderResult.filledQuantity ?? '?'} / ${autoQuantity}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            } else {
+                                await sendErrorEmail(
+                                    `미체결 주문: ${item.symbol}`,
+                                    `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            }
                             decisions.push({
                                 symbol: item.symbol,
-                                action: 'order_submitted',
+                                action:
+                                    orderResult.status === 'partial'
+                                        ? 'order_partial'
+                                        : 'order_submitted',
                                 score: decision.score,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — close/open at estimated price if filledPrice missing
-                        if (!orderResult.filledPrice) {
+                        // status === 'filled' — auto-book ONLY a clean full fill:
+                        // broker filled qty == intended integer qty (within epsilon) AND a
+                        // real fill price is present. Any other outcome (short/fractional
+                        // fill or missing price) is routed to needs_review (no auto-book).
+                        const filledQ = orderResult.filledQuantity ?? autoQuantity;
+                        const cleanFullFill =
+                            orderResult.avgFilledPrice != null &&
+                            Number.isInteger(autoQuantity) &&
+                            Math.abs(filledQ - autoQuantity) < 1e-6;
+                        if (!cleanFullFill) {
+                            // 단축/소수점 체결 또는 체결가 누락 → 자동 기록하지 않고 수동 검토로
                             await updateOrderTracking(db, idempotencyKey, {
-                                status: 'fill_price_unknown',
+                                status: 'needs_review',
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            const estimatedQty = orderResult.filledQuantity ?? decision.quantity;
-                            if (decision.action === 'buy' || decision.action === 'average_in') {
-                                const existingEstimated = await getOpenPositionBySymbol(
-                                    db,
-                                    item.symbol,
-                                );
-                                await db.transaction(async (tx) => {
-                                    await insertTrade(tx, {
-                                        symbol: item.symbol,
-                                        side: autoSide,
-                                        orderType: 'market',
-                                        quantity: estimatedQty,
-                                        price: currentPrice,
-                                        executedAt: new Date(),
-                                        reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                        mode: 'auto',
-                                        cronRunId,
-                                    });
-                                    if (existingEstimated) {
-                                        await averageIntoPosition(
-                                            tx,
-                                            existingEstimated.id,
-                                            estimatedQty,
-                                            currentPrice,
-                                        );
-                                    } else {
-                                        await openPosition(tx, {
-                                            symbol: item.symbol,
-                                            side: 'long',
-                                            quantity: estimatedQty,
-                                            avgPrice: currentPrice,
-                                        });
-                                    }
-                                });
-                                currentExposure += currentPrice * estimatedQty;
-                            } else if (decision.action === 'sell') {
-                                const existingSellEstimated = await getOpenPositionBySymbol(
-                                    db,
-                                    item.symbol,
-                                );
-                                if (existingSellEstimated) {
-                                    await db.transaction(async (tx) => {
-                                        if (estimatedQty >= existingSellEstimated.quantity) {
-                                            const closed = await closePosition(
-                                                tx,
-                                                existingSellEstimated.id,
-                                                currentPrice,
-                                            );
-                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
-                                        } else {
-                                            await reducePositionQuantity(
-                                                tx,
-                                                existingSellEstimated.id,
-                                                estimatedQty,
-                                            );
-                                        }
-                                        await insertTrade(tx, {
-                                            symbol: item.symbol,
-                                            side: autoSide,
-                                            orderType: 'market',
-                                            quantity: estimatedQty,
-                                            price: currentPrice,
-                                            executedAt: new Date(),
-                                            reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                            mode: 'auto',
-                                            cronRunId,
-                                        });
-                                    });
-                                    currentExposure -= currentPrice * estimatedQty;
-                                    if (currentExposure < 0) currentExposure = 0;
-                                }
-                            }
                             await sendErrorEmail(
-                                `체결가 누락: ${item.symbol}`,
-                                `${item.symbol} ${autoSide} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
+                                `체결 수동확인 필요: ${item.symbol}`,
+                                `${autoSide} 주문이 예상과 다르게 체결됨 (의도 ${autoQuantity}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: item.symbol,
-                                action: decision.action,
+                                action: 'needs_review',
                                 score: decision.score,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        const filledPrice = orderResult.filledPrice;
-                        const actualQuantity = orderResult.filledQuantity ?? decision.quantity;
-                        const quantityEstimated = !orderResult.filledQuantity;
-                        if (
-                            orderResult.filledQuantity &&
-                            orderResult.filledQuantity < decision.quantity
-                        ) {
-                            await sendErrorEmail(
-                                `부분 체결: ${item.symbol}`,
-                                `${item.symbol} ${decision.quantity}주 중 ${actualQuantity}주만 체결되었습니다. 나머지 ${decision.quantity - actualQuantity}주는 미체결.`,
-                            ).catch((e) => console.error('[email]', e));
-                        }
-                        if (!orderResult.filledQuantity) {
-                            await sendErrorEmail(
-                                `체결 수량 누락: ${item.symbol}`,
-                                `${item.symbol} 주문이 체결되었으나 체결 수량이 반환되지 않았습니다. 요청 수량 ${decision.quantity}주로 기록합니다.`,
-                            ).catch((e) => console.error('[email]', e));
-                        }
-                        const tradeReason = `${decision.reason}${quantityEstimated ? ' (수량 미확인 — 요청 수량으로 기록)' : ''}`;
+                        const filledPrice = orderResult.avgFilledPrice!;
+                        const actualQuantity = autoQuantity; // integer, == filledQ
+                        const tradeReason = decision.reason;
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
                             await db.transaction(async (tx) => {
@@ -1124,6 +1193,14 @@ export default async function handler(req: Request): Promise<Response> {
                                         avgPrice: filledPrice,
                                     });
                                 }
+                                // ATOMIC: mark filled inside the same tx so 'filled' never
+                                // exists without its trade (double-book race guard).
+                                await updateOrderTracking(tx, idempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice,
+                                    resolvedAt: new Date(),
+                                });
                             });
                             currentExposure += filledPrice * actualQuantity;
                         } else if (decision.action === 'sell') {
@@ -1156,6 +1233,13 @@ export default async function handler(req: Request): Promise<Response> {
                                             mode: 'auto',
                                             cronRunId,
                                         });
+                                        // ATOMIC: mark filled inside the same tx.
+                                        await updateOrderTracking(tx, idempotencyKey, {
+                                            tossOrderId: orderResult.orderId || undefined,
+                                            status: 'filled',
+                                            filledPrice,
+                                            resolvedAt: new Date(),
+                                        });
                                     });
                                     currentExposure -= filledPrice * actualQuantity;
                                     if (currentExposure < 0) currentExposure = 0;
@@ -1176,16 +1260,25 @@ export default async function handler(req: Request): Promise<Response> {
                                 }
                             } else {
                                 // Position disappeared between guard check and fill — record trade + alert
-                                await insertTrade(db, {
-                                    symbol: item.symbol,
-                                    side: 'sell',
-                                    orderType: 'market',
-                                    quantity: actualQuantity,
-                                    price: filledPrice,
-                                    executedAt: new Date(),
-                                    reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
-                                    mode: 'auto',
-                                    cronRunId,
+                                await db.transaction(async (tx) => {
+                                    await insertTrade(tx, {
+                                        symbol: item.symbol,
+                                        side: 'sell',
+                                        orderType: 'market',
+                                        quantity: actualQuantity,
+                                        price: filledPrice,
+                                        executedAt: new Date(),
+                                        reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
+                                        mode: 'auto',
+                                        cronRunId,
+                                    });
+                                    // ATOMIC: mark filled inside the same tx.
+                                    await updateOrderTracking(tx, idempotencyKey, {
+                                        tossOrderId: orderResult.orderId || undefined,
+                                        status: 'filled',
+                                        filledPrice,
+                                        resolvedAt: new Date(),
+                                    });
                                 });
                                 await sendErrorEmail(
                                     `포지션 미확인 매도 체결: ${item.symbol}`,
@@ -1193,16 +1286,25 @@ export default async function handler(req: Request): Promise<Response> {
                                 ).catch((e) => console.error('[email]', e));
                             }
                         } else {
-                            await insertTrade(db, {
-                                symbol: item.symbol,
-                                side: autoSide,
-                                orderType: 'market',
-                                quantity: actualQuantity,
-                                price: filledPrice,
-                                executedAt: new Date(),
-                                reason: tradeReason,
-                                mode: 'auto',
-                                cronRunId,
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
+                                    symbol: item.symbol,
+                                    side: autoSide,
+                                    orderType: 'market',
+                                    quantity: actualQuantity,
+                                    price: filledPrice,
+                                    executedAt: new Date(),
+                                    reason: tradeReason,
+                                    mode: 'auto',
+                                    cronRunId,
+                                });
+                                // ATOMIC: mark filled inside the same tx.
+                                await updateOrderTracking(tx, idempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice,
+                                    resolvedAt: new Date(),
+                                });
                             });
                         }
                         await sendTradeExecutedEmail({

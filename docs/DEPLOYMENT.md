@@ -35,8 +35,10 @@ yarn db:migrate
 # 필수
 DATABASE_URL=postgresql://...
 CRON_SECRET=<generate random string>
-UPSTASH_REDIS_REST_URL=<from siglens>
-UPSTASH_REDIS_REST_TOKEN=<from siglens>
+UPSTASH_REDIS_REST_URL=<Upstash Redis REST URL>
+UPSTASH_REDIS_REST_TOKEN=<Upstash Redis REST token>
+# Redis는 siglens-core 분석 큐 외에, 토스 OAuth 토큰 캐시(toss:oauth:token) + accountSeq 캐시(toss:account:seq) +
+# 분산 락(execute cron 동시 실행 방지)에도 사용됨. 미설정 시 trading 레이어 경고 출력 + 프로덕션 unsafe.
 WORKER_URL=<siglens-worker URL>
 WORKER_SECRET=<from siglens-worker>
 FMP_API_KEY=<from financialmodelingprep.com>
@@ -51,13 +53,58 @@ GEMINI_API_KEY=
 RESEND_API_KEY=<from resend.com>
 NOTIFICATION_EMAIL_FROM=noreply@siglens.io
 
-# 토스증권 (API 오픈 후 설정)
+# 토스증권 (trading_mode=auto/semi_auto 사용 시 필수)
+# TOSS_APP_KEY: OAuth2 client_id (Toss Open API 앱 등록 후 발급)
+# TOSS_SECRET_KEY: OAuth2 client_secret (앱 등록 후 발급)
 TOSS_APP_KEY=
 TOSS_SECRET_KEY=
-TOSS_ACCOUNT_NO=
 ```
 
 3. Deploy → 첫 배포 완료
+
+---
+
+## ⚠️ 배포 전 필수: 스키마 마이그레이션 (client_order_id 컬럼)
+
+> **auto / semi_auto 모드를 활성화하기 전에 반드시 완료해야 한다.**
+> `order_tracking` 테이블에 `client_order_id` 컬럼이 없으면 auto 모드 주문 insert가 모두 실패한다.
+
+`drizzle/` 디렉터리는 `.gitignore`로 제외되므로 마이그레이션 파일은 저장소에 포함되지 않는다.
+아래 두 가지 방법 중 하나로 적용한다:
+
+**방법 A — yarn db:migrate (권장)**
+```bash
+DATABASE_URL=postgresql://<prod-connection-string> yarn db:migrate
+```
+
+**방법 B — 수동 SQL**
+```sql
+ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS client_order_id text;
+```
+
+**적용 확인:**
+```sql
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'order_tracking' AND column_name = 'client_order_id';
+-- 1행이 반환되면 정상
+```
+
+---
+
+## 안전 롤아웃 순서
+
+1. **환경변수 설정** — 위 env 목록 전체 (Redis + Toss 키 포함) 입력 후 저장
+2. **스키마 마이그레이션** — 위 단계로 `client_order_id` 컬럼 존재 확인
+3. **`dry_run` 배포** (기본값) — 실제 주문 없이 한 세션(1~2 거래일) 운영하며 로그·DB 확인
+4. **`semi_auto` 전환** — 신호 발생 시 이메일 수신 + 대시보드 승인으로 실제 Toss 주문 경로 검증 (한 세션)
+5. **`auto` 전환** — `semi_auto` 세션이 정상 완료된 후에만 활성화. 초기에는 `max_trades_per_day`, `max_position_size`, `max_daily_loss_usd`를 보수적으로 설정
+
+```sql
+-- 모드 전환 예시
+UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
+UPDATE config SET value = '3' WHERE key = 'max_trades_per_day';
+```
 
 ---
 
@@ -169,9 +216,11 @@ curl -H "Authorization: Bearer <CRON_SECRET>" \
 
 ## 9. 운영 모드 전환
 
+안전 롤아웃 순서는 **배포 전 필수 섹션**을 참고. 요약:
+
 1. 초기: `dry_run` (모의투자) — 실제 주문 없이 가상 거래 기록
-2. 검증 후: `semi_auto` — 신호 발생 시 이메일 알림, 대시보드에서 승인
-3. 신뢰도 확보 후: `auto` — 자동 주문 실행 (토스 API 필요)
+2. 검증 후: `semi_auto` — 신호 발생 시 이메일 알림, 대시보드에서 승인 (실제 Toss API 호출)
+3. 신뢰도 확보 후: `auto` — 즉시 주문 실행 (토스 API + Redis 필수)
 
 대시보드 설정 페이지에서 변경하거나:
 ```sql
@@ -229,10 +278,16 @@ Redis 분산 락을 위해 기존 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST
 
 ## 12. 마이그레이션 참고
 
-`order_tracking` 테이블이 추가되었다. 배포 전 반드시 마이그레이션을 실행할 것:
+`order_tracking` 테이블이 추가되었으며, 이후 `client_order_id TEXT` 컬럼이 추가되었다.
+배포 전 반드시 마이그레이션을 실행할 것 (자세한 절차는 **배포 전 필수 섹션** 참고):
 
 ```bash
 yarn db:migrate
+```
+
+`drizzle/` 디렉터리는 gitignore 대상이므로 마이그레이션 파일이 없으면 수동 SQL로 적용:
+```sql
+ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS client_order_id text;
 ```
 
 ---
@@ -249,5 +304,6 @@ yarn db:migrate
 | Access 거부 | Cloudflare policy 미적용 | Zero Trust 설정 재확인 |
 | Config 400 | 허용되지 않은 key | ALLOWED_CONFIG_KEYS 확인 (api/config.ts) |
 | Execute skipped (locked) | 이전 execute cron이 아직 실행 중 | Redis 락 TTL (15분) 만료 대기, 또는 수동 키 삭제 |
+| Auto 주문 insert 오류 | `client_order_id` 컬럼 없음 | `ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS client_order_id text;` 실행 후 재배포 |
 | Reconcile 이메일 폭발 | 다수 주문 30분 타임아웃 | broker 연결 상태 확인, 수동 주문 상태 업데이트 |
 | 일일 손실 한도 초과 | 당일 실현+미실현 손실 합산 초과 | `max_daily_loss_usd` 조정 또는 다음 거래일까지 대기 |

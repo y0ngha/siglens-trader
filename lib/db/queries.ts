@@ -1,4 +1,4 @@
-import { eq, desc, and, sql } from 'drizzle-orm';
+import { eq, desc, and, sql, inArray } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index';
 import {
     watchlist,
@@ -426,6 +426,7 @@ export async function createOrderTracking(
         side: string;
         quantity: number;
         tossOrderId?: string;
+        clientOrderId?: string;
         status: string;
         cronRunId?: string;
     },
@@ -438,6 +439,7 @@ export async function createOrderTracking(
             side: params.side,
             quantity: params.quantity,
             tossOrderId: params.tossOrderId,
+            clientOrderId: params.clientOrderId,
             status: params.status,
             cronRunId: params.cronRunId,
         })
@@ -445,7 +447,7 @@ export async function createOrderTracking(
 }
 
 export async function updateOrderTracking(
-    db: Db,
+    db: DbOrTx,
     idempotencyKey: string,
     updates: {
         status?: string;
@@ -464,9 +466,10 @@ export async function updateOrderTracking(
 }
 
 export async function getPendingSubmittedOrders(db: Db) {
+    // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.
     return db
         .select()
         .from(orderTracking)
-        .where(eq(orderTracking.status, 'submitted'))
+        .where(inArray(orderTracking.status, ['submitted', 'pending', 'partial']))
         .orderBy(orderTracking.submittedAt);
 }

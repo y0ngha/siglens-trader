@@ -15,7 +15,7 @@ import {
     updateOrderTracking,
     averageIntoPosition,
 } from '../../lib/db/queries';
-import { executeBuyOrder, executeSellOrder } from '../../lib/trading/order';
+import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
 import { sendErrorEmail } from '../../lib/notification/email';
 
 export default async function handler(req: Request): Promise<Response> {
@@ -82,6 +82,7 @@ export default async function handler(req: Request): Promise<Response> {
             try {
                 await createOrderTracking(db, {
                     idempotencyKey,
+                    clientOrderId: idempotencyKey,
                     symbol: order.symbol,
                     side: order.side,
                     quantity: order.quantity,
@@ -92,47 +93,61 @@ export default async function handler(req: Request): Promise<Response> {
                 const result = await orderFn(order.symbol, order.quantity, idempotencyKey);
 
                 await updateOrderTracking(db, idempotencyKey, {
-                    tossOrderId: result.orderId,
+                    tossOrderId: result.orderId || undefined,
                     status: result.status,
-                    filledPrice: result.filledPrice ?? undefined,
-                    resolvedAt: result.status !== 'submitted' ? new Date() : undefined,
+                    filledPrice: result.avgFilledPrice ?? undefined,
+                    resolvedAt:
+                        result.status === 'pending' || result.status === 'partial'
+                            ? undefined
+                            : new Date(),
                 });
 
-                if (result.status === 'rejected') {
+                if (result.status === 'rejected' || result.status === 'canceled') {
                     await revertPendingOrder(db, id).catch(() => {});
                     return Response.json(
-                        { error: `Order rejected: ${result.message ?? 'unknown'}` },
+                        { error: `Order ${result.status}: ${result.rejectReason ?? 'unknown'}` },
                         { status: 422 },
                     );
                 }
-                if (result.status === 'submitted') {
+                if (result.status === 'pending' || result.status === 'partial') {
+                    // 접수됐으나 미확정 — 거래는 reconcile cron이 확정/기록. 여기서는 기록하지 않음.
+                    const msg =
+                        result.status === 'partial'
+                            ? `주문이 부분 체결되었습니다 (${result.filledQuantity ?? '?'}주). 나머지 체결/확정은 reconcile가 처리합니다.`
+                            : '주문이 접수되었으나 아직 체결되지 않았습니다. reconcile가 확정합니다.';
+                    return Response.json(
+                        { accepted: true, status: result.status, message: msg },
+                        { status: 202 },
+                    );
+                }
+                // result.status === 'filled' — only auto-book a clean full fill.
+                // If NOT clean (null price, fractional qty, or short fill) → needs_review + alert.
+                const filledQ = result.filledQuantity ?? order.quantity;
+                const cleanFullFill =
+                    result.avgFilledPrice != null &&
+                    Number.isInteger(order.quantity) &&
+                    Math.abs(filledQ - order.quantity) < 1e-6;
+                if (!cleanFullFill) {
+                    await updateOrderTracking(db, idempotencyKey, {
+                        status: 'needs_review',
+                        filledPrice: result.avgFilledPrice ?? undefined,
+                        resolvedAt: new Date(),
+                    });
+                    await sendErrorEmail(
+                        `체결 수동확인 필요: ${order.symbol}`,
+                        `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${order.quantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
+                    ).catch((e) => console.error('[email]', e));
                     return Response.json(
                         {
                             accepted: true,
-                            status: 'submitted',
-                            message:
-                                '주문이 접수되었으나 아직 체결되지 않았습니다. 추후 확인이 필요합니다.',
+                            status: 'needs_review',
+                            message: '체결이 예상과 달라 수동 확인이 필요합니다.',
                         },
                         { status: 202 },
                     );
                 }
-                if (result.status === 'filled') {
-                    if (!result.filledPrice) {
-                        // Record at estimated price rather than leaving position untracked
-                        filledPrice = price;
-                        await updateOrderTracking(db, idempotencyKey, {
-                            status: 'fill_price_unknown',
-                        });
-                        await sendErrorEmail(
-                            `체결가 누락: ${order.symbol}`,
-                            `${order.symbol} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 예상가 $${price}로 기록합니다.`,
-                        ).catch((e) => console.error('[email]', e));
-                        // Continue to trade recording below with estimated price
-                    } else {
-                        filledPrice = result.filledPrice;
-                    }
-                    actualQuantity = result.filledQuantity ?? order.quantity;
-                }
+                filledPrice = result.avgFilledPrice!; // non-null: cleanFullFill requires avgFilledPrice != null
+                actualQuantity = order.quantity; // integer, == filledQ
             } catch (err) {
                 // Toss API failed — mark order tracking as error and revert pending status
                 await updateOrderTracking(db, idempotencyKey, {

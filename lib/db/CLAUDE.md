@@ -25,7 +25,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `trades` | Execution history (with reason + mode + cronRunId) |
 | `pending_orders` | Approval queue (semi_auto mode) |
 | `config` | Key-value settings (JSONB value) |
-| `order_tracking` | Order lifecycle tracking (unique idempotency key, status transitions) |
+| `order_tracking` | Order lifecycle tracking (unique idempotency key, `client_order_id` Toss idempotency key, status transitions) |
 | `notification_config` | Email channel settings |
 
 ## Key Query Functions (added in audit)

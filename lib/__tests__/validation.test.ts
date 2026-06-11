@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isFinitePositive, isFiniteNonNegative, safeNumber } from '../validation';
+import { isFinitePositive, isFiniteNonNegative, safeNumber, parseDecimal } from '../validation';
 
 describe('isFinitePositive', () => {
     it('returns true for positive finite numbers', () => {
@@ -89,5 +89,36 @@ describe('safeNumber', () => {
         expect(safeNumber(null, -1)).toBe(-1);
         expect(safeNumber(undefined, 5)).toBe(5);
         expect(safeNumber({}, 10)).toBe(10);
+    });
+});
+
+describe('parseDecimal', () => {
+    it('parses decimal string correctly', () => {
+        expect(parseDecimal('0.013315', 0)).toBe(0.013315);
+        expect(parseDecimal('43.404581', 0)).toBe(43.404581);
+    });
+
+    it('passes through number values', () => {
+        expect(parseDecimal(5, 0)).toBe(5);
+    });
+
+    it('returns fallback for unparseable string', () => {
+        expect(parseDecimal('abc', 0)).toBe(0);
+    });
+
+    it('returns fallback for empty string', () => {
+        expect(parseDecimal('', 0)).toBe(0);
+    });
+
+    it('returns fallback for undefined', () => {
+        expect(parseDecimal(undefined, 0)).toBe(0);
+    });
+
+    it('returns fallback for null', () => {
+        expect(parseDecimal(null, 0)).toBe(0);
+    });
+
+    it('returns fallback for Infinity string (parseFloat→Infinity, not finite)', () => {
+        expect(parseDecimal('Infinity', 0)).toBe(0);
     });
 });

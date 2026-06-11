@@ -100,6 +100,7 @@ export const orderTracking = pgTable('order_tracking', {
     side: text('side').notNull(),
     quantity: integer('quantity').notNull(),
     tossOrderId: text('toss_order_id'),
+    clientOrderId: text('client_order_id'),
     status: text('status').notNull(),
     filledPrice: numeric('filled_price'),
     submittedAt: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),

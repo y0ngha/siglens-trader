@@ -15,7 +15,7 @@ vi.mock('../_lib/auth', () => ({
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
-vi.mock('../../lib/trading/order', () => ({
+vi.mock('../../lib/trading/orders', () => ({
     executeBuyOrder: (...args: unknown[]) => mockExecuteBuyOrder(...args),
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
 }));
@@ -758,8 +758,9 @@ describe('POST /api/approve/[id]', () => {
         mockGetConfigValue.mockResolvedValue('auto');
         mockExecuteBuyOrder.mockResolvedValue({
             orderId: 'T123',
+            clientOrderId: 'approve-50',
             status: 'filled',
-            filledPrice: 895.5,
+            avgFilledPrice: 895.5,
             filledQuantity: 5,
         });
         mockInsertTrade.mockResolvedValue([{}]);
@@ -798,9 +799,10 @@ describe('POST /api/approve/[id]', () => {
         mockApprovePendingOrder.mockResolvedValue(true);
         mockGetConfigValue.mockResolvedValue('auto');
         mockExecuteSellOrder.mockResolvedValue({
-            orderId: 'T999',
+            orderId: '',
+            clientOrderId: 'approve-51',
             status: 'rejected',
-            message: 'Insufficient balance',
+            rejectReason: 'insufficient-balance',
         });
 
         const res = await handler(
@@ -808,7 +810,7 @@ describe('POST /api/approve/[id]', () => {
         );
         expect(res.status).toBe(422);
         const data = await res.json();
-        expect(data.error).toContain('Insufficient balance');
+        expect(data.error).toContain('insufficient-balance');
     });
 
     it('returns 502 and does not record trade when Toss API throws', async () => {
