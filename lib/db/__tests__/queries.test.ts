@@ -471,8 +471,9 @@ describe('Positions queries', () => {
     });
 
     describe('reducePositionQuantity', () => {
-        it('executes atomic SQL update to reduce quantity', async () => {
-            const db = createMockDb([{ id: 1 }]);
+        it('executes atomic SQL update to reduce quantity (rowCount=1 → true)', async () => {
+            // neon-serverless db.execute returns QueryResult with rowCount, not an array
+            const db = createMockDb({ rowCount: 1 } as any);
 
             const result = await reducePositionQuantity(db as unknown as Db, 1, 3);
 
@@ -480,8 +481,8 @@ describe('Positions queries', () => {
             expect(result).toBe(true);
         });
 
-        it('returns false when no rows matched', async () => {
-            const db = createMockDb([]);
+        it('returns false when no rows matched (rowCount=0)', async () => {
+            const db = createMockDb({ rowCount: 0 } as any);
 
             const result = await reducePositionQuantity(db as unknown as Db, 999, 5);
 
@@ -489,12 +490,12 @@ describe('Positions queries', () => {
             expect(result).toBe(false);
         });
 
-        it('returns true when rowCount is returned instead of array', async () => {
-            const db = createMockDb({ rowCount: 1 } as any);
+        it('returns false when rowCount is undefined (defensive)', async () => {
+            const db = createMockDb({} as any);
 
             const result = await reducePositionQuantity(db as unknown as Db, 1, 2);
 
-            expect(result).toBe(true);
+            expect(result).toBe(false);
         });
     });
 

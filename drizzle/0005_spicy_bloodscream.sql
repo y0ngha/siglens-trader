@@ -1,0 +1,1 @@
+ALTER TABLE "order_tracking" ADD COLUMN "client_order_id" text;

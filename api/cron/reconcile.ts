@@ -25,7 +25,8 @@ export default async function handler(req: Request): Promise<Response> {
 
     const LOCK_KEY = 'cron:reconcile:lock';
     let lockAcquired = false;
-    const locked = await acquireLock(LOCK_KEY, 300); // 5 min TTL
+    // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
+    const locked = await acquireLock(LOCK_KEY, 780);
     if (!locked) {
         return Response.json({ skipped: true, reason: 'locked' });
     }

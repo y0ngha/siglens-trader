@@ -173,10 +173,10 @@ describe('reconcile cron handler', () => {
             expect(mockGetPendingSubmittedOrders).not.toHaveBeenCalled();
         });
 
-        it('acquires lock with 5-minute TTL', async () => {
+        it('acquires lock with 780s TTL (< maxDuration 800s)', async () => {
             await handler(makeRequest(true));
 
-            expect(mockAcquireLock).toHaveBeenCalledWith('cron:reconcile:lock', 300);
+            expect(mockAcquireLock).toHaveBeenCalledWith('cron:reconcile:lock', 780);
         });
 
         it('releases lock after successful execution', async () => {

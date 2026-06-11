@@ -16,8 +16,8 @@ vi.mock('@upstash/redis', () => ({
     })),
 }));
 
-// Import AFTER mocks are set up
-const { acquireLock, releaseLock } = await import('../lock');
+// Note: all tests use vi.resetModules() + fresh import('../lock') to avoid
+// cached Redis singleton state between tests.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -48,6 +48,36 @@ describe('lock', () => {
 
             expect(result).toBe(true);
             expect(mockSet).not.toHaveBeenCalled();
+        });
+
+        it('returns false (fail-CLOSED) when Redis is not configured in production (NODE_ENV=production)', async () => {
+            delete process.env.UPSTASH_REDIS_REST_URL;
+            delete process.env.UPSTASH_REDIS_REST_TOKEN;
+
+            vi.resetModules();
+            vi.stubEnv('NODE_ENV', 'production');
+            const { acquireLock: freshAcquire } = await import('../lock');
+
+            const result = await freshAcquire('test:lock');
+
+            expect(result).toBe(false);
+            expect(mockSet).not.toHaveBeenCalled();
+            vi.unstubAllEnvs();
+        });
+
+        it('returns false (fail-CLOSED) when Redis is not configured in production (VERCEL_ENV=production)', async () => {
+            delete process.env.UPSTASH_REDIS_REST_URL;
+            delete process.env.UPSTASH_REDIS_REST_TOKEN;
+
+            vi.resetModules();
+            vi.stubEnv('VERCEL_ENV', 'production');
+            const { acquireLock: freshAcquire } = await import('../lock');
+
+            const result = await freshAcquire('test:lock');
+
+            expect(result).toBe(false);
+            expect(mockSet).not.toHaveBeenCalled();
+            vi.unstubAllEnvs();
         });
 
         it('returns true when SETNX succeeds (lock acquired)', async () => {

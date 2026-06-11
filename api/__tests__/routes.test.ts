@@ -630,6 +630,114 @@ describe('POST /api/config', () => {
             overall: 10,
         });
     });
+
+    // K1 — Boolean config key validation (kill-switch integrity)
+    it('rejects string "false" for trading_enabled (kill-switch integrity)', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_enabled',
+                value: 'false',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a boolean');
+    });
+
+    it('rejects string "true" for trading_enabled', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_enabled',
+                value: 'true',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a boolean');
+    });
+
+    it('rejects numeric 0 for trading_enabled', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_enabled',
+                value: 0,
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a boolean');
+    });
+
+    it('accepts boolean true for trading_enabled', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_enabled',
+                value: true,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_enabled', true);
+    });
+
+    it('accepts boolean false for trading_enabled', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_enabled',
+                value: false,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_enabled', false);
+    });
+
+    it('rejects string value for fixed_exit_enabled', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'fixed_exit_enabled',
+                value: 'false',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('must be a boolean');
+    });
+
+    // K1b — analysis_timeframe enum validation
+    it('rejects invalid analysis_timeframe value', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'analysis_timeframe',
+                value: '1Min',
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('analysis_timeframe must be one of');
+    });
+
+    it('accepts valid analysis_timeframe values', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        for (const tf of ['5Min', '15Min', '30Min', '1Hour', '4Hour', '1Day']) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'analysis_timeframe',
+                    value: tf,
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+        expect(mockSetConfigValue).toHaveBeenCalledTimes(6);
+    });
 });
 
 describe('GET /api/pending', () => {

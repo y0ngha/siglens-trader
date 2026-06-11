@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1779626290419,
+      "tag": "0000_glorious_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779697933152,
+      "tag": "0001_ambitious_shatterstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1748131200000,
+      "tag": "0002_create_order_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1748217600000,
+      "tag": "0003_add_performance_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779713527606,
+      "tag": "0004_cooing_zarek",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781172643417,
+      "tag": "0005_spicy_bloodscream",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781192922194,
+      "tag": "0006_brief_wind_dancer",
+      "breakpoints": true
+    }
+  ]
+}

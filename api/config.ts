@@ -76,6 +76,8 @@ export default async function handler(req: Request): Promise<Response> {
             'max_daily_loss_usd',
         ]);
 
+        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
+
         switch (payload.type) {
             case 'config': {
                 const { key, value } = payload;
@@ -93,6 +95,27 @@ export default async function handler(req: Request): Promise<Response> {
                     if (!ALLOWED_MODES.has(value as string)) {
                         return Response.json(
                             { error: 'trading_mode must be one of: dry_run, semi_auto, auto' },
+                            { status: 400 },
+                        );
+                    }
+                }
+                if (BOOLEAN_CONFIG_KEYS.has(key) && typeof value !== 'boolean') {
+                    return Response.json({ error: `${key} must be a boolean` }, { status: 400 });
+                }
+                if (key === 'analysis_timeframe') {
+                    const ALLOWED_TF = new Set([
+                        '5Min',
+                        '15Min',
+                        '30Min',
+                        '1Hour',
+                        '4Hour',
+                        '1Day',
+                    ]);
+                    if (!ALLOWED_TF.has(value as string)) {
+                        return Response.json(
+                            {
+                                error: 'analysis_timeframe must be one of: 5Min, 15Min, 30Min, 1Hour, 4Hour, 1Day',
+                            },
                             { status: 400 },
                         );
                     }
