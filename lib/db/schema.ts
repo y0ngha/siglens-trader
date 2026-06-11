@@ -70,6 +70,8 @@ export const trades = pgTable('trades', {
     reason: text('reason'),
     mode: text('mode').notNull(),
     cronRunId: text('cron_run_id'),
+    clientOrderId: text('client_order_id'),
+    realizedPnl: numeric('realized_pnl'),
     dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

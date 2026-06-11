@@ -936,6 +936,53 @@ describe('execute cron handler', () => {
                     quantity: 5,
                     price: 151.5,
                     mode: 'auto',
+                    // auto buy carries the per-order facade clientOrderId (uuid)
+                    clientOrderId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+                }),
+            );
+            // BUY must NOT set realizedPnl
+            const buyCall = mockInsertTrade.mock.calls.find(
+                (c) => (c[1] as { side?: string })?.side === 'buy',
+            );
+            expect(buyCall?.[1]).not.toHaveProperty('realizedPnl');
+        });
+
+        it('books a clean-fill SELL with realizedPnl and clientOrderId', async () => {
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 160,
+                filledQuantity: 10,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'sell',
+                    quantity: 10,
+                    price: 160,
+                    mode: 'auto',
+                    clientOrderId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+                    // (filledPrice 160 − avgPrice 140) × 10
+                    realizedPnl: 200,
                 }),
             );
         });
@@ -1315,6 +1362,9 @@ describe('execute cron handler', () => {
                 expect.objectContaining({
                     side: 'sell',
                     quantity: 10,
+                    mode: 'dry_run',
+                    // dry_run sell at currentPrice 150 vs avgPrice 140, qty 10
+                    realizedPnl: 100,
                 }),
             );
         });
@@ -1884,6 +1934,8 @@ describe('execute cron handler', () => {
                     price: 95,
                     mode: 'dry_run',
                     reason: '기술적 추세 반전 (bearish)',
+                    // (sellPrice 95 − avgPrice 100) × 10
+                    realizedPnl: -50,
                 }),
             );
             expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
@@ -2072,6 +2124,10 @@ describe('execute cron handler', () => {
                     symbol: 'AAPL',
                     side: 'sell',
                     mode: 'auto',
+                    // facade sell carries the per-order clientOrderId (uuid)
+                    clientOrderId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+                    // (filledPrice 148 − avgPrice 100) × 10
+                    realizedPnl: 480,
                 }),
             );
             expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 148); // filledPrice from mock

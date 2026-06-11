@@ -554,6 +554,8 @@ describe('Trades queries', () => {
                 reason: 'Signal triggered',
                 mode: 'auto',
                 cronRunId: 'run-456',
+                clientOrderId: undefined,
+                realizedPnl: undefined,
             });
             expect(db._chain.returning).toHaveBeenCalled();
             expect(result).toEqual(mockReturned);
@@ -583,7 +585,67 @@ describe('Trades queries', () => {
                 reason: undefined,
                 mode: 'manual',
                 cronRunId: undefined,
+                clientOrderId: undefined,
+                realizedPnl: undefined,
             });
+        });
+
+        it('inserts clientOrderId and realizedPnl when provided, realizedPnl as string', async () => {
+            const executedAt = new Date('2026-01-15T10:00:00Z');
+            const mockReturned = [{ id: 2 }];
+            const db = createMockDb(mockReturned);
+
+            const result = await insertTrade(db as unknown as Db, {
+                symbol: 'NVDA',
+                side: 'sell',
+                orderType: 'market',
+                quantity: 10,
+                price: 900.0,
+                executedAt,
+                mode: 'auto',
+                cronRunId: 'run-789',
+                clientOrderId: 'uuid-client-order-123',
+                realizedPnl: 250.75,
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith({
+                symbol: 'NVDA',
+                side: 'sell',
+                orderType: 'market',
+                quantity: 10,
+                price: '900',
+                executedAt,
+                reason: undefined,
+                mode: 'auto',
+                cronRunId: 'run-789',
+                clientOrderId: 'uuid-client-order-123',
+                realizedPnl: '250.75',
+            });
+            expect(db._chain.returning).toHaveBeenCalled();
+            expect(result).toEqual(mockReturned);
+        });
+
+        it('stores realizedPnl as undefined when null/undefined (not string)', async () => {
+            const executedAt = new Date('2026-01-15T10:00:00Z');
+            const db = createMockDb([{ id: 3 }]);
+
+            await insertTrade(db as unknown as Db, {
+                symbol: 'AAPL',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 5,
+                price: 150.0,
+                executedAt,
+                mode: 'auto',
+                clientOrderId: 'uuid-client-order-456',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    clientOrderId: 'uuid-client-order-456',
+                    realizedPnl: undefined,
+                }),
+            );
         });
     });
 
@@ -629,59 +691,49 @@ describe('Trades queries', () => {
     });
 
     describe('getTodayRealizedPnl', () => {
-        it('sums closed-position PnL and partial-sell PnL', async () => {
-            const db = createMockDb([{ pnl: 300 }]);
-            // Override db.execute for the partial-sell query
-            db.execute = vi.fn().mockResolvedValue([{ pnl: 150 }]);
+        // getTodayRealizedPnl now uses the typed drizzle select builder
+        // (db.select().from().where()) to avoid db.execute() driver-shape
+        // ambiguity (raw array vs {rows:[...]}) that silently returned 0.
+        // Tests mirror the pattern used by getTodayTradeCount above.
+
+        it('sums today realized_pnl over non-dry/non-skipped sell trades', async () => {
+            const db = createMockDb([{ pnl: 450 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
-            // closedPnl=300 + partialPnl=150 = 450
             expect(result).toBe(450);
+            // Uses typed select builder — NOT db.execute
+            expect(db.execute).not.toHaveBeenCalled();
             expect(db._chain.from).toHaveBeenCalled();
             expect(db._chain.where).toHaveBeenCalled();
-            expect(db.execute).toHaveBeenCalled();
         });
 
-        it('returns 0 when no closed positions and no partial sells', async () => {
+        it('returns 0 when sum is zero', async () => {
             const db = createMockDb([{ pnl: 0 }]);
-            db.execute = vi.fn().mockResolvedValue([{ pnl: 0 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
             expect(result).toBe(0);
         });
 
-        it('returns 0 when results are null', async () => {
+        it('returns 0 when pnl value is null (COALESCE default)', async () => {
             const db = createMockDb([{ pnl: null }]);
-            db.execute = vi.fn().mockResolvedValue([{ pnl: null }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
             expect(result).toBe(0);
         });
 
-        it('returns only closed PnL when no partial sells exist', async () => {
-            const db = createMockDb([{ pnl: 1200 }]);
-            db.execute = vi.fn().mockResolvedValue([{ pnl: 0 }]);
+        it('returns 0 when result row is missing (empty array)', async () => {
+            const db = createMockDb([]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 
-            expect(result).toBe(1200);
+            expect(result).toBe(0);
         });
 
-        it('returns only partial-sell PnL when no positions were fully closed', async () => {
-            const db = createMockDb([{ pnl: 0 }]);
-            db.execute = vi.fn().mockResolvedValue([{ pnl: 250 }]);
-
-            const result = await getTodayRealizedPnl(db as unknown as Db);
-
-            expect(result).toBe(250);
-        });
-
-        it('handles negative PnL from losing positions', async () => {
-            const db = createMockDb([{ pnl: -400 }]);
-            db.execute = vi.fn().mockResolvedValue([{ pnl: -100 }]);
+        it('handles negative realized PnL from losing sells', async () => {
+            const db = createMockDb([{ pnl: -500 }]);
 
             const result = await getTodayRealizedPnl(db as unknown as Db);
 

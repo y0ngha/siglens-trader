@@ -56,6 +56,7 @@ import {
     safeArray,
     safeActionRecommendation,
 } from '../../lib/strategy/safe-extract';
+import { realizedPnlForSell } from '../../lib/strategy/pnl';
 
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
@@ -330,6 +331,11 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: evaluation.reason,
                                     mode: 'dry_run',
                                     cronRunId,
+                                    realizedPnl: realizedPnlForSell(
+                                        currentPrice,
+                                        Number(position.avgPrice),
+                                        position.quantity,
+                                    ),
                                 });
                             });
                             currentExposure -= currentPrice * position.quantity;
@@ -526,6 +532,12 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: evaluation.reason,
                                     mode: 'auto',
                                     cronRunId,
+                                    clientOrderId,
+                                    realizedPnl: realizedPnlForSell(
+                                        filledSellPrice,
+                                        Number(position.avgPrice),
+                                        actualExitQty,
+                                    ),
                                 });
                                 // ATOMIC: mark filled inside the same tx so 'filled' never
                                 // exists without its trade (double-book race guard).
@@ -921,6 +933,11 @@ export default async function handler(req: Request): Promise<Response> {
                                             reason: decision.reason,
                                             mode: 'dry_run',
                                             cronRunId,
+                                            realizedPnl: realizedPnlForSell(
+                                                currentPrice,
+                                                Number(existingSellPos.avgPrice),
+                                                decision.quantity,
+                                            ),
                                         });
                                     });
                                     currentExposure -= currentPrice * decision.quantity;
@@ -1177,6 +1194,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: tradeReason,
                                     mode: 'auto',
                                     cronRunId,
+                                    clientOrderId,
                                 });
                                 if (existingAuto) {
                                     await averageIntoPosition(
@@ -1232,6 +1250,12 @@ export default async function handler(req: Request): Promise<Response> {
                                             reason: tradeReason,
                                             mode: 'auto',
                                             cronRunId,
+                                            clientOrderId,
+                                            realizedPnl: realizedPnlForSell(
+                                                filledPrice,
+                                                Number(existingSellPos.avgPrice),
+                                                actualQuantity,
+                                            ),
                                         });
                                         // ATOMIC: mark filled inside the same tx.
                                         await updateOrderTracking(tx, idempotencyKey, {
@@ -1271,6 +1295,7 @@ export default async function handler(req: Request): Promise<Response> {
                                         reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
                                         mode: 'auto',
                                         cronRunId,
+                                        clientOrderId,
                                     });
                                     // ATOMIC: mark filled inside the same tx.
                                     await updateOrderTracking(tx, idempotencyKey, {
@@ -1297,6 +1322,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: tradeReason,
                                     mode: 'auto',
                                     cronRunId,
+                                    clientOrderId,
                                 });
                                 // ATOMIC: mark filled inside the same tx.
                                 await updateOrderTracking(tx, idempotencyKey, {

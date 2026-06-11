@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from './index';
 import { orderTracking, trades } from './schema';
 import {
@@ -25,6 +25,28 @@ export interface AutoRecoveryResult {
 }
 
 /**
+ * Builds the WHERE clause that decides whether a booked trade already exists
+ * for a filled order.
+ *
+ * - When the order carries a `clientOrderId` (every facade-placed order does),
+ *   match precisely on `trades.client_order_id` — this detects whether execute
+ *   already booked this exact order, with no symbol/side/time ambiguity.
+ * - Legacy/null orders fall back to the loose symbol + side + executed-after
+ *   condition (best effort for rows booked before client_order_id existed).
+ */
+function matchingTradeWhere(order: {
+    symbol: string;
+    side: string;
+    submittedAt: Date | null;
+    clientOrderId: string | null;
+}): SQL {
+    if (order.clientOrderId) {
+        return sql`${trades.clientOrderId} = ${order.clientOrderId}`;
+    }
+    return sql`${trades.symbol} = ${order.symbol} AND ${trades.side} = ${order.side} AND ${trades.executedAt} > ${order.submittedAt}`;
+}
+
+/**
  * Checks for DB state inconsistencies between order_tracking and trades.
  *
  * Specifically, finds orders marked 'filled' in the last 24 hours that
@@ -44,12 +66,7 @@ export async function checkConsistency(db: Db): Promise<RecoveryReport> {
 
     let filledOrdersWithoutTrades = 0;
     for (const order of filledOrders) {
-        const matchingTrades = await db
-            .select()
-            .from(trades)
-            .where(
-                sql`${trades.symbol} = ${order.symbol} AND ${trades.side} = ${order.side} AND ${trades.executedAt} > ${order.submittedAt}`,
-            );
+        const matchingTrades = await db.select().from(trades).where(matchingTradeWhere(order));
 
         if (matchingTrades.length === 0) {
             filledOrdersWithoutTrades++;
@@ -93,9 +110,7 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
         const matchingTrades = await db
             .select()
             .from(trades)
-            .where(
-                sql`${trades.symbol} = ${order.symbol} AND ${trades.side} = ${order.side} AND ${trades.executedAt} > ${order.submittedAt}`,
-            )
+            .where(matchingTradeWhere(order))
             .limit(1);
 
         if (matchingTrades.length > 0) continue; // Trade exists, no recovery needed
@@ -118,6 +133,14 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
             // preventing concurrent modifications.
             const existingPosition = await getOpenPositionBySymbol(db, order.symbol);
 
+            // realized PnL for sells that close/reduce a known long position.
+            // lib/db는 lib/strategy 임포트 금지 → realizedPnlForSell 공식 인라인 (센트 반올림).
+            // Buys / no-position sells → undefined.
+            const recoveredRealizedPnl =
+                order.side === 'sell' && existingPosition
+                    ? Math.round((price - Number(existingPosition.avgPrice)) * quantity * 100) / 100
+                    : undefined;
+
             await db.transaction(async (tx) => {
                 // Insert the missing trade
                 await insertTrade(tx, {
@@ -130,6 +153,8 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                     reason: `자동 복구 — orderTracking ${order.idempotencyKey}에서 복원`,
                     mode: 'auto',
                     cronRunId: order.cronRunId ?? undefined,
+                    clientOrderId: order.clientOrderId ?? undefined,
+                    realizedPnl: recoveredRealizedPnl,
                 });
 
                 // Update position

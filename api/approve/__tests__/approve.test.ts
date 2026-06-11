@@ -225,8 +225,13 @@ describe('approve handler', () => {
                     symbol: 'AAPL',
                     quantity: 5,
                     price: 151.25,
+                    side: 'buy',
+                    // auto buy carries the facade clientOrderId but NO realizedPnl
+                    clientOrderId: 'approve-1',
                 }),
             );
+            // BUY booking must not set realizedPnl
+            expect(mockInsertTrade.mock.calls[0]?.[1]).not.toHaveProperty('realizedPnl');
             expect(mockOpenPosition).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({ quantity: 5, avgPrice: 151.25 }),
@@ -559,6 +564,10 @@ describe('approve handler', () => {
                     side: 'sell',
                     quantity: 4,
                     reason: expect.stringContaining('부분 매도'),
+                    // (sellPrice 155 − avgPrice 140) × 4
+                    realizedPnl: 60,
+                    // semi_auto (default mode) → no facade order → no clientOrderId
+                    clientOrderId: undefined,
                 }),
             );
         });
@@ -579,6 +588,53 @@ describe('approve handler', () => {
             expect(body.success).toBe(true);
             expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 155);
             expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    side: 'sell',
+                    quantity: 10,
+                    // (sellPrice 155 − avgPrice 140) × 10
+                    realizedPnl: 150,
+                    clientOrderId: undefined,
+                }),
+            );
+        });
+
+        it('auto-mode full close carries clientOrderId (approve-${id}) + realizedPnl', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetPendingOrderById.mockResolvedValue(fakeSellOrder); // id 2, qty 10
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            // Toss fills cleanly at 155 (avgFilledPrice), full qty
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'filled',
+                avgFilledPrice: 155,
+                filledQuantity: 10,
+            });
+
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            const body = await res.json();
+
+            expect(body.success).toBe(true);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.objectContaining({
+                    side: 'sell',
+                    quantity: 10,
+                    mode: 'auto',
+                    clientOrderId: 'approve-2',
+                    realizedPnl: 150,
+                }),
+            );
         });
     });
 
