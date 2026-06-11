@@ -10,6 +10,11 @@ vi.mock('../poll-until-done', () => ({
     pollUntilDone: vi.fn(),
 }));
 
+const mockProvider = { getBars: vi.fn(), getQuote: vi.fn() };
+vi.mock('@lib/data/fmp-market-data-provider', () => ({
+    getMarketDataProvider: () => mockProvider,
+}));
+
 const { submitAnalysis, pollAnalysis } = await import('@y0ngha/siglens-core');
 const { pollUntilDone } = await import('../poll-until-done');
 const { runTechnicalAnalysis } = await import('../run-technical');
@@ -80,6 +85,7 @@ describe('runTechnicalAnalysis', () => {
         expect(mockedSubmit).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Day', false, undefined, {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
+            marketDataProvider: mockProvider,
         });
     });
 });
