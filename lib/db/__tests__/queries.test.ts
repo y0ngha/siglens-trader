@@ -554,6 +554,8 @@ describe('Trades queries', () => {
                 reason: 'Signal triggered',
                 mode: 'auto',
                 cronRunId: 'run-456',
+                clientOrderId: undefined,
+                realizedPnl: undefined,
             });
             expect(db._chain.returning).toHaveBeenCalled();
             expect(result).toEqual(mockReturned);
@@ -583,7 +585,67 @@ describe('Trades queries', () => {
                 reason: undefined,
                 mode: 'manual',
                 cronRunId: undefined,
+                clientOrderId: undefined,
+                realizedPnl: undefined,
             });
+        });
+
+        it('inserts clientOrderId and realizedPnl when provided, realizedPnl as string', async () => {
+            const executedAt = new Date('2026-01-15T10:00:00Z');
+            const mockReturned = [{ id: 2 }];
+            const db = createMockDb(mockReturned);
+
+            const result = await insertTrade(db as unknown as Db, {
+                symbol: 'NVDA',
+                side: 'sell',
+                orderType: 'market',
+                quantity: 10,
+                price: 900.0,
+                executedAt,
+                mode: 'auto',
+                cronRunId: 'run-789',
+                clientOrderId: 'uuid-client-order-123',
+                realizedPnl: 250.75,
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith({
+                symbol: 'NVDA',
+                side: 'sell',
+                orderType: 'market',
+                quantity: 10,
+                price: '900',
+                executedAt,
+                reason: undefined,
+                mode: 'auto',
+                cronRunId: 'run-789',
+                clientOrderId: 'uuid-client-order-123',
+                realizedPnl: '250.75',
+            });
+            expect(db._chain.returning).toHaveBeenCalled();
+            expect(result).toEqual(mockReturned);
+        });
+
+        it('stores realizedPnl as undefined when null/undefined (not string)', async () => {
+            const executedAt = new Date('2026-01-15T10:00:00Z');
+            const db = createMockDb([{ id: 3 }]);
+
+            await insertTrade(db as unknown as Db, {
+                symbol: 'AAPL',
+                side: 'buy',
+                orderType: 'market',
+                quantity: 5,
+                price: 150.0,
+                executedAt,
+                mode: 'auto',
+                clientOrderId: 'uuid-client-order-456',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    clientOrderId: 'uuid-client-order-456',
+                    realizedPnl: undefined,
+                }),
+            );
         });
     });
 

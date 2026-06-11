@@ -226,6 +226,8 @@ export async function insertTrade(
         reason?: string;
         mode: string;
         cronRunId?: string;
+        clientOrderId?: string;
+        realizedPnl?: number;
     },
 ) {
     return db
@@ -240,6 +242,8 @@ export async function insertTrade(
             reason: params.reason,
             mode: params.mode,
             cronRunId: params.cronRunId,
+            clientOrderId: params.clientOrderId,
+            realizedPnl: params.realizedPnl != null ? String(params.realizedPnl) : undefined,
         })
         .returning();
 }
