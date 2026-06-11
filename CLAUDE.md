@@ -100,11 +100,14 @@ Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 
 ## Cron Schedule
 
-All crons run during US market hours (KST 22:00~05:59, Mon-Fri):
-- Analysis crons (technical, news, options): `0 22-23,0-5 * * 1-5` (hourly)
-- Fundamental: `0 22 * * 1-5` (daily at market open)
-- Execute: `7 22-23,0-5 * * 1-5` (7-minute offset after analysis, hourly)
-- Reconcile: `*/10 22-23,0-5 * * 1-5` (every 10 minutes — order timeout + DB consistency)
+**Vercel runs cron schedules in UTC.** Hours below are UTC, chosen to cover the US regular
+session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
+DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
+`market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
+- Analysis crons (technical, news, options): `0 13-20 * * 1-5` (hourly)
+- Fundamental: `0 13 * * 1-5` (daily near US open)
+- Execute: `7 13-20 * * 1-5` (7-minute offset after analysis, hourly)
+- Reconcile: `*/10 13-20 * * 1-5` (every 10 minutes — order timeout + DB consistency)
 
 ---
 
