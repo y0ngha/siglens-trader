@@ -5,6 +5,7 @@ import {
     getPendingSubmittedOrders,
     updateOrderTracking,
     getOpenPositions,
+    getConfigValue,
 } from '../../lib/db/queries';
 import { sendErrorEmail } from '../../lib/notification/email';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery';
@@ -32,6 +33,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     try {
         const db = getDb();
+        const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
         const submitted = await getPendingSubmittedOrders(db);
         const results: Array<{ id: number; symbol: string; action: string }> = [];
 
@@ -228,43 +230,49 @@ export default async function handler(req: Request): Promise<Response> {
         }
 
         // Holdings reconciliation — compare broker holdings vs DB open positions.
+        // Skipped in dry_run: DB positions are simulated, so comparing against the real
+        // broker account would produce constant false-positive alerts.
         // Filter to US-only: the system trades only US equities; Korean/manual holdings
         // would cause constant false-positive "broker holding without DB position" alerts.
         let holdingsMismatchCount = 0;
-        const holdings = await getHoldings().catch(() => null);
-        if (holdings) {
-            const usHoldings = holdings.filter(
-                (h) => h.currency === 'USD' || h.marketCountry === 'US',
-            );
-            const openPositions = await getOpenPositions(db);
-            const mismatches: string[] = [];
-            const brokerBySymbol = new Map(usHoldings.map((h) => [h.symbol, h]));
+        if (tradingMode !== 'dry_run') {
+            const holdings = await getHoldings().catch(() => null);
+            if (holdings) {
+                const usHoldings = holdings.filter(
+                    (h) => h.currency === 'USD' || h.marketCountry === 'US',
+                );
+                const openPositions = await getOpenPositions(db);
+                const mismatches: string[] = [];
+                const brokerBySymbol = new Map(usHoldings.map((h) => [h.symbol, h]));
 
-            for (const pos of openPositions) {
-                const dbQty = Number(pos.quantity);
-                const broker = brokerBySymbol.get(pos.symbol);
-                const brokerQty = broker ? broker.quantity : 0;
-                if (Math.abs(dbQty - brokerQty) > HOLDINGS_QTY_EPSILON) {
-                    mismatches.push(
-                        `${pos.symbol}: DB ${dbQty}주 vs 브로커 ${brokerQty}주 (불일치)`,
-                    );
+                for (const pos of openPositions) {
+                    const dbQty = Number(pos.quantity);
+                    const broker = brokerBySymbol.get(pos.symbol);
+                    const brokerQty = broker ? broker.quantity : 0;
+                    if (Math.abs(dbQty - brokerQty) > HOLDINGS_QTY_EPSILON) {
+                        mismatches.push(
+                            `${pos.symbol}: DB ${dbQty}주 vs 브로커 ${brokerQty}주 (불일치)`,
+                        );
+                    }
                 }
-            }
 
-            // Broker holdings with no matching open DB position.
-            const dbSymbols = new Set(openPositions.map((p) => p.symbol));
-            for (const h of usHoldings) {
-                if (h.quantity > HOLDINGS_QTY_EPSILON && !dbSymbols.has(h.symbol)) {
-                    mismatches.push(`${h.symbol}: 브로커 ${h.quantity}주 보유 but DB 포지션 없음`);
+                // Broker holdings with no matching open DB position.
+                const dbSymbols = new Set(openPositions.map((p) => p.symbol));
+                for (const h of usHoldings) {
+                    if (h.quantity > HOLDINGS_QTY_EPSILON && !dbSymbols.has(h.symbol)) {
+                        mismatches.push(
+                            `${h.symbol}: 브로커 ${h.quantity}주 보유 but DB 포지션 없음`,
+                        );
+                    }
                 }
-            }
 
-            holdingsMismatchCount = mismatches.length;
-            if (mismatches.length > 0) {
-                await sendErrorEmail(
-                    `보유 정합성 불일치 (${mismatches.length}건)`,
-                    mismatches.join('\n'),
-                ).catch((e) => console.error('[email]', e));
+                holdingsMismatchCount = mismatches.length;
+                if (mismatches.length > 0) {
+                    await sendErrorEmail(
+                        `보유 정합성 불일치 (${mismatches.length}건)`,
+                        mismatches.join('\n'),
+                    ).catch((e) => console.error('[email]', e));
+                }
             }
         }
 
