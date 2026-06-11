@@ -10,7 +10,9 @@ neonConfig.webSocketConstructor = ws;
 export function createDb() {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new Pool({ connectionString: url });
+    // max:1 — a serverless instance handles one request at a time, so one connection
+    // per instance avoids exhausting Neon's connection limit when functions scale out.
+    const pool = new Pool({ connectionString: url, max: 1 });
     return drizzle(pool, { schema });
 }
 
