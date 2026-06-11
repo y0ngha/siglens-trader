@@ -4144,7 +4144,7 @@ describe('execute cron handler', () => {
             });
         });
 
-        it('partial → records filled portion as trade, tracking status partial (unresolved)', async () => {
+        it('partial → tracking status partial (unresolved), NO trade, NO position mutation (reconcile books it)', async () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-pf',
                 clientOrderId: 'coid-pf',
@@ -4153,9 +4153,10 @@ describe('execute cron handler', () => {
                 avgFilledPrice: 151,
             });
 
-            await handler(makeRequest(true));
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
 
-            // tracking updated to 'partial' WITHOUT resolvedAt
+            // tracking updated to 'partial' WITHOUT resolvedAt — reconcile owns final booking
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
                 expect.stringMatching(/^exec-.*-AAPL-buy$/),
@@ -4166,21 +4167,20 @@ describe('execute cron handler', () => {
                     resolvedAt: undefined,
                 }),
             );
-            // filled portion (3 @ 151) recorded as a real trade
-            expect(mockInsertTrade).toHaveBeenCalledWith(
-                fakeDb,
-                expect.objectContaining({
-                    symbol: 'AAPL',
-                    side: 'buy',
-                    quantity: 3,
-                    price: 151,
-                    mode: 'auto',
-                }),
+            // execute books NOTHING for partial — no trade, no position change, no exposure change
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            expect(mockAverageIntoPosition).not.toHaveBeenCalled();
+            // informational partial-fill email + order_partial decision
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '부분 체결: AAPL',
+                expect.stringContaining('reconcile'),
             );
-            expect(mockOpenPosition).toHaveBeenCalledWith(
-                fakeDb,
-                expect.objectContaining({ quantity: 3, avgPrice: 151 }),
-            );
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_partial',
+                score: 80,
+            });
         });
 
         it('canceled → handled like rejected (order_rejected, resolved, no trade)', async () => {

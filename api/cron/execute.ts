@@ -436,31 +436,40 @@ export default async function handler(req: Request): Promise<Response> {
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'pending') {
-                            await sendErrorEmail(
-                                `미체결 주문: ${position.symbol}`,
-                                `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch((err) => console.error('[email] send failed:', err));
+                        // pending/partial: NO trade, NO position mutation, NO exposure change.
+                        // Reconcile owns final booking (single source of truth → no double-count).
+                        // partial differs only in tracking status + notification text.
+                        if (orderResult.status === 'pending' || orderResult.status === 'partial') {
+                            if (orderResult.status === 'partial') {
+                                await sendErrorEmail(
+                                    `부분 체결: ${position.symbol}`,
+                                    `${position.symbol} sell ${orderResult.filledQuantity ?? '?'} / ${sellQty}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            } else {
+                                await sendErrorEmail(
+                                    `미체결 주문: ${position.symbol}`,
+                                    `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            }
                             decisions.push({
                                 symbol: position.symbol,
-                                action: 'order_submitted',
+                                action:
+                                    orderResult.status === 'partial'
+                                        ? 'order_partial'
+                                        : 'order_submitted',
                                 score: 0,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' | 'partial' — record the filled portion.
+                        // status === 'filled' — record the filled portion immediately.
                         const actualExitQty = orderResult.filledQuantity ?? sellQty;
                         if (orderResult.avgFilledPrice == null) {
-                            // RARE: filled/partial but no avg price returned. Record at estimate.
-                            // Keep 'partial' unresolved (reconcile resolves remainder); else mark unknown.
-                            await updateOrderTracking(
-                                db,
-                                exitIdempotencyKey,
-                                orderResult.status === 'partial'
-                                    ? { status: 'partial' }
-                                    : { status: 'fill_price_unknown', resolvedAt: new Date() },
-                            );
+                            // RARE: filled but no avg price returned. Record at estimate.
+                            await updateOrderTracking(db, exitIdempotencyKey, {
+                                status: 'fill_price_unknown',
+                                resolvedAt: new Date(),
+                            });
                             await db.transaction(async (tx) => {
                                 if (actualExitQty >= position.quantity) {
                                     const closed = await closePosition(
@@ -1059,30 +1068,39 @@ export default async function handler(req: Request): Promise<Response> {
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'pending') {
-                            await sendErrorEmail(
-                                `미체결 주문: ${item.symbol}`,
-                                `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                            ).catch((err) => console.error('[email] send failed:', err));
+                        // pending/partial: NO trade, NO position mutation, NO exposure change.
+                        // Reconcile owns final booking (single source of truth → no double-count).
+                        // partial differs only in tracking status + notification text.
+                        if (orderResult.status === 'pending' || orderResult.status === 'partial') {
+                            if (orderResult.status === 'partial') {
+                                await sendErrorEmail(
+                                    `부분 체결: ${item.symbol}`,
+                                    `${item.symbol} ${orderResult.filledQuantity ?? '?'} / ${autoQuantity}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            } else {
+                                await sendErrorEmail(
+                                    `미체결 주문: ${item.symbol}`,
+                                    `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                ).catch((err) => console.error('[email] send failed:', err));
+                            }
                             decisions.push({
                                 symbol: item.symbol,
-                                action: 'order_submitted',
+                                action:
+                                    orderResult.status === 'partial'
+                                        ? 'order_partial'
+                                        : 'order_submitted',
                                 score: decision.score,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' | 'partial' — record filled portion at estimate if avg price missing
+                        // status === 'filled' — record filled portion at estimate if avg price missing
                         if (orderResult.avgFilledPrice == null) {
-                            // RARE: filled/partial but no avg price returned. Record at estimate.
-                            // Keep 'partial' unresolved (reconcile resolves remainder); else mark unknown.
-                            await updateOrderTracking(
-                                db,
-                                idempotencyKey,
-                                orderResult.status === 'partial'
-                                    ? { status: 'partial' }
-                                    : { status: 'fill_price_unknown', resolvedAt: new Date() },
-                            );
+                            // RARE: filled but no avg price returned. Record at estimate.
+                            await updateOrderTracking(db, idempotencyKey, {
+                                status: 'fill_price_unknown',
+                                resolvedAt: new Date(),
+                            });
                             const estimatedQty = orderResult.filledQuantity ?? autoQuantity;
                             if (decision.action === 'buy' || decision.action === 'average_in') {
                                 const existingEstimated = await getOpenPositionBySymbol(
