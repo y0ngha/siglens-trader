@@ -3897,7 +3897,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@vitest/coverage-v8@npm:^3.2.4":
+"@vitest/coverage-v8@npm:3.2.4":
   version: 3.2.4
   resolution: "@vitest/coverage-v8@npm:3.2.4"
   dependencies:
@@ -10182,7 +10182,7 @@ __metadata:
     "@upstash/redis": "npm:^1.37.0"
     "@vercel/functions": "npm:^3.4.3"
     "@vitejs/plugin-react": "npm:^4.5.2"
-    "@vitest/coverage-v8": "npm:^3.2.4"
+    "@vitest/coverage-v8": "npm:3.2.4"
     "@y0ngha/siglens-core": "npm:0.21.1"
     clsx: "npm:^2.1.1"
     drizzle-kit: "npm:^0.31.10"
