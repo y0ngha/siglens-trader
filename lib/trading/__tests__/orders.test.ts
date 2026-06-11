@@ -199,6 +199,20 @@ describe('orders', () => {
     });
 
     // Fix 1: 일시적/모호한 4xx는 rejected로 삼키지 않고 rethrow
+    it('worst: 401 Unauthorized → executeBuyOrder는 throw (rejected 아님)', async () => {
+        mockTossFetch.mockRejectedValueOnce(
+            new FakeTossApiError('unauthorized', 'Unauthorized', 401),
+        );
+        const { executeBuyOrder } = await import('../orders');
+        await expect(executeBuyOrder('AAPL', 10, 'c1')).rejects.toThrow();
+    });
+
+    it('worst: 403 Forbidden → executeBuyOrder는 throw (rejected 아님)', async () => {
+        mockTossFetch.mockRejectedValueOnce(new FakeTossApiError('forbidden', 'Forbidden', 403));
+        const { executeBuyOrder } = await import('../orders');
+        await expect(executeBuyOrder('AAPL', 10, 'c1')).rejects.toThrow();
+    });
+
     it('worst: 429 rate-limit → executeBuyOrder는 throw (rejected 아님)', async () => {
         mockTossFetch.mockRejectedValueOnce(
             new FakeTossApiError('rate-limit-exceeded', 'Too Many Requests', 429),

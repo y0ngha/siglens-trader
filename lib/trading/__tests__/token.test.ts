@@ -146,6 +146,34 @@ describe('token manager', () => {
         expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
+    it('worst: expires_in 누락 시 기본값 86400 - 60 = 86340으로 캐싱', async () => {
+        mockFetch.mockResolvedValueOnce(
+            tokenResponse({ access_token: 'tok-noexp', token_type: 'Bearer' }),
+        );
+        const { getAccessToken } = await import('../token');
+        const token = await getAccessToken();
+        expect(token).toBe('tok-noexp');
+        expect(mockSet).toHaveBeenCalledWith(
+            'toss:oauth:token',
+            'tok-noexp',
+            expect.objectContaining({ ex: 86340 }),
+        );
+    });
+
+    it('worst: expires_in이 비정상값(NaN)일 때 기본값 86340으로 캐싱', async () => {
+        mockFetch.mockResolvedValueOnce(
+            tokenResponse({ access_token: 'tok-nan', token_type: 'Bearer', expires_in: NaN }),
+        );
+        const { getAccessToken } = await import('../token');
+        const token = await getAccessToken();
+        expect(token).toBe('tok-nan');
+        expect(mockSet).toHaveBeenCalledWith(
+            'toss:oauth:token',
+            'tok-nan',
+            expect.objectContaining({ ex: 86340 }),
+        );
+    });
+
     it('worst: 자격증명 누락 시 에러', async () => {
         vi.stubEnv('TOSS_APP_KEY', '');
         const { getAccessToken } = await import('../token');

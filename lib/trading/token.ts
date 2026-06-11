@@ -59,7 +59,11 @@ async function issueToken(): Promise<{ token: string; ttl: number }> {
         throw new Error(`Toss OAuth2 token issue failed: ${detail}`);
     }
     const json = (await res.json()) as OAuth2TokenResponse;
-    return { token: json.access_token, ttl: Math.max(1, json.expires_in - EXPIRY_MARGIN_S) };
+    const expiresIn =
+        typeof json.expires_in === 'number' && Number.isFinite(json.expires_in)
+            ? json.expires_in
+            : 86400; // 누락/비정상 시 24h 기본값
+    return { token: json.access_token, ttl: Math.max(1, expiresIn - EXPIRY_MARGIN_S) };
 }
 
 async function cacheToken(token: string, ttl: number): Promise<void> {

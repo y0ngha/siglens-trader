@@ -101,7 +101,9 @@ async function executeOrder(
                 err.status === 429 ||
                 err.code === 'idempotency-key-conflict' ||
                 err.code === 'request-in-progress';
-            if (err.status >= 400 && err.status < 500 && !transient) {
+            const isAuthError = err.status === 401 || err.status === 403;
+            // 진짜 비즈니스 거부만 terminal 'rejected'; 인증/일시 오류는 rethrow → order-tracking 'error'
+            if (err.status >= 400 && err.status < 500 && !transient && !isAuthError) {
                 return {
                     orderId: '',
                     clientOrderId: coid,
