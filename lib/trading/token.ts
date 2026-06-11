@@ -6,8 +6,10 @@ const TOKEN_URL = 'https://openapi.tossinvest.com/oauth2/token';
 const REDIS_TOKEN_KEY = 'toss:oauth:token';
 const REFRESH_LOCK_KEY = 'toss:oauth:refresh';
 const EXPIRY_MARGIN_S = 60;
-const LOCK_WAIT_RETRIES = 10;
-const LOCK_WAIT_MS = 200;
+const ISSUE_TIMEOUT_MS = 10_000;
+const LOCK_TTL_S = 15; // > ISSUE_TIMEOUT_MS(10s) + 캐시 쓰기 여유
+const POLL_INTERVAL_MS = 250;
+const MAX_WAIT_MS = 25_000; // > LOCK_TTL_S: 락 보유자가 죽어도 TTL 만료 후 재획득 가능
 
 let redis: Redis | null = null;
 function getRedis(): Redis | null {
@@ -34,7 +36,7 @@ async function issueToken(): Promise<{ token: string; ttl: number }> {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(ISSUE_TIMEOUT_MS),
     });
     if (!res.ok) {
         const text = await res.text();
@@ -49,41 +51,69 @@ async function cacheToken(token: string, ttl: number): Promise<void> {
     if (r) await r.set(REDIS_TOKEN_KEY, token, { ex: ttl });
 }
 
-export async function forceRefreshToken(): Promise<string> {
+// dev(Redis 미설정): 프로세스 로컬 캐시로 재발급 storm 방지 (토스는 재발급 시 이전 토큰 무효화)
+let devToken: { token: string; expiresAt: number } | null = null;
+async function issueDevToken(): Promise<string> {
+    if (devToken && devToken.expiresAt > Date.now()) return devToken.token;
     const { token, ttl } = await issueToken();
-    await cacheToken(token, ttl);
+    devToken = { token, expiresAt: Date.now() + ttl * 1000 };
     return token;
+}
+
+// 항상 락 안에서만 발급한다(언락 발급 금지 — one-token-per-client 불변식).
+// allowReuse=true 이면, 다른 인스턴스가 이미 캐시한 (staleToken 과 다른) 토큰을 재사용한다.
+async function issueUnderLock(
+    r: Redis,
+    staleToken: string | undefined,
+    allowReuse: boolean,
+): Promise<string> {
+    const deadline = Date.now() + MAX_WAIT_MS;
+    for (;;) {
+        const locked = await acquireLock(REFRESH_LOCK_KEY, LOCK_TTL_S);
+        if (locked) {
+            try {
+                if (allowReuse) {
+                    const fresh = await r.get<string>(REDIS_TOKEN_KEY);
+                    if (fresh && fresh !== staleToken) return fresh; // 락 대기 중 다른 인스턴스가 발급함
+                }
+                const { token, ttl } = await issueToken();
+                await cacheToken(token, ttl);
+                return token;
+            } finally {
+                await releaseLock(REFRESH_LOCK_KEY);
+            }
+        }
+        // 다른 인스턴스가 발급 중 — 캐시에 토큰이 올라오면 재사용
+        if (allowReuse) {
+            const cached = await r.get<string>(REDIS_TOKEN_KEY);
+            if (cached && cached !== staleToken) return cached;
+        }
+        if (Date.now() >= deadline) {
+            throw new Error('Toss token refresh timed out waiting for lock');
+        }
+        await delay(POLL_INTERVAL_MS);
+    }
 }
 
 export async function getAccessToken(): Promise<string> {
     const r = getRedis();
-    if (r) {
-        const cached = await r.get<string>(REDIS_TOKEN_KEY);
-        if (cached) return cached;
-    } else {
-        // dev: Redis 없음 → 매번 발급
-        const { token } = await issueToken();
-        return token;
-    }
+    if (!r) return issueDevToken();
+    const cached = await r.get<string>(REDIS_TOKEN_KEY);
+    if (cached) return cached;
+    return issueUnderLock(r, undefined, true);
+}
 
-    // 재발급 직렬화 — 동시 재발급으로 인한 이전 토큰 무효화 race 방지
-    const locked = await acquireLock(REFRESH_LOCK_KEY, 10);
-    if (locked) {
-        try {
-            const { token, ttl } = await issueToken();
-            await cacheToken(token, ttl);
-            return token;
-        } finally {
-            await releaseLock(REFRESH_LOCK_KEY);
-        }
+// staleToken: 401 을 유발한(무효화된) 토큰. 전달 시 그 토큰과 다른 캐시 값은 재사용(stampede 방지),
+// 같으면 새로 발급. 미전달 시 무조건 재발급(allowReuse=false).
+export async function forceRefreshToken(staleToken?: string): Promise<string> {
+    const r = getRedis();
+    if (!r) {
+        devToken = null;
+        return issueDevToken();
     }
+    return issueUnderLock(r, staleToken, staleToken !== undefined);
+}
 
-    // 락 실패 — 다른 인스턴스가 발급 중. 캐시를 폴링.
-    for (let i = 0; i < LOCK_WAIT_RETRIES; i++) {
-        await new Promise((resolve) => setTimeout(resolve, LOCK_WAIT_MS));
-        const cached = await r.get<string>(REDIS_TOKEN_KEY);
-        if (cached) return cached;
-    }
-    // 그래도 없으면 best-effort 직접 발급
-    return forceRefreshToken();
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }

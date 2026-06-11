@@ -34,8 +34,11 @@ describe('token manager', () => {
         vi.resetModules();
         redisStore.clear();
         mockFetch.mockReset();
-        mockGet.mockClear();
-        mockSet.mockClear();
+        mockGet.mockReset().mockImplementation(async (k: string) => redisStore.get(k) ?? null);
+        mockSet.mockReset().mockImplementation(async (k: string, v: string) => {
+            redisStore.set(k, v);
+            return 'OK';
+        });
         vi.stubEnv('TOSS_APP_KEY', 'c_test');
         vi.stubEnv('TOSS_SECRET_KEY', 's_test');
         vi.stubEnv('UPSTASH_REDIS_REST_URL', 'https://redis.test');
@@ -95,25 +98,52 @@ describe('token manager', () => {
         await expect(getAccessToken()).rejects.toThrow('fetch failed');
     });
 
-    it('forceRefreshToken은 캐시 무시하고 재발급', async () => {
+    it('forceRefreshToken(no-arg)은 캐시 무시하고 재발급', async () => {
         redisStore.set('toss:oauth:token', 'old-tok');
         mockFetch.mockResolvedValueOnce(
             tokenResponse({ access_token: 'new-tok', token_type: 'Bearer', expires_in: 100 }),
         );
+        const lockMod = await import('../../lock');
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
         const { forceRefreshToken } = await import('../token');
         const token = await forceRefreshToken();
         expect(token).toBe('new-tok');
         expect(mockFetch).toHaveBeenCalledOnce();
     });
 
-    it('worst: Redis 미설정(dev)이면 매번 직접 발급', async () => {
+    it('worst: Redis 미설정(dev)이면 토큰 메모이제이션 — 두 번 호출 시 fetch 1회만', async () => {
+        vi.stubEnv('UPSTASH_REDIS_REST_URL', '');
+        vi.stubEnv('UPSTASH_REDIS_REST_TOKEN', '');
+        const devTokenResp = tokenResponse({
+            access_token: 'dev-tok',
+            token_type: 'Bearer',
+            expires_in: 3600,
+        });
+        mockFetch.mockResolvedValue(devTokenResp);
+        const { getAccessToken } = await import('../token');
+        const first = await getAccessToken();
+        const second = await getAccessToken();
+        expect(first).toBe('dev-tok');
+        expect(second).toBe('dev-tok');
+        // 메모이제이션: fetch는 딱 1번만 호출
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('worst: dev forceRefreshToken()은 메모 초기화 후 재발급', async () => {
         vi.stubEnv('UPSTASH_REDIS_REST_URL', '');
         vi.stubEnv('UPSTASH_REDIS_REST_TOKEN', '');
         mockFetch.mockResolvedValue(
-            tokenResponse({ access_token: 'dev-tok', token_type: 'Bearer', expires_in: 100 }),
+            tokenResponse({ access_token: 'dev-tok', token_type: 'Bearer', expires_in: 3600 }),
         );
-        const { getAccessToken } = await import('../token');
-        expect(await getAccessToken()).toBe('dev-tok');
+        const { getAccessToken, forceRefreshToken } = await import('../token');
+        // 1차 발급 (fetch #1)
+        await getAccessToken();
+        // 메모 히트 (fetch 추가 없음)
+        await getAccessToken();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        // forceRefreshToken → 메모 초기화 후 재발급 (fetch #2)
+        await forceRefreshToken();
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it('worst: 자격증명 누락 시 에러', async () => {
@@ -127,7 +157,6 @@ describe('token manager', () => {
         mockGet
             .mockResolvedValueOnce(null) // 최초 캐시 확인: 미스
             .mockResolvedValue('polled-tok'); // 폴링 시 캐시 히트
-        // resetModules 이후 새로 로딩된 lock 모듈의 acquireLock을 제어
         const lockMod = await import('../../lock');
         vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(false);
 
@@ -145,27 +174,45 @@ describe('token manager', () => {
         }
     });
 
-    it('worst: 락 경합 — 폴링 내내 캐시 없음 → forceRefreshToken으로 폴백 발급', async () => {
-        // 초기 캐시 미스 → 락 획득 실패 → 폴링 전체 캐시 미스 → 직접 발급
-        mockGet.mockResolvedValue(null); // 모든 get 호출에서 null
-        // resetModules 이후 새로 로딩된 lock 모듈의 acquireLock을 제어
+    it('worst: 락 경합 — 폴링 내내 캐시 없음 → MAX_WAIT_MS 후 throw', async () => {
+        // 초기 캐시 미스 → 락 획득 계속 실패 → 폴링 전체 캐시 미스 → 타임아웃 throw
+        mockGet.mockResolvedValue(null);
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(false);
-        mockFetch.mockResolvedValue(
-            tokenResponse({ access_token: 'fallback-tok', token_type: 'Bearer', expires_in: 100 }),
-        );
+        vi.mocked(lockMod.acquireLock).mockResolvedValue(false);
 
         vi.useFakeTimers();
         try {
             const { getAccessToken } = await import('../token');
             const p = getAccessToken();
+            const assertion = expect(p).rejects.toThrow(/timed out waiting for lock/);
             await vi.runAllTimersAsync();
-            const result = await p;
-
-            expect(result).toBe('fallback-tok');
-            expect(mockFetch).toHaveBeenCalledOnce();
+            await assertion;
+            expect(mockFetch).not.toHaveBeenCalled();
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('forceRefreshToken(staleToken) — 캐시가 staleToken과 다르면 재발급 없이 캐시 반환', async () => {
+        redisStore.set('toss:oauth:token', 'fresh-Y');
+        const lockMod = await import('../../lock');
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
+        const { forceRefreshToken } = await import('../token');
+        const result = await forceRefreshToken('stale-X');
+        expect(result).toBe('fresh-Y');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('forceRefreshToken(staleToken) — 캐시가 staleToken과 같으면 재발급', async () => {
+        redisStore.set('toss:oauth:token', 'stale-X');
+        mockFetch.mockResolvedValueOnce(
+            tokenResponse({ access_token: 'brand-new', token_type: 'Bearer', expires_in: 100 }),
+        );
+        const lockMod = await import('../../lock');
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
+        const { forceRefreshToken } = await import('../token');
+        const result = await forceRefreshToken('stale-X');
+        expect(result).toBe('brand-new');
+        expect(mockFetch).toHaveBeenCalledOnce();
     });
 });
