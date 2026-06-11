@@ -12,11 +12,20 @@ const POLL_INTERVAL_MS = 250;
 const MAX_WAIT_MS = 25_000; // > LOCK_TTL_S: 락 보유자가 죽어도 TTL 만료 후 재획득 가능
 
 let redis: Redis | null = null;
+let _redisWarnedOnce = false;
 function getRedis(): Redis | null {
     if (redis) return redis;
     const url = process.env.UPSTASH_REDIS_REST_URL;
     const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-    if (!url || !token) return null;
+    if (!url || !token) {
+        if (!_redisWarnedOnce) {
+            _redisWarnedOnce = true;
+            console.warn(
+                '[toss-token] Redis not configured — token cache + refresh lock disabled; not safe for production (token re-issue storms).',
+            );
+        }
+        return null;
+    }
     redis = new Redis({ url, token });
     return redis;
 }
@@ -40,7 +49,14 @@ async function issueToken(): Promise<{ token: string; ttl: number }> {
     });
     if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Toss OAuth2 token issue failed: ${res.status} ${text}`);
+        let detail = `status ${res.status}`;
+        try {
+            const j = JSON.parse(text) as { error?: string; error_description?: string };
+            if (j.error) detail = `${res.status} ${j.error}`; // OAuth2 표준 error code만 노출 (본문 원문 비노출)
+        } catch {
+            /* non-JSON body — keep status only */
+        }
+        throw new Error(`Toss OAuth2 token issue failed: ${detail}`);
     }
     const json = (await res.json()) as OAuth2TokenResponse;
     return { token: json.access_token, ttl: Math.max(1, json.expires_in - EXPIRY_MARGIN_S) };
