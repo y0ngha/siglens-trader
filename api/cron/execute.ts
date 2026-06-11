@@ -26,7 +26,8 @@ import { runOverallAnalysis } from '../../lib/analysis/run-overall';
 import { scoreSignals } from '../../lib/strategy/signal-scorer';
 import { calculatePositionSize, evaluateExistingPosition } from '../../lib/strategy/risk-manager';
 import { makeTradeDecision } from '../../lib/strategy/decision';
-import { executeBuyOrder, executeSellOrder } from '../../lib/trading/order';
+import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
+import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account';
 import {
     sendTradeExecutedEmail,
     sendApprovalRequestEmail,
@@ -168,6 +169,15 @@ export default async function handler(req: Request): Promise<Response> {
         const takeProfitPercent = (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
         const fixedExitEnabled = (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
 
+        // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
+        // gated by wall-clock at entry; this catches holidays the static schedule misses.
+        if (tradingMode !== 'dry_run') {
+            const marketOpen = await isUsMarketOpen().catch(() => true); // 조회 실패 시 기존 시간기반 동작 유지
+            if (!marketOpen) {
+                return Response.json({ skipped: true, reason: 'us-market-holiday' });
+            }
+        }
+
         const watchlistItems = await getEnabledWatchlist(db);
 
         // Calculate current exposure using current market prices when available,
@@ -216,6 +226,11 @@ export default async function handler(req: Request): Promise<Response> {
             const price = await fetchLivePrice(sym).catch(() => null);
             if (price) priceCache.set(sym, price);
         }
+
+        // USD buying power, fetched once per invocation (non-dry-run only).
+        // null => guard disabled (fetch failed or dry_run) — fall back to prior behavior.
+        const usdBuyingPower =
+            tradingMode !== 'dry_run' ? await getBuyingPower('USD').catch(() => null) : null;
 
         // Fetch pending submitted orders once for sell-guard checks
         const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
@@ -353,12 +368,33 @@ export default async function handler(req: Request): Promise<Response> {
                         break;
 
                     case 'auto': {
+                        // Sellable-quantity guard: confirm broker holds enough shares.
+                        let sellQty = position.quantity;
+                        const sellable = await getSellableQuantity(position.symbol).catch(
+                            () => null,
+                        );
+                        if (sellable != null) {
+                            if (sellable <= 0) {
+                                decisions.push({
+                                    symbol: position.symbol,
+                                    action: 'skipped_not_sellable',
+                                    score: 0,
+                                });
+                                decisionPushed = true;
+                                break;
+                            }
+                            if (sellQty > sellable) {
+                                sellQty = Math.floor(sellable);
+                            }
+                        }
                         const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
+                        const clientOrderId = crypto.randomUUID();
                         await createOrderTracking(db, {
                             idempotencyKey: exitIdempotencyKey,
+                            clientOrderId,
                             symbol: position.symbol,
                             side: 'sell',
-                            quantity: position.quantity,
+                            quantity: sellQty,
                             status: 'submitted',
                             cronRunId,
                         });
@@ -366,8 +402,8 @@ export default async function handler(req: Request): Promise<Response> {
                         try {
                             orderResult = await executeSellOrder(
                                 position.symbol,
-                                position.quantity,
-                                exitIdempotencyKey,
+                                sellQty,
+                                clientOrderId,
                             );
                         } catch (apiErr) {
                             await updateOrderTracking(db, exitIdempotencyKey, {
@@ -376,13 +412,18 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
+                        const exitResolved =
+                            orderResult.status !== 'pending' && orderResult.status !== 'partial';
                         await updateOrderTracking(db, exitIdempotencyKey, {
-                            tossOrderId: orderResult.orderId,
+                            tossOrderId: orderResult.orderId || undefined,
                             status: orderResult.status,
-                            filledPrice: orderResult.filledPrice ?? undefined,
-                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
+                            filledPrice: orderResult.avgFilledPrice ?? undefined,
+                            resolvedAt: exitResolved ? new Date() : undefined,
                         });
-                        if (orderResult.status === 'rejected') {
+                        if (
+                            orderResult.status === 'rejected' ||
+                            orderResult.status === 'canceled'
+                        ) {
                             decisions.push({
                                 symbol: position.symbol,
                                 action: 'order_rejected',
@@ -391,14 +432,14 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${position.symbol}`,
-                                orderResult.message ?? '거부 사유 없음',
+                                orderResult.rejectReason ?? '거부 사유 없음',
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'submitted') {
+                        if (orderResult.status === 'pending') {
                             await sendErrorEmail(
                                 `미체결 주문: ${position.symbol}`,
-                                `${position.symbol} sell ${position.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
                             ).catch((err) => console.error('[email] send failed:', err));
                             decisions.push({
                                 symbol: position.symbol,
@@ -408,13 +449,18 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — close at estimated price if filledPrice missing
-                        const actualExitQty = orderResult.filledQuantity ?? position.quantity;
-                        if (!orderResult.filledPrice) {
-                            await updateOrderTracking(db, exitIdempotencyKey, {
-                                status: 'fill_price_unknown',
-                                resolvedAt: new Date(),
-                            });
+                        // status === 'filled' | 'partial' — record the filled portion.
+                        const actualExitQty = orderResult.filledQuantity ?? sellQty;
+                        if (orderResult.avgFilledPrice == null) {
+                            // RARE: filled/partial but no avg price returned. Record at estimate.
+                            // Keep 'partial' unresolved (reconcile resolves remainder); else mark unknown.
+                            await updateOrderTracking(
+                                db,
+                                exitIdempotencyKey,
+                                orderResult.status === 'partial'
+                                    ? { status: 'partial' }
+                                    : { status: 'fill_price_unknown', resolvedAt: new Date() },
+                            );
                             await db.transaction(async (tx) => {
                                 if (actualExitQty >= position.quantity) {
                                     const closed = await closePosition(
@@ -452,7 +498,7 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        const filledSellPrice = orderResult.filledPrice;
+                        const filledSellPrice = orderResult.avgFilledPrice;
                         try {
                             await db.transaction(async (tx) => {
                                 if (actualExitQty >= position.quantity) {
@@ -927,26 +973,61 @@ export default async function handler(req: Request): Promise<Response> {
 
                     case 'auto': {
                         const autoSide = decision.action === 'average_in' ? 'buy' : decision.action;
+                        const isBuyOrder =
+                            decision.action === 'buy' || decision.action === 'average_in';
+                        let autoQuantity = decision.quantity;
+
+                        // Buying-power guard (BUY/average_in): skip if cost exceeds USD cash.
+                        if (
+                            isBuyOrder &&
+                            usdBuyingPower != null &&
+                            currentPrice * autoQuantity > usdBuyingPower
+                        ) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'skipped_insufficient_cash',
+                                score: decision.score,
+                            });
+                            decisionPushed = true;
+                            break;
+                        }
+
+                        // Sellable-quantity guard (SELL): skip if none sellable, clamp if short.
+                        if (decision.action === 'sell') {
+                            const sellable = await getSellableQuantity(item.symbol).catch(
+                                () => null,
+                            );
+                            if (sellable != null) {
+                                if (sellable <= 0) {
+                                    decisions.push({
+                                        symbol: item.symbol,
+                                        action: 'skipped_not_sellable',
+                                        score: decision.score,
+                                    });
+                                    decisionPushed = true;
+                                    break;
+                                }
+                                if (autoQuantity > sellable) {
+                                    autoQuantity = Math.floor(sellable);
+                                }
+                            }
+                        }
+
                         const idempotencyKey = `${cronRunId}-${item.symbol}-${autoSide}`;
+                        const clientOrderId = crypto.randomUUID();
                         await createOrderTracking(db, {
                             idempotencyKey,
+                            clientOrderId,
                             symbol: item.symbol,
                             side: autoSide,
-                            quantity: decision.quantity,
+                            quantity: autoQuantity,
                             status: 'submitted',
                             cronRunId,
                         });
-                        const orderFn =
-                            decision.action === 'buy' || decision.action === 'average_in'
-                                ? executeBuyOrder
-                                : executeSellOrder;
+                        const orderFn = isBuyOrder ? executeBuyOrder : executeSellOrder;
                         let orderResult;
                         try {
-                            orderResult = await orderFn(
-                                item.symbol,
-                                decision.quantity,
-                                idempotencyKey,
-                            );
+                            orderResult = await orderFn(item.symbol, autoQuantity, clientOrderId);
                         } catch (apiErr) {
                             await updateOrderTracking(db, idempotencyKey, {
                                 status: 'error',
@@ -954,13 +1035,18 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
+                        const autoResolved =
+                            orderResult.status !== 'pending' && orderResult.status !== 'partial';
                         await updateOrderTracking(db, idempotencyKey, {
-                            tossOrderId: orderResult.orderId,
+                            tossOrderId: orderResult.orderId || undefined,
                             status: orderResult.status,
-                            filledPrice: orderResult.filledPrice ?? undefined,
-                            resolvedAt: orderResult.status !== 'submitted' ? new Date() : undefined,
+                            filledPrice: orderResult.avgFilledPrice ?? undefined,
+                            resolvedAt: autoResolved ? new Date() : undefined,
                         });
-                        if (orderResult.status === 'rejected') {
+                        if (
+                            orderResult.status === 'rejected' ||
+                            orderResult.status === 'canceled'
+                        ) {
                             decisions.push({
                                 symbol: item.symbol,
                                 action: 'order_rejected',
@@ -969,14 +1055,14 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             await sendErrorEmail(
                                 `주문 거부: ${item.symbol}`,
-                                orderResult.message ?? '거부 사유 없음',
+                                orderResult.rejectReason ?? '거부 사유 없음',
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
-                        if (orderResult.status === 'submitted') {
+                        if (orderResult.status === 'pending') {
                             await sendErrorEmail(
                                 `미체결 주문: ${item.symbol}`,
-                                `${item.symbol} ${decision.action} ${decision.quantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
+                                `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
                             ).catch((err) => console.error('[email] send failed:', err));
                             decisions.push({
                                 symbol: item.symbol,
@@ -986,13 +1072,18 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — close/open at estimated price if filledPrice missing
-                        if (!orderResult.filledPrice) {
-                            await updateOrderTracking(db, idempotencyKey, {
-                                status: 'fill_price_unknown',
-                                resolvedAt: new Date(),
-                            });
-                            const estimatedQty = orderResult.filledQuantity ?? decision.quantity;
+                        // status === 'filled' | 'partial' — record filled portion at estimate if avg price missing
+                        if (orderResult.avgFilledPrice == null) {
+                            // RARE: filled/partial but no avg price returned. Record at estimate.
+                            // Keep 'partial' unresolved (reconcile resolves remainder); else mark unknown.
+                            await updateOrderTracking(
+                                db,
+                                idempotencyKey,
+                                orderResult.status === 'partial'
+                                    ? { status: 'partial' }
+                                    : { status: 'fill_price_unknown', resolvedAt: new Date() },
+                            );
+                            const estimatedQty = orderResult.filledQuantity ?? autoQuantity;
                             if (decision.action === 'buy' || decision.action === 'average_in') {
                                 const existingEstimated = await getOpenPositionBySymbol(
                                     db,
@@ -1076,22 +1167,22 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        const filledPrice = orderResult.filledPrice;
-                        const actualQuantity = orderResult.filledQuantity ?? decision.quantity;
+                        const filledPrice = orderResult.avgFilledPrice;
+                        const actualQuantity = orderResult.filledQuantity ?? autoQuantity;
                         const quantityEstimated = !orderResult.filledQuantity;
                         if (
                             orderResult.filledQuantity &&
-                            orderResult.filledQuantity < decision.quantity
+                            orderResult.filledQuantity < autoQuantity
                         ) {
                             await sendErrorEmail(
                                 `부분 체결: ${item.symbol}`,
-                                `${item.symbol} ${decision.quantity}주 중 ${actualQuantity}주만 체결되었습니다. 나머지 ${decision.quantity - actualQuantity}주는 미체결.`,
+                                `${item.symbol} ${autoQuantity}주 중 ${actualQuantity}주만 체결되었습니다. 나머지 ${autoQuantity - actualQuantity}주는 미체결.`,
                             ).catch((e) => console.error('[email]', e));
                         }
                         if (!orderResult.filledQuantity) {
                             await sendErrorEmail(
                                 `체결 수량 누락: ${item.symbol}`,
-                                `${item.symbol} 주문이 체결되었으나 체결 수량이 반환되지 않았습니다. 요청 수량 ${decision.quantity}주로 기록합니다.`,
+                                `${item.symbol} 주문이 체결되었으나 체결 수량이 반환되지 않았습니다. 요청 수량 ${autoQuantity}주로 기록합니다.`,
                             ).catch((e) => console.error('[email]', e));
                         }
                         const tradeReason = `${decision.reason}${quantityEstimated ? ' (수량 미확인 — 요청 수량으로 기록)' : ''}`;

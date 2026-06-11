@@ -82,9 +82,18 @@ vi.mock('../../../lib/strategy/decision', () => ({
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
-vi.mock('../../../lib/trading/order', () => ({
+vi.mock('../../../lib/trading/orders', () => ({
     executeBuyOrder: (...args: unknown[]) => mockExecuteBuyOrder(...args),
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
+}));
+
+const mockGetBuyingPower = vi.fn();
+const mockGetSellableQuantity = vi.fn();
+const mockIsUsMarketOpen = vi.fn();
+vi.mock('../../../lib/trading/account', () => ({
+    getBuyingPower: (...args: unknown[]) => mockGetBuyingPower(...args),
+    getSellableQuantity: (...args: unknown[]) => mockGetSellableQuantity(...args),
+    isUsMarketOpen: (...args: unknown[]) => mockIsUsMarketOpen(...args),
 }));
 
 const mockSendTradeExecutedEmail = vi.fn();
@@ -206,12 +215,22 @@ function setupDefaults() {
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
     mockSendErrorEmail.mockResolvedValue(undefined);
-    mockExecuteBuyOrder.mockResolvedValue({ orderId: 'ord-1', status: 'filled', filledPrice: 150 });
+    mockExecuteBuyOrder.mockResolvedValue({
+        orderId: 'ord-1',
+        clientOrderId: 'coid-1',
+        status: 'filled',
+        avgFilledPrice: 150,
+    });
     mockExecuteSellOrder.mockResolvedValue({
         orderId: 'ord-2',
+        clientOrderId: 'coid-2',
         status: 'filled',
-        filledPrice: 148,
+        avgFilledPrice: 148,
     });
+    // Account guards: default open market + abundant buying power so existing tests place orders.
+    mockIsUsMarketOpen.mockResolvedValue(true);
+    mockGetBuyingPower.mockResolvedValue(1_000_000);
+    mockGetSellableQuantity.mockResolvedValue(1_000_000);
     mockCreateOrderTracking.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
     mockAverageIntoPosition.mockResolvedValue(undefined);
@@ -844,7 +863,7 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('calls executeBuyOrder for buy decisions with idempotency key', async () => {
+        it('calls executeBuyOrder for buy decisions with clientOrderId (uuid)', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -859,12 +878,12 @@ describe('execute cron handler', () => {
             expect(mockExecuteBuyOrder).toHaveBeenCalledWith(
                 'AAPL',
                 5,
-                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.stringMatching(/^[0-9a-f-]{36}$/),
             );
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
         });
 
-        it('calls executeSellOrder for sell decisions with idempotency key', async () => {
+        it('calls executeSellOrder for sell decisions with clientOrderId (uuid)', async () => {
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -886,7 +905,7 @@ describe('execute cron handler', () => {
             expect(mockExecuteSellOrder).toHaveBeenCalledWith(
                 'AAPL',
                 10,
-                expect.stringMatching(/^exec-.*-AAPL-sell$/),
+                expect.stringMatching(/^[0-9a-f-]{36}$/),
             );
             expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
         });
@@ -903,7 +922,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151.5,
+                avgFilledPrice: 151.5,
                 filledQuantity: 5,
             });
 
@@ -933,7 +952,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151.5,
+                avgFilledPrice: 151.5,
                 filledQuantity: 5,
             });
 
@@ -961,7 +980,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151.5,
+                avgFilledPrice: 151.5,
                 // filledQuantity intentionally omitted
             });
 
@@ -987,7 +1006,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: undefined,
+                avgFilledPrice: undefined,
             });
 
             const res = await handler(makeRequest(true));
@@ -1049,7 +1068,7 @@ describe('execute cron handler', () => {
             });
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
-                status: 'submitted',
+                status: 'pending',
             });
 
             const res = await handler(makeRequest(true));
@@ -1092,7 +1111,7 @@ describe('execute cron handler', () => {
             });
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-2',
-                status: 'submitted',
+                status: 'pending',
             });
 
             const res = await handler(makeRequest(true));
@@ -1153,7 +1172,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151.5,
+                avgFilledPrice: 151.5,
             });
 
             await handler(makeRequest(true));
@@ -1170,7 +1189,7 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('updates order tracking with submitted status (no resolvedAt)', async () => {
+        it('updates order tracking with pending status (no resolvedAt)', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -1181,7 +1200,7 @@ describe('execute cron handler', () => {
             });
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
-                status: 'submitted',
+                status: 'pending',
             });
 
             await handler(makeRequest(true));
@@ -1191,7 +1210,7 @@ describe('execute cron handler', () => {
                 expect.stringMatching(/^exec-.*-AAPL-buy$/),
                 expect.objectContaining({
                     tossOrderId: 'ord-1',
-                    status: 'submitted',
+                    status: 'pending',
                     resolvedAt: undefined,
                 }),
             );
@@ -2035,7 +2054,7 @@ describe('execute cron handler', () => {
             expect(mockExecuteSellOrder).toHaveBeenCalledWith(
                 'AAPL',
                 10,
-                expect.stringMatching(/^exec-.*-AAPL-sell$/),
+                expect.stringMatching(/^[0-9a-f-]{36}$/),
             );
             expect(mockCreateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
@@ -2044,6 +2063,7 @@ describe('execute cron handler', () => {
                     side: 'sell',
                     quantity: 10,
                     status: 'submitted',
+                    clientOrderId: expect.stringMatching(/^[0-9a-f-]{36}$/),
                 }),
             );
             expect(mockInsertTrade).toHaveBeenCalledWith(
@@ -2082,7 +2102,7 @@ describe('execute cron handler', () => {
             });
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-3',
-                status: 'submitted',
+                status: 'pending',
             });
 
             const res = await handler(makeRequest(true));
@@ -2198,9 +2218,9 @@ describe('execute cron handler', () => {
                 reason: '기술적 추세 반전',
             });
             mockExecuteSellOrder.mockResolvedValue({
-                orderId: 'ord-x',
+                orderId: '',
                 status: 'rejected',
-                message: 'Insufficient shares',
+                rejectReason: 'insufficient-shares',
             });
 
             const res = await handler(makeRequest(true));
@@ -2235,7 +2255,7 @@ describe('execute cron handler', () => {
             });
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-y',
-                status: 'submitted',
+                status: 'pending',
             });
 
             const res = await handler(makeRequest(true));
@@ -2566,7 +2586,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 148,
+                avgFilledPrice: 148,
             });
             mockClosePosition.mockResolvedValue(false);
 
@@ -2703,7 +2723,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151,
+                avgFilledPrice: 151,
             });
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
@@ -2762,7 +2782,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: undefined,
+                avgFilledPrice: undefined,
             });
 
             const res = await handler(makeRequest(true));
@@ -2925,7 +2945,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 150,
+                avgFilledPrice: 150,
                 filledQuantity: 7,
             });
 
@@ -2960,7 +2980,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 150,
+                avgFilledPrice: 150,
                 filledQuantity: 5,
             });
 
@@ -3001,7 +3021,7 @@ describe('execute cron handler', () => {
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 151.5,
+                avgFilledPrice: 151.5,
                 // filledQuantity intentionally omitted
             });
 
@@ -3248,7 +3268,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 94,
+                avgFilledPrice: 94,
                 filledQuantity: 7, // partial: 7 of 10
             });
 
@@ -3291,7 +3311,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: 94,
+                avgFilledPrice: 94,
                 filledQuantity: 10, // full fill
             });
 
@@ -3331,7 +3351,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-2',
                 status: 'filled',
-                filledPrice: 148,
+                avgFilledPrice: 148,
                 filledQuantity: 6, // partial: 6 of 10
             });
 
@@ -3567,7 +3587,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-2',
                 status: 'filled',
-                filledPrice: 148,
+                avgFilledPrice: 148,
                 filledQuantity: 10,
             });
 
@@ -3638,7 +3658,7 @@ describe('execute cron handler', () => {
             mockExecuteSellOrder.mockResolvedValue({
                 orderId: 'ord-1',
                 status: 'filled',
-                filledPrice: undefined,
+                avgFilledPrice: undefined,
                 filledQuantity: 7, // partial: 7 of 10
             });
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
@@ -3854,6 +3874,365 @@ describe('execute cron handler', () => {
             // but the cache itself should only fetch once
             // We just verify fetchLivePrice was called (not zero times — proving the mock works)
             expect(aaplCalls.length).toBeGreaterThan(0);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Toss OpenAPI integration: market-holiday gate + buying-power / sellable guards
+    // -----------------------------------------------------------------------
+
+    describe('us market-holiday gate', () => {
+        it('skips entirely (no orders) when isUsMarketOpen is false in auto mode', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockIsUsMarketOpen.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({ skipped: true, reason: 'us-market-holiday' });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+            // Lock still released via finally
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+        });
+
+        it('does NOT gate in dry_run mode (isUsMarketOpen not consulted)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockIsUsMarketOpen.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // dry_run proceeds regardless of holiday
+            expect(body.tradingMode).toBe('dry_run');
+            expect(mockIsUsMarketOpen).not.toHaveBeenCalled();
+            expect(mockInsertTrade).toHaveBeenCalled();
+        });
+
+        it('proceeds (fail-open) when isUsMarketOpen throws in auto mode', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockIsUsMarketOpen.mockRejectedValue(new Error('calendar down'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // catch(() => true) → fall back to time-based behavior, order placed
+            expect(body.skipped).not.toBe(true);
+            expect(mockExecuteBuyOrder).toHaveBeenCalled();
+        });
+    });
+
+    describe('buying-power guard', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult); // price 150
+                    return Promise.resolve(null);
+                },
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+        });
+
+        it('skips buy (skipped_insufficient_cash) when cost exceeds USD buying power', async () => {
+            // cost = 150 * 5 = 750, buying power 700 < 750
+            mockGetBuyingPower.mockResolvedValue(700);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'skipped_insufficient_cash',
+                score: 80,
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+
+        it('places buy when buying power is sufficient', async () => {
+            mockGetBuyingPower.mockResolvedValue(1000); // > 750
+
+            await handler(makeRequest(true));
+
+            expect(mockExecuteBuyOrder).toHaveBeenCalled();
+        });
+
+        it('does not gate buy when getBuyingPower throws (guard disabled)', async () => {
+            mockGetBuyingPower.mockRejectedValue(new Error('balance API down'));
+
+            await handler(makeRequest(true));
+
+            // null buying power → guard skipped, order placed
+            expect(mockExecuteBuyOrder).toHaveBeenCalled();
+        });
+    });
+
+    describe('sellable-quantity guard (watchlist sell)', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+        });
+
+        it('skips sell (skipped_not_sellable) when sellable is 0', async () => {
+            mockGetSellableQuantity.mockResolvedValue(0);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'skipped_not_sellable',
+                score: 20,
+            });
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+
+        it('clamps sell quantity down to floor(sellable) when intended qty exceeds sellable', async () => {
+            mockGetSellableQuantity.mockResolvedValue(6.9); // intended 10 > 6.9 → clamp to 6
+
+            await handler(makeRequest(true));
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith(
+                'AAPL',
+                6,
+                expect.stringMatching(/^[0-9a-f-]{36}$/),
+            );
+            // order_tracking records the clamped quantity
+            expect(mockCreateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ quantity: 6 }),
+            );
+        });
+
+        it('does not clamp when sellable >= intended quantity', async () => {
+            mockGetSellableQuantity.mockResolvedValue(50);
+
+            await handler(makeRequest(true));
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith(
+                'AAPL',
+                10,
+                expect.stringMatching(/^[0-9a-f-]{36}$/),
+            );
+        });
+    });
+
+    describe('OrderOutcome status mapping (auto watchlist buy)', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+        });
+
+        it('pending → order_tracking pending, NOT resolved, no trade', async () => {
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-p',
+                clientOrderId: 'coid-p',
+                status: 'pending',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    tossOrderId: 'ord-p',
+                    status: 'pending',
+                    resolvedAt: undefined,
+                }),
+            );
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_submitted',
+                score: 80,
+            });
+        });
+
+        it('partial → records filled portion as trade, tracking status partial (unresolved)', async () => {
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-pf',
+                clientOrderId: 'coid-pf',
+                status: 'partial',
+                filledQuantity: 3,
+                avgFilledPrice: 151,
+            });
+
+            await handler(makeRequest(true));
+
+            // tracking updated to 'partial' WITHOUT resolvedAt
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    tossOrderId: 'ord-pf',
+                    status: 'partial',
+                    filledPrice: 151,
+                    resolvedAt: undefined,
+                }),
+            );
+            // filled portion (3 @ 151) recorded as a real trade
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 3,
+                    price: 151,
+                    mode: 'auto',
+                }),
+            );
+            expect(mockOpenPosition).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ quantity: 3, avgPrice: 151 }),
+            );
+        });
+
+        it('canceled → handled like rejected (order_rejected, resolved, no trade)', async () => {
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-c',
+                clientOrderId: 'coid-c',
+                status: 'canceled',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    status: 'canceled',
+                    resolvedAt: expect.any(Date),
+                }),
+            );
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'order_rejected',
+                score: 80,
+            });
+        });
+
+        it('rejected → uses rejectReason in error email', async () => {
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: '',
+                clientOrderId: 'coid-r',
+                status: 'rejected',
+                rejectReason: 'insufficient-funds',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '주문 거부: AAPL',
+                'insufficient-funds',
+            );
+            // empty orderId must not be written to tracking
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^exec-.*-AAPL-buy$/),
+                expect.objectContaining({
+                    tossOrderId: undefined,
+                    status: 'rejected',
+                    resolvedAt: expect.any(Date),
+                }),
+            );
         });
     });
 });
