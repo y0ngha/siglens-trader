@@ -46,7 +46,7 @@ vi.mock('../../../lib/db/queries', () => ({
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
-vi.mock('../../../lib/trading/order', () => ({
+vi.mock('../../../lib/trading/orders', () => ({
     executeBuyOrder: (...args: unknown[]) => mockExecuteBuyOrder(...args),
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
 }));
@@ -115,13 +115,17 @@ function setupDefaults() {
     mockSendErrorEmail.mockResolvedValue(undefined);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
+        clientOrderId: 'approve-1',
         status: 'filled',
-        filledPrice: 150,
+        filledQuantity: 5,
+        avgFilledPrice: 150,
     });
     mockExecuteSellOrder.mockResolvedValue({
         orderId: 'ord-2',
+        clientOrderId: 'approve-2',
         status: 'filled',
-        filledPrice: 155,
+        filledQuantity: 10,
+        avgFilledPrice: 155,
     });
 }
 
@@ -158,12 +162,24 @@ describe('approve handler', () => {
                 fakeDb,
                 expect.objectContaining({
                     idempotencyKey: 'approve-1',
+                    clientOrderId: 'approve-1',
                     symbol: 'AAPL',
                     side: 'buy',
                     quantity: 5,
                     status: 'submitted',
                 }),
             );
+        });
+
+        it('passes the stable clientOrderId (approve-${id}) to the Toss facade', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+
+            await handler(makeApproveRequest(1, 'approve'));
+
+            expect(mockExecuteBuyOrder).toHaveBeenCalledWith('AAPL', 5, 'approve-1');
         });
 
         it('updates order tracking after Toss API responds', async () => {
@@ -181,7 +197,39 @@ describe('approve handler', () => {
                     tossOrderId: 'ord-1',
                     status: 'filled',
                     filledPrice: 150,
+                    resolvedAt: expect.any(Date),
                 }),
+            );
+        });
+
+        it('records trade at avgFilledPrice with actualQuantity from filledQuantity (filled)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            // partial-ish fill quantity but terminal 'filled' status: actualQuantity follows filledQuantity
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'filled',
+                filledQuantity: 5,
+                avgFilledPrice: 151.25,
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(200);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    price: 151.25,
+                }),
+            );
+            expect(mockOpenPosition).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ quantity: 5, avgPrice: 151.25 }),
             );
         });
 
@@ -205,15 +253,104 @@ describe('approve handler', () => {
                 return Promise.resolve(null);
             });
             mockExecuteBuyOrder.mockResolvedValue({
-                orderId: 'ord-1',
+                orderId: '',
+                clientOrderId: 'approve-1',
                 status: 'rejected',
-                message: 'Insufficient funds',
+                rejectReason: 'insufficient-funds',
             });
 
             const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
 
             expect(res.status).toBe(422);
+            expect(body.error).toContain('insufficient-funds');
             expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
+        it('reverts pending order when Toss API cancels', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'canceled',
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(422);
+            expect(body.error).toContain('canceled');
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // pending / partial: accepted (202), reconcile owns confirmation
+    // -----------------------------------------------------------------------
+
+    describe('unconfirmed outcomes (pending/partial)', () => {
+        it('returns 202 and records no trade when pending (not reverted)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'pending',
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(202);
+            expect(body.accepted).toBe(true);
+            expect(body.status).toBe('pending');
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            // order was submitted successfully — must NOT revert
+            expect(mockRevertPendingOrder).not.toHaveBeenCalled();
+            // tracking left unresolved (resolvedAt undefined)
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'approve-1',
+                expect.objectContaining({ status: 'pending', resolvedAt: undefined }),
+            );
+        });
+
+        it('returns 202 with partial message and records no trade when partial (not reverted)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                clientOrderId: 'approve-1',
+                status: 'partial',
+                filledQuantity: 3,
+                avgFilledPrice: 150,
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(202);
+            expect(body.accepted).toBe(true);
+            expect(body.status).toBe('partial');
+            expect(body.message).toContain('부분 체결');
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+            expect(mockRevertPendingOrder).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'approve-1',
+                expect.objectContaining({ status: 'partial', resolvedAt: undefined }),
+            );
         });
     });
 
@@ -222,15 +359,17 @@ describe('approve handler', () => {
     // -----------------------------------------------------------------------
 
     describe('filledPrice missing in auto mode', () => {
-        it('records trade at estimated price when filledPrice is undefined', async () => {
+        it('records trade at estimated price when avgFilledPrice is null', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
             });
             mockExecuteBuyOrder.mockResolvedValue({
                 orderId: 'ord-1',
+                clientOrderId: 'approve-1',
                 status: 'filled',
-                filledPrice: undefined,
+                filledQuantity: 5,
+                avgFilledPrice: null,
             });
 
             const res = await handler(makeApproveRequest(1, 'approve'));
