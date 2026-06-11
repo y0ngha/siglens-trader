@@ -104,10 +104,12 @@ Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
 DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
 `market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
-- Analysis crons (technical, news, options): `0 13-20 * * 1-5` (hourly)
+- Analysis crons (technical, news, options): `0 13-21 * * 1-5` (hourly)
 - Fundamental: `0 13 * * 1-5` (daily near US open)
-- Execute: `7 13-20 * * 1-5` (7-minute offset after analysis, hourly)
-- Reconcile: `*/10 13-20 * * 1-5` (every 10 minutes — order timeout + DB consistency)
+- Execute: `7 13-21 * * 1-5` (7-minute offset after analysis, hourly)
+- Reconcile: `*/10 13-21 * * 1-5` (every 10 minutes — order timeout + DB consistency)
+
+UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) and EST (14:30–21:00 UTC); the `isEtRegularSessionOpen` runtime gate skips out-of-session fires.
 
 ---
 
