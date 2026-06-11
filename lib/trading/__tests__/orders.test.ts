@@ -99,10 +99,12 @@ describe('orders', () => {
         const outcome = await p;
         vi.useRealTimers();
         expect(outcome.status).toBe('pending');
+        // 1 issueOrder + 3 getOrder polls
+        expect(mockTossFetch).toHaveBeenCalledTimes(4);
     });
 
     it('PARTIAL_FILLED → status partial + 체결분', async () => {
-        mockTossFetch.mockResolvedValueOnce({ orderId: 'o1' }).mockResolvedValue({
+        mockTossFetch.mockResolvedValueOnce({ orderId: 'o1' }).mockResolvedValueOnce({
             orderId: 'o1',
             status: 'PARTIAL_FILLED',
             execution: { filledQuantity: '3', averageFilledPrice: '50' },
@@ -111,6 +113,8 @@ describe('orders', () => {
         const outcome = await executeBuyOrder('AAPL', 10, 'c1');
         expect(outcome.status).toBe('partial');
         expect(outcome.filledQuantity).toBe(3);
+        // 1 issueOrder + 1 poll (early return proves the loop exits immediately)
+        expect(mockTossFetch).toHaveBeenCalledTimes(2);
     });
 
     it('REJECTED 폴링 → status rejected', async () => {
@@ -192,5 +196,50 @@ describe('orders', () => {
         const detail = await getOrder('o1');
         expect(detail.filledQuantity).toBe(0);
         expect(detail.avgFilledPrice).toBeNull();
+    });
+
+    // Fix 1: 일시적/모호한 4xx는 rejected로 삼키지 않고 rethrow
+    it('worst: 429 rate-limit → executeBuyOrder는 throw (rejected 아님)', async () => {
+        mockTossFetch.mockRejectedValueOnce(
+            new FakeTossApiError('rate-limit-exceeded', 'Too Many Requests', 429),
+        );
+        const { executeBuyOrder } = await import('../orders');
+        await expect(executeBuyOrder('AAPL', 10, 'c1')).rejects.toThrow();
+    });
+
+    it('worst: 409 idempotency-key-conflict → executeBuyOrder는 throw (rejected 아님)', async () => {
+        mockTossFetch.mockRejectedValueOnce(
+            new FakeTossApiError('idempotency-key-conflict', '충돌', 409),
+        );
+        const { executeBuyOrder } = await import('../orders');
+        await expect(executeBuyOrder('AAPL', 10, 'c1')).rejects.toThrow();
+    });
+
+    it('400 invalid-request → rejected outcome (진짜 비즈니스 거부)', async () => {
+        mockTossFetch.mockRejectedValueOnce(
+            new FakeTossApiError('invalid-request', '잘못된 요청', 400),
+        );
+        const { executeBuyOrder } = await import('../orders');
+        const outcome = await executeBuyOrder('AAPL', 10, 'c1');
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.rejectReason).toBe('invalid-request');
+    });
+
+    // Fix 2: getOrder 폴링 실패 시 orderId 보존하여 pending 반환
+    it('worst: issueOrder 성공 후 getOrder throw → orderId 보존한 pending 반환 (throw 아님)', async () => {
+        mockTossFetch
+            .mockResolvedValueOnce({ orderId: 'o1' })
+            .mockRejectedValueOnce(new FakeTossApiError('internal-error', 'poll fail', 500));
+        const { executeBuyOrder } = await import('../orders');
+        const outcome = await executeBuyOrder('AAPL', 10, 'c1');
+        expect(outcome.status).toBe('pending');
+        expect(outcome.orderId).toBe('o1');
+        expect(outcome.clientOrderId).toBe('c1');
+    });
+
+    // Fix 4: clientOrderId 길이/형식 검증
+    it('worst: clientOrderId 37자 → rejects /clientOrderId/', async () => {
+        const { executeBuyOrder } = await import('../orders');
+        await expect(executeBuyOrder('AAPL', 1, 'x'.repeat(37))).rejects.toThrow(/clientOrderId/);
     });
 });

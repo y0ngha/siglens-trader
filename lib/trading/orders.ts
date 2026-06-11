@@ -58,6 +58,7 @@ function mapStatus(s: TossOrderStatus): OrderOutcome['status'] | null {
         case 'FILLED':
             return 'filled';
         case 'PARTIAL_FILLED':
+            // non-terminal: reconcile cron resolves partial → filled when remaining quantity clears
             return 'partial';
         case 'REJECTED':
         case 'CANCEL_REJECTED':
@@ -78,6 +79,9 @@ async function executeOrder(
 ): Promise<OrderOutcome> {
     validateOrderInputs(symbol, quantity);
     const coid = clientOrderId ?? crypto.randomUUID();
+    if (coid.length > 36 || !/^[a-zA-Z0-9\-_]+$/.test(coid)) {
+        throw new Error('clientOrderId must be <=36 chars of [a-zA-Z0-9-_]');
+    }
 
     let orderId: string;
     try {
@@ -89,15 +93,33 @@ async function executeOrder(
             clientOrderId: coid,
         }));
     } catch (err) {
-        if (err instanceof TossApiError && err.status >= 400 && err.status < 500) {
-            return { orderId: '', clientOrderId: coid, status: 'rejected', rejectReason: err.code };
+        // 진짜 비즈니스 거부(잔고부족/장마감/종목제한/잘못된 주문 등)만 terminal 'rejected'.
+        // 일시적/모호한 코드(rate-limit, timeout, 멱등성 충돌)는 rethrow → order-tracking 'error' 경로로.
+        if (err instanceof TossApiError) {
+            const transient =
+                err.status === 408 ||
+                err.status === 429 ||
+                err.code === 'idempotency-key-conflict' ||
+                err.code === 'request-in-progress';
+            if (err.status >= 400 && err.status < 500 && !transient) {
+                return {
+                    orderId: '',
+                    clientOrderId: coid,
+                    status: 'rejected',
+                    rejectReason: err.code,
+                };
+            }
         }
         throw err;
     }
 
     let last: OrderDetail | null = null;
     for (let i = 0; i < POLL_ATTEMPTS; i++) {
-        last = await getOrder(orderId);
+        try {
+            last = await getOrder(orderId);
+        } catch {
+            break; // 폴링 실패는 best-effort — 아래 pending 반환으로 떨어져 reconcile이 확정
+        }
         const mapped = mapStatus(last.status);
         if (mapped) {
             return {
@@ -111,6 +133,7 @@ async function executeOrder(
         if (i < POLL_ATTEMPTS - 1) await delay(POLL_INTERVAL_MS);
     }
 
+    // 미확정 (PENDING 지속 또는 폴링 실패) — orderId 보존, reconcile이 추후 확정
     return {
         orderId,
         clientOrderId: coid,
