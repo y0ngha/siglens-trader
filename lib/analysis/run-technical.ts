@@ -1,4 +1,5 @@
 import { submitAnalysis, pollAnalysis } from '@y0ngha/siglens-core';
+import { getMarketDataProvider } from '@lib/data/fmp-market-data-provider';
 import { pollUntilDone } from './poll-until-done';
 import type { AnalysisRunResult, RunAnalysisOptions } from './types';
 
@@ -13,7 +14,11 @@ export async function runTechnicalAnalysis(
             timeframe,
             false,
             undefined,
-            { modelId: options.modelId, userApiKey: options.userApiKey },
+            {
+                modelId: options.modelId,
+                userApiKey: options.userApiKey,
+                marketDataProvider: getMarketDataProvider(),
+            },
         );
 
         if (submission.status === 'cached') {

@@ -3,6 +3,7 @@ import type { EnrichedNewsItem, EarningsCalendarItem } from '@y0ngha/siglens-cor
 import { FmpFundamentalClient } from '@lib/data/fmp-fundamental';
 import { FmpNewsClient } from '@lib/data/fmp-news';
 import { fetchOptionsSnapshot } from '@lib/data/yahoo-options';
+import { getMarketDataProvider } from '@lib/data/fmp-market-data-provider';
 import { pollUntilDone } from './poll-until-done';
 import type { AnalysisRunResult, RunAnalysisOptions } from './types';
 
@@ -48,6 +49,7 @@ export async function runOverallAnalysis(options: RunAnalysisOptions): Promise<A
             optionsSnapshot: snapshot ?? undefined,
             userApiKey: options.userApiKey,
             technical: {},
+            marketDataProvider: getMarketDataProvider(),
         });
 
         if (submission.status === 'cached') {

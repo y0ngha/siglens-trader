@@ -26,6 +26,11 @@ vi.mock('@lib/data/yahoo-options', () => ({
     fetchOptionsSnapshot: mockFetchOptionsSnapshot,
 }));
 
+const mockProvider = { getBars: vi.fn(), getQuote: vi.fn() };
+vi.mock('@lib/data/fmp-market-data-provider', () => ({
+    getMarketDataProvider: () => mockProvider,
+}));
+
 vi.mock('../poll-until-done', () => ({
     pollUntilDone: vi.fn(),
 }));
@@ -67,6 +72,17 @@ describe('runOverallAnalysis', () => {
 
         expect(result).toEqual({ status: 'cached', result: { overallScore: 72 } });
         expect(mockedPoll).not.toHaveBeenCalled();
+    });
+
+    it('injects the FMP marketDataProvider into submitOverallAnalysis', async () => {
+        setupDefaultMocks();
+        mockedSubmit.mockResolvedValue({ status: 'cached', result: {} } as any);
+
+        await runOverallAnalysis(baseOptions);
+
+        expect(mockedSubmit).toHaveBeenCalledWith(
+            expect.objectContaining({ marketDataProvider: mockProvider }),
+        );
     });
 
     it('polls and returns done when submitted', async () => {
