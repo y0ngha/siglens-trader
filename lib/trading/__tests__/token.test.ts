@@ -14,6 +14,12 @@ vi.mock('@upstash/redis', () => ({
     Redis: vi.fn(() => ({ get: mockGet, set: mockSet, eval: vi.fn(async () => 1) })),
 }));
 
+// lock 모킹 — 기본값: 락 획득 성공(true)으로 기존 테스트 유지
+vi.mock('../../lock', () => ({
+    acquireLock: vi.fn(async () => true),
+    releaseLock: vi.fn(async () => {}),
+}));
+
 function tokenResponse(body: unknown, status = 200): Response {
     return {
         ok: status >= 200 && status < 300,
@@ -114,5 +120,52 @@ describe('token manager', () => {
         vi.stubEnv('TOSS_APP_KEY', '');
         const { getAccessToken } = await import('../token');
         await expect(getAccessToken()).rejects.toThrow(/TOSS_APP_KEY/);
+    });
+
+    it('worst: 락 경합 — 폴링 중 캐시 등장 시 새 발급 없이 캐시 토큰 반환', async () => {
+        // 초기 캐시 미스 → 락 획득 실패 → 폴링 중 캐시 등장
+        mockGet
+            .mockResolvedValueOnce(null) // 최초 캐시 확인: 미스
+            .mockResolvedValue('polled-tok'); // 폴링 시 캐시 히트
+        // resetModules 이후 새로 로딩된 lock 모듈의 acquireLock을 제어
+        const lockMod = await import('../../lock');
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(false);
+
+        vi.useFakeTimers();
+        try {
+            const { getAccessToken } = await import('../token');
+            const p = getAccessToken();
+            await vi.runAllTimersAsync();
+            const result = await p;
+
+            expect(result).toBe('polled-tok');
+            expect(mockFetch).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('worst: 락 경합 — 폴링 내내 캐시 없음 → forceRefreshToken으로 폴백 발급', async () => {
+        // 초기 캐시 미스 → 락 획득 실패 → 폴링 전체 캐시 미스 → 직접 발급
+        mockGet.mockResolvedValue(null); // 모든 get 호출에서 null
+        // resetModules 이후 새로 로딩된 lock 모듈의 acquireLock을 제어
+        const lockMod = await import('../../lock');
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(false);
+        mockFetch.mockResolvedValue(
+            tokenResponse({ access_token: 'fallback-tok', token_type: 'Bearer', expires_in: 100 }),
+        );
+
+        vi.useFakeTimers();
+        try {
+            const { getAccessToken } = await import('../token');
+            const p = getAccessToken();
+            await vi.runAllTimersAsync();
+            const result = await p;
+
+            expect(result).toBe('fallback-tok');
+            expect(mockFetch).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
