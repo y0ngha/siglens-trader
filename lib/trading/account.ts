@@ -1,5 +1,5 @@
 import { tossFetch } from './client';
-import { safeNumber } from '../validation';
+import { parseDecimal } from '../validation';
 import type { TossHolding } from './types';
 
 interface HoldingsItemRaw {
@@ -11,11 +11,6 @@ interface HoldingsItemRaw {
     lastPrice: string;
     averagePurchasePrice: string;
     profitLoss?: { amount?: string };
-}
-
-/** Parses a decimal string to number, falling back to `fallback` on NaN/invalid. */
-function parseDecimal(value: unknown, fallback: number): number {
-    return safeNumber(typeof value === 'string' ? parseFloat(value) : (value as number), fallback);
 }
 
 export async function getHoldings(): Promise<TossHolding[]> {

@@ -25,3 +25,11 @@ export function safeNumber(value: unknown, fallback: number): number {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     return fallback;
 }
+
+/**
+ * Parses a decimal that may arrive as a string (Toss API) or number into a finite number.
+ * Returns `fallback` for non-finite / unparseable values (never NaN).
+ */
+export function parseDecimal(value: unknown, fallback: number): number {
+    return safeNumber(typeof value === 'string' ? parseFloat(value) : value, fallback);
+}
