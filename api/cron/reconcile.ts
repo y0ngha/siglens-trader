@@ -66,17 +66,43 @@ export default async function handler(req: Request): Promise<Response> {
                 const detail = await getOrder(order.tossOrderId).catch(() => null);
                 if (detail) {
                     if (detail.status === 'FILLED') {
-                        // Fully filled — mark 'filled' so autoRecoverFilledOrders books it.
-                        // order.quantity == filled qty for a full fill, so integer-quantity booking is correct.
+                        // Only auto-book a CLEAN FULL FILL: broker filled qty is a whole
+                        // number equal (within epsilon) to the tracked intended integer
+                        // quantity, AND a real fill price is present. autoRecoverFilledOrders
+                        // books integer order.quantity, so this guarantees it only ever runs
+                        // on orders whose actual fill equals that integer quantity.
+                        const cleanFull =
+                            detail.avgFilledPrice != null &&
+                            Number.isInteger(order.quantity) &&
+                            Math.abs(detail.filledQuantity - order.quantity) < 1e-6;
+                        if (cleanFull) {
+                            await updateOrderTracking(db, order.idempotencyKey, {
+                                status: 'filled',
+                                filledPrice: detail.avgFilledPrice ?? undefined,
+                                resolvedAt: new Date(),
+                            });
+                            results.push({
+                                id: order.id,
+                                symbol: order.symbol,
+                                action: 'resolved_filled',
+                            });
+                            continue;
+                        }
+                        // Short/fractional fill or missing fill price → do NOT auto-book
+                        // (order_tracking.quantity is integer/intended). Route to manual review.
                         await updateOrderTracking(db, order.idempotencyKey, {
-                            status: 'filled',
+                            status: 'needs_review',
                             filledPrice: detail.avgFilledPrice ?? undefined,
                             resolvedAt: new Date(),
                         });
+                        await sendErrorEmail(
+                            `체결 수동확인 필요: ${order.symbol}`,
+                            `주문 ${order.tossOrderId} FILLED 이나 체결수량(${detail.filledQuantity})이 의도수량(${order.quantity})과 불일치하거나 소수점. 수동 기록 필요.`,
+                        ).catch((e) => console.error('[email]', e));
                         results.push({
                             id: order.id,
                             symbol: order.symbol,
-                            action: 'resolved_filled',
+                            action: 'needs_review',
                         });
                         continue;
                     }

@@ -418,7 +418,7 @@ describe('reconcile cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('broker resolution', () => {
-        it('FILLED → marks tracking filled (so autoRecover books it), action resolved_filled', async () => {
+        it('FILLED clean full fill (filledQuantity == order.quantity) → marks tracking filled, action resolved_filled', async () => {
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
             mockGetOrder.mockResolvedValue({
                 orderId: 'toss-1',
@@ -439,6 +439,93 @@ describe('reconcile cron handler', () => {
             });
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'resolved_filled' }]);
             expect(mockCancelOrder).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+        });
+
+        it('FILLED but filledQuantity != order.quantity → needs_review + email, NOT filled', async () => {
+            // Policy: broker FILLED but actual fill (8) != tracked intended integer qty (10)
+            // ⇒ do NOT mark filled (autoRecover books integer order.quantity). needs_review.
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ quantity: 10 })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 8,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'needs_review',
+                filledPrice: 187.5,
+                resolvedAt: expect.any(Date),
+            });
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'filled' }),
+            );
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '체결 수동확인 필요: AAPL',
+                expect.stringContaining('체결수량(8)이 의도수량(10)'),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
+        it('FILLED with fractional filledQuantity → needs_review, NOT filled', async () => {
+            // Policy: fractional fill ⇒ needs_review (integer column corruption guard).
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ quantity: 10 })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 9.5,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'filled' }),
+            );
+            expect(mockSendErrorEmail).toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
+        it('FILLED with missing avgFilledPrice → needs_review, NOT filled', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ quantity: 10 })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 10,
+                avgFilledPrice: null,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'filled' }),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
         });
 
         it('REJECTED → marks tracking rejected', async () => {

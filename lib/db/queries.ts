@@ -447,7 +447,7 @@ export async function createOrderTracking(
 }
 
 export async function updateOrderTracking(
-    db: Db,
+    db: DbOrTx,
     idempotencyKey: string,
     updates: {
         status?: string;

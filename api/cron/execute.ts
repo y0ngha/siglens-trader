@@ -417,14 +417,21 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
-                        const exitResolved =
-                            orderResult.status !== 'pending' && orderResult.status !== 'partial';
-                        await updateOrderTracking(db, exitIdempotencyKey, {
-                            tossOrderId: orderResult.orderId || undefined,
-                            status: orderResult.status,
-                            filledPrice: orderResult.avgFilledPrice ?? undefined,
-                            resolvedAt: exitResolved ? new Date() : undefined,
-                        });
+                        // Early status write for non-filled outcomes only. For 'filled' the
+                        // ONLY status write happens inside the booking tx (clean fill) or the
+                        // needs_review write below — never here — so 'filled' can't exist
+                        // without its trade.
+                        if (orderResult.status !== 'filled') {
+                            const exitResolved =
+                                orderResult.status !== 'pending' &&
+                                orderResult.status !== 'partial';
+                            await updateOrderTracking(db, exitIdempotencyKey, {
+                                tossOrderId: orderResult.orderId || undefined,
+                                status: orderResult.status,
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
+                                resolvedAt: exitResolved ? new Date() : undefined,
+                            });
+                        }
                         if (
                             orderResult.status === 'rejected' ||
                             orderResult.status === 'canceled'
@@ -467,52 +474,36 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — record the filled portion immediately.
-                        const actualExitQty = orderResult.filledQuantity ?? sellQty;
-                        if (orderResult.avgFilledPrice == null) {
-                            // RARE: filled but no avg price returned. Record at estimate.
+                        // status === 'filled' — auto-book ONLY a clean full fill:
+                        // broker filled qty == intended integer qty (within epsilon) AND a
+                        // real fill price is present. Any other outcome (short/fractional
+                        // fill or missing price) is routed to needs_review (no auto-book).
+                        const filledQ = orderResult.filledQuantity ?? sellQty;
+                        const cleanFullFill =
+                            orderResult.avgFilledPrice != null &&
+                            Number.isInteger(sellQty) &&
+                            Math.abs(filledQ - sellQty) < 1e-6;
+                        if (!cleanFullFill) {
+                            // 단축/소수점 체결 또는 체결가 누락 → 자동 기록하지 않고 수동 검토로
                             await updateOrderTracking(db, exitIdempotencyKey, {
-                                status: 'fill_price_unknown',
+                                status: 'needs_review',
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            await db.transaction(async (tx) => {
-                                if (actualExitQty >= position.quantity) {
-                                    const closed = await closePosition(
-                                        tx,
-                                        position.id,
-                                        currentPrice,
-                                    );
-                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
-                                } else {
-                                    await reducePositionQuantity(tx, position.id, actualExitQty);
-                                }
-                                await insertTrade(tx, {
-                                    symbol: position.symbol,
-                                    side: 'sell',
-                                    orderType: 'market',
-                                    quantity: actualExitQty,
-                                    price: currentPrice,
-                                    executedAt: new Date(),
-                                    reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                    mode: 'auto',
-                                    cronRunId,
-                                });
-                            });
-                            currentExposure -= currentPrice * actualExitQty;
-                            if (currentExposure < 0) currentExposure = 0;
                             await sendErrorEmail(
-                                `체결가 누락: ${position.symbol}`,
-                                `${position.symbol} 매도가 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
+                                `체결 수동확인 필요: ${position.symbol}`,
+                                `sell 주문이 예상과 다르게 체결됨 (의도 ${sellQty}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: position.symbol,
-                                action: evaluation.action,
+                                action: 'needs_review',
                                 score: 0,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        const filledSellPrice = orderResult.avgFilledPrice;
+                        const filledSellPrice = orderResult.avgFilledPrice!;
+                        const actualExitQty = sellQty;
                         try {
                             await db.transaction(async (tx) => {
                                 if (actualExitQty >= position.quantity) {
@@ -535,6 +526,14 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: evaluation.reason,
                                     mode: 'auto',
                                     cronRunId,
+                                });
+                                // ATOMIC: mark filled inside the same tx so 'filled' never
+                                // exists without its trade (double-book race guard).
+                                await updateOrderTracking(tx, exitIdempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice: filledSellPrice,
+                                    resolvedAt: new Date(),
                                 });
                             });
                             currentExposure -= filledSellPrice * actualExitQty;
@@ -1071,14 +1070,21 @@ export default async function handler(req: Request): Promise<Response> {
                             }).catch(() => {});
                             throw apiErr;
                         }
-                        const autoResolved =
-                            orderResult.status !== 'pending' && orderResult.status !== 'partial';
-                        await updateOrderTracking(db, idempotencyKey, {
-                            tossOrderId: orderResult.orderId || undefined,
-                            status: orderResult.status,
-                            filledPrice: orderResult.avgFilledPrice ?? undefined,
-                            resolvedAt: autoResolved ? new Date() : undefined,
-                        });
+                        // Early status write for non-filled outcomes only. For 'filled' the
+                        // ONLY status write happens inside the booking tx (clean fill) or the
+                        // needs_review write below — never here — so 'filled' can't exist
+                        // without its trade.
+                        if (orderResult.status !== 'filled') {
+                            const autoResolved =
+                                orderResult.status !== 'pending' &&
+                                orderResult.status !== 'partial';
+                            await updateOrderTracking(db, idempotencyKey, {
+                                tossOrderId: orderResult.orderId || undefined,
+                                status: orderResult.status,
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
+                                resolvedAt: autoResolved ? new Date() : undefined,
+                            });
+                        }
                         if (
                             orderResult.status === 'rejected' ||
                             orderResult.status === 'canceled'
@@ -1127,116 +1133,37 @@ export default async function handler(req: Request): Promise<Response> {
                             decisionPushed = true;
                             break;
                         }
-                        // status === 'filled' — record filled portion at estimate if avg price missing
-                        if (orderResult.avgFilledPrice == null) {
-                            // RARE: filled but no avg price returned. Record at estimate.
+                        // status === 'filled' — auto-book ONLY a clean full fill:
+                        // broker filled qty == intended integer qty (within epsilon) AND a
+                        // real fill price is present. Any other outcome (short/fractional
+                        // fill or missing price) is routed to needs_review (no auto-book).
+                        const filledQ = orderResult.filledQuantity ?? autoQuantity;
+                        const cleanFullFill =
+                            orderResult.avgFilledPrice != null &&
+                            Number.isInteger(autoQuantity) &&
+                            Math.abs(filledQ - autoQuantity) < 1e-6;
+                        if (!cleanFullFill) {
+                            // 단축/소수점 체결 또는 체결가 누락 → 자동 기록하지 않고 수동 검토로
                             await updateOrderTracking(db, idempotencyKey, {
-                                status: 'fill_price_unknown',
+                                status: 'needs_review',
+                                filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            const estimatedQty = orderResult.filledQuantity ?? autoQuantity;
-                            if (decision.action === 'buy' || decision.action === 'average_in') {
-                                const existingEstimated = await getOpenPositionBySymbol(
-                                    db,
-                                    item.symbol,
-                                );
-                                await db.transaction(async (tx) => {
-                                    await insertTrade(tx, {
-                                        symbol: item.symbol,
-                                        side: autoSide,
-                                        orderType: 'market',
-                                        quantity: estimatedQty,
-                                        price: currentPrice,
-                                        executedAt: new Date(),
-                                        reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                        mode: 'auto',
-                                        cronRunId,
-                                    });
-                                    if (existingEstimated) {
-                                        await averageIntoPosition(
-                                            tx,
-                                            existingEstimated.id,
-                                            estimatedQty,
-                                            currentPrice,
-                                        );
-                                    } else {
-                                        await openPosition(tx, {
-                                            symbol: item.symbol,
-                                            side: 'long',
-                                            quantity: estimatedQty,
-                                            avgPrice: currentPrice,
-                                        });
-                                    }
-                                });
-                                currentExposure += currentPrice * estimatedQty;
-                            } else if (decision.action === 'sell') {
-                                const existingSellEstimated = await getOpenPositionBySymbol(
-                                    db,
-                                    item.symbol,
-                                );
-                                if (existingSellEstimated) {
-                                    await db.transaction(async (tx) => {
-                                        if (estimatedQty >= existingSellEstimated.quantity) {
-                                            const closed = await closePosition(
-                                                tx,
-                                                existingSellEstimated.id,
-                                                currentPrice,
-                                            );
-                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
-                                        } else {
-                                            await reducePositionQuantity(
-                                                tx,
-                                                existingSellEstimated.id,
-                                                estimatedQty,
-                                            );
-                                        }
-                                        await insertTrade(tx, {
-                                            symbol: item.symbol,
-                                            side: autoSide,
-                                            orderType: 'market',
-                                            quantity: estimatedQty,
-                                            price: currentPrice,
-                                            executedAt: new Date(),
-                                            reason: `체결가 미확인 — 예상가 $${currentPrice}로 기록 (수동 확인 필요)`,
-                                            mode: 'auto',
-                                            cronRunId,
-                                        });
-                                    });
-                                    currentExposure -= currentPrice * estimatedQty;
-                                    if (currentExposure < 0) currentExposure = 0;
-                                }
-                            }
                             await sendErrorEmail(
-                                `체결가 누락: ${item.symbol}`,
-                                `${item.symbol} ${autoSide} 주문이 체결되었으나 체결가가 반환되지 않았습니다. 분석가 $${currentPrice}로 기록했습니다. 실제 체결가를 확인하여 수정해주세요.`,
+                                `체결 수동확인 필요: ${item.symbol}`,
+                                `${autoSide} 주문이 예상과 다르게 체결됨 (의도 ${autoQuantity}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
                             decisions.push({
                                 symbol: item.symbol,
-                                action: decision.action,
+                                action: 'needs_review',
                                 score: decision.score,
                             });
                             decisionPushed = true;
                             break;
                         }
-                        const filledPrice = orderResult.avgFilledPrice;
-                        const actualQuantity = orderResult.filledQuantity ?? autoQuantity;
-                        const quantityEstimated = !orderResult.filledQuantity;
-                        if (
-                            orderResult.filledQuantity &&
-                            orderResult.filledQuantity < autoQuantity
-                        ) {
-                            await sendErrorEmail(
-                                `부분 체결: ${item.symbol}`,
-                                `${item.symbol} ${autoQuantity}주 중 ${actualQuantity}주만 체결되었습니다. 나머지 ${autoQuantity - actualQuantity}주는 미체결.`,
-                            ).catch((e) => console.error('[email]', e));
-                        }
-                        if (!orderResult.filledQuantity) {
-                            await sendErrorEmail(
-                                `체결 수량 누락: ${item.symbol}`,
-                                `${item.symbol} 주문이 체결되었으나 체결 수량이 반환되지 않았습니다. 요청 수량 ${autoQuantity}주로 기록합니다.`,
-                            ).catch((e) => console.error('[email]', e));
-                        }
-                        const tradeReason = `${decision.reason}${quantityEstimated ? ' (수량 미확인 — 요청 수량으로 기록)' : ''}`;
+                        const filledPrice = orderResult.avgFilledPrice!;
+                        const actualQuantity = autoQuantity; // integer, == filledQ
+                        const tradeReason = decision.reason;
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             const existingAuto = await getOpenPositionBySymbol(db, item.symbol);
                             await db.transaction(async (tx) => {
@@ -1266,6 +1193,14 @@ export default async function handler(req: Request): Promise<Response> {
                                         avgPrice: filledPrice,
                                     });
                                 }
+                                // ATOMIC: mark filled inside the same tx so 'filled' never
+                                // exists without its trade (double-book race guard).
+                                await updateOrderTracking(tx, idempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice,
+                                    resolvedAt: new Date(),
+                                });
                             });
                             currentExposure += filledPrice * actualQuantity;
                         } else if (decision.action === 'sell') {
@@ -1298,6 +1233,13 @@ export default async function handler(req: Request): Promise<Response> {
                                             mode: 'auto',
                                             cronRunId,
                                         });
+                                        // ATOMIC: mark filled inside the same tx.
+                                        await updateOrderTracking(tx, idempotencyKey, {
+                                            tossOrderId: orderResult.orderId || undefined,
+                                            status: 'filled',
+                                            filledPrice,
+                                            resolvedAt: new Date(),
+                                        });
                                     });
                                     currentExposure -= filledPrice * actualQuantity;
                                     if (currentExposure < 0) currentExposure = 0;
@@ -1318,16 +1260,25 @@ export default async function handler(req: Request): Promise<Response> {
                                 }
                             } else {
                                 // Position disappeared between guard check and fill — record trade + alert
-                                await insertTrade(db, {
-                                    symbol: item.symbol,
-                                    side: 'sell',
-                                    orderType: 'market',
-                                    quantity: actualQuantity,
-                                    price: filledPrice,
-                                    executedAt: new Date(),
-                                    reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
-                                    mode: 'auto',
-                                    cronRunId,
+                                await db.transaction(async (tx) => {
+                                    await insertTrade(tx, {
+                                        symbol: item.symbol,
+                                        side: 'sell',
+                                        orderType: 'market',
+                                        quantity: actualQuantity,
+                                        price: filledPrice,
+                                        executedAt: new Date(),
+                                        reason: `${tradeReason} (포지션 미확인 — 수동 확인 필요)`,
+                                        mode: 'auto',
+                                        cronRunId,
+                                    });
+                                    // ATOMIC: mark filled inside the same tx.
+                                    await updateOrderTracking(tx, idempotencyKey, {
+                                        tossOrderId: orderResult.orderId || undefined,
+                                        status: 'filled',
+                                        filledPrice,
+                                        resolvedAt: new Date(),
+                                    });
                                 });
                                 await sendErrorEmail(
                                     `포지션 미확인 매도 체결: ${item.symbol}`,
@@ -1335,16 +1286,25 @@ export default async function handler(req: Request): Promise<Response> {
                                 ).catch((e) => console.error('[email]', e));
                             }
                         } else {
-                            await insertTrade(db, {
-                                symbol: item.symbol,
-                                side: autoSide,
-                                orderType: 'market',
-                                quantity: actualQuantity,
-                                price: filledPrice,
-                                executedAt: new Date(),
-                                reason: tradeReason,
-                                mode: 'auto',
-                                cronRunId,
+                            await db.transaction(async (tx) => {
+                                await insertTrade(tx, {
+                                    symbol: item.symbol,
+                                    side: autoSide,
+                                    orderType: 'market',
+                                    quantity: actualQuantity,
+                                    price: filledPrice,
+                                    executedAt: new Date(),
+                                    reason: tradeReason,
+                                    mode: 'auto',
+                                    cronRunId,
+                                });
+                                // ATOMIC: mark filled inside the same tx.
+                                await updateOrderTracking(tx, idempotencyKey, {
+                                    tossOrderId: orderResult.orderId || undefined,
+                                    status: 'filled',
+                                    filledPrice,
+                                    resolvedAt: new Date(),
+                                });
                             });
                         }
                         await sendTradeExecutedEmail({
