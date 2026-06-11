@@ -1,5 +1,6 @@
 import { tossFetch, TossApiError } from './client';
 import { parseDecimal } from '../validation';
+import { delay } from './_util';
 import type {
     IssueOrderRequest,
     OrderOutcome,
@@ -151,8 +152,4 @@ export function executeBuyOrder(symbol: string, quantity: number, clientOrderId?
 
 export function executeSellOrder(symbol: string, quantity: number, clientOrderId?: string) {
     return executeOrder('SELL', symbol, quantity, clientOrderId);
-}
-
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

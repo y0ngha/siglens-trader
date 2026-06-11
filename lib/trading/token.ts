@@ -1,6 +1,7 @@
 import { acquireLock, releaseLock } from '../lock';
 import { Redis } from '@upstash/redis';
 import type { OAuth2TokenResponse } from './types';
+import { delay, getTradingRedis } from './_util';
 
 const TOKEN_URL = 'https://openapi.tossinvest.com/oauth2/token';
 const REDIS_TOKEN_KEY = 'toss:oauth:token';
@@ -11,13 +12,10 @@ const LOCK_TTL_S = 15; // > ISSUE_TIMEOUT_MS(10s) + 캐시 쓰기 여유
 const POLL_INTERVAL_MS = 250;
 const MAX_WAIT_MS = 25_000; // > LOCK_TTL_S: 락 보유자가 죽어도 TTL 만료 후 재획득 가능
 
-let redis: Redis | null = null;
 let _redisWarnedOnce = false;
 function getRedis(): Redis | null {
-    if (redis) return redis;
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-    if (!url || !token) {
+    const r = getTradingRedis();
+    if (!r) {
         if (!_redisWarnedOnce) {
             _redisWarnedOnce = true;
             console.warn(
@@ -26,8 +24,7 @@ function getRedis(): Redis | null {
         }
         return null;
     }
-    redis = new Redis({ url, token });
-    return redis;
+    return r;
 }
 
 async function issueToken(): Promise<{ token: string; ttl: number }> {
@@ -132,8 +129,4 @@ export async function forceRefreshToken(staleToken?: string): Promise<string> {
         return issueDevToken();
     }
     return issueUnderLock(r, staleToken, staleToken !== undefined);
-}
-
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -227,10 +227,10 @@ export default async function handler(req: Request): Promise<Response> {
             if (price) priceCache.set(sym, price);
         }
 
-        // USD buying power, fetched once per invocation (non-dry-run only).
-        // null => guard disabled (fetch failed or dry_run) — fall back to prior behavior.
+        // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
+        // null => guard disabled (fetch failed or non-auto mode) — fall back to prior behavior.
         const usdBuyingPower =
-            tradingMode !== 'dry_run' ? await getBuyingPower('USD').catch(() => null) : null;
+            tradingMode === 'auto' ? await getBuyingPower('USD').catch(() => null) : null;
         // Running balance: optimistically decremented after each live buy so multiple
         // buys in one run don't all authorize against the same un-decremented cash.
         // null => guard disabled. Reconcile/next-run corrects against broker reality.

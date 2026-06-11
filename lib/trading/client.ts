@@ -1,5 +1,5 @@
 import { getAccessToken, forceRefreshToken } from './token';
-import { Redis } from '@upstash/redis';
+import { delay, getTradingRedis } from './_util';
 
 const BASE_URL = 'https://openapi.tossinvest.com';
 const FETCH_TIMEOUT_MS = 10_000;
@@ -25,20 +25,10 @@ interface TossFetchOptions {
     account?: boolean;
 }
 
-let redis: Redis | null = null;
-function getRedis(): Redis | null {
-    if (redis) return redis;
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-    if (!url || !token) return null;
-    redis = new Redis({ url, token });
-    return redis;
-}
-
 let memoSeq: number | null = null;
 export async function resolveAccountSeq(): Promise<number> {
     if (memoSeq != null) return memoSeq;
-    const r = getRedis();
+    const r = getTradingRedis();
     if (r) {
         const cached = await r.get<number>(ACCOUNT_SEQ_KEY);
         if (cached != null) {
@@ -59,14 +49,20 @@ export async function resolveAccountSeq(): Promise<number> {
 
 function parseError(status: number, text: string): TossApiError {
     try {
-        const json = JSON.parse(text);
+        const json = JSON.parse(text) as {
+            error?: { code?: string; message?: string; data?: unknown } | string;
+            error_description?: string;
+            code?: string;
+            message?: string;
+            data?: unknown;
+        };
         const e = json.error ?? json;
         if (typeof e === 'string') {
             // OAuth2 스타일 { error: "invalid_grant", error_description: "..." }
             return new TossApiError(e, json.error_description ?? text, status);
         }
-        const code = e.code ?? e.error ?? `http-${status}`;
-        const message = e.message ?? e.error_description ?? text;
+        const code = e.code ?? `http-${status}`;
+        const message = e.message ?? json.error_description ?? text;
         return new TossApiError(code, message, status, e.data);
     } catch {
         return new TossApiError(`http-${status}`, text, status);
@@ -150,8 +146,4 @@ export async function tossFetch<T>(
 
     /* c8 ignore next 2 — defensive fallback: all retry paths throw before loop exits */
     throw new TossApiError('exhausted', `Toss API ${method} ${path} failed`, 0);
-}
-
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
