@@ -26,6 +26,14 @@ export async function acquireLock(
 ): Promise<boolean> {
     const r = getRedis();
     if (!r) {
+        const isProd =
+            process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
+        if (isProd) {
+            console.error(
+                '[lock] Redis not configured in production — failing CLOSED (refusing lock) to prevent unlocked concurrent execution',
+            );
+            return false;
+        }
         console.warn('[lock] Redis not configured — lock disabled (dev mode)');
         return true;
     }

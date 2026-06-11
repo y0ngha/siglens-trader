@@ -67,6 +67,8 @@ function mapStatus(s: TossOrderStatus): OrderOutcome['status'] | null {
             return 'rejected';
         case 'CANCELED':
             return 'canceled';
+        case 'REPLACED':
+            return null; // 정정으로 원주문 대체됨 — 본 시스템은 주문 정정을 안 하므로 미발생; 발생 시 reconcile가 확정
         default:
             return null; // PENDING/PENDING_* → 미확정
     }
