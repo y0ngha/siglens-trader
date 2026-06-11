@@ -3,7 +3,7 @@ import { Redis } from '@upstash/redis';
 
 const BASE_URL = 'https://openapi.tossinvest.com';
 const FETCH_TIMEOUT_MS = 10_000;
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 2; // 첫 시도 외 추가 재시도 횟수 (총 3회 fetch)
 const BASE_DELAY_MS = 1000;
 const ACCOUNT_SEQ_KEY = 'toss:account:seq';
 
@@ -80,7 +80,7 @@ export async function tossFetch<T>(
         method === 'POST' &&
         typeof opts.body === 'object' &&
         opts.body !== null &&
-        'clientOrderId' in (opts.body as Record<string, unknown>);
+        (opts.body as Record<string, unknown>).clientOrderId != null;
 
     let url = `${BASE_URL}${path}`;
     if (opts.query) url += `?${new URLSearchParams(opts.query).toString()}`;
@@ -114,6 +114,7 @@ export async function tossFetch<T>(
         if (httpRes.status === 401 && !triedRefresh) {
             triedRefresh = true;
             await forceRefreshToken(token);
+            attempt--; // 인증 재발급은 백오프 재시도 예산을 소모하지 않음
             continue;
         }
 
@@ -129,7 +130,7 @@ export async function tossFetch<T>(
         // 429: Retry-After 존중
         if (httpRes.status === 429 && attempt < MAX_RETRIES) {
             const ra = Number(httpRes.headers.get('Retry-After') ?? '1');
-            await delay(Number.isFinite(ra) ? ra * 1000 : BASE_DELAY_MS);
+            await delay(Number.isFinite(ra) ? Math.max(0, ra) * 1000 : BASE_DELAY_MS);
             continue;
         }
 

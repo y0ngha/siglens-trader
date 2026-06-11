@@ -257,6 +257,36 @@ describe('tossFetch', () => {
         expect(await p).toEqual({ ok: 1 });
     });
 
+    it('fix(issue-1): 401 재발급 후 5xx 2회 → 총 4회 fetch, forceRefreshToken 1회, 최종 성공', async () => {
+        vi.useFakeTimers();
+        mockFetch
+            .mockResolvedValueOnce(res({ error: { code: 'unauthorized' } }, 401)) // attempt 0 → 401
+            .mockResolvedValueOnce(res('err', 500)) // attempt 0 (after refresh) → 500
+            .mockResolvedValueOnce(res('err', 500)) // attempt 1 → 500
+            .mockResolvedValueOnce(res({ result: { ok: 1 } })); // attempt 2 → success
+        const { tossFetch } = await import('../client');
+        const p = tossFetch('GET', '/api/v1/test');
+        const assertion = expect(p).resolves.toEqual({ ok: 1 });
+        await vi.runAllTimersAsync();
+        await assertion;
+        expect(mockForceRefreshToken).toHaveBeenCalledOnce();
+        expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('fix(issue-3): 429 Retry-After가 음수(-5)이면 0으로 클램프 후 재시도 성공', async () => {
+        vi.useFakeTimers();
+        mockFetch
+            .mockResolvedValueOnce(
+                res({ error: { code: 'rate-limited' } }, 429, { 'Retry-After': '-5' }),
+            )
+            .mockResolvedValueOnce(res({ result: { ok: 1 } }));
+        const { tossFetch } = await import('../client');
+        const p = tossFetch('GET', '/api/v1/test');
+        await vi.runAllTimersAsync();
+        expect(await p).toEqual({ ok: 1 });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
     it('parseError: error 객체에 code 없고 message도 없으면 fallback 사용', async () => {
         // error is an object but has neither code, message — test fallback branches
         mockFetch.mockResolvedValueOnce(res({ error: { requestId: 'r1' } }, 400));
