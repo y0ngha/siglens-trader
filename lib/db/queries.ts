@@ -1,4 +1,4 @@
-import { eq, desc, and, sql } from 'drizzle-orm';
+import { eq, desc, and, sql, inArray } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index';
 import {
     watchlist,
@@ -466,9 +466,10 @@ export async function updateOrderTracking(
 }
 
 export async function getPendingSubmittedOrders(db: Db) {
+    // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.
     return db
         .select()
         .from(orderTracking)
-        .where(eq(orderTracking.status, 'submitted'))
+        .where(inArray(orderTracking.status, ['submitted', 'pending', 'partial']))
         .orderBy(orderTracking.submittedAt);
 }

@@ -4235,4 +4235,237 @@ describe('execute cron handler', () => {
             );
         });
     });
+
+    // -----------------------------------------------------------------------
+    // In-flight order guard: pending/partial orders block re-submission.
+    // Regression for the double-submit bug — an unfilled order from a prior run
+    // (status pending/partial) must prevent a new order with a fresh clientOrderId.
+    // -----------------------------------------------------------------------
+
+    describe('in-flight order guard (pending/partial)', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+        });
+
+        it('skips watchlist BUY (pending_order_in_progress) when a pending buy order is in flight', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'buy', status: 'pending' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_order_in_progress',
+                score: 80,
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+
+        it('skips watchlist BUY when a partial buy order is in flight', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'buy', status: 'partial' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_order_in_progress',
+                score: 80,
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+
+        it('skips watchlist SELL when a pending sell order is in flight', async () => {
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'sell', status: 'pending' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_sell_in_progress',
+                score: 20,
+            });
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+
+        it('skips position re-evaluation SELL when a partial sell order is in flight', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([]) // unrealized PnL check
+                .mockResolvedValueOnce([
+                    { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+                ])
+                .mockResolvedValueOnce([]); // recalc
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'sell', status: 'partial' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_sell_in_progress',
+                score: 0,
+            });
+            expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Buying-power running decrement across multiple buys in one run.
+    // -----------------------------------------------------------------------
+
+    describe('buying-power running decrement', () => {
+        it('skips the second buy (skipped_insufficient_cash) when cash only covers the first', async () => {
+            // Both AAPL and TSLA signal buy of 5 @ 150 = $750 each.
+            // Buying power 1000 covers the first (750) but not the second (remaining 250 < 750).
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist); // AAPL, TSLA
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult); // price 150
+                    return Promise.resolve(null);
+                },
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockImplementation((params: { symbol: string }) => ({
+                action: 'buy',
+                symbol: params.symbol,
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            }));
+            mockGetBuyingPower.mockResolvedValue(1000); // between 1x (750) and 2x (1500)
+            mockExecuteBuyOrder.mockResolvedValue({
+                orderId: 'ord-1',
+                status: 'filled',
+                avgFilledPrice: 150,
+                filledQuantity: 5,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // First buy placed, second skipped for insufficient cash
+            expect(mockExecuteBuyOrder).toHaveBeenCalledTimes(1);
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'buy',
+                score: 80,
+            });
+            expect(body.decisions).toContainEqual({
+                symbol: 'TSLA',
+                action: 'skipped_insufficient_cash',
+                score: 80,
+            });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Fractional sellable: clamp-before-reject must not place a 0-qty order.
+    // -----------------------------------------------------------------------
+
+    describe('fractional sellable clamp (watchlist sell)', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    return Promise.resolve(null);
+                },
+            );
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+        });
+
+        it('fractional sellable 0.4 → skipped_not_sellable, no order (not an error row)', async () => {
+            mockGetSellableQuantity.mockResolvedValue(0.4); // floor → 0
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'skipped_not_sellable',
+                score: 20,
+            });
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+            expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+            expect(body.decisions).not.toContainEqual(
+                expect.objectContaining({ action: 'error' }),
+            );
+        });
+    });
 });

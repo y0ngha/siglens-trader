@@ -231,6 +231,10 @@ export default async function handler(req: Request): Promise<Response> {
         // null => guard disabled (fetch failed or dry_run) — fall back to prior behavior.
         const usdBuyingPower =
             tradingMode !== 'dry_run' ? await getBuyingPower('USD').catch(() => null) : null;
+        // Running balance: optimistically decremented after each live buy so multiple
+        // buys in one run don't all authorize against the same un-decremented cash.
+        // null => guard disabled. Reconcile/next-run corrects against broker reality.
+        let remainingBuyingPower: number | null = usdBuyingPower;
 
         // Fetch pending submitted orders once for sell-guard checks
         const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
@@ -243,7 +247,7 @@ export default async function handler(req: Request): Promise<Response> {
                     (o) =>
                         o.symbol === position.symbol &&
                         o.side === 'sell' &&
-                        o.status === 'submitted',
+                        ['submitted', 'pending', 'partial'].includes(o.status),
                 );
                 if (hasPendingSell) {
                     decisions.push({
@@ -374,7 +378,10 @@ export default async function handler(req: Request): Promise<Response> {
                             () => null,
                         );
                         if (sellable != null) {
-                            if (sellable <= 0) {
+                            // Clamp first, then reject — a fractional sellable (0<x<1)
+                            // floors to 0 and must not produce a 0-qty order.
+                            const clamped = Math.min(sellQty, Math.floor(sellable));
+                            if (clamped <= 0) {
                                 decisions.push({
                                     symbol: position.symbol,
                                     action: 'skipped_not_sellable',
@@ -383,9 +390,7 @@ export default async function handler(req: Request): Promise<Response> {
                                 decisionPushed = true;
                                 break;
                             }
-                            if (sellQty > sellable) {
-                                sellQty = Math.floor(sellable);
-                            }
+                            sellQty = clamped;
                         }
                         const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
                         const clientOrderId = crypto.randomUUID();
@@ -748,12 +753,32 @@ export default async function handler(req: Request): Promise<Response> {
                         (o) =>
                             o.symbol === item.symbol &&
                             o.side === 'sell' &&
-                            o.status === 'submitted',
+                            ['submitted', 'pending', 'partial'].includes(o.status),
                     );
                     if (hasPendingSellWatch) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'pending_sell_in_progress',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+                }
+
+                // Pending buy guard: skip buy/average_in if an in-flight buy order exists
+                // for this symbol. With per-run random clientOrderIds, re-submitting an
+                // unfilled (pending/partial/submitted) buy would double-submit.
+                if (decision.action === 'buy' || decision.action === 'average_in') {
+                    const hasPendingBuy = pendingSubmittedOrders.some(
+                        (o) =>
+                            o.symbol === item.symbol &&
+                            o.side === 'buy' &&
+                            ['submitted', 'pending', 'partial'].includes(o.status),
+                    );
+                    if (hasPendingBuy) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'pending_order_in_progress',
                             score: decision.score,
                         });
                         continue;
@@ -986,11 +1011,12 @@ export default async function handler(req: Request): Promise<Response> {
                             decision.action === 'buy' || decision.action === 'average_in';
                         let autoQuantity = decision.quantity;
 
-                        // Buying-power guard (BUY/average_in): skip if cost exceeds USD cash.
+                        // Buying-power guard (BUY/average_in): skip if cost exceeds remaining
+                        // USD cash (running balance, decremented after each live buy this run).
                         if (
                             isBuyOrder &&
-                            usdBuyingPower != null &&
-                            currentPrice * autoQuantity > usdBuyingPower
+                            remainingBuyingPower != null &&
+                            currentPrice * autoQuantity > remainingBuyingPower
                         ) {
                             decisions.push({
                                 symbol: item.symbol,
@@ -1007,7 +1033,10 @@ export default async function handler(req: Request): Promise<Response> {
                                 () => null,
                             );
                             if (sellable != null) {
-                                if (sellable <= 0) {
+                                // Clamp first, then reject — a fractional sellable (0<x<1)
+                                // floors to 0 and must not produce a 0-qty order.
+                                const clamped = Math.min(autoQuantity, Math.floor(sellable));
+                                if (clamped <= 0) {
                                     decisions.push({
                                         symbol: item.symbol,
                                         action: 'skipped_not_sellable',
@@ -1016,9 +1045,7 @@ export default async function handler(req: Request): Promise<Response> {
                                     decisionPushed = true;
                                     break;
                                 }
-                                if (autoQuantity > sellable) {
-                                    autoQuantity = Math.floor(sellable);
-                                }
+                                autoQuantity = clamped;
                             }
                         }
 
@@ -1067,6 +1094,12 @@ export default async function handler(req: Request): Promise<Response> {
                                 orderResult.rejectReason ?? '거부 사유 없음',
                             ).catch((err) => console.error('[email] send failed:', err));
                             break;
+                        }
+                        // Order is live (filled/partial/pending) and will consume cash —
+                        // optimistically decrement the running balance so subsequent buys
+                        // this run see reduced cash. Uses request qty (filled qty unknown for pending).
+                        if (isBuyOrder && remainingBuyingPower != null) {
+                            remainingBuyingPower -= currentPrice * autoQuantity;
                         }
                         // pending/partial: NO trade, NO position mutation, NO exposure change.
                         // Reconcile owns final booking (single source of truth → no double-count).

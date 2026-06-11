@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { inArray } from 'drizzle-orm';
+import { orderTracking } from '../schema';
 import {
     getEnabledWatchlist,
     getAllWatchlist,
@@ -999,10 +1001,11 @@ describe('Order tracking queries', () => {
     });
 
     describe('getPendingSubmittedOrders', () => {
-        it('returns orders with status=submitted ordered by submittedAt', async () => {
+        it('returns all in-flight orders (submitted/pending/partial) ordered by submittedAt', async () => {
             const mockRows = [
                 { id: 1, status: 'submitted', symbol: 'AAPL' },
-                { id: 2, status: 'submitted', symbol: 'TSLA' },
+                { id: 2, status: 'pending', symbol: 'TSLA' },
+                { id: 3, status: 'partial', symbol: 'MSFT' },
             ];
             const db = createMockDb(mockRows);
 
@@ -1010,6 +1013,13 @@ describe('Order tracking queries', () => {
 
             expect(db._chain.from).toHaveBeenCalled();
             expect(db._chain.where).toHaveBeenCalled();
+            // where() must be called with an inArray() over all unfilled-in-flight statuses
+            const expectedWhere = inArray(orderTracking.status, [
+                'submitted',
+                'pending',
+                'partial',
+            ]);
+            expect(db._chain.where).toHaveBeenCalledWith(expectedWhere);
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
         });
