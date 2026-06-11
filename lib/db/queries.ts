@@ -188,7 +188,7 @@ export async function reducePositionQuantity(
         WHERE id = ${id} AND status = 'open' AND quantity >= ${soldQuantity}
         RETURNING id
     `);
-    return ((result as { rowCount?: number }).rowCount ?? 0) > 0;
+    return ((result as { rowCount?: number } | null)?.rowCount ?? 0) > 0;
 }
 
 /**
