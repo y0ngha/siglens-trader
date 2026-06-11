@@ -24,9 +24,23 @@ vi.mock('../../../lib/lock', () => ({
 
 const mockGetPendingSubmittedOrders = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
+const mockGetOpenPositions = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
+    getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
+}));
+
+const mockGetOrder = vi.fn();
+vi.mock('../../../lib/trading/orders', () => ({
+    getOrder: (...args: unknown[]) => mockGetOrder(...args),
+}));
+
+const mockCancelOrder = vi.fn();
+const mockGetHoldings = vi.fn();
+vi.mock('../../../lib/trading/account', () => ({
+    cancelOrder: (...args: unknown[]) => mockCancelOrder(...args),
+    getHoldings: (...args: unknown[]) => mockGetHoldings(...args),
 }));
 
 const mockSendErrorEmail = vi.fn();
@@ -74,6 +88,38 @@ function setupDefaults() {
         openPositionsWithoutTrades: 0,
         alerts: [],
     });
+    mockGetOpenPositions.mockResolvedValue([]);
+    mockGetOrder.mockResolvedValue(null);
+    mockCancelOrder.mockResolvedValue(undefined);
+    mockGetHoldings.mockResolvedValue([]);
+}
+
+/** Order submitted 90 min ago (> 30 min timeout window). */
+function oldOrderWith(overrides: Record<string, unknown> = {}) {
+    return {
+        id: 1,
+        idempotencyKey: 'exec-abc-AAPL-buy',
+        symbol: 'AAPL',
+        side: 'buy',
+        quantity: 10,
+        tossOrderId: 'toss-1',
+        submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+        ...overrides,
+    };
+}
+
+/** Order submitted 10 min ago (within the 30 min window). */
+function recentOrderWith(overrides: Record<string, unknown> = {}) {
+    return {
+        id: 2,
+        idempotencyKey: 'exec-def-AAPL-buy',
+        symbol: 'AAPL',
+        side: 'buy',
+        quantity: 10,
+        tossOrderId: 'toss-2',
+        submittedAt: new Date('2026-05-24T14:20:00.000Z'),
+        ...overrides,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +410,306 @@ describe('reconcile cron handler', () => {
                 'exec-old-AAPL-buy',
                 expect.objectContaining({ status: 'timeout' }),
             );
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Broker resolution via getOrder
+    // -----------------------------------------------------------------------
+
+    describe('broker resolution', () => {
+        it('FILLED → marks tracking filled (so autoRecover books it), action resolved_filled', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 10,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetOrder).toHaveBeenCalledWith('toss-1');
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'filled',
+                filledPrice: 187.5,
+                resolvedAt: expect.any(Date),
+            });
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'resolved_filled' }]);
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+        });
+
+        it('REJECTED → marks tracking rejected', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'REJECTED',
+                filledQuantity: 0,
+                avgFilledPrice: null,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'rejected',
+                resolvedAt: expect.any(Date),
+            });
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'resolved_rejected' }]);
+        });
+
+        it('CANCELED with filledQuantity 0 → marks tracking canceled', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'CANCELED',
+                filledQuantity: 0,
+                avgFilledPrice: null,
+                canceledAt: '2026-05-24T13:05:00.000Z',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'canceled',
+                resolvedAt: expect.any(Date),
+            });
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'resolved_canceled' }]);
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+        });
+
+        it('CANCELED with filledQuantity > 0 → needs_review + email, NO auto-book', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ side: 'sell' })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'CANCELED',
+                filledQuantity: 4,
+                avgFilledPrice: 190.25,
+                canceledAt: '2026-05-24T13:05:00.000Z',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'needs_review',
+                resolvedAt: expect.any(Date),
+            });
+            // NOT marked 'filled' → autoRecover never books it.
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'filled' }),
+            );
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '부분체결 후 취소 — 수동 확인: AAPL',
+                expect.stringContaining('4주 부분체결 후 취소됨'),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
+        it('PARTIAL_FILLED within window → waiting_partial, no cancel, no booking', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([recentOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-2',
+                status: 'PARTIAL_FILLED',
+                filledQuantity: 3,
+                avgFilledPrice: 188.0,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 2, symbol: 'AAPL', action: 'waiting_partial' }]);
+        });
+
+        it('PARTIAL_FILLED past window → cancelOrder + needs_review + email', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ side: 'sell' })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'PARTIAL_FILLED',
+                filledQuantity: 6,
+                avgFilledPrice: 191.0,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockCancelOrder).toHaveBeenCalledWith('toss-1');
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'needs_review',
+                resolvedAt: expect.any(Date),
+            });
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '부분체결 타임아웃 — 수동 확인: AAPL',
+                expect.stringContaining('부분체결(6주 @ 191'),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
+        it('PENDING past window → cancelOrder + timeout + urgent email for sell', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ side: 'sell' })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'PENDING',
+                filledQuantity: 0,
+                avgFilledPrice: null,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockCancelOrder).toHaveBeenCalledWith('toss-1');
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'timeout',
+                resolvedAt: expect.any(Date),
+            });
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '[긴급] 매도 주문 타임아웃: AAPL',
+                expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+        });
+
+        it('PENDING within window → waiting, no cancel', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([recentOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-2',
+                status: 'PENDING',
+                filledQuantity: 0,
+                avgFilledPrice: null,
+                canceledAt: null,
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 2, symbol: 'AAPL', action: 'waiting' }]);
+        });
+
+        it('getOrder throws (null) → falls back to age-based timeout', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockRejectedValue(new Error('broker down'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'timeout',
+                resolvedAt: expect.any(Date),
+            });
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+        });
+
+        it('order with no tossOrderId past window → timeout (existing path), getOrder not called', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ tossOrderId: null })]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetOrder).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'timeout' }),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Holdings reconciliation
+    // -----------------------------------------------------------------------
+
+    describe('holdings reconciliation', () => {
+        it('alerts when DB position quantity differs from broker quantity', async () => {
+            mockGetOpenPositions.mockResolvedValue([{ symbol: 'AAPL', quantity: '10' }]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'AAPL',
+                    quantity: 7,
+                    avgPrice: 180,
+                    currentPrice: 190,
+                    pnl: 70,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '보유 정합성 불일치 (1건)',
+                expect.stringContaining('AAPL'),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('alerts when broker holds a symbol with no open DB position', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'TSLA',
+                    quantity: 5,
+                    avgPrice: 200,
+                    currentPrice: 210,
+                    pnl: 50,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '보유 정합성 불일치 (1건)',
+                expect.stringContaining('TSLA'),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('does not alert when holdings match within epsilon (fractional)', async () => {
+            mockGetOpenPositions.mockResolvedValue([{ symbol: 'AAPL', quantity: '10' }]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'AAPL',
+                    quantity: 10.005,
+                    avgPrice: 180,
+                    currentPrice: 190,
+                    pnl: 0,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(body.holdings).toEqual({ mismatchCount: 0 });
+        });
+
+        it('skips holdings reconciliation gracefully when getHoldings throws', async () => {
+            mockGetHoldings.mockRejectedValue(new Error('broker down'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetOpenPositions).not.toHaveBeenCalled();
+            expect(body.holdings).toEqual({ mismatchCount: 0 });
         });
     });
 });
