@@ -17,6 +17,7 @@ import {
 } from '../../lib/db/queries';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
 import { sendErrorEmail } from '../../lib/notification/email';
+import { realizedPnlForSell } from '../../lib/strategy/pnl';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
@@ -239,7 +240,11 @@ export default async function handler(req: Request): Promise<Response> {
                             reason: order.analysisSummary ?? '수동 승인',
                             mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
                             clientOrderId: bookingClientOrderId,
-                            realizedPnl: (filledPrice - Number(pos.avgPrice)) * actualQuantity,
+                            realizedPnl: realizedPnlForSell(
+                                filledPrice,
+                                Number(pos.avgPrice),
+                                actualQuantity,
+                            ),
                         });
                     });
                 } else {
@@ -256,7 +261,11 @@ export default async function handler(req: Request): Promise<Response> {
                             reason: `${order.analysisSummary ?? '수동 승인'} (부분 매도)`,
                             mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
                             clientOrderId: bookingClientOrderId,
-                            realizedPnl: (filledPrice - Number(pos.avgPrice)) * actualQuantity,
+                            realizedPnl: realizedPnlForSell(
+                                filledPrice,
+                                Number(pos.avgPrice),
+                                actualQuantity,
+                            ),
                         });
                     });
                 }

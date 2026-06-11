@@ -133,11 +133,12 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
             // preventing concurrent modifications.
             const existingPosition = await getOpenPositionBySymbol(db, order.symbol);
 
-            // realized PnL for sells that close/reduce a known long position
-            // (sellPrice − cost basis) × qty. Buys / no-position sells → undefined.
+            // realized PnL for sells that close/reduce a known long position.
+            // lib/db는 lib/strategy 임포트 금지 → realizedPnlForSell 공식 인라인 (센트 반올림).
+            // Buys / no-position sells → undefined.
             const recoveredRealizedPnl =
                 order.side === 'sell' && existingPosition
-                    ? (price - Number(existingPosition.avgPrice)) * quantity
+                    ? Math.round((price - Number(existingPosition.avgPrice)) * quantity * 100) / 100
                     : undefined;
 
             await db.transaction(async (tx) => {

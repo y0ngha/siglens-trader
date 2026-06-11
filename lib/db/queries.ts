@@ -289,17 +289,28 @@ export async function getTodayTradeCount(db: Db) {
  *
  * Deploy-day caveat: sell trades booked before the realized_pnl column was
  * populated carry null and are skipped — a negligible one-day edge.
+ *
+ * Uses the typed Drizzle select builder (not db.execute) to ensure a stable
+ * typed-array return shape regardless of the underlying driver. db.execute()
+ * return shape varies by driver (raw array vs {rows:[...]}), which caused
+ * rows[0] to be undefined → PnL silently always 0 → daily-loss breaker never
+ * trips.
  */
 export async function getTodayRealizedPnl(db: Db): Promise<number> {
-    const rows = await db.execute(sql`
-        SELECT COALESCE(SUM(realized_pnl::numeric), 0) as pnl
-        FROM trades
-        WHERE side = 'sell'
-          AND mode NOT IN ('skipped', 'dry_run')
-          AND realized_pnl IS NOT NULL
-          AND executed_at AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
-    `);
-    return Number((rows as unknown as Array<{ pnl: number }>)[0]?.pnl ?? 0);
+    const rows = await db
+        .select({
+            pnl: sql<number>`COALESCE(SUM(${trades.realizedPnl}::numeric), 0)`,
+        })
+        .from(trades)
+        .where(
+            and(
+                eq(trades.side, 'sell'),
+                sql`${trades.mode} NOT IN ('skipped', 'dry_run')`,
+                sql`${trades.realizedPnl} IS NOT NULL`,
+                sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
+            ),
+        );
+    return Number(rows[0]?.pnl ?? 0);
 }
 
 // ---------------------------------------------------------------------------

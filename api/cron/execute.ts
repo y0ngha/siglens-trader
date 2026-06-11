@@ -56,6 +56,7 @@ import {
     safeArray,
     safeActionRecommendation,
 } from '../../lib/strategy/safe-extract';
+import { realizedPnlForSell } from '../../lib/strategy/pnl';
 
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
@@ -330,9 +331,11 @@ export default async function handler(req: Request): Promise<Response> {
                                     reason: evaluation.reason,
                                     mode: 'dry_run',
                                     cronRunId,
-                                    realizedPnl:
-                                        (currentPrice - Number(position.avgPrice)) *
+                                    realizedPnl: realizedPnlForSell(
+                                        currentPrice,
+                                        Number(position.avgPrice),
                                         position.quantity,
+                                    ),
                                 });
                             });
                             currentExposure -= currentPrice * position.quantity;
@@ -530,9 +533,11 @@ export default async function handler(req: Request): Promise<Response> {
                                     mode: 'auto',
                                     cronRunId,
                                     clientOrderId,
-                                    realizedPnl:
-                                        (filledSellPrice - Number(position.avgPrice)) *
+                                    realizedPnl: realizedPnlForSell(
+                                        filledSellPrice,
+                                        Number(position.avgPrice),
                                         actualExitQty,
+                                    ),
                                 });
                                 // ATOMIC: mark filled inside the same tx so 'filled' never
                                 // exists without its trade (double-book race guard).
@@ -928,9 +933,11 @@ export default async function handler(req: Request): Promise<Response> {
                                             reason: decision.reason,
                                             mode: 'dry_run',
                                             cronRunId,
-                                            realizedPnl:
-                                                (currentPrice - Number(existingSellPos.avgPrice)) *
+                                            realizedPnl: realizedPnlForSell(
+                                                currentPrice,
+                                                Number(existingSellPos.avgPrice),
                                                 decision.quantity,
+                                            ),
                                         });
                                     });
                                     currentExposure -= currentPrice * decision.quantity;
@@ -1244,9 +1251,11 @@ export default async function handler(req: Request): Promise<Response> {
                                             mode: 'auto',
                                             cronRunId,
                                             clientOrderId,
-                                            realizedPnl:
-                                                (filledPrice - Number(existingSellPos.avgPrice)) *
+                                            realizedPnl: realizedPnlForSell(
+                                                filledPrice,
+                                                Number(existingSellPos.avgPrice),
                                                 actualQuantity,
+                                            ),
                                         });
                                         // ATOMIC: mark filled inside the same tx.
                                         await updateOrderTracking(tx, idempotencyKey, {

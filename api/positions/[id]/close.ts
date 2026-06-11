@@ -1,6 +1,7 @@
 import { isAuthenticated } from '../../_lib/auth';
 import { getDb } from '../../_lib/db';
 import { closePosition, getOpenPositions, insertTrade } from '../../../lib/db/queries';
+import { realizedPnlForSell } from '../../../lib/strategy/pnl';
 
 class AlreadyClosedError extends Error {
     constructor() {
@@ -56,7 +57,11 @@ export default async function handler(req: Request): Promise<Response> {
                 executedAt: new Date(),
                 reason: '수동 청산',
                 mode: 'semi_auto',
-                realizedPnl: (closePrice - Number(position.avgPrice)) * position.quantity,
+                realizedPnl: realizedPnlForSell(
+                    closePrice,
+                    Number(position.avgPrice),
+                    position.quantity,
+                ),
             });
         });
     } catch (err) {
