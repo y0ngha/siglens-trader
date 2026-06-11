@@ -426,6 +426,7 @@ export async function createOrderTracking(
         side: string;
         quantity: number;
         tossOrderId?: string;
+        clientOrderId?: string;
         status: string;
         cronRunId?: string;
     },
@@ -438,6 +439,7 @@ export async function createOrderTracking(
             side: params.side,
             quantity: params.quantity,
             tossOrderId: params.tossOrderId,
+            clientOrderId: params.clientOrderId,
             status: params.status,
             cronRunId: params.cronRunId,
         })

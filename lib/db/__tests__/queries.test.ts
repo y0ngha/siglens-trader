@@ -910,6 +910,26 @@ describe('Order tracking queries', () => {
                 }),
             );
         });
+
+        it('includes clientOrderId when provided', async () => {
+            const db = createMockDb([{ id: 1 }]);
+
+            await createOrderTracking(db as unknown as Db, {
+                idempotencyKey: 'exec-abc-AAPL-buy',
+                symbol: 'AAPL',
+                side: 'buy',
+                quantity: 3,
+                clientOrderId: 'uuid-client-order-id',
+                status: 'submitted',
+                cronRunId: 'exec-abc',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    clientOrderId: 'uuid-client-order-id',
+                }),
+            );
+        });
     });
 
     describe('updateOrderTracking', () => {
