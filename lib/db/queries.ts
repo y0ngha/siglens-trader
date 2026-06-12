@@ -496,9 +496,11 @@ export async function getPendingSubmittedOrders(db: Db) {
 // Cron audit log
 // ---------------------------------------------------------------------------
 
+export type CronType = 'technical' | 'news' | 'options' | 'fundamental' | 'execute' | 'reconcile';
+
 export async function startCronRun(
     db: Db,
-    params: { runId: string; cronType: string; startedAt: Date },
+    params: { runId: string; cronType: CronType; startedAt: Date },
 ) {
     return db
         .insert(cronRuns)
@@ -511,27 +513,32 @@ export async function startCronRun(
         .onConflictDoNothing();
 }
 
-export interface CronRunFinish {
-    status: 'completed' | 'skipped' | 'error';
-    outcome?: string;
-    summary?: unknown;
-    error?: string;
-    durationMs?: number;
-    finishedAt: Date;
-}
+export type CronRunFinish =
+    | {
+          status: 'completed';
+          outcome: string;
+          summary?: unknown;
+          durationMs?: number;
+          finishedAt: Date;
+      }
+    | { status: 'skipped'; outcome: string; durationMs?: number; finishedAt: Date }
+    | { status: 'error'; error: string; durationMs?: number; finishedAt: Date };
 
 export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
-    return db
-        .update(cronRuns)
-        .set({
-            status: p.status,
-            outcome: p.outcome,
-            summary: p.summary as Record<string, unknown> | undefined,
-            error: p.error,
-            durationMs: p.durationMs,
-            finishedAt: p.finishedAt,
-        })
-        .where(eq(cronRuns.runId, runId));
+    const set: Partial<typeof cronRuns.$inferInsert> = {
+        status: p.status,
+        durationMs: p.durationMs,
+        finishedAt: p.finishedAt,
+    };
+    if (p.status === 'error') {
+        set.error = p.error;
+    } else {
+        set.outcome = p.outcome;
+        if (p.status === 'completed' && p.summary !== undefined) {
+            set.summary = p.summary as (typeof cronRuns.$inferInsert)['summary'];
+        }
+    }
+    return db.update(cronRuns).set(set).where(eq(cronRuns.runId, runId));
 }
 
 export interface CronDecisionInput {
@@ -546,7 +553,7 @@ export interface CronDecisionInput {
 export async function insertCronDecisions(
     db: Db,
     runId: string,
-    cronType: string,
+    cronType: CronType,
     decisions: CronDecisionInput[],
 ) {
     if (decisions.length === 0) return;
@@ -557,9 +564,9 @@ export async function insertCronDecisions(
             symbol: d.symbol,
             action: d.action,
             executed: d.executed ?? false,
-            score: d.score != null ? String(d.score) : null,
+            score: d.score != null && Number.isFinite(d.score) ? String(d.score) : null,
             reason: d.reason,
-            detail: d.detail as Record<string, unknown> | undefined,
+            detail: d.detail,
         })),
     );
 }

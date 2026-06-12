@@ -1255,15 +1255,27 @@ describe('Cron audit log queries', () => {
             ]);
         });
 
-        it('converts score number to string', async () => {
+        it('converts score=0 to "0" (falsy-zero boundary)', async () => {
             const db = createMockDb(undefined);
 
             await insertCronDecisions(db as unknown as Db, 'run-technical-abc', 'technical', [
-                { action: 'analyze', score: 75 },
+                { action: 'analyze', score: 0 },
             ]);
 
             expect(db._chain.values).toHaveBeenCalledWith([
-                expect.objectContaining({ score: '75' }),
+                expect.objectContaining({ score: '0' }),
+            ]);
+        });
+
+        it('maps score=NaN to null (NaN-defense guard)', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-technical-abc', 'technical', [
+                { action: 'analyze', score: NaN },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ score: null }),
             ]);
         });
 
