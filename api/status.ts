@@ -2,7 +2,7 @@ import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
 import { getOpenPositions, getConfigValue, getTodayTradeCount } from '../lib/db/queries.js';
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'GET') return new Response(null, { status: 405 });
 
@@ -25,3 +25,5 @@ export default async function handler(req: Request): Promise<Response> {
         maxTradesPerDay: maxTradesPerDay ?? 20,
     });
 }
+
+export const GET = handler;

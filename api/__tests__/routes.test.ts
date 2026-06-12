@@ -122,7 +122,7 @@ describe('GET /api/status', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../status')).default;
+        handler = (await import('../status')).GET;
     });
 
     it('rejects non-GET methods', async () => {
@@ -166,7 +166,7 @@ describe('GET /api/positions', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../positions')).default;
+        handler = (await import('../positions')).GET;
     });
 
     it('rejects non-GET methods', async () => {
@@ -188,7 +188,7 @@ describe('GET /api/trades', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../trades')).default;
+        handler = (await import('../trades')).GET;
     });
 
     it('rejects unsupported methods', async () => {
@@ -211,7 +211,7 @@ describe('POST /api/trades (dismiss)', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../trades')).default;
+        handler = (await import('../trades')).GET;
     });
 
     it('dismisses a trade by id', async () => {
@@ -253,7 +253,7 @@ describe('GET /api/analysis', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../analysis')).default;
+        handler = (await import('../analysis')).GET;
     });
 
     it('rejects non-GET methods', async () => {
@@ -283,7 +283,7 @@ describe('GET /api/config', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../config')).default;
+        handler = (await import('../config')).GET;
     });
 
     it('rejects unsupported methods', async () => {
@@ -314,7 +314,7 @@ describe('POST /api/config', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../config')).default;
+        handler = (await import('../config')).GET;
     });
 
     it('rejects invalid JSON', async () => {
@@ -744,7 +744,7 @@ describe('GET /api/pending', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../pending')).default;
+        handler = (await import('../pending')).GET;
     });
 
     it('rejects non-GET methods', async () => {
@@ -766,7 +766,7 @@ describe('POST /api/approve/[id]', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../approve/[id]')).default;
+        handler = (await import('../approve/[id]')).POST;
     });
 
     it('rejects non-POST methods', async () => {
@@ -1220,7 +1220,7 @@ describe('GET /api/health', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../health')).default;
+        handler = (await import('../health')).GET;
     });
 
     it('returns 200 with status ok', async () => {
@@ -1247,7 +1247,7 @@ describe('POST /api/config — analysis type allowlist', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../config')).default;
+        handler = (await import('../config')).GET;
     });
 
     it('rejects unknown analysis type', async () => {
@@ -1288,7 +1288,7 @@ describe('POST /api/config — notification channel allowlist', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../config')).default;
+        handler = (await import('../config')).GET;
     });
 
     it('rejects unknown notification channel', async () => {

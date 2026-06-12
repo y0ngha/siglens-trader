@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import handler from '../execute';
+import { GET as handler } from '../execute';
 
 // ---------------------------------------------------------------------------
 // Mocks

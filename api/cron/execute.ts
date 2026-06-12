@@ -64,7 +64,7 @@ import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
         return new Response('Unauthorized', { status: 401 });
     }
@@ -1369,3 +1369,7 @@ export default async function handler(req: Request): Promise<Response> {
         if (lockAcquired) await releaseLock(LOCK_KEY);
     }
 }
+
+// Vercel Node runtime: expose Web `Request`/`Response` handlers via named HTTP-method
+// exports. A bare `export default` would be treated as the legacy `(req, res)` handler.
+export const GET = handler;

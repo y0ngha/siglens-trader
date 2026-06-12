@@ -1,7 +1,7 @@
 import { getDb } from './_lib/db.js';
 import { checkConsistency } from '../lib/db/recovery.js';
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (req.method !== 'GET') {
         return new Response(null, { status: 405 });
     }
@@ -30,3 +30,9 @@ export default async function handler(req: Request): Promise<Response> {
     // No auth required — this is for uptime monitoring
     return Response.json(base);
 }
+
+// Vercel Node runtime: named HTTP-method exports use the Web `Request`/`Response`
+// signature. A bare `export default` is treated as the legacy `(req, res)` handler
+// (req.headers.get is undefined, returned Response ignored), and its presence forces
+// legacy mode even when named exports exist — so we expose ONLY named methods.
+export const GET = handler;

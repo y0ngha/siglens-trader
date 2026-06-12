@@ -5,7 +5,7 @@ const FMP_BASE_URL = 'https://financialmodelingprep.com/stable';
 const FMP_SEARCH_LIMIT = 10;
 const US_EXCHANGES = new Set(['NYSE', 'NASDAQ', 'AMEX', 'NYSEArca']);
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'GET') return new Response(null, { status: 405 });
 
@@ -57,3 +57,7 @@ async function fetchFmp(path: string): Promise<Array<Record<string, string>>> {
         return [];
     }
 }
+
+// Vercel Node runtime: expose Web `Request`/`Response` handlers via named HTTP-method
+// exports. A bare `export default` would be treated as the legacy `(req, res)` handler.
+export const GET = handler;

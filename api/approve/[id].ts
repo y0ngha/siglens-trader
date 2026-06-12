@@ -19,7 +19,7 @@ import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { sendErrorEmail } from '../../lib/notification/email.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
@@ -311,3 +311,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     return Response.json({ success: true, action, id });
 }
+
+// Vercel Node runtime: expose Web `Request`/`Response` handlers via named HTTP-method
+// exports. A bare `export default` would be treated as the legacy `(req, res)` handler.
+export const POST = handler;

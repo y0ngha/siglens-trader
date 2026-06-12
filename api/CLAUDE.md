@@ -36,14 +36,24 @@ api/
 
 ## Handler Pattern
 
-All handlers use standard Web API `Request`/`Response`:
+Handlers use the standard Web `Request`/`Response` API, exported as **named HTTP-method
+functions** (`GET`, `POST`, …). Do NOT use `export default` — Vercel's Node runtime treats a
+default export as the legacy `(req, res)` Node signature (so `req.headers.get` is undefined and
+a returned `Response` is silently ignored → runtime 500). Named method exports are what switches
+Vercel into Web `Request`/`Response` mode.
+
 ```typescript
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
+    // req.method dispatch happens inside; the same handler can back multiple methods
     return Response.json(data);
 }
+export const GET = handler;   // add `export const POST = handler;` for multi-method routes
 ```
 
-Do NOT use `@vercel/functions` `VercelRequest`/`VercelResponse` types.
+Single-purpose routes can also export the method function directly
+(`export async function GET(req: Request) { ... }`). Do NOT use `@vercel/functions`
+`VercelRequest`/`VercelResponse` types. Unit tests import the method export
+(`(await import('../status')).GET`), not a default.
 
 ## Authentication
 

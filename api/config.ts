@@ -14,7 +14,7 @@ import {
     updateNotificationConfig,
 } from '../lib/db/queries.js';
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
 
     const db = getDb();
@@ -288,3 +288,8 @@ export default async function handler(req: Request): Promise<Response> {
 
     return new Response(null, { status: 405 });
 }
+
+// Vercel Node runtime: expose Web `Request`/`Response` handlers via named HTTP-method
+// exports. A bare `export default` would be treated as the legacy `(req, res)` handler.
+export const GET = handler;
+export const POST = handler;

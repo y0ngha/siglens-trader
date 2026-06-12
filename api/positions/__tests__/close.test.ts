@@ -53,7 +53,7 @@ describe('POST /api/positions/[id]/close', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
-        handler = (await import('../[id]/close')).default;
+        handler = (await import('../[id]/close')).POST;
     });
 
     it('rejects non-POST methods', async () => {

@@ -17,7 +17,7 @@ describe('POST /api/analysis/trigger', () => {
 
     beforeEach(async () => {
         vi.resetAllMocks();
-        handler = (await import('../trigger')).default;
+        handler = (await import('../trigger')).POST;
     });
 
     it('rejects non-POST methods', async () => {
