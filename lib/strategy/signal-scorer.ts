@@ -1,4 +1,4 @@
-import type { ScoreWeights, SignalDirection, SignalScore } from './types';
+import type { ScoreWeights, SignalDirection, SignalScore } from './types.js';
 
 export interface ActionRecommendation {
     action: 'buy' | 'hold' | 'wait';

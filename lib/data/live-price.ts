@@ -1,4 +1,4 @@
-import { fmpGet } from './fmp-http';
+import { fmpGet } from './fmp-http.js';
 
 interface FmpQuote {
     price: number;

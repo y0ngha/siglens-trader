@@ -1,4 +1,4 @@
-import { createDb } from '../../lib/db';
+import { createDb } from '../../lib/db/index.js';
 
 let _db: ReturnType<typeof createDb> | null = null;
 

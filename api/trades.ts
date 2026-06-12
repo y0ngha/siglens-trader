@@ -1,6 +1,6 @@
-import { getDb } from './_lib/db';
-import { isAuthenticated } from './_lib/auth';
-import { getRecentTrades, dismissTrade } from '../lib/db/queries';
+import { getDb } from './_lib/db.js';
+import { isAuthenticated } from './_lib/auth.js';
+import { getRecentTrades, dismissTrade } from '../lib/db/queries.js';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });

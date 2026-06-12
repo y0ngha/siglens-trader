@@ -1,7 +1,7 @@
-import { isAuthenticated } from '../../_lib/auth';
-import { getDb } from '../../_lib/db';
-import { closePosition, getOpenPositions, insertTrade } from '../../../lib/db/queries';
-import { realizedPnlForSell } from '../../../lib/strategy/pnl';
+import { isAuthenticated } from '../../_lib/auth.js';
+import { getDb } from '../../_lib/db.js';
+import { closePosition, getOpenPositions, insertTrade } from '../../../lib/db/queries.js';
+import { realizedPnlForSell } from '../../../lib/strategy/pnl.js';
 
 class AlreadyClosedError extends Error {
     constructor() {
@@ -14,7 +14,7 @@ export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
-    const url = new URL(req.url);
+    const url = new URL(req.url, 'http://localhost');
     const segments = url.pathname.split('/');
     // URL: /api/positions/:id/close -> segments = ['', 'api', 'positions', ':id', 'close']
     const id = Number(segments[segments.length - 2]);

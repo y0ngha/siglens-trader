@@ -1,7 +1,7 @@
 import { submitOptionsAnalysis, pollOptionsAnalysis } from '@y0ngha/siglens-core';
-import { fetchOptionsSnapshot } from '@lib/data/yahoo-options';
-import { pollUntilDone } from './poll-until-done';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types';
+import { fetchOptionsSnapshot } from '../data/yahoo-options.js';
+import { pollUntilDone } from './poll-until-done.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 export async function runOptionsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
     try {

@@ -1,7 +1,7 @@
-import { acquireLock, releaseLock } from '../lock';
+import { acquireLock, releaseLock } from '../lock.js';
 import { Redis } from '@upstash/redis';
-import type { OAuth2TokenResponse } from './types';
-import { delay, getTradingRedis } from './_util';
+import type { OAuth2TokenResponse } from './types.js';
+import { delay, getTradingRedis } from './_util.js';
 
 const TOKEN_URL = 'https://openapi.tossinvest.com/oauth2/token';
 const REDIS_TOKEN_KEY = 'toss:oauth:token';

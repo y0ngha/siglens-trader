@@ -1,12 +1,12 @@
-import { getDb } from './_lib/db';
-import { checkConsistency } from '../lib/db/recovery';
+import { getDb } from './_lib/db.js';
+import { checkConsistency } from '../lib/db/recovery.js';
 
 export default async function handler(req: Request): Promise<Response> {
     if (req.method !== 'GET') {
         return new Response(null, { status: 405 });
     }
 
-    const url = new URL(req.url);
+    const url = new URL(req.url, 'http://localhost');
     const base = {
         status: 'ok',
         timestamp: new Date().toISOString(),

@@ -1,12 +1,12 @@
-import { getDb } from './_lib/db';
-import { isAuthenticated } from './_lib/auth';
-import { getLatestAnalysisResults } from '../lib/db/queries';
+import { getDb } from './_lib/db.js';
+import { isAuthenticated } from './_lib/auth.js';
+import { getLatestAnalysisResults } from '../lib/db/queries.js';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'GET') return new Response(null, { status: 405 });
 
-    const url = new URL(req.url);
+    const url = new URL(req.url, 'http://localhost');
     const symbol = url.searchParams.get('symbol');
 
     if (!symbol) {

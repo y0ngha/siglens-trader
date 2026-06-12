@@ -9,7 +9,7 @@ import {
     trades,
     analysisResults,
     pendingOrders,
-} from './schema';
+} from './schema.js';
 
 export async function seed() {
     if (!process.env.DATABASE_URL) {

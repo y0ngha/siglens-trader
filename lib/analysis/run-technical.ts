@@ -1,7 +1,7 @@
 import { submitAnalysis, pollAnalysis } from '@y0ngha/siglens-core';
-import { getMarketDataProvider } from '@lib/data/fmp-market-data-provider';
-import { pollUntilDone } from './poll-until-done';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types';
+import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
+import { pollUntilDone } from './poll-until-done.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 export async function runTechnicalAnalysis(
     options: RunAnalysisOptions,

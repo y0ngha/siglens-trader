@@ -1,9 +1,9 @@
 import { submitNewsAnalysis, pollNewsAnalysis } from '@y0ngha/siglens-core';
 import type { EnrichedNewsItem, EarningsCalendarItem } from '@y0ngha/siglens-core';
-import { FmpNewsClient } from '@lib/data/fmp-news';
-import { FmpFundamentalClient } from '@lib/data/fmp-fundamental';
-import { pollUntilDone } from './poll-until-done';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types';
+import { FmpNewsClient } from '../data/fmp-news.js';
+import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
+import { pollUntilDone } from './poll-until-done.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 const newsClient = new FmpNewsClient();
 const fundamentalClient = new FmpFundamentalClient();

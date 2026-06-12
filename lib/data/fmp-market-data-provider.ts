@@ -5,7 +5,7 @@ import type {
     MarketQuote,
     Timeframe,
 } from '@y0ngha/siglens-core';
-import { fmpGet } from './fmp-http';
+import { fmpGet } from './fmp-http.js';
 
 const MS_PER_SECOND = 1000;
 const ISO_DATE_PREFIX_LENGTH = 10;

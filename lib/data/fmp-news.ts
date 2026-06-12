@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import type { EarningsReport, NewsItem, NewsTimeRange } from '@y0ngha/siglens-core';
-import { fmpGet } from './fmp-http';
-import type { RawFmpEarningsReport, RawFmpNews } from './fmp-types';
+import { fmpGet } from './fmp-http.js';
+import type { RawFmpEarningsReport, RawFmpNews } from './fmp-types.js';
 
 const MS_PER_HOUR = 3_600_000;
 

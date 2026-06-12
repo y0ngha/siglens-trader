@@ -1,7 +1,7 @@
 import { Pool, neonConfig } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-serverless';
 import ws from 'ws';
-import * as schema from './schema';
+import * as schema from './schema.js';
 
 // neon-serverless uses WebSockets for the full wire protocol (enables interactive
 // transactions, unlike neon-http). Provide the ws constructor for Node runtimes.

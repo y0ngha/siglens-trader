@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
-import type { Db } from './index';
-import { orderTracking, trades } from './schema';
+import type { Db } from './index.js';
+import { orderTracking, trades } from './schema.js';
 import {
     insertTrade,
     openPosition,
@@ -9,7 +9,7 @@ import {
     averageIntoPosition,
     getOpenPositionBySymbol,
     updateOrderTracking,
-} from './queries';
+} from './queries.js';
 
 export interface RecoveryReport {
     filledOrdersWithoutTrades: number;

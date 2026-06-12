@@ -1,5 +1,5 @@
 import { readFmpConfig } from '@y0ngha/siglens-core';
-import { isAuthenticated } from './_lib/auth';
+import { isAuthenticated } from './_lib/auth.js';
 
 const FMP_BASE_URL = 'https://financialmodelingprep.com/stable';
 const FMP_SEARCH_LIMIT = 10;
@@ -9,7 +9,7 @@ export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'GET') return new Response(null, { status: 405 });
 
-    const url = new URL(req.url);
+    const url = new URL(req.url, 'http://localhost');
     const query = url.searchParams.get('q');
     if (!query || query.length < 1) {
         return Response.json([]);

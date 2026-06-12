@@ -1,5 +1,5 @@
-import { getAccessToken, forceRefreshToken } from './token';
-import { delay, getTradingRedis } from './_util';
+import { getAccessToken, forceRefreshToken } from './token.js';
+import { delay, getTradingRedis } from './_util.js';
 
 const BASE_URL = 'https://openapi.tossinvest.com';
 const FETCH_TIMEOUT_MS = 10_000;

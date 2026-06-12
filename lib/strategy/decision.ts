@@ -1,4 +1,4 @@
-import type { SignalScore, TradingSignal } from './types';
+import type { SignalScore, TradingSignal } from './types.js';
 
 export interface TradeDecision {
     action: TradingSignal;

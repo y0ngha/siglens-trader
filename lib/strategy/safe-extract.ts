@@ -1,4 +1,4 @@
-import { isFinitePositive } from '../validation';
+import { isFinitePositive } from '../validation.js';
 
 /**
  * Safe extraction helpers for untyped AI analysis results.

@@ -1,6 +1,6 @@
-import { tossFetch } from './client';
-import { parseDecimal } from '../validation';
-import type { TossHolding } from './types';
+import { tossFetch } from './client.js';
+import { parseDecimal } from '../validation.js';
+import type { TossHolding } from './types.js';
 
 interface HoldingsItemRaw {
     symbol: string;

@@ -1,13 +1,13 @@
-import { tossFetch, TossApiError } from './client';
-import { parseDecimal } from '../validation';
-import { delay } from './_util';
+import { tossFetch, TossApiError } from './client.js';
+import { parseDecimal } from '../validation.js';
+import { delay } from './_util.js';
 import type {
     IssueOrderRequest,
     OrderOutcome,
     OrderDetail,
     OrderSide,
     TossOrderStatus,
-} from './types';
+} from './types.js';
 
 const POLL_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 1500;

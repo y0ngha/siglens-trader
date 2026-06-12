@@ -1,13 +1,13 @@
-import { verifyCronSecret } from '../_lib/cron-auth';
-import { getDb } from '../_lib/db';
+import { verifyCronSecret } from '../_lib/cron-auth.js';
+import { getDb } from '../_lib/db.js';
 import {
     getEnabledWatchlist,
     getAnalysisConfig,
     getConfigValue,
     saveAnalysisResult,
-} from '../../lib/db/queries';
-import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types';
-import { acquireLock, releaseLock } from '../../lib/lock';
+} from '../../lib/db/queries.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types.js';
+import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;

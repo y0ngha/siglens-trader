@@ -1,16 +1,16 @@
-import { verifyCronSecret } from '../_lib/cron-auth';
-import { getDb } from '../_lib/db';
-import { acquireLock, releaseLock } from '../../lib/lock';
+import { verifyCronSecret } from '../_lib/cron-auth.js';
+import { getDb } from '../_lib/db.js';
+import { acquireLock, releaseLock } from '../../lib/lock.js';
 import {
     getPendingSubmittedOrders,
     updateOrderTracking,
     getOpenPositions,
     getConfigValue,
-} from '../../lib/db/queries';
-import { sendErrorEmail } from '../../lib/notification/email';
-import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery';
-import { getOrder } from '../../lib/trading/orders';
-import { cancelOrder, getHoldings } from '../../lib/trading/account';
+} from '../../lib/db/queries.js';
+import { sendErrorEmail } from '../../lib/notification/email.js';
+import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
+import { getOrder } from '../../lib/trading/orders.js';
+import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
 
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;

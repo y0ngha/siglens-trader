@@ -1,4 +1,4 @@
-import { fmpGet } from './fmp-http';
+import { fmpGet } from './fmp-http.js';
 import type {
     RawFmpAnalystEstimate,
     RawFmpCashFlowStatement,
@@ -14,7 +14,7 @@ import type {
     RawFmpRatiosTtm,
     RawFmpSectorPerformance,
     RawFmpStockPeer,
-} from './fmp-types';
+} from './fmp-types.js';
 import type {
     EarningsReport,
     FundamentalAnalystEstimateInput,

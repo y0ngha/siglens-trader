@@ -10,7 +10,7 @@ import {
     analysisModelConfig,
     notificationConfig,
     config,
-} from './schema';
+} from './schema.js';
 
 async function confirm(message: string): Promise<boolean> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

@@ -1,11 +1,11 @@
 import { submitOverallAnalysis, pollOverallAnalysis } from '@y0ngha/siglens-core';
 import type { EnrichedNewsItem, EarningsCalendarItem } from '@y0ngha/siglens-core';
-import { FmpFundamentalClient } from '@lib/data/fmp-fundamental';
-import { FmpNewsClient } from '@lib/data/fmp-news';
-import { fetchOptionsSnapshot } from '@lib/data/yahoo-options';
-import { getMarketDataProvider } from '@lib/data/fmp-market-data-provider';
-import { pollUntilDone } from './poll-until-done';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types';
+import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
+import { FmpNewsClient } from '../data/fmp-news.js';
+import { fetchOptionsSnapshot } from '../data/yahoo-options.js';
+import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
+import { pollUntilDone } from './poll-until-done.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 const fundamentalClient = new FmpFundamentalClient();
 const newsClient = new FmpNewsClient();

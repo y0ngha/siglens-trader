@@ -1,5 +1,5 @@
 import { eq, desc, and, sql, inArray } from 'drizzle-orm';
-import type { Db, DbOrTx } from './index';
+import type { Db, DbOrTx } from './index.js';
 import {
     watchlist,
     analysisModelConfig,
@@ -10,7 +10,7 @@ import {
     config,
     notificationConfig,
     orderTracking,
-} from './schema';
+} from './schema.js';
 
 // ---------------------------------------------------------------------------
 // Watchlist

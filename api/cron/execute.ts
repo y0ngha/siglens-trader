@@ -1,5 +1,5 @@
-import { verifyCronSecret } from '../_lib/cron-auth';
-import { getDb } from '../_lib/db';
+import { verifyCronSecret } from '../_lib/cron-auth.js';
+import { getDb } from '../_lib/db.js';
 import {
     getEnabledWatchlist,
     getConfigValue,
@@ -21,29 +21,32 @@ import {
     updateOrderTracking,
     getPendingSubmittedOrders,
     averageIntoPosition,
-} from '../../lib/db/queries';
-import { runOverallAnalysis } from '../../lib/analysis/run-overall';
-import { scoreSignals } from '../../lib/strategy/signal-scorer';
-import { calculatePositionSize, evaluateExistingPosition } from '../../lib/strategy/risk-manager';
-import { makeTradeDecision } from '../../lib/strategy/decision';
-import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
-import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account';
+} from '../../lib/db/queries.js';
+import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
+import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
+import {
+    calculatePositionSize,
+    evaluateExistingPosition,
+} from '../../lib/strategy/risk-manager.js';
+import { makeTradeDecision } from '../../lib/strategy/decision.js';
+import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
+import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
 import {
     sendTradeExecutedEmail,
     sendApprovalRequestEmail,
     sendErrorEmail,
-} from '../../lib/notification/email';
+} from '../../lib/notification/email.js';
 import {
     DEFAULT_WEIGHTS,
     DEFAULT_BUY_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
-} from '../../lib/strategy/types';
-import type { ScoreWeights } from '../../lib/strategy/types';
-import { resolveApiKey } from './_run-analysis-cron';
-import { acquireLock, releaseLock } from '../../lib/lock';
+} from '../../lib/strategy/types.js';
+import type { ScoreWeights } from '../../lib/strategy/types.js';
+import { resolveApiKey } from './_run-analysis-cron.js';
+import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
-import { fetchLivePrice } from '../../lib/data/live-price';
-import { safeNumber } from '../../lib/validation';
+import { fetchLivePrice } from '../../lib/data/live-price.js';
+import { safeNumber } from '../../lib/validation.js';
 import {
     safeRecord,
     safeString,
@@ -55,8 +58,8 @@ import {
     safeAnalysisTargetPrice,
     safeArray,
     safeActionRecommendation,
-} from '../../lib/strategy/safe-extract';
-import { realizedPnlForSell } from '../../lib/strategy/pnl';
+} from '../../lib/strategy/safe-extract.js';
+import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;

@@ -1,7 +1,7 @@
 import { submitFundamentalAnalysis, pollFundamentalAnalysis } from '@y0ngha/siglens-core';
-import { FmpFundamentalClient } from '@lib/data/fmp-fundamental';
-import { pollUntilDone } from './poll-until-done';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types';
+import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
+import { pollUntilDone } from './poll-until-done.js';
+import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 const fundamentalClient = new FmpFundamentalClient();
 

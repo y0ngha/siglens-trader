@@ -1,4 +1,4 @@
-import { isAuthenticated } from '../_lib/auth';
+import { isAuthenticated } from '../_lib/auth.js';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });

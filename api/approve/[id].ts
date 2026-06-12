@@ -1,5 +1,5 @@
-import { getDb } from '../_lib/db';
-import { isAuthenticated } from '../_lib/auth';
+import { getDb } from '../_lib/db.js';
+import { isAuthenticated } from '../_lib/auth.js';
 import {
     approvePendingOrder,
     revertPendingOrder,
@@ -14,16 +14,16 @@ import {
     createOrderTracking,
     updateOrderTracking,
     averageIntoPosition,
-} from '../../lib/db/queries';
-import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders';
-import { sendErrorEmail } from '../../lib/notification/email';
-import { realizedPnlForSell } from '../../lib/strategy/pnl';
+} from '../../lib/db/queries.js';
+import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
+import { sendErrorEmail } from '../../lib/notification/email.js';
+import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
 export default async function handler(req: Request): Promise<Response> {
     if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
-    const url = new URL(req.url);
+    const url = new URL(req.url, 'http://localhost');
     const idStr = url.pathname.split('/').pop();
     const id = Number(idStr);
 
