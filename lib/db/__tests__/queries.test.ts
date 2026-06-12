@@ -879,7 +879,7 @@ describe('Notification config queries', () => {
     });
 
     describe('updateNotificationConfig', () => {
-        it('updates by channel with correct fields', async () => {
+        it('upserts by channel: only the given fields update on conflict', async () => {
             const db = createMockDb([]);
 
             await updateNotificationConfig(db as unknown as Db, 'email', {
@@ -888,25 +888,43 @@ describe('Notification config queries', () => {
                 events: ['trade', 'signal'],
             });
 
+            // Insert path supplies a complete row (so a missing row is created)...
             expect(
-                (db as unknown as { update: ReturnType<typeof vi.fn> }).update,
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
             ).toHaveBeenCalled();
-            expect(db._chain.set).toHaveBeenCalledWith({
+            expect(db._chain.values).toHaveBeenCalledWith({
+                channel: 'email',
                 enabled: false,
                 target: 'user@example.com',
                 events: ['trade', 'signal'],
             });
-            expect(db._chain.where).toHaveBeenCalled();
+            // ...and on conflict, only the provided updates are written.
+            expect(db._chain.onConflictDoUpdate).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    set: {
+                        enabled: false,
+                        target: 'user@example.com',
+                        events: ['trade', 'signal'],
+                    },
+                }),
+            );
         });
 
-        it('updates with partial fields', async () => {
+        it('partial update preserves other columns (set contains only given fields)', async () => {
             const db = createMockDb([]);
 
-            await updateNotificationConfig(db as unknown as Db, 'slack', {
+            await updateNotificationConfig(db as unknown as Db, 'email', {
                 enabled: true,
             });
 
-            expect(db._chain.set).toHaveBeenCalledWith({ enabled: true });
+            // Missing-row insert fills defaults for the unspecified columns.
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({ channel: 'email', enabled: true }),
+            );
+            // On conflict, target/events are NOT touched — only enabled.
+            expect(db._chain.onConflictDoUpdate).toHaveBeenCalledWith(
+                expect.objectContaining({ set: { enabled: true } }),
+            );
         });
     });
 });

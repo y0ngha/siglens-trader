@@ -35,6 +35,7 @@ const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
 const mockGetPendingSubmittedOrders = vi.fn();
 const mockAverageIntoPosition = vi.fn();
+const mockGetNotificationConfig = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -56,6 +57,7 @@ vi.mock('../../../lib/db/queries', () => ({
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
+    getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
 }));
 
 const mockRunOverallAnalysis = vi.fn();
@@ -237,6 +239,16 @@ function setupDefaults() {
     mockReducePositionQuantity.mockResolvedValue(true);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockFetchLivePrice.mockResolvedValue(null);
+    // Default: email channel enabled with all events selected so existing
+    // notification assertions still fire. Tests that exercise the gate override this.
+    mockGetNotificationConfig.mockResolvedValue([
+        {
+            channel: 'email',
+            enabled: true,
+            target: 'test@example.com',
+            events: ['trade_executed', 'order_pending', 'stop_loss', 'error'],
+        },
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +791,67 @@ describe('execute cron handler', () => {
                 reason: 'Score 80/100 — BUY',
                 approveUrl: 'https://auto-trade.siglens.io/pending',
             });
+        });
+
+        it('still inserts the pending order but skips the approval email when email is disabled', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: false, target: 't@e.com', events: ['order_pending'] },
+            ]);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertPendingOrder).toHaveBeenCalled();
+            expect(mockSendApprovalRequestEmail).not.toHaveBeenCalled();
+        });
+
+        it('skips the approval email when order_pending event is not selected', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: true, target: 't@e.com', events: ['trade_executed'] },
+            ]);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertPendingOrder).toHaveBeenCalled();
+            expect(mockSendApprovalRequestEmail).not.toHaveBeenCalled();
+        });
+
+        it('honors the legacy approval_required event key as order_pending', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                {
+                    channel: 'email',
+                    enabled: true,
+                    target: 't@e.com',
+                    events: ['approval_required'],
+                },
+            ]);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockSendApprovalRequestEmail).toHaveBeenCalled();
         });
 
         it('does NOT call executeBuyOrder/executeSellOrder', async () => {

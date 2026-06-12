@@ -277,6 +277,35 @@ describe('SettingsPage', () => {
         });
     });
 
+    it('optimistically shows the new symbol before the request resolves', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        // Never resolves: the new item must appear from the optimistic update alone.
+        mockedApi.updateConfig.mockReturnValue(new Promise(() => {}));
+        mockedApi.searchTickers.mockResolvedValue([
+            { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
+        ]);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('감시 종목')).toBeInTheDocument();
+        });
+
+        await user.type(screen.getByLabelText('종목 검색'), 'NV');
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+        await user.click(screen.getByText('NVDA').closest('button')!);
+
+        // The new symbol is inserted into the watchlist immediately (it now has a
+        // 삭제 button), without waiting for the server round-trip or a refetch.
+        await waitFor(() => {
+            expect(screen.getByLabelText('NVDA 삭제')).toBeInTheDocument();
+        });
+        expect(mockedApi.getConfig).toHaveBeenCalledTimes(1);
+    });
+
     it('removes a symbol from watchlist using id', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);

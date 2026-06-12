@@ -21,6 +21,7 @@ import {
     updateOrderTracking,
     getPendingSubmittedOrders,
     averageIntoPosition,
+    getNotificationConfig,
 } from '../../lib/db/queries.js';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
@@ -36,6 +37,7 @@ import {
     sendApprovalRequestEmail,
     sendErrorEmail,
 } from '../../lib/notification/email.js';
+import { makeEmailGate } from '../../lib/notification/gate.js';
 import {
     DEFAULT_WEIGHTS,
     DEFAULT_BUY_THRESHOLD,
@@ -173,6 +175,11 @@ async function handler(req: Request): Promise<Response> {
         const stopLossPercent = (await getConfigValue<number>(db, 'stop_loss_percent')) ?? 5;
         const takeProfitPercent = (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
         const fixedExitEnabled = (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
+
+        // Email notification gate — respect the dashboard ON/OFF toggle + per-event
+        // selection. Legacy 'approval_required' is honored as an alias for 'order_pending'.
+        const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
+        const shouldEmail = makeEmailGate(emailNotif);
 
         // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
         // gated by wall-clock at entry; this catches holidays the static schedule misses.
@@ -371,14 +378,16 @@ async function handler(req: Request): Promise<Response> {
                             signalScore: 0,
                             expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                         });
-                        await sendApprovalRequestEmail({
-                            symbol: position.symbol,
-                            side: 'sell',
-                            quantity: position.quantity,
-                            score: 0,
-                            reason: evaluation.reason,
-                            approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch((err) => console.error('[email] send failed:', err));
+                        if (shouldEmail('order_pending', 'approval_required')) {
+                            await sendApprovalRequestEmail({
+                                symbol: position.symbol,
+                                side: 'sell',
+                                quantity: position.quantity,
+                                score: 0,
+                                reason: evaluation.reason,
+                                approveUrl: 'https://auto-trade.siglens.io/pending',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
 
                     case 'auto': {
@@ -569,14 +578,17 @@ async function handler(req: Request): Promise<Response> {
                             throw txErr;
                         }
                         if (currentExposure < 0) currentExposure = 0;
-                        await sendTradeExecutedEmail({
-                            symbol: position.symbol,
-                            side: 'sell',
-                            quantity: actualExitQty,
-                            price: filledSellPrice,
-                            reason: evaluation.reason,
-                            mode: 'auto',
-                        });
+                        // Position exits include stop-loss closures, so either event enables it.
+                        if (shouldEmail('trade_executed', 'stop_loss')) {
+                            await sendTradeExecutedEmail({
+                                symbol: position.symbol,
+                                side: 'sell',
+                                quantity: actualExitQty,
+                                price: filledSellPrice,
+                                reason: evaluation.reason,
+                                mode: 'auto',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
                 }
@@ -1014,14 +1026,16 @@ async function handler(req: Request): Promise<Response> {
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             currentExposure += currentPrice * decision.quantity;
                         }
-                        await sendApprovalRequestEmail({
-                            symbol: item.symbol,
-                            side: pendingSide,
-                            quantity: decision.quantity,
-                            score: decision.score,
-                            reason: decision.reason,
-                            approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch((err) => console.error('[email] send failed:', err));
+                        if (shouldEmail('order_pending', 'approval_required')) {
+                            await sendApprovalRequestEmail({
+                                symbol: item.symbol,
+                                side: pendingSide,
+                                quantity: decision.quantity,
+                                score: decision.score,
+                                reason: decision.reason,
+                                approveUrl: 'https://auto-trade.siglens.io/pending',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
 
@@ -1337,14 +1351,16 @@ async function handler(req: Request): Promise<Response> {
                                 });
                             });
                         }
-                        await sendTradeExecutedEmail({
-                            symbol: item.symbol,
-                            side: autoSide,
-                            quantity: actualQuantity,
-                            price: filledPrice,
-                            reason: tradeReason,
-                            mode: 'auto',
-                        });
+                        if (shouldEmail('trade_executed')) {
+                            await sendTradeExecutedEmail({
+                                symbol: item.symbol,
+                                side: autoSide,
+                                quantity: actualQuantity,
+                                price: filledPrice,
+                                reason: tradeReason,
+                                mode: 'auto',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
                 }

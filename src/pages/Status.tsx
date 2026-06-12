@@ -1,6 +1,7 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { Position } from '@/lib/api';
+import type { Position, Trade } from '@/lib/api';
+import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
@@ -60,17 +61,18 @@ function computePortfolio(positions: Position[]) {
 }
 
 export function StatusPage() {
-    const queryClient = useQueryClient();
-
     const { data, isLoading, error } = useQuery({
         queryKey: ['status'],
         queryFn: ({ signal }) => api.getStatus(signal),
         refetchInterval: 30_000,
     });
 
-    const dismissMutation = useMutation({
-        mutationFn: (id: number) => api.dismissAlert(id),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['trades'] }),
+    // Optimistically mark the alert dismissed so it disappears immediately.
+    const dismissMutation = useOptimisticMutation<number, Trade[]>({
+        mutationFn: (id) => api.dismissAlert(id),
+        queryKey: ['trades'],
+        updater: (old, id) =>
+            old?.map((t) => (t.id === id ? { ...t, dismissedAt: new Date().toISOString() } : t)),
     });
 
     const { data: positions } = useQuery({

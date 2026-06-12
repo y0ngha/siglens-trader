@@ -399,15 +399,31 @@ export async function getNotificationConfig(db: Db) {
     return db.select().from(notificationConfig);
 }
 
+// Defaults used when a notification channel row does not yet exist (e.g. a fresh
+// deploy where the seed never ran). Keep event keys in sync with the dashboard
+// (src/pages/Settings.tsx NOTIFICATION_EVENTS).
+const DEFAULT_NOTIFICATION_TARGET = 'dev.y0ngha@gmail.com';
+const DEFAULT_NOTIFICATION_EVENTS = ['trade_executed', 'order_pending', 'stop_loss', 'error'];
+
 export async function updateNotificationConfig(
     db: Db,
     channel: string,
     updates: { enabled?: boolean; target?: string; events?: string[] },
 ) {
+    // Upsert: a plain UPDATE silently no-ops when the row is missing, which made
+    // the dashboard toggle appear broken. Insert a complete row on first write.
     return db
-        .update(notificationConfig)
-        .set(updates)
-        .where(eq(notificationConfig.channel, channel));
+        .insert(notificationConfig)
+        .values({
+            channel,
+            enabled: updates.enabled ?? true,
+            target: updates.target ?? DEFAULT_NOTIFICATION_TARGET,
+            events: updates.events ?? DEFAULT_NOTIFICATION_EVENTS,
+        })
+        .onConflictDoUpdate({
+            target: notificationConfig.channel,
+            set: updates,
+        });
 }
 
 // ---------------------------------------------------------------------------
