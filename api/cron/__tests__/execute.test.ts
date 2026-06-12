@@ -1464,7 +1464,9 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'hold', score: 50 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'hold', score: 50, executed: false },
+            ]);
             expect(mockInsertTrade).not.toHaveBeenCalled();
             expect(mockInsertPendingOrder).not.toHaveBeenCalled();
             expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
@@ -1601,7 +1603,12 @@ describe('execute cron handler', () => {
 
             expect(body.decisions).toHaveLength(2);
             expect(body.decisions[0]).toEqual({ symbol: 'AAPL', action: 'error', score: 0 });
-            expect(body.decisions[1]).toEqual({ symbol: 'TSLA', action: 'hold', score: 50 });
+            expect(body.decisions[1]).toEqual({
+                symbol: 'TSLA',
+                action: 'hold',
+                score: 50,
+                executed: false,
+            });
 
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 'AAPL',
@@ -1875,7 +1882,7 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).not.toHaveBeenCalled();
             expect(body.decisions).toEqual([
                 { symbol: 'MSFT', action: 'hold', score: 0, executed: false },
-                { symbol: 'AAPL', action: 'hold', score: 50 },
+                { symbol: 'AAPL', action: 'hold', score: 50, executed: false },
             ]);
         });
 
@@ -2667,6 +2674,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'hold',
                 score: 50,
+                executed: false,
             });
             expect(mockScoreSignals).toHaveBeenCalled();
         });

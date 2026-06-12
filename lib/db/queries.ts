@@ -498,6 +498,17 @@ export async function getPendingSubmittedOrders(db: Db) {
 
 export type CronType = 'technical' | 'news' | 'options' | 'fundamental' | 'execute' | 'reconcile';
 
+export type CronOutcome =
+    | 'completed'
+    | 'market_closed'
+    | 'us_market_holiday'
+    | 'trading_disabled'
+    | 'empty_watchlist'
+    | 'locked'
+    | 'disabled'
+    | 'daily_trade_limit'
+    | 'daily_loss_limit';
+
 export async function startCronRun(
     db: Db,
     params: { runId: string; cronType: CronType; startedAt: Date },
@@ -516,12 +527,12 @@ export async function startCronRun(
 export type CronRunFinish =
     | {
           status: 'completed';
-          outcome: string;
+          outcome: CronOutcome;
           summary?: unknown;
           durationMs?: number;
           finishedAt: Date;
       }
-    | { status: 'skipped'; outcome: string; durationMs?: number; finishedAt: Date }
+    | { status: 'skipped'; outcome: CronOutcome; durationMs?: number; finishedAt: Date }
     | { status: 'error'; error: string; durationMs?: number; finishedAt: Date };
 
 export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {

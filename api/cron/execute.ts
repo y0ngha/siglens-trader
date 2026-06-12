@@ -972,6 +972,7 @@ async function handler(req: Request): Promise<Response> {
                             symbol: item.symbol,
                             action: decision.action,
                             score: decision.score,
+                            executed: false,
                         });
                         continue;
                     }

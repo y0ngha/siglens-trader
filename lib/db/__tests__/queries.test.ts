@@ -1136,7 +1136,7 @@ describe('Cron audit log queries', () => {
 
             await finishCronRun(db as unknown as Db, 'run-technical-abc123', {
                 status: 'completed',
-                outcome: 'ok',
+                outcome: 'completed',
                 summary: { analyzed: 5, skipped: 0 },
                 durationMs: 1500,
                 finishedAt,
@@ -1148,7 +1148,7 @@ describe('Cron audit log queries', () => {
             expect(db._chain.set).toHaveBeenCalledWith(
                 expect.objectContaining({
                     status: 'completed',
-                    outcome: 'ok',
+                    outcome: 'completed',
                     summary: { analyzed: 5, skipped: 0 },
                     durationMs: 1500,
                     finishedAt,
