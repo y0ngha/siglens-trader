@@ -443,6 +443,14 @@ async function handler(req: Request): Promise<Response> {
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
                                 }).catch((err) => console.error('[email] send failed:', err));
                             }
+                            // Pending order awaits human approval — NOT a fill.
+                            decisions.push({
+                                symbol: position.symbol,
+                                action: evaluation.action,
+                                score: 0,
+                                executed: false,
+                            });
+                            decisionPushed = true;
                             break;
 
                         case 'auto': {
@@ -1124,6 +1132,14 @@ async function handler(req: Request): Promise<Response> {
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
                                 }).catch((err) => console.error('[email] send failed:', err));
                             }
+                            // Pending order awaits human approval — NOT a fill.
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: decision.action,
+                                score: decision.score,
+                                executed: false,
+                            });
+                            decisionPushed = true;
                             break;
                         }
 

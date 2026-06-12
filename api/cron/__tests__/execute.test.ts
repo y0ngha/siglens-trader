@@ -962,6 +962,38 @@ describe('execute cron handler', () => {
                 expect.objectContaining({ symbol: 'AAPL' }),
             );
         });
+
+        it('records executed:false for semi_auto pending order (watchlist loop)', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]); // AAPL only
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        executed: false,
+                    }),
+                ]),
+            );
+            // Confirm no entry records executed:true for AAPL
+            const calls = mockInsertCronDecisions.mock.calls;
+            const lastCall = calls[calls.length - 1];
+            const decisionsArg = lastCall[3] as Array<{ symbol: string; executed: boolean }>;
+            const aaplEntry = decisionsArg.find((d) => d.symbol === 'AAPL');
+            expect(aaplEntry?.executed).toBe(false);
+        });
     });
 
     // -----------------------------------------------------------------------
@@ -2211,6 +2243,45 @@ describe('execute cron handler', () => {
             );
             // No direct close in semi_auto
             expect(mockClosePosition).not.toHaveBeenCalled();
+        });
+
+        it('records executed:false for semi_auto pending order (position re-eval loop)', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('semi_auto');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '기술적 추세 반전 (bearish)',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        executed: false,
+                    }),
+                ]),
+            );
+            // Confirm no entry records executed:true for AAPL
+            const calls = mockInsertCronDecisions.mock.calls;
+            const lastCall = calls[calls.length - 1];
+            const decisionsArg = lastCall[3] as Array<{ symbol: string; executed: boolean }>;
+            const aaplEntry = decisionsArg.find((d) => d.symbol === 'AAPL');
+            expect(aaplEntry?.executed).toBe(false);
         });
 
         it('handles auto mode for position re-evaluation', async () => {
