@@ -36,6 +36,9 @@ const mockUpdateOrderTracking = vi.fn();
 const mockGetPendingSubmittedOrders = vi.fn();
 const mockAverageIntoPosition = vi.fn();
 const mockGetNotificationConfig = vi.fn();
+const mockStartCronRun = vi.fn();
+const mockFinishCronRun = vi.fn();
+const mockInsertCronDecisions = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -58,6 +61,9 @@ vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
+    finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
+    insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
 }));
 
 const mockRunOverallAnalysis = vi.fn();
@@ -239,6 +245,9 @@ function setupDefaults() {
     mockReducePositionQuantity.mockResolvedValue(true);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockFetchLivePrice.mockResolvedValue(null);
+    mockStartCronRun.mockResolvedValue(undefined);
+    mockFinishCronRun.mockResolvedValue(undefined);
+    mockInsertCronDecisions.mockResolvedValue(undefined);
     // Default: email channel enabled with all events selected so existing
     // notification assertions still fire. Tests that exercise the gate override this.
     mockGetNotificationConfig.mockResolvedValue([
@@ -325,9 +334,7 @@ describe('execute cron handler', () => {
         });
 
         it('releases lock even when handler throws', async () => {
-            mockGetDb.mockImplementation(() => {
-                throw new Error('DB connection failed');
-            });
+            mockGetNotificationConfig.mockRejectedValue(new Error('DB connection failed'));
 
             await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
 
@@ -741,7 +748,9 @@ describe('execute cron handler', () => {
             const body = await res.json();
 
             expect(body.tradingMode).toBe('dry_run');
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'buy', score: 80 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'buy', score: 80, executed: true },
+            ]);
 
             // Trade inserted
             expect(mockInsertTrade).toHaveBeenCalledWith(
@@ -1443,7 +1452,9 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'buy', score: 80 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'buy', score: 80, executed: true },
+            ]);
             expect(mockInsertTrade).toHaveBeenCalledTimes(1);
         });
 
@@ -1467,7 +1478,9 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'sell', score: 20 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'sell', score: 20, executed: true },
+            ]);
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
@@ -1850,7 +1863,9 @@ describe('execute cron handler', () => {
                     quantity: 5,
                 }),
             );
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'buy', score: 80 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'buy', score: 80, executed: true },
+            ]);
         });
 
         it('continues to next symbol after recording skipped trade', async () => {
@@ -2054,6 +2069,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'stop_loss',
                 score: 0,
+                executed: true,
             });
         });
 
@@ -2086,6 +2102,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'stop_loss',
                 score: 0,
+                executed: true,
             });
         });
 
@@ -2118,6 +2135,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'take_profit',
                 score: 0,
+                executed: true,
             });
         });
 
@@ -2589,6 +2607,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'stop_loss',
                 score: 0,
+                executed: true,
             });
             // Should have cooldown instead of buy for watchlist
             expect(body.decisions).toContainEqual({
@@ -4723,6 +4742,7 @@ describe('execute cron handler', () => {
                 symbol: 'AAPL',
                 action: 'buy',
                 score: 80,
+                executed: true,
             });
             expect(body.decisions).toContainEqual({
                 symbol: 'TSLA',
@@ -4780,6 +4800,128 @@ describe('execute cron handler', () => {
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
             expect(mockCreateOrderTracking).not.toHaveBeenCalled();
             expect(body.decisions).not.toContainEqual(expect.objectContaining({ action: 'error' }));
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Cron audit log
+    // -----------------------------------------------------------------------
+
+    describe('cron audit log', () => {
+        it('calls startCronRun with cronType execute before any other work', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            await handler(makeRequest(true));
+
+            expect(mockStartCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ cronType: 'execute' }),
+            );
+        });
+
+        it('records completed finishState on normal completion', async () => {
+            // Use fakeWatchlist (already set in setupDefaults) + hold decisions → completed
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'AAPL',
+                score: 50,
+                reason: 'hold',
+                quantity: 0,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'completed', outcome: 'completed' }),
+            );
+        });
+
+        it('calls insertCronDecisions with execute and a decisions array on normal completion', async () => {
+            mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'AAPL',
+                score: 50,
+                reason: 'hold',
+                quantity: 0,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.any(Array),
+            );
+        });
+
+        it('records skipped/market_closed when session is closed', async () => {
+            mockIsEtRegularSessionOpen.mockReturnValue(false);
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'skipped', outcome: 'market_closed' }),
+            );
+        });
+
+        it('records skipped/locked when lock is not acquired', async () => {
+            mockAcquireLock.mockResolvedValue(false);
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'skipped', outcome: 'locked' }),
+            );
+        });
+
+        it('records skipped/daily_loss_limit for realized loss limit breach', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'max_daily_loss_usd') return Promise.resolve(500);
+                return Promise.resolve(null);
+            });
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'skipped', outcome: 'daily_loss_limit' }),
+            );
+        });
+
+        it('records error finishState and re-throws on unhandled exception', async () => {
+            mockGetNotificationConfig.mockRejectedValue(new Error('DB exploded'));
+
+            await expect(handler(makeRequest(true))).rejects.toThrow('DB exploded');
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'error', error: 'DB exploded' }),
+            );
+        });
+
+        it('audit failures do not abort trading (startCronRun throws → handler still runs)', async () => {
+            mockStartCronRun.mockRejectedValue(new Error('audit DB down'));
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Trading completed normally despite audit failure
+            expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
         });
     });
 });
