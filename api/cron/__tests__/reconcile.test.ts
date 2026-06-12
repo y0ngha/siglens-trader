@@ -27,12 +27,18 @@ const mockUpdateOrderTracking = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockGetNotificationConfig = vi.fn();
+const mockStartCronRun = vi.fn();
+const mockFinishCronRun = vi.fn();
+const mockInsertCronDecisions = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
+    finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
+    insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
 }));
 
 const mockGetOrder = vi.fn();
@@ -102,6 +108,9 @@ function setupDefaults() {
     mockGetNotificationConfig.mockResolvedValue([
         { channel: 'email', enabled: true, target: 'test@example.com', events: ['error'] },
     ]);
+    mockStartCronRun.mockResolvedValue(undefined);
+    mockFinishCronRun.mockResolvedValue(undefined);
+    mockInsertCronDecisions.mockResolvedValue(undefined);
 }
 
 /** Order submitted 90 min ago (> 30 min timeout window). */
@@ -959,6 +968,151 @@ describe('reconcile cron handler', () => {
                 expect.stringContaining('AAPL'),
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Audit logging (cron_runs + cron_decisions)
+    // -----------------------------------------------------------------------
+
+    describe('audit logging', () => {
+        it('calls startCronRun with cronType reconcile before lock attempt', async () => {
+            await handler(makeRequest(true));
+
+            expect(mockStartCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ cronType: 'reconcile' }),
+            );
+        });
+
+        it('normal run → finishCronRun called with status:completed, outcome:completed', async () => {
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^reconcile-/),
+                expect.objectContaining({ status: 'completed', outcome: 'completed' }),
+            );
+        });
+
+        it('normal run → insertCronDecisions called with reconcile and mapped results', async () => {
+            const orders = [
+                {
+                    id: 1,
+                    idempotencyKey: 'exec-abc-AAPL-buy',
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 10,
+                    submittedAt: new Date('2026-05-24T13:00:00.000Z'), // timed out
+                },
+            ];
+            mockGetPendingSubmittedOrders.mockResolvedValue(orders);
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^reconcile-/),
+                'reconcile',
+                [{ symbol: 'AAPL', action: 'timeout' }],
+            );
+        });
+
+        it('locked run → finishCronRun called with status:skipped, outcome:locked', async () => {
+            mockAcquireLock.mockResolvedValue(false);
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^reconcile-/),
+                expect.objectContaining({ status: 'skipped', outcome: 'locked' }),
+            );
+        });
+
+        it('locked run → insertCronDecisions called with empty decisions array', async () => {
+            mockAcquireLock.mockResolvedValue(false);
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^reconcile-/),
+                'reconcile',
+                [],
+            );
+        });
+
+        it('thrown exception → finishCronRun called with status:error, exception re-thrown', async () => {
+            mockGetPendingSubmittedOrders.mockRejectedValue(new Error('DB exploded'));
+
+            await expect(handler(makeRequest(true))).rejects.toThrow('DB exploded');
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.stringMatching(/^reconcile-/),
+                expect.objectContaining({ status: 'error', error: 'DB exploded' }),
+            );
+        });
+
+        it('audit write rejects → reconcile still returns normally (best-effort)', async () => {
+            mockFinishCronRun.mockRejectedValue(new Error('audit DB down'));
+            mockInsertCronDecisions.mockRejectedValue(new Error('audit DB down'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Audit failure must not break normal reconcile response
+            expect(res.status).toBe(200);
+            expect(body.processed).toBe(0);
+        });
+
+        it('completed summary includes processed, recovered, consistencyAlerts, holdingsMismatches, actionsByType', async () => {
+            const orders = [
+                {
+                    id: 1,
+                    idempotencyKey: 'exec-abc-AAPL-buy',
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 10,
+                    submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                },
+                {
+                    id: 2,
+                    idempotencyKey: 'exec-def-TSLA-buy',
+                    symbol: 'TSLA',
+                    side: 'buy',
+                    quantity: 5,
+                    submittedAt: new Date('2026-05-24T14:20:00.000Z'), // recent → waiting
+                },
+            ];
+            mockGetPendingSubmittedOrders.mockResolvedValue(orders);
+            mockAutoRecoverFilledOrders.mockResolvedValue({ recovered: 1, failed: 0, details: [] });
+            mockCheckConsistency.mockResolvedValue({
+                filledOrdersWithoutTrades: 0,
+                filledOrdersWithoutPositions: 0,
+                openPositionsWithoutTrades: 0,
+                alerts: ['some-alert'],
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({
+                    status: 'completed',
+                    outcome: 'completed',
+                    summary: expect.objectContaining({
+                        processed: 2,
+                        recovered: 1,
+                        recoveryFailed: 0,
+                        consistencyAlerts: 1,
+                        holdingsMismatches: 0,
+                        actionsByType: { timeout: 1, waiting: 1 },
+                    }),
+                }),
+            );
         });
     });
 });

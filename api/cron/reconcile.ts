@@ -7,7 +7,11 @@ import {
     getOpenPositions,
     getConfigValue,
     getNotificationConfig,
+    startCronRun,
+    finishCronRun,
+    insertCronDecisions,
 } from '../../lib/db/queries.js';
+import type { CronRunFinish } from '../../lib/db/queries.js';
 import { sendErrorEmail } from '../../lib/notification/email.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
@@ -25,17 +29,31 @@ async function handler(req: Request): Promise<Response> {
         return new Response('Unauthorized', { status: 401 });
     }
 
+    // Audit helpers — best-effort, never abort reconcile
+    const startedAt = new Date();
+    const startedMs = startedAt.getTime();
+    const runId = `reconcile-${crypto.randomUUID()}`;
+    // getDb() early (cheap singleton) so the locked-out path can record a row
+    const db = getDb();
+    const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
+    const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
+
+    await safe(startCronRun(db, { runId, cronType: 'reconcile', startedAt }));
+
+    let finishState: CronRunFinish | null = null;
+    const results: Array<{ id: number; symbol: string; action: string }> = [];
+
     const LOCK_KEY = 'cron:reconcile:lock';
     let lockAcquired = false;
-    // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-    const locked = await acquireLock(LOCK_KEY, 780);
-    if (!locked) {
-        return Response.json({ skipped: true, reason: 'locked' });
-    }
-    lockAcquired = true;
 
     try {
-        const db = getDb();
+        // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
+        const locked = await acquireLock(LOCK_KEY, 780);
+        if (!locked) {
+            finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
+            return Response.json({ skipped: true, reason: 'locked' });
+        }
+        lockAcquired = true;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
 
         // Reconcile alerts are system/safety notifications — gated on the dashboard
@@ -48,7 +66,6 @@ async function handler(req: Request): Promise<Response> {
                 : Promise.resolve();
 
         const submitted = await getPendingSubmittedOrders(db);
-        const results: Array<{ id: number; symbol: string; action: string }> = [];
 
         // Marks an order as timed out and emails an alert (urgent for sells).
         // Used both for orders with no broker id and when getOrder polling fails.
@@ -289,6 +306,23 @@ async function handler(req: Request): Promise<Response> {
             }
         }
 
+        const actionsByType = results.reduce<Record<string, number>>((acc, r) => {
+            acc[r.action] = (acc[r.action] ?? 0) + 1;
+            return acc;
+        }, {});
+        finishState = {
+            status: 'completed',
+            outcome: 'completed',
+            summary: {
+                processed: results.length,
+                recovered: recovery.recovered,
+                recoveryFailed: recovery.failed,
+                consistencyAlerts: consistency.alerts.length,
+                holdingsMismatches: holdingsMismatchCount,
+                actionsByType,
+            },
+            ...elapsed(),
+        };
         return Response.json({
             processed: results.length,
             results,
@@ -304,8 +338,27 @@ async function handler(req: Request): Promise<Response> {
                 mismatchCount: holdingsMismatchCount,
             },
         });
+    } catch (e) {
+        finishState = {
+            status: 'error',
+            error: e instanceof Error ? e.message : String(e),
+            ...elapsed(),
+        };
+        throw e;
     } finally {
-        if (lockAcquired) await releaseLock(LOCK_KEY);
+        if (lockAcquired)
+            await releaseLock(LOCK_KEY).catch((e) => console.error('[lock-release]', e));
+        if (finishState) {
+            await safe(finishCronRun(db, runId, finishState));
+            await safe(
+                insertCronDecisions(
+                    db,
+                    runId,
+                    'reconcile',
+                    results.map((r) => ({ symbol: r.symbol, action: r.action })),
+                ),
+            );
+        }
     }
 }
 
