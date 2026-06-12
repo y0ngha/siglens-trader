@@ -21,6 +21,7 @@ import {
     updateOrderTracking,
     getPendingSubmittedOrders,
     averageIntoPosition,
+    getNotificationConfig,
 } from '../../lib/db/queries.js';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
@@ -36,6 +37,7 @@ import {
     sendApprovalRequestEmail,
     sendErrorEmail,
 } from '../../lib/notification/email.js';
+import { makeEmailGate } from '../../lib/notification/gate.js';
 import {
     DEFAULT_WEIGHTS,
     DEFAULT_BUY_THRESHOLD,
@@ -86,6 +88,18 @@ async function handler(req: Request): Promise<Response> {
     try {
         const db = getDb();
 
+        // Email notification gate — respect the dashboard ON/OFF toggle + per-event
+        // selection. Legacy 'approval_required' is honored as an alias for 'order_pending'.
+        // Defined early so circuit-breaker alerts below also go through the gate.
+        const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
+        const shouldEmail = makeEmailGate(emailNotif);
+        // Error/safety alerts are gated on the 'error' (시스템 오류) event — same contract
+        // as reconcile's notifyError, so "email OFF" suppresses every email uniformly.
+        const notifyError = (subject: string, body: string) =>
+            shouldEmail('error')
+                ? sendErrorEmail(subject, body).catch((e) => console.error('[email]', e))
+                : Promise.resolve();
+
         // Circuit breaker: kill switch
         const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
         if (!tradingEnabled) {
@@ -111,10 +125,10 @@ async function handler(req: Request): Promise<Response> {
         const maxDailyLoss = (await getConfigValue<number>(db, 'max_daily_loss_usd')) ?? 500;
         const todayPnl = await getTodayRealizedPnl(db);
         if (todayPnl < -maxDailyLoss) {
-            await sendErrorEmail(
+            await notifyError(
                 '일일 손실 한도 초과',
                 `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
-            ).catch((err) => console.error('[email] send failed:', err));
+            );
             return Response.json({
                 skipped: true,
                 reason: 'daily_loss_limit_reached',
@@ -144,10 +158,10 @@ async function handler(req: Request): Promise<Response> {
             }
             const totalPnl = todayPnl + unrealizedPnl;
             if (totalPnl < -maxDailyLoss) {
-                await sendErrorEmail(
+                await notifyError(
                     '일일 손실 한도 초과 (미실현 포함)',
                     `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
-                ).catch((err) => console.error('[email] send failed:', err));
+                );
                 return Response.json({
                     skipped: true,
                     reason: 'daily_loss_limit_reached',
@@ -285,10 +299,10 @@ async function handler(req: Request): Promise<Response> {
                         action: 'skipped_no_price',
                         score: 0,
                     });
-                    await sendErrorEmail(
+                    await notifyError(
                         `가격 데이터 없음: ${position.symbol}`,
                         `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
-                    ).catch((err) => console.error('[email] send failed:', err));
+                    );
                     continue;
                 }
 
@@ -371,14 +385,16 @@ async function handler(req: Request): Promise<Response> {
                             signalScore: 0,
                             expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                         });
-                        await sendApprovalRequestEmail({
-                            symbol: position.symbol,
-                            side: 'sell',
-                            quantity: position.quantity,
-                            score: 0,
-                            reason: evaluation.reason,
-                            approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch((err) => console.error('[email] send failed:', err));
+                        if (shouldEmail('order_pending', 'approval_required')) {
+                            await sendApprovalRequestEmail({
+                                symbol: position.symbol,
+                                side: 'sell',
+                                quantity: position.quantity,
+                                score: 0,
+                                reason: evaluation.reason,
+                                approveUrl: 'https://auto-trade.siglens.io/pending',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
 
                     case 'auto': {
@@ -452,10 +468,10 @@ async function handler(req: Request): Promise<Response> {
                                 score: 0,
                             });
                             decisionPushed = true;
-                            await sendErrorEmail(
+                            await notifyError(
                                 `주문 거부: ${position.symbol}`,
                                 orderResult.rejectReason ?? '거부 사유 없음',
-                            ).catch((err) => console.error('[email] send failed:', err));
+                            );
                             break;
                         }
                         // pending/partial: NO trade, NO position mutation, NO exposure change.
@@ -463,15 +479,15 @@ async function handler(req: Request): Promise<Response> {
                         // partial differs only in tracking status + notification text.
                         if (orderResult.status === 'pending' || orderResult.status === 'partial') {
                             if (orderResult.status === 'partial') {
-                                await sendErrorEmail(
+                                await notifyError(
                                     `부분 체결: ${position.symbol}`,
                                     `${position.symbol} sell ${orderResult.filledQuantity ?? '?'} / ${sellQty}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             } else {
-                                await sendErrorEmail(
+                                await notifyError(
                                     `미체결 주문: ${position.symbol}`,
                                     `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             }
                             decisions.push({
                                 symbol: position.symbol,
@@ -500,7 +516,7 @@ async function handler(req: Request): Promise<Response> {
                                 filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            await sendErrorEmail(
+                            await notifyError(
                                 `체결 수동확인 필요: ${position.symbol}`,
                                 `sell 주문이 예상과 다르게 체결됨 (의도 ${sellQty}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
@@ -569,14 +585,21 @@ async function handler(req: Request): Promise<Response> {
                             throw txErr;
                         }
                         if (currentExposure < 0) currentExposure = 0;
-                        await sendTradeExecutedEmail({
-                            symbol: position.symbol,
-                            side: 'sell',
-                            quantity: actualExitQty,
-                            price: filledSellPrice,
-                            reason: evaluation.reason,
-                            mode: 'auto',
-                        });
+                        // Route the exit to the matching event: stop-loss closures honor the
+                        // 'stop_loss' checkbox, all other exits (take-profit / AI sell) honor
+                        // 'trade_executed' — so each checkbox is meaningful on the exit path.
+                        const exitEvent =
+                            evaluation.action === 'stop_loss' ? 'stop_loss' : 'trade_executed';
+                        if (shouldEmail(exitEvent)) {
+                            await sendTradeExecutedEmail({
+                                symbol: position.symbol,
+                                side: 'sell',
+                                quantity: actualExitQty,
+                                price: filledSellPrice,
+                                reason: evaluation.reason,
+                                mode: 'auto',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
                 }
@@ -589,9 +612,7 @@ async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await sendErrorEmail(position.symbol, String(err)).catch((err) =>
-                    console.error('[email] send failed:', err),
-                );
+                await notifyError(position.symbol, String(err));
                 decisions.push({ symbol: position.symbol, action: 'error', score: 0 });
             }
         }
@@ -844,10 +865,10 @@ async function handler(req: Request): Promise<Response> {
                         cronRunId,
                     });
 
-                    await sendErrorEmail(
+                    await notifyError(
                         `잔고 부족: ${item.symbol}`,
                         `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
-                    ).catch((err) => console.error('[email] send failed:', err));
+                    );
 
                     decisions.push({
                         symbol: item.symbol,
@@ -1014,14 +1035,16 @@ async function handler(req: Request): Promise<Response> {
                         if (decision.action === 'buy' || decision.action === 'average_in') {
                             currentExposure += currentPrice * decision.quantity;
                         }
-                        await sendApprovalRequestEmail({
-                            symbol: item.symbol,
-                            side: pendingSide,
-                            quantity: decision.quantity,
-                            score: decision.score,
-                            reason: decision.reason,
-                            approveUrl: 'https://auto-trade.siglens.io/pending',
-                        }).catch((err) => console.error('[email] send failed:', err));
+                        if (shouldEmail('order_pending', 'approval_required')) {
+                            await sendApprovalRequestEmail({
+                                symbol: item.symbol,
+                                side: pendingSide,
+                                quantity: decision.quantity,
+                                score: decision.score,
+                                reason: decision.reason,
+                                approveUrl: 'https://auto-trade.siglens.io/pending',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
 
@@ -1116,10 +1139,10 @@ async function handler(req: Request): Promise<Response> {
                                 score: decision.score,
                             });
                             decisionPushed = true;
-                            await sendErrorEmail(
+                            await notifyError(
                                 `주문 거부: ${item.symbol}`,
                                 orderResult.rejectReason ?? '거부 사유 없음',
-                            ).catch((err) => console.error('[email] send failed:', err));
+                            );
                             break;
                         }
                         // Order is live (filled/partial/pending) and will consume cash —
@@ -1133,15 +1156,15 @@ async function handler(req: Request): Promise<Response> {
                         // partial differs only in tracking status + notification text.
                         if (orderResult.status === 'pending' || orderResult.status === 'partial') {
                             if (orderResult.status === 'partial') {
-                                await sendErrorEmail(
+                                await notifyError(
                                     `부분 체결: ${item.symbol}`,
                                     `${item.symbol} ${orderResult.filledQuantity ?? '?'} / ${autoQuantity}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             } else {
-                                await sendErrorEmail(
+                                await notifyError(
                                     `미체결 주문: ${item.symbol}`,
                                     `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             }
                             decisions.push({
                                 symbol: item.symbol,
@@ -1170,7 +1193,7 @@ async function handler(req: Request): Promise<Response> {
                                 filledPrice: orderResult.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
-                            await sendErrorEmail(
+                            await notifyError(
                                 `체결 수동확인 필요: ${item.symbol}`,
                                 `${autoSide} 주문이 예상과 다르게 체결됨 (의도 ${autoQuantity}주, 체결 ${filledQ}, 체결가 ${orderResult.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                             ).catch((e) => console.error('[email]', e));
@@ -1309,7 +1332,7 @@ async function handler(req: Request): Promise<Response> {
                                         resolvedAt: new Date(),
                                     });
                                 });
-                                await sendErrorEmail(
+                                await notifyError(
                                     `포지션 미확인 매도 체결: ${item.symbol}`,
                                     `${item.symbol} ${actualQuantity}주가 체결되었으나 DB에 포지션이 없습니다.`,
                                 ).catch((e) => console.error('[email]', e));
@@ -1337,14 +1360,16 @@ async function handler(req: Request): Promise<Response> {
                                 });
                             });
                         }
-                        await sendTradeExecutedEmail({
-                            symbol: item.symbol,
-                            side: autoSide,
-                            quantity: actualQuantity,
-                            price: filledPrice,
-                            reason: tradeReason,
-                            mode: 'auto',
-                        });
+                        if (shouldEmail('trade_executed')) {
+                            await sendTradeExecutedEmail({
+                                symbol: item.symbol,
+                                side: autoSide,
+                                quantity: actualQuantity,
+                                price: filledPrice,
+                                reason: tradeReason,
+                                mode: 'auto',
+                            }).catch((err) => console.error('[email] send failed:', err));
+                        }
                         break;
                     }
                 }
@@ -1357,9 +1382,7 @@ async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await sendErrorEmail(item.symbol, String(err)).catch((err) =>
-                    console.error('[email] send failed:', err),
-                );
+                await notifyError(item.symbol, String(err));
                 decisions.push({ symbol: item.symbol, action: 'error', score: 0 });
             }
         }

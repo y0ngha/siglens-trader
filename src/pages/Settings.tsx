@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { TickerSearch } from '@/components/TickerSearch';
@@ -81,16 +82,90 @@ function getConfigValue(config: ConfigEntry[], key: string, fallback: unknown): 
     return entry ? entry.value : fallback;
 }
 
+/**
+ * Optimistically apply a config POST body to the cached ConfigData so the UI
+ * reflects the change instantly (before the server round-trip + refetch).
+ * Mirrors the server-side handling in api/config.ts; the subsequent refetch
+ * reconciles any divergence (e.g. real watchlist ids).
+ */
+function applyConfigOptimistic(old: ConfigData | undefined, body: unknown): ConfigData | undefined {
+    if (!old) return old;
+    const p = body as Record<string, unknown>;
+    switch (p.type) {
+        case 'config': {
+            const key = p.key as string;
+            const exists = old.config.some((c) => c.key === key);
+            const config = exists
+                ? old.config.map((c) => (c.key === key ? { ...c, value: p.value } : c))
+                : [...old.config, { key, value: p.value, updatedAt: new Date().toISOString() }];
+            return { ...old, config };
+        }
+        case 'watchlist': {
+            if (p.action === 'add') {
+                // Negative temp id avoids colliding with real ids until refetch.
+                return {
+                    ...old,
+                    watchlist: [
+                        ...old.watchlist,
+                        {
+                            id: -Date.now(),
+                            symbol: p.symbol as string,
+                            companyName: p.companyName as string,
+                            enabled: true,
+                            createdAt: new Date().toISOString(),
+                        },
+                    ],
+                };
+            }
+            if (p.action === 'remove') {
+                return { ...old, watchlist: old.watchlist.filter((w) => w.id !== p.id) };
+            }
+            if (p.action === 'toggle') {
+                return {
+                    ...old,
+                    watchlist: old.watchlist.map((w) =>
+                        w.id === p.id ? { ...w, enabled: p.enabled as boolean } : w,
+                    ),
+                };
+            }
+            return old;
+        }
+        case 'analysis': {
+            const updates = p.updates as Partial<AnalysisConfig>;
+            return {
+                ...old,
+                analysis: old.analysis.map((a) =>
+                    a.analysisType === p.analysisType ? { ...a, ...updates } : a,
+                ),
+            };
+        }
+        case 'notification': {
+            const updates = p.updates as Partial<NotificationConfig>;
+            const channel = p.channel as string;
+            const exists = old.notification.some((n) => n.channel === channel);
+            const notification = exists
+                ? old.notification.map((n) => (n.channel === channel ? { ...n, ...updates } : n))
+                : [
+                      ...old.notification,
+                      { id: -1, channel, enabled: false, target: '', events: [], ...updates },
+                  ];
+            return { ...old, notification };
+        }
+        default:
+            return old;
+    }
+}
+
 export function SettingsPage() {
-    const queryClient = useQueryClient();
     const { data, isLoading, error } = useQuery({
         queryKey: ['config'],
         queryFn: ({ signal }) => api.getConfig(signal) as Promise<ConfigData>,
     });
 
-    const updateMutation = useMutation({
-        mutationFn: (body: unknown) => api.updateConfig(body),
-        onSettled: () => queryClient.invalidateQueries({ queryKey: ['config'] }),
+    const updateMutation = useOptimisticMutation<unknown, ConfigData>({
+        mutationFn: (body) => api.updateConfig(body),
+        queryKey: ['config'],
+        updater: applyConfigOptimistic,
     });
 
     const [saveMessage, setSaveMessage] = useState<string | null>(null);

@@ -26,11 +26,13 @@ const mockGetPendingSubmittedOrders = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetConfigValue = vi.fn();
+const mockGetNotificationConfig = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
+    getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
 }));
 
 const mockGetOrder = vi.fn();
@@ -96,6 +98,10 @@ function setupDefaults() {
     mockGetHoldings.mockResolvedValue([]);
     // Default to 'auto' so existing holdings tests exercise the real broker path.
     mockGetConfigValue.mockResolvedValue('auto');
+    // Default: email enabled with 'error' event so existing alert assertions fire.
+    mockGetNotificationConfig.mockResolvedValue([
+        { channel: 'email', enabled: true, target: 'test@example.com', events: ['error'] },
+    ]);
 }
 
 /** Order submitted 90 min ago (> 30 min timeout window). */
@@ -271,6 +277,50 @@ describe('reconcile cron handler', () => {
                 '[긴급] 매도 주문 타임아웃: TSLA',
                 expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
             );
+        });
+
+        it('still marks the order timeout but skips the alert email when email is disabled', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: false, target: 't@e.com', events: ['error'] },
+            ]);
+            const oldSellOrder = {
+                id: 2,
+                idempotencyKey: 'exec-def-TSLA-sell',
+                symbol: 'TSLA',
+                side: 'sell',
+                quantity: 10,
+                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+            };
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldSellOrder]);
+
+            await handler(makeRequest(true));
+
+            // Order status transition still happens — only the email is suppressed.
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-def-TSLA-sell',
+                expect.objectContaining({ status: 'timeout' }),
+            );
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+        });
+
+        it('skips the alert email when the error event is not selected', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: true, target: 't@e.com', events: ['trade_executed'] },
+            ]);
+            const oldSellOrder = {
+                id: 2,
+                idempotencyKey: 'exec-def-TSLA-sell',
+                symbol: 'TSLA',
+                side: 'sell',
+                quantity: 10,
+                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+            };
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldSellOrder]);
+
+            await handler(makeRequest(true));
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
         });
     });
 

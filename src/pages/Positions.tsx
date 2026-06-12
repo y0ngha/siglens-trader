@@ -1,6 +1,7 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useState, useRef, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
@@ -33,8 +34,16 @@ function pnlColorClass(pnl: number | null): string {
 }
 
 export function PositionsPage() {
-    const queryClient = useQueryClient();
-    const [closingId, setClosingId] = useState<number | null>(null);
+    const [closeError, setCloseError] = useState<string | null>(null);
+    // Hold the dismiss timer so repeated failures reset it (no early clear) and it
+    // is cleaned up on unmount (no stray setState / leak).
+    const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        return () => {
+            if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        };
+    }, []);
 
     const { data, isLoading, error } = useQuery({
         queryKey: ['positions'],
@@ -42,12 +51,15 @@ export function PositionsPage() {
         refetchInterval: 30_000,
     });
 
-    const closeMutation = useMutation({
-        mutationFn: (id: number) => api.closePosition(id),
-        onMutate: (id) => setClosingId(id),
-        onSettled: () => {
-            setClosingId(null);
-            queryClient.invalidateQueries({ queryKey: ['positions'] });
+    // Optimistically drop the position from the list on close; restore on error.
+    const closeMutation = useOptimisticMutation<number, Position[]>({
+        mutationFn: (id) => api.closePosition(id),
+        queryKey: ['positions'],
+        updater: (old, id) => old?.filter((p) => p.id !== id),
+        onError: () => {
+            setCloseError('포지션 청산에 실패했습니다');
+            if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+            errorTimerRef.current = setTimeout(() => setCloseError(null), 3000);
         },
     });
 
@@ -58,6 +70,14 @@ export function PositionsPage() {
     return (
         <div className="space-y-4">
             <h1 className="text-lg font-semibold">포지션</h1>
+            {closeError && (
+                <div
+                    role="status"
+                    className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-400"
+                >
+                    {closeError}
+                </div>
+            )}
             <ul className="space-y-2">
                 {data.map((position) => {
                     const borderColor =
@@ -123,11 +143,10 @@ export function PositionsPage() {
                                 <button
                                     type="button"
                                     onClick={() => closeMutation.mutate(position.id)}
-                                    disabled={closingId === position.id}
-                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
                                     aria-label={`${position.symbol} 포지션 청산`}
                                 >
-                                    {closingId === position.id ? '처리 중...' : '청산'}
+                                    청산
                                 </button>
                             </div>
                         </li>

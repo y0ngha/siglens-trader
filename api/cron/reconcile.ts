@@ -6,8 +6,10 @@ import {
     updateOrderTracking,
     getOpenPositions,
     getConfigValue,
+    getNotificationConfig,
 } from '../../lib/db/queries.js';
 import { sendErrorEmail } from '../../lib/notification/email.js';
+import { makeEmailGate } from '../../lib/notification/gate.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
 import { getOrder } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
@@ -35,6 +37,16 @@ async function handler(req: Request): Promise<Response> {
     try {
         const db = getDb();
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+
+        // Reconcile alerts are system/safety notifications — gated on the dashboard
+        // email toggle + the 'error' (시스템 오류) event. Off means off.
+        const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
+        const shouldEmail = makeEmailGate(emailNotif);
+        const notifyError = (subject: string, body: string) =>
+            shouldEmail('error')
+                ? sendErrorEmail(subject, body).catch((e) => console.error('[email]', e))
+                : Promise.resolve();
+
         const submitted = await getPendingSubmittedOrders(db);
         const results: Array<{ id: number; symbol: string; action: string }> = [];
 
@@ -55,7 +67,7 @@ async function handler(req: Request): Promise<Response> {
                 ? `${order.symbol} sell ${order.quantity}주 주문이 ${Math.round(age / 60000)}분째 미체결 상태입니다. 브로커에 포지션이 남아 있을 수 있습니다. 즉시 수동 확인이 필요합니다.\nIdempotency Key: ${order.idempotencyKey}`
                 : `${order.symbol} ${order.side} ${order.quantity}주 주문이 ${Math.round(age / 60000)}분째 미체결 상태입니다. 수동 확인이 필요합니다.\nIdempotency Key: ${order.idempotencyKey}`;
 
-            await sendErrorEmail(subject, body).catch((e) => console.error('[email]', e));
+            await notifyError(subject, body);
             results.push({ id: order.id, symbol: order.symbol, action: 'timeout' });
         };
 
@@ -98,10 +110,10 @@ async function handler(req: Request): Promise<Response> {
                             filledPrice: detail.avgFilledPrice ?? undefined,
                             resolvedAt: new Date(),
                         });
-                        await sendErrorEmail(
+                        await notifyError(
                             `체결 수동확인 필요: ${order.symbol}`,
                             `주문 ${order.tossOrderId} FILLED 이나 체결수량(${detail.filledQuantity})이 의도수량(${order.quantity})과 불일치하거나 소수점. 수동 기록 필요.`,
-                        ).catch((e) => console.error('[email]', e));
+                        );
                         results.push({
                             id: order.id,
                             symbol: order.symbol,
@@ -136,10 +148,10 @@ async function handler(req: Request): Promise<Response> {
                                 status: 'needs_review',
                                 resolvedAt: new Date(),
                             });
-                            await sendErrorEmail(
+                            await notifyError(
                                 `부분체결 후 취소 — 수동 확인: ${order.symbol}`,
                                 `${order.side} 주문 ${order.tossOrderId} 가 ${detail.filledQuantity}주 부분체결 후 취소됨. 평균체결가 ${detail.avgFilledPrice}. trade/position 수동 기록 필요.`,
-                            ).catch((e) => console.error('[email]', e));
+                            );
                             results.push({
                                 id: order.id,
                                 symbol: order.symbol,
@@ -170,10 +182,10 @@ async function handler(req: Request): Promise<Response> {
                                 status: 'needs_review',
                                 resolvedAt: new Date(),
                             });
-                            await sendErrorEmail(
+                            await notifyError(
                                 `부분체결 타임아웃 — 수동 확인: ${order.symbol}`,
                                 `${order.side} 주문 ${order.tossOrderId} 가 30분 경과 부분체결(${detail.filledQuantity}주 @ ${detail.avgFilledPrice}). 잔량 취소 시도함. 수동 기록 필요.`,
-                            ).catch((e) => console.error('[email]', e));
+                            );
                             results.push({
                                 id: order.id,
                                 symbol: order.symbol,
@@ -215,19 +227,19 @@ async function handler(req: Request): Promise<Response> {
         // Auto-recover filled orders without matching trades
         const recovery = await autoRecoverFilledOrders(db);
         if (recovery.recovered > 0 || recovery.failed > 0) {
-            await sendErrorEmail(
+            await notifyError(
                 `자동 복구 결과: ${recovery.recovered}건 성공, ${recovery.failed}건 실패`,
                 recovery.details.join('\n'),
-            ).catch((e) => console.error('[email]', e));
+            );
         }
 
         // DB consistency check
         const consistency = await checkConsistency(db);
         if (consistency.alerts.length > 0) {
-            await sendErrorEmail(
+            await notifyError(
                 `DB 정합성 경고 (${consistency.alerts.length}건)`,
                 consistency.alerts.join('\n'),
-            ).catch((e) => console.error('[email]', e));
+            );
         }
 
         // Holdings reconciliation — compare broker holdings vs DB open positions.
@@ -269,10 +281,10 @@ async function handler(req: Request): Promise<Response> {
 
                 holdingsMismatchCount = mismatches.length;
                 if (mismatches.length > 0) {
-                    await sendErrorEmail(
+                    await notifyError(
                         `보유 정합성 불일치 (${mismatches.length}건)`,
                         mismatches.join('\n'),
-                    ).catch((e) => console.error('[email]', e));
+                    );
                 }
             }
         }

@@ -224,9 +224,10 @@ describe('PositionsPage', () => {
         expect(mockedApi.closePosition).toHaveBeenCalledWith(1);
     });
 
-    it('shows loading state on close button while mutation is pending', async () => {
+    it('optimistically removes the position while the close is pending', async () => {
         const user = userEvent.setup();
         mockedApi.getPositions.mockResolvedValue(mockPositions);
+        // Never resolves: the row must disappear from the optimistic update alone.
         mockedApi.closePosition.mockReturnValue(new Promise(() => {}));
 
         renderWithQuery(<PositionsPage />);
@@ -238,8 +239,28 @@ describe('PositionsPage', () => {
         await user.click(screen.getByLabelText('AAPL 포지션 청산'));
 
         await waitFor(() => {
-            expect(screen.getByText('처리 중...')).toBeInTheDocument();
+            expect(screen.queryByLabelText('AAPL 포지션 청산')).not.toBeInTheDocument();
         });
+    });
+
+    it('restores the position and shows an error when close fails', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+        mockedApi.closePosition.mockRejectedValue(new Error('boom'));
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
+
+        await waitFor(() => {
+            expect(screen.getByText('포지션 청산에 실패했습니다')).toBeInTheDocument();
+        });
+        // Rolled back: the position is visible again.
+        expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
     });
 
     // --- timeAgo display ---
