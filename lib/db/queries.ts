@@ -10,6 +10,8 @@ import {
     config,
     notificationConfig,
     orderTracking,
+    cronRuns,
+    cronDecisions,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -488,4 +490,94 @@ export async function getPendingSubmittedOrders(db: Db) {
         .from(orderTracking)
         .where(inArray(orderTracking.status, ['submitted', 'pending', 'partial']))
         .orderBy(orderTracking.submittedAt);
+}
+
+// ---------------------------------------------------------------------------
+// Cron audit log
+// ---------------------------------------------------------------------------
+
+export type CronType = 'technical' | 'news' | 'options' | 'fundamental' | 'execute' | 'reconcile';
+
+export type CronOutcome =
+    | 'completed'
+    | 'market_closed'
+    | 'us_market_holiday'
+    | 'trading_disabled'
+    | 'empty_watchlist'
+    | 'locked'
+    | 'disabled'
+    | 'daily_trade_limit'
+    | 'daily_loss_limit';
+
+export async function startCronRun(
+    db: Db,
+    params: { runId: string; cronType: CronType; startedAt: Date },
+) {
+    return db
+        .insert(cronRuns)
+        .values({
+            runId: params.runId,
+            cronType: params.cronType,
+            status: 'running',
+            startedAt: params.startedAt,
+        })
+        .onConflictDoNothing();
+}
+
+export type CronRunFinish =
+    | {
+          status: 'completed';
+          outcome: CronOutcome;
+          summary?: unknown;
+          durationMs?: number;
+          finishedAt: Date;
+      }
+    | { status: 'skipped'; outcome: CronOutcome; durationMs?: number; finishedAt: Date }
+    | { status: 'error'; error: string; durationMs?: number; finishedAt: Date };
+
+export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
+    const set: Partial<typeof cronRuns.$inferInsert> = {
+        status: p.status,
+        durationMs: p.durationMs,
+        finishedAt: p.finishedAt,
+    };
+    if (p.status === 'error') {
+        set.error = p.error;
+    } else {
+        set.outcome = p.outcome;
+        if (p.status === 'completed' && p.summary !== undefined) {
+            set.summary = p.summary as (typeof cronRuns.$inferInsert)['summary'];
+        }
+    }
+    return db.update(cronRuns).set(set).where(eq(cronRuns.runId, runId));
+}
+
+export interface CronDecisionInput {
+    symbol?: string;
+    action: string;
+    executed?: boolean;
+    score?: number;
+    reason?: string;
+    detail?: unknown;
+}
+
+export async function insertCronDecisions(
+    db: Db,
+    runId: string,
+    cronType: CronType,
+    decisions: CronDecisionInput[],
+) {
+    if (decisions.length === 0) return;
+    return db.insert(cronDecisions).values(
+        decisions.map((d) => ({
+            runId,
+            cronType,
+            symbol: d.symbol,
+            action: d.action,
+            executed: d.executed ?? false,
+            score: d.score != null && Number.isFinite(d.score) ? String(d.score) : null,
+            reason: d.reason,
+            detail: d.detail,
+        })),
+    );
 }

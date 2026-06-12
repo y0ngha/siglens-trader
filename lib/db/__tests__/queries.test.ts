@@ -36,6 +36,9 @@ import {
     createOrderTracking,
     updateOrderTracking,
     getPendingSubmittedOrders,
+    startCronRun,
+    finishCronRun,
+    insertCronDecisions,
 } from '../queries';
 import type { Db } from '../index';
 
@@ -1093,6 +1096,235 @@ describe('Order tracking queries', () => {
             expect(db._chain.where).toHaveBeenCalledWith(expectedWhere);
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Cron audit log
+// ---------------------------------------------------------------------------
+
+describe('Cron audit log queries', () => {
+    describe('startCronRun', () => {
+        it('calls insert().values().onConflictDoNothing() with status=running', async () => {
+            const startedAt = new Date('2026-06-12T13:00:00Z');
+            const db = createMockDb(undefined);
+
+            await startCronRun(db as unknown as Db, {
+                runId: 'run-technical-abc123',
+                cronType: 'technical',
+                startedAt,
+            });
+
+            expect(
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+            ).toHaveBeenCalled();
+            expect(db._chain.values).toHaveBeenCalledWith({
+                runId: 'run-technical-abc123',
+                cronType: 'technical',
+                status: 'running',
+                startedAt,
+            });
+            expect(db._chain.onConflictDoNothing).toHaveBeenCalled();
+        });
+    });
+
+    describe('finishCronRun', () => {
+        it('calls update().set().where() with all finish fields', async () => {
+            const finishedAt = new Date('2026-06-12T13:01:30Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'run-technical-abc123', {
+                status: 'completed',
+                outcome: 'completed',
+                summary: { analyzed: 5, skipped: 0 },
+                durationMs: 1500,
+                finishedAt,
+            });
+
+            expect(
+                (db as unknown as { update: ReturnType<typeof vi.fn> }).update,
+            ).toHaveBeenCalled();
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'completed',
+                    outcome: 'completed',
+                    summary: { analyzed: 5, skipped: 0 },
+                    durationMs: 1500,
+                    finishedAt,
+                }),
+            );
+            expect(db._chain.where).toHaveBeenCalled();
+        });
+
+        it('handles skipped status with no summary or error', async () => {
+            const finishedAt = new Date('2026-06-12T13:01:00Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'run-execute-xyz', {
+                status: 'skipped',
+                outcome: 'market_closed',
+                finishedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'skipped',
+                    outcome: 'market_closed',
+                    finishedAt,
+                }),
+            );
+        });
+
+        it('handles error status with error message', async () => {
+            const finishedAt = new Date('2026-06-12T14:00:00Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'run-execute-err', {
+                status: 'error',
+                error: 'DB connection timeout',
+                finishedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'error',
+                    error: 'DB connection timeout',
+                    finishedAt,
+                }),
+            );
+        });
+    });
+
+    describe('insertCronDecisions', () => {
+        it('returns early without calling insert when decisions array is empty', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-execute-abc', 'execute', []);
+
+            expect(
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+            ).not.toHaveBeenCalled();
+        });
+
+        it('calls insert().values() with correctly mapped rows', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-execute-abc', 'execute', [
+                {
+                    symbol: 'AAPL',
+                    action: 'buy',
+                    executed: true,
+                    score: 75,
+                    reason: 'Strong technical signal',
+                    detail: { technical: 85, news: 60 },
+                },
+                {
+                    symbol: 'MSFT',
+                    action: 'hold',
+                    executed: false,
+                    score: 55,
+                    reason: 'Below threshold',
+                },
+            ]);
+
+            expect(
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+            ).toHaveBeenCalled();
+            expect(db._chain.values).toHaveBeenCalledWith([
+                {
+                    runId: 'run-execute-abc',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'buy',
+                    executed: true,
+                    score: '75',
+                    reason: 'Strong technical signal',
+                    detail: { technical: 85, news: 60 },
+                },
+                {
+                    runId: 'run-execute-abc',
+                    cronType: 'execute',
+                    symbol: 'MSFT',
+                    action: 'hold',
+                    executed: false,
+                    score: '55',
+                    reason: 'Below threshold',
+                    detail: undefined,
+                },
+            ]);
+        });
+
+        it('converts score=0 to "0" (falsy-zero boundary)', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-technical-abc', 'technical', [
+                { action: 'analyze', score: 0 },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ score: '0' }),
+            ]);
+        });
+
+        it('maps score=NaN to null (NaN-defense guard)', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-technical-abc', 'technical', [
+                { action: 'analyze', score: NaN },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ score: null }),
+            ]);
+        });
+
+        it('sets score to null when score is omitted', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-technical-abc', 'technical', [
+                { action: 'analyze' },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ score: null }),
+            ]);
+        });
+
+        it('defaults executed to false when omitted', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-execute-abc', 'execute', [
+                { symbol: 'TSLA', action: 'buy' },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ executed: false }),
+            ]);
+        });
+
+        it('preserves explicit executed=true', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-execute-abc', 'execute', [
+                { symbol: 'NVDA', action: 'buy', executed: true },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ executed: true }),
+            ]);
+        });
+
+        it('handles decision without symbol (e.g. global action)', async () => {
+            const db = createMockDb(undefined);
+
+            await insertCronDecisions(db as unknown as Db, 'run-reconcile-abc', 'reconcile', [
+                { action: 'consistency_check', reason: 'Detected orphaned order' },
+            ]);
+
+            expect(db._chain.values).toHaveBeenCalledWith([
+                expect.objectContaining({ symbol: undefined, action: 'consistency_check' }),
+            ]);
         });
     });
 });

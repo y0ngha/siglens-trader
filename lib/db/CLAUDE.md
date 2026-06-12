@@ -6,7 +6,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 
 | File | Responsibility |
 |------|---------------|
-| `schema.ts` | Drizzle table definitions (9 tables) |
+| `schema.ts` | Drizzle table definitions (11 tables) |
 | `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
@@ -27,6 +27,8 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `config` | Key-value settings (JSONB value) |
 | `order_tracking` | Order lifecycle tracking (unique idempotency key, `client_order_id` Toss idempotency key, status transitions) |
 | `notification_config` | Email channel settings |
+| `cron_runs` | One row per cron invocation (health: status, outcome, duration, summary) |
+| `cron_decisions` | Per-symbol/per-order decision audit (action + reason, linked to cron_runs by run_id) |
 
 ## Key Query Functions (added in audit)
 

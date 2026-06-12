@@ -19,11 +19,15 @@ const mockGetEnabledWatchlist = vi.fn();
 const mockGetAnalysisConfig = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
+const mockStartCronRun = vi.fn();
+const mockFinishCronRun = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
+    startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
+    finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<boolean>>();
@@ -78,6 +82,8 @@ describe('createAnalysisCronHandler', () => {
         mockGetConfigValue.mockResolvedValue(null);
         mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
         mockSaveAnalysisResult.mockResolvedValue([]);
+        mockStartCronRun.mockResolvedValue(undefined);
+        mockFinishCronRun.mockResolvedValue(undefined);
         mockVerifyCronSecret.mockReturnValue(true);
         mockIsEtRegularSessionOpen.mockReturnValue(true);
         mockAcquireLock.mockResolvedValue(true);
@@ -144,9 +150,8 @@ describe('createAnalysisCronHandler', () => {
     });
 
     it('releases lock even when handler throws', async () => {
-        mockGetDb.mockImplementation(() => {
-            throw new Error('DB connection failed');
-        });
+        // Throw after lock acquisition (getAnalysisConfig runs inside the lock)
+        mockGetAnalysisConfig.mockRejectedValue(new Error('DB connection failed'));
 
         await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
 
@@ -288,6 +293,119 @@ describe('createAnalysisCronHandler', () => {
         await optionsHandler(makeRequest(true));
 
         expect(mockGetAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'options');
+    });
+
+    // ---------------------------------------------------------------------------
+    // Cron audit logging (cron_runs)
+    // ---------------------------------------------------------------------------
+
+    it('calls startCronRun with the analysisType as cronType', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockStartCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ cronType: 'technical' }),
+        );
+    });
+
+    it('calls finishCronRun with status:completed and outcome:completed on normal run', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({
+                status: 'completed',
+                outcome: 'completed',
+                summary: { processed: fakeWatchlist.length, saved: fakeWatchlist.length },
+            }),
+        );
+    });
+
+    it('calls finishCronRun with status:skipped and outcome:disabled when config is disabled', async () => {
+        mockGetAnalysisConfig.mockResolvedValue({ ...fakeConfig, enabled: false });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'skipped', outcome: 'disabled' }),
+        );
+    });
+
+    it('calls finishCronRun with status:skipped and outcome:market_closed when session is closed', async () => {
+        mockIsEtRegularSessionOpen.mockReturnValue(false);
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'skipped', outcome: 'market_closed' }),
+        );
+    });
+
+    it('calls finishCronRun with status:skipped and outcome:empty_watchlist when watchlist is empty', async () => {
+        mockGetEnabledWatchlist.mockResolvedValue([]);
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'skipped', outcome: 'empty_watchlist' }),
+        );
+    });
+
+    it('calls finishCronRun with status:skipped and outcome:locked when lock cannot be acquired', async () => {
+        mockAcquireLock.mockResolvedValue(false);
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'skipped', outcome: 'locked' }),
+        );
+    });
+
+    it('calls finishCronRun with status:error when handler throws', async () => {
+        mockGetEnabledWatchlist.mockRejectedValue(new Error('DB timeout'));
+
+        await expect(handler(makeRequest(true))).rejects.toThrow('DB timeout');
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'error', error: 'DB timeout' }),
+        );
+    });
+
+    it('does not break the cron when startCronRun fails', async () => {
+        mockStartCronRun.mockRejectedValue(new Error('audit DB down'));
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        const res = await handler(makeRequest(true));
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.cronRunId).toMatch(/^technical-/);
+    });
+
+    it('does not break the cron when finishCronRun fails', async () => {
+        mockFinishCronRun.mockRejectedValue(new Error('audit DB down'));
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        const res = await handler(makeRequest(true));
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.cronRunId).toMatch(/^technical-/);
     });
 });
 

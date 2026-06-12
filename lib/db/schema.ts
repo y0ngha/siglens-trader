@@ -9,6 +9,7 @@ import {
     jsonb,
     timestamp,
     uniqueIndex,
+    index,
 } from 'drizzle-orm/pg-core';
 
 export const watchlist = pgTable('watchlist', {
@@ -117,3 +118,42 @@ export const notificationConfig = pgTable('notification_config', {
     target: text('target').notNull(),
     events: text('events').array().default([]).notNull(),
 });
+
+// status = lifecycle (running→completed/skipped/error); outcome = machine-readable reason (market_closed, locked, …); summary = structured counts
+export const cronRuns = pgTable(
+    'cron_runs',
+    {
+        id: serial('id').primaryKey(),
+        runId: text('run_id').notNull().unique(),
+        cronType: text('cron_type').notNull(), // technical|news|options|fundamental|execute|reconcile
+        status: text('status').notNull(), // running|completed|skipped|error
+        outcome: text('outcome'),
+        startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+        finishedAt: timestamp('finished_at', { withTimezone: true }),
+        durationMs: integer('duration_ms'),
+        summary: jsonb('summary'),
+        error: text('error'),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [index('idx_cron_runs_type_started').on(table.cronType, table.startedAt)],
+);
+
+export const cronDecisions = pgTable(
+    'cron_decisions',
+    {
+        id: serial('id').primaryKey(),
+        runId: text('run_id').notNull(),
+        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries
+        symbol: text('symbol'),
+        action: text('action').notNull(),
+        executed: boolean('executed').default(false).notNull(),
+        score: numeric('score'),
+        reason: text('reason'),
+        detail: jsonb('detail'),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [
+        index('idx_cron_decisions_run').on(table.runId),
+        index('idx_cron_decisions_symbol_created').on(table.symbol, table.createdAt),
+    ],
+);
