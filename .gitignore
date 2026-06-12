@@ -30,3 +30,5 @@ Thumbs.db
 !.yarn/versions
 .pnp.*
 .vercel
+
+.env.deployment
