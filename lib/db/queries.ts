@@ -410,8 +410,12 @@ export async function updateNotificationConfig(
     channel: string,
     updates: { enabled?: boolean; target?: string; events?: string[] },
 ) {
+    // Empty updates would make `DO UPDATE SET` empty (SQL error). Unreachable from
+    // the dashboard (always ≥1 field), but guard against future regressions.
+    if (Object.keys(updates).length === 0) return;
     // Upsert: a plain UPDATE silently no-ops when the row is missing, which made
-    // the dashboard toggle appear broken. Insert a complete row on first write.
+    // the dashboard toggle appear broken. Insert a complete row on first write;
+    // on conflict only the provided fields are written (partial update preserved).
     return db
         .insert(notificationConfig)
         .values({

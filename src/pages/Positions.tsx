@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { EmptyState } from '@/components/EmptyState';
@@ -35,6 +35,15 @@ function pnlColorClass(pnl: number | null): string {
 
 export function PositionsPage() {
     const [closeError, setCloseError] = useState<string | null>(null);
+    // Hold the dismiss timer so repeated failures reset it (no early clear) and it
+    // is cleaned up on unmount (no stray setState / leak).
+    const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        return () => {
+            if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        };
+    }, []);
 
     const { data, isLoading, error } = useQuery({
         queryKey: ['positions'],
@@ -49,7 +58,8 @@ export function PositionsPage() {
         updater: (old, id) => old?.filter((p) => p.id !== id),
         onError: () => {
             setCloseError('포지션 청산에 실패했습니다');
-            setTimeout(() => setCloseError(null), 3000);
+            if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+            errorTimerRef.current = setTimeout(() => setCloseError(null), 3000);
         },
     });
 

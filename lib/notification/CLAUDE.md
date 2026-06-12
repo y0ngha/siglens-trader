@@ -25,7 +25,8 @@ The dashboard exposes a master ON/OFF toggle plus per-event checkboxes
 every send: `if (shouldEmail('trade_executed')) await sendTradeExecutedEmail(...)`.
 
 - execute cron: approvals → `order_pending` (legacy alias `approval_required`),
-  new-trade fills → `trade_executed`, position exits → `trade_executed`/`stop_loss`.
+  new-trade fills → `trade_executed`, position exits → `stop_loss` for stop-loss
+  closures else `trade_executed`, all error/circuit-breaker alerts → `error`.
 - reconcile cron: all timeout / needs-review / consistency / holdings alerts → `error`.
 - `enabled === false` (or a missing row) suppresses **all** email, including safety alerts.
 - `updateNotificationConfig` upserts (a bare UPDATE silently no-ops on a missing row,

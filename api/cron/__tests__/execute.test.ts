@@ -505,6 +505,44 @@ describe('execute cron handler', () => {
                 );
             });
 
+            it('does NOT send the loss-limit error email when email is disabled', async () => {
+                mockGetNotificationConfig.mockResolvedValue([
+                    { channel: 'email', enabled: false, target: 't@e.com', events: ['error'] },
+                ]);
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_daily_loss_usd') return Promise.resolve(300);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayRealizedPnl.mockResolvedValue(-350);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                // Circuit breaker still trips — only the alert email is suppressed.
+                expect(body.reason).toBe('daily_loss_limit_reached');
+                expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            });
+
+            it('does NOT send the loss-limit error email when the error event is unselected', async () => {
+                mockGetNotificationConfig.mockResolvedValue([
+                    {
+                        channel: 'email',
+                        enabled: true,
+                        target: 't@e.com',
+                        events: ['trade_executed'],
+                    },
+                ]);
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_daily_loss_usd') return Promise.resolve(300);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayRealizedPnl.mockResolvedValue(-350);
+
+                await handler(makeRequest(true));
+
+                expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            });
+
             it('proceeds when loss is within limit', async () => {
                 mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                     if (key === 'max_daily_loss_usd') return Promise.resolve(500);
