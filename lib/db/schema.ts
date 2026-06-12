@@ -119,6 +119,7 @@ export const notificationConfig = pgTable('notification_config', {
     events: text('events').array().default([]).notNull(),
 });
 
+// status = lifecycle (running→completed/skipped/error); outcome = machine-readable reason (market_closed, locked, …); summary = structured counts
 export const cronRuns = pgTable(
     'cron_runs',
     {
@@ -142,7 +143,7 @@ export const cronDecisions = pgTable(
     {
         id: serial('id').primaryKey(),
         runId: text('run_id').notNull(),
-        cronType: text('cron_type').notNull(),
+        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries
         symbol: text('symbol'),
         action: text('action').notNull(),
         executed: boolean('executed').default(false).notNull(),

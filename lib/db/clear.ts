@@ -10,6 +10,7 @@ import {
     analysisModelConfig,
     notificationConfig,
     config,
+    orderTracking,
     cronRuns,
     cronDecisions,
 } from './schema.js';
@@ -31,8 +32,8 @@ export async function clear() {
 
     console.warn('\n⚠️  WARNING: This will DELETE ALL DATA from the database.');
     console.warn('   Tables: watchlist, analysis_model_config, analysis_results,');
-    console.warn('           positions, trades, pending_orders, config, notification_config,');
-    console.warn('           cron_runs, cron_decisions\n');
+    console.warn('           positions, trades, pending_orders, config, order_tracking,');
+    console.warn('           notification_config, cron_runs, cron_decisions\n');
 
     const confirmed = await confirm('Are you sure? (Y/n): ');
     if (!confirmed) {
@@ -49,6 +50,7 @@ export async function clear() {
         { table: analysisResults, name: 'analysis_results' },
         { table: trades, name: 'trades' },
         { table: pendingOrders, name: 'pending_orders' },
+        { table: orderTracking, name: 'order_tracking' },
         { table: positions, name: 'positions' },
         { table: watchlist, name: 'watchlist' },
         { table: analysisModelConfig, name: 'analysis_model_config' },
