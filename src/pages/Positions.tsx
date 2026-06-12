@@ -143,7 +143,7 @@ export function PositionsPage() {
                                 <button
                                     type="button"
                                     onClick={() => closeMutation.mutate(position.id)}
-                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
                                     aria-label={`${position.symbol} 포지션 청산`}
                                 >
                                     청산

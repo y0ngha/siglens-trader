@@ -128,7 +128,7 @@ async function handler(req: Request): Promise<Response> {
             await notifyError(
                 '일일 손실 한도 초과',
                 `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
-            ).catch((err) => console.error('[email] send failed:', err));
+            );
             return Response.json({
                 skipped: true,
                 reason: 'daily_loss_limit_reached',
@@ -161,7 +161,7 @@ async function handler(req: Request): Promise<Response> {
                 await notifyError(
                     '일일 손실 한도 초과 (미실현 포함)',
                     `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
-                ).catch((err) => console.error('[email] send failed:', err));
+                );
                 return Response.json({
                     skipped: true,
                     reason: 'daily_loss_limit_reached',
@@ -302,7 +302,7 @@ async function handler(req: Request): Promise<Response> {
                     await notifyError(
                         `가격 데이터 없음: ${position.symbol}`,
                         `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
-                    ).catch((err) => console.error('[email] send failed:', err));
+                    );
                     continue;
                 }
 
@@ -471,7 +471,7 @@ async function handler(req: Request): Promise<Response> {
                             await notifyError(
                                 `주문 거부: ${position.symbol}`,
                                 orderResult.rejectReason ?? '거부 사유 없음',
-                            ).catch((err) => console.error('[email] send failed:', err));
+                            );
                             break;
                         }
                         // pending/partial: NO trade, NO position mutation, NO exposure change.
@@ -482,12 +482,12 @@ async function handler(req: Request): Promise<Response> {
                                 await notifyError(
                                     `부분 체결: ${position.symbol}`,
                                     `${position.symbol} sell ${orderResult.filledQuantity ?? '?'} / ${sellQty}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             } else {
                                 await notifyError(
                                     `미체결 주문: ${position.symbol}`,
                                     `${position.symbol} sell ${sellQty}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             }
                             decisions.push({
                                 symbol: position.symbol,
@@ -612,9 +612,7 @@ async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await notifyError(position.symbol, String(err)).catch((err) =>
-                    console.error('[email] send failed:', err),
-                );
+                await notifyError(position.symbol, String(err));
                 decisions.push({ symbol: position.symbol, action: 'error', score: 0 });
             }
         }
@@ -870,7 +868,7 @@ async function handler(req: Request): Promise<Response> {
                     await notifyError(
                         `잔고 부족: ${item.symbol}`,
                         `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
-                    ).catch((err) => console.error('[email] send failed:', err));
+                    );
 
                     decisions.push({
                         symbol: item.symbol,
@@ -1144,7 +1142,7 @@ async function handler(req: Request): Promise<Response> {
                             await notifyError(
                                 `주문 거부: ${item.symbol}`,
                                 orderResult.rejectReason ?? '거부 사유 없음',
-                            ).catch((err) => console.error('[email] send failed:', err));
+                            );
                             break;
                         }
                         // Order is live (filled/partial/pending) and will consume cash —
@@ -1161,12 +1159,12 @@ async function handler(req: Request): Promise<Response> {
                                 await notifyError(
                                     `부분 체결: ${item.symbol}`,
                                     `${item.symbol} ${orderResult.filledQuantity ?? '?'} / ${autoQuantity}주 부분 체결, 주문ID ${orderResult.orderId ?? 'N/A'}, reconcile가 잔량/최종 체결을 확정합니다.`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             } else {
                                 await notifyError(
                                     `미체결 주문: ${item.symbol}`,
                                     `${item.symbol} ${decision.action} ${autoQuantity}주 주문이 접수되었으나 아직 체결되지 않았습니다. 주문 ID: ${orderResult.orderId ?? 'N/A'}`,
-                                ).catch((err) => console.error('[email] send failed:', err));
+                                );
                             }
                             decisions.push({
                                 symbol: item.symbol,
@@ -1384,9 +1382,7 @@ async function handler(req: Request): Promise<Response> {
                     });
                 }
             } catch (err) {
-                await notifyError(item.symbol, String(err)).catch((err) =>
-                    console.error('[email] send failed:', err),
-                );
+                await notifyError(item.symbol, String(err));
                 decisions.push({ symbol: item.symbol, action: 'error', score: 0 });
             }
         }
