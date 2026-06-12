@@ -368,7 +368,15 @@ async function handler(req: Request): Promise<Response> {
                         overallSignal: overallSentiment,
                     });
 
-                    if (evaluation.action === 'hold') continue;
+                    if (evaluation.action === 'hold') {
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'hold',
+                            score: 0,
+                            executed: false,
+                        });
+                        continue;
+                    }
 
                     // Track stop-loss closures to prevent same-run re-buy
                     if (evaluation.action === 'stop_loss') {

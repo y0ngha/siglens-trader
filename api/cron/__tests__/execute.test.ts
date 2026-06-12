@@ -1850,8 +1850,11 @@ describe('execute cron handler', () => {
                 expect.stringContaining('잔고 부족으로 미실행'),
             );
 
-            // Should report as skipped in decisions
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'skipped', score: 80 }]);
+            // Should report as skipped in decisions (MSFT position hold precedes AAPL watchlist entry)
+            expect(body.decisions).toEqual([
+                { symbol: 'MSFT', action: 'hold', score: 0, executed: false },
+                { symbol: 'AAPL', action: 'skipped', score: 80 },
+            ]);
         });
 
         it('does not record skipped trade when signal is hold (not buy)', async () => {
@@ -1870,7 +1873,10 @@ describe('execute cron handler', () => {
 
             expect(mockInsertTrade).not.toHaveBeenCalled();
             expect(mockSendErrorEmail).not.toHaveBeenCalled();
-            expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'hold', score: 50 }]);
+            expect(body.decisions).toEqual([
+                { symbol: 'MSFT', action: 'hold', score: 0, executed: false },
+                { symbol: 'AAPL', action: 'hold', score: 50 },
+            ]);
         });
 
         it('does not record skipped trade when calculatedSize > 0', async () => {
@@ -1896,6 +1902,7 @@ describe('execute cron handler', () => {
                 }),
             );
             expect(body.decisions).toEqual([
+                { symbol: 'MSFT', action: 'hold', score: 0, executed: false },
                 { symbol: 'AAPL', action: 'buy', score: 80, executed: true },
             ]);
         });
@@ -1917,9 +1924,16 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            expect(body.decisions).toHaveLength(2);
-            expect(body.decisions[0]).toEqual({ symbol: 'AAPL', action: 'skipped', score: 80 });
-            expect(body.decisions[1]).toEqual({ symbol: 'TSLA', action: 'skipped', score: 80 });
+            // MSFT position hold now precedes the two watchlist skips
+            expect(body.decisions).toHaveLength(3);
+            expect(body.decisions[0]).toEqual({
+                symbol: 'MSFT',
+                action: 'hold',
+                score: 0,
+                executed: false,
+            });
+            expect(body.decisions[1]).toEqual({ symbol: 'AAPL', action: 'skipped', score: 80 });
+            expect(body.decisions[2]).toEqual({ symbol: 'TSLA', action: 'skipped', score: 80 });
             expect(mockInsertTrade).toHaveBeenCalledTimes(2);
         });
     });
@@ -2060,6 +2074,45 @@ describe('execute cron handler', () => {
             );
         });
 
+        it('records hold decision for position re-evaluation that returns hold', async () => {
+            mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechHealthy);
+                    return Promise.resolve(null);
+                },
+            );
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'hold',
+                reason: '유지 (조건 미충족)',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // A held position must appear in decisions[] so symbolsEvaluated counts it.
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    action: 'hold',
+                    executed: false,
+                }),
+            );
+            // insertCronDecisions must receive the hold entry.
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String), // cronRunId
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        action: 'hold',
+                        executed: false,
+                    }),
+                ]),
+            );
+        });
+
         it('sells position in dry_run when trend is bearish', async () => {
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockImplementation(
@@ -2190,8 +2243,10 @@ describe('execute cron handler', () => {
             // No trade or position close
             expect(mockInsertTrade).not.toHaveBeenCalled();
             expect(mockClosePosition).not.toHaveBeenCalled();
-            // No decisions pushed for hold
-            expect(body.decisions).toEqual([]);
+            // Hold decision IS now pushed so symbolsEvaluated counts it
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'hold', score: 0, executed: false },
+            ]);
         });
 
         it('skips position when no currentPrice available', async () => {
