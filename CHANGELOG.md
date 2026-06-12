@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/y0ngha/siglens-trader/compare/v0.2.1...v0.2.2) (2026-06-12)
+
+
+### Bug Fixes
+
+* API 핸들러 서명 수정 (named export로 Vercel Node 런타임 호환) ([0b426bd](https://github.com/y0ngha/siglens-trader/commit/0b426bd811580682f5ff0ee6bff5bf746fce6f40))
+
 ## [0.2.1](https://github.com/y0ngha/siglens-trader/compare/v0.2.0...v0.2.1) (2026-06-12)
 
 
