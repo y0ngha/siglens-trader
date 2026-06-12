@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/y0ngha/siglens-trader/compare/v0.2.0...v0.2.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* ESM 모듈 해석 실패로 인한 production 500 오류 (FUNCTION_INVOCATION_FAILED) ([d70cffe](https://github.com/y0ngha/siglens-trader/commit/d70cffe352eb7a07adecc2522b52550c53a8d48a))
+
 # 0.2.0 (2026-06-12)
 
 
