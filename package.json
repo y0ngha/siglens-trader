@@ -29,10 +29,10 @@
         "db:seed": "tsx --env-file=.env.local lib/db/seed.ts",
         "db:clear": "tsx --env-file=.env.local lib/db/clear.ts",
         "prepare": "husky",
-        "release": "release-it",
-        "release:patch": "release-it patch",
-        "release:minor": "release-it minor",
-        "release:major": "release-it major"
+        "release": "dotenv -e .env.local -- release-it",
+        "release:patch": "dotenv -e .env.local -- release-it patch",
+        "release:minor": "dotenv -e .env.local -- release-it minor",
+        "release:major": "dotenv -e .env.local -- release-it major"
     },
     "dependencies": {
         "@neondatabase/serverless": "^1.1.0",
