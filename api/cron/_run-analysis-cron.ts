@@ -16,6 +16,8 @@ import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;
 
 export function createAnalysisCronHandler(analysisType: string, runner: AnalysisRunner) {
+    const LOCK_KEY = `cron:${analysisType}:lock`;
+
     return async function handler(req: Request): Promise<Response> {
         if (!verifyCronSecret(req)) {
             return new Response('Unauthorized', { status: 401 });
@@ -29,6 +31,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
 
         // Best-effort audit helper — failures never break the cron
         const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
+        const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
 
         await safe(startCronRun(db, { runId: cronRunId, cronType, startedAt }));
 
@@ -40,21 +43,18 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 finishState = {
                     status: 'skipped',
                     outcome: 'market_closed',
-                    durationMs: Date.now() - startedMs,
-                    finishedAt: new Date(),
+                    ...elapsed(),
                 };
                 return Response.json({ skipped: true, reason: 'market_closed' });
             }
 
-            const LOCK_KEY = `cron:${analysisType}:lock`;
             let lockAcquired = false;
             const locked = await acquireLock(LOCK_KEY);
             if (!locked) {
                 finishState = {
                     status: 'skipped',
                     outcome: 'locked',
-                    durationMs: Date.now() - startedMs,
-                    finishedAt: new Date(),
+                    ...elapsed(),
                 };
                 return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
             }
@@ -66,8 +66,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     finishState = {
                         status: 'skipped',
                         outcome: 'disabled',
-                        durationMs: Date.now() - startedMs,
-                        finishedAt: new Date(),
+                        ...elapsed(),
                     };
                     return Response.json({ skipped: true, reason: 'disabled' });
                 }
@@ -77,8 +76,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     finishState = {
                         status: 'skipped',
                         outcome: 'empty_watchlist',
-                        durationMs: Date.now() - startedMs,
-                        finishedAt: new Date(),
+                        ...elapsed(),
                     };
                     return Response.json({ skipped: true, reason: 'empty_watchlist' });
                 }
@@ -118,20 +116,23 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 finishState = {
                     status: 'completed',
                     outcome: 'completed',
-                    summary: { analyzed: results.length },
-                    durationMs: Date.now() - startedMs,
-                    finishedAt: new Date(),
+                    summary: {
+                        processed: results.length,
+                        saved: results.filter((r) => r.status === 'done' || r.status === 'cached')
+                            .length,
+                    },
+                    ...elapsed(),
                 };
                 return Response.json({ cronRunId, results });
             } finally {
-                if (lockAcquired) await releaseLock(LOCK_KEY);
+                if (lockAcquired)
+                    await releaseLock(LOCK_KEY).catch((e) => console.error('[lock-release]', e));
             }
         } catch (e) {
             finishState = {
                 status: 'error',
                 error: e instanceof Error ? e.message : String(e),
-                durationMs: Date.now() - startedMs,
-                finishedAt: new Date(),
+                ...elapsed(),
             };
             throw e;
         } finally {

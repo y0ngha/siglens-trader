@@ -321,8 +321,20 @@ describe('createAnalysisCronHandler', () => {
             expect.objectContaining({
                 status: 'completed',
                 outcome: 'completed',
-                summary: { analyzed: fakeWatchlist.length },
+                summary: { processed: fakeWatchlist.length, saved: fakeWatchlist.length },
             }),
+        );
+    });
+
+    it('calls finishCronRun with status:skipped and outcome:disabled when config is disabled', async () => {
+        mockGetAnalysisConfig.mockResolvedValue({ ...fakeConfig, enabled: false });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({ status: 'skipped', outcome: 'disabled' }),
         );
     });
 
