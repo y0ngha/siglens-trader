@@ -10,6 +10,8 @@ import {
     config,
     notificationConfig,
     orderTracking,
+    cronRuns,
+    cronDecisions,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -488,4 +490,76 @@ export async function getPendingSubmittedOrders(db: Db) {
         .from(orderTracking)
         .where(inArray(orderTracking.status, ['submitted', 'pending', 'partial']))
         .orderBy(orderTracking.submittedAt);
+}
+
+// ---------------------------------------------------------------------------
+// Cron audit log
+// ---------------------------------------------------------------------------
+
+export async function startCronRun(
+    db: Db,
+    params: { runId: string; cronType: string; startedAt: Date },
+) {
+    return db
+        .insert(cronRuns)
+        .values({
+            runId: params.runId,
+            cronType: params.cronType,
+            status: 'running',
+            startedAt: params.startedAt,
+        })
+        .onConflictDoNothing();
+}
+
+export interface CronRunFinish {
+    status: 'completed' | 'skipped' | 'error';
+    outcome?: string;
+    summary?: unknown;
+    error?: string;
+    durationMs?: number;
+    finishedAt: Date;
+}
+
+export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
+    return db
+        .update(cronRuns)
+        .set({
+            status: p.status,
+            outcome: p.outcome,
+            summary: p.summary as Record<string, unknown> | undefined,
+            error: p.error,
+            durationMs: p.durationMs,
+            finishedAt: p.finishedAt,
+        })
+        .where(eq(cronRuns.runId, runId));
+}
+
+export interface CronDecisionInput {
+    symbol?: string;
+    action: string;
+    executed?: boolean;
+    score?: number;
+    reason?: string;
+    detail?: unknown;
+}
+
+export async function insertCronDecisions(
+    db: Db,
+    runId: string,
+    cronType: string,
+    decisions: CronDecisionInput[],
+) {
+    if (decisions.length === 0) return;
+    return db.insert(cronDecisions).values(
+        decisions.map((d) => ({
+            runId,
+            cronType,
+            symbol: d.symbol,
+            action: d.action,
+            executed: d.executed ?? false,
+            score: d.score != null ? String(d.score) : null,
+            reason: d.reason,
+            detail: d.detail as Record<string, unknown> | undefined,
+        })),
+    );
 }
