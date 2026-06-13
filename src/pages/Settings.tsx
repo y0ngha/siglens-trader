@@ -670,14 +670,36 @@ export function SettingsPage() {
                     <button
                         type="button"
                         onClick={() => {
-                            for (const [key, val] of Object.entries(riskOverrides)) {
-                                mutate(
+                            const entries = Object.entries(riskOverrides);
+                            let failCount = 0;
+                            let doneCount = 0;
+                            setSaveMessage(null);
+                            for (const [key, val] of entries) {
+                                updateMutation.mutate(
                                     { type: 'config', key, value: Number(val) },
-                                    { showMessage: false },
+                                    {
+                                        onSuccess: () => {
+                                            doneCount++;
+                                            if (doneCount + failCount === entries.length) {
+                                                setSaveMessage(
+                                                    failCount > 0
+                                                        ? `오류: ${failCount}개 항목 저장에 실패했습니다`
+                                                        : '설정이 저장되었습니다',
+                                                );
+                                            }
+                                        },
+                                        onError: () => {
+                                            failCount++;
+                                            if (doneCount + failCount === entries.length) {
+                                                setSaveMessage(
+                                                    `오류: ${failCount}개 항목 저장에 실패했습니다`,
+                                                );
+                                            }
+                                        },
+                                    },
                                 );
                             }
                             setRiskOverrides({});
-                            setSaveMessage('설정이 저장되었습니다');
                         }}
                         className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
                     >

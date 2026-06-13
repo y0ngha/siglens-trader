@@ -631,6 +631,40 @@ describe('POST /api/config', () => {
         });
     });
 
+    it('rejects score_weights with unknown extra keys', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: {
+                    technical: 30,
+                    news: 20,
+                    options: 20,
+                    fundamental: 20,
+                    overall: 10,
+                    sentiment: 5,
+                },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('unknown key');
+        expect(data.error).toContain('sentiment');
+    });
+
+    it('rejects score_weights where all weights are zero (sum <= 0)', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 0, news: 0, options: 0, fundamental: 0, overall: 0 },
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('sum must be greater than 0');
+    });
+
     // K1 — Boolean config key validation (kill-switch integrity)
     it('rejects string "false" for trading_enabled (kill-switch integrity)', async () => {
         const res = await handler(

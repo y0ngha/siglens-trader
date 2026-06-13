@@ -946,4 +946,54 @@ describe('SettingsPage', () => {
         expect(screen.getByText('일일 최대 거래 횟수')).toBeInTheDocument();
         expect(screen.getByText('일일 최대 손실 한도 ($)')).toBeInTheDocument();
     });
+
+    // -----------------------------------------------------------------------
+    // L15 — risk save partial failure surfacing
+    // -----------------------------------------------------------------------
+
+    it('shows error message when a risk field save fails server-side', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        // Simulate a server 400: updateConfig rejects on any call
+        mockedApi.updateConfig.mockRejectedValue(new Error('buy_threshold validation failed'));
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
+        });
+
+        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        await user.clear(buyThresholdInput);
+        await user.type(buyThresholdInput, '0.8');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        await waitFor(() => {
+            const msg = screen.getByRole('status');
+            expect(msg.textContent).toMatch(/오류/);
+        });
+    });
+
+    it('shows success when all risk field saves succeed', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
+        });
+
+        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        await user.clear(buyThresholdInput);
+        await user.type(buyThresholdInput, '0.8');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        await waitFor(() => {
+            expect(screen.getByText('설정이 저장되었습니다')).toBeInTheDocument();
+        });
+    });
 });
