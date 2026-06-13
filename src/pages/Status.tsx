@@ -256,14 +256,16 @@ export function StatusPage() {
                                                 takeProfitPercent,
                                                 stopLossPercent,
                                             );
+                                            const chipClass =
+                                                profitable === null
+                                                    ? 'bg-neutral-500/10 text-neutral-400'
+                                                    : profitable
+                                                      ? 'bg-green-500/10 text-green-400'
+                                                      : 'bg-red-500/10 text-red-400';
                                             return (
                                                 <span
                                                     key={p.id}
-                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                                        profitable !== false
-                                                            ? 'bg-green-500/10 text-green-400'
-                                                            : 'bg-red-500/10 text-red-400'
-                                                    }`}
+                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${chipClass}`}
                                                 >
                                                     {p.symbol}
                                                 </span>

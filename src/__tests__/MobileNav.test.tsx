@@ -1,24 +1,15 @@
 /**
  * Mobile nav tests (4 primary tabs + 더보기 overflow sheet).
  * Tests the REAL MobileNav component from src/components/MobileNav.tsx.
+ * MobileNav receives navItems as props — no API dependency.
  */
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { api } from '@/lib/api';
+import { describe, it, expect } from 'vitest';
 import { MobileNav } from '@/components/MobileNav';
 import type { NavItem } from '@/components/MobileNav';
-
-// Mock the API so the pending badge query resolves without network
-vi.mock('@/lib/api', () => ({
-    api: {
-        getPending: vi.fn(),
-    },
-}));
-
-const mockedApi = vi.mocked(api);
 
 const TEST_NAV_ITEMS: NavItem[] = [
     { to: '/', label: '상태', icon: '●', primary: true },
@@ -45,10 +36,6 @@ function renderMobileNav(initialRoute = '/') {
 }
 
 describe('MobileNav — primary tabs', () => {
-    beforeEach(() => {
-        mockedApi.getPending.mockResolvedValue([]);
-    });
-
     it('renders exactly 4 primary tab links', () => {
         renderMobileNav();
         const nav = screen.getByTestId('mobile-nav');
@@ -87,10 +74,6 @@ describe('MobileNav — primary tabs', () => {
 });
 
 describe('MobileNav — overflow sheet', () => {
-    beforeEach(() => {
-        mockedApi.getPending.mockResolvedValue([]);
-    });
-
     it('overflow sheet is NOT in the DOM before sheet opens', () => {
         renderMobileNav();
         expect(screen.queryByTestId('overflow-sheet')).not.toBeInTheDocument();
@@ -158,10 +141,6 @@ describe('MobileNav — overflow sheet', () => {
 });
 
 describe('MobileNav — 더보기 active state on overflow route', () => {
-    beforeEach(() => {
-        mockedApi.getPending.mockResolvedValue([]);
-    });
-
     it('더보기 button shows overflow-active=true when on /analysis', () => {
         renderMobileNav('/analysis');
         const btn = screen.getByTestId('more-button');
