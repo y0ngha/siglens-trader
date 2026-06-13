@@ -1435,7 +1435,8 @@ describe('getCronRuns', () => {
         const result = await getCronRuns(db as unknown as Db);
 
         expect(db._chain.from).toHaveBeenCalled();
-        // where() not called (no conditions) — but orderBy + limit are
+        // where() is always called — with undefined when no conditions are given (Drizzle no-op)
+        expect(db._chain.where).toHaveBeenCalledWith(undefined);
         expect(db._chain.orderBy).toHaveBeenCalled();
         expect(db._chain.limit).toHaveBeenCalledWith(200); // default limit
         expect(result).toEqual(mockRows);

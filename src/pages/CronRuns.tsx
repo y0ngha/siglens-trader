@@ -380,12 +380,11 @@ export function CronRunsPage() {
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
     const [datePreset, setDatePreset] = useState<DatePreset>('7d');
 
-    const { from, to } = getDateRange(datePreset);
-
     const { data, isLoading, error } = useQuery({
         queryKey: ['cron-runs', typeFilter, statusFilter, datePreset] as const,
-        queryFn: ({ queryKey: [, qType, qStatus], signal }) =>
-            api.getCronRuns(
+        queryFn: ({ queryKey: [, qType, qStatus, qDatePreset], signal }) => {
+            const { from, to } = getDateRange(qDatePreset);
+            return api.getCronRuns(
                 {
                     type: qType !== 'all' ? qType : undefined,
                     status: qStatus !== 'all' ? qStatus : undefined,
@@ -393,7 +392,8 @@ export function CronRunsPage() {
                     to,
                 },
                 signal,
-            ),
+            );
+        },
         refetchInterval: 30_000,
     });
 
