@@ -224,6 +224,53 @@ describe('api', () => {
         });
     });
 
+    describe('getCronRuns', () => {
+        it('builds URL with no filters', async () => {
+            mockOk({ runs: [] });
+
+            await api.getCronRuns();
+
+            expect(mockFetch).toHaveBeenCalledWith('/api/cron-runs', expect.anything());
+        });
+
+        it('passes type and status filters without double-encoding', async () => {
+            mockOk({ runs: [] });
+
+            await api.getCronRuns({ type: 'execute', status: 'completed' });
+
+            const url = mockFetch.mock.calls[0][0] as string;
+            expect(url).toContain('type=execute');
+            expect(url).toContain('status=completed');
+        });
+
+        it('single-encodes ISO date values (no double-encoding)', async () => {
+            mockOk({ runs: [] });
+
+            await api.getCronRuns({
+                from: '2026-06-12T13:00:00.000Z',
+                to: '2026-06-12T21:00:00.000Z',
+            });
+
+            const url = mockFetch.mock.calls[0][0] as string;
+            // URLSearchParams encodes `:` as `%3A` once — NOT `%253A`
+            expect(url).toContain('from=2026-06-12T13%3A00%3A00.000Z');
+            expect(url).toContain('to=2026-06-12T21%3A00%3A00.000Z');
+            expect(url).not.toContain('%253A');
+        });
+
+        it('omits undefined filter keys', async () => {
+            mockOk({ runs: [] });
+
+            await api.getCronRuns({ type: 'technical' });
+
+            const url = mockFetch.mock.calls[0][0] as string;
+            expect(url).toContain('type=technical');
+            expect(url).not.toContain('status=');
+            expect(url).not.toContain('from=');
+            expect(url).not.toContain('to=');
+        });
+    });
+
     describe('error handling', () => {
         it('throws with status code for non-ok responses', async () => {
             mockError(403, 'Forbidden');

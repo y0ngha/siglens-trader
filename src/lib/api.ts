@@ -64,6 +64,33 @@ export interface TickerSearchResult {
     exchange: string;
 }
 
+export interface CronRun {
+    id: number;
+    runId: string;
+    cronType: string;
+    status: string;
+    outcome: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    durationMs: number | null;
+    summary: unknown;
+    error: string | null;
+    createdAt: string;
+}
+
+export interface CronDecision {
+    id: number;
+    runId: string;
+    cronType: string;
+    symbol: string | null;
+    action: string;
+    executed: boolean;
+    score: string | null;
+    reason: string | null;
+    detail: unknown;
+    createdAt: string;
+}
+
 export const api = {
     getStatus: (signal?: AbortSignal) => fetchJson<StatusResponse>('/status', { signal }),
     getPositions: (signal?: AbortSignal) => fetchJson<Position[]>('/positions', { signal }),
@@ -98,4 +125,20 @@ export const api = {
         }),
     searchTickers: (query: string, signal?: AbortSignal) =>
         fetchJson<TickerSearchResult[]>(`/search?q=${encodeURIComponent(query)}`, { signal }),
+    getCronRuns: (
+        filters: { type?: string; status?: string; from?: string; to?: string } = {},
+        signal?: AbortSignal,
+    ) => {
+        const qs = new URLSearchParams();
+        if (filters.type) qs.set('type', filters.type);
+        if (filters.status) qs.set('status', filters.status);
+        if (filters.from) qs.set('from', filters.from);
+        if (filters.to) qs.set('to', filters.to);
+        const query = qs.toString();
+        return fetchJson<{ runs: CronRun[] }>(`/cron-runs${query ? `?${query}` : ''}`, { signal });
+    },
+    getCronDecisions: (runId: string, signal?: AbortSignal) =>
+        fetchJson<{ decisions: CronDecision[] }>(`/cron-runs?runId=${encodeURIComponent(runId)}`, {
+            signal,
+        }),
 };

@@ -15,6 +15,9 @@ const PendingPage = lazy(() => import('./pages/Pending').then((m) => ({ default:
 const SettingsPage = lazy(() =>
     import('./pages/Settings').then((m) => ({ default: m.SettingsPage })),
 );
+const CronRunsPage = lazy(() =>
+    import('./pages/CronRuns').then((m) => ({ default: m.CronRunsPage })),
+);
 
 interface NavItem {
     to: string;
@@ -38,6 +41,7 @@ export function App() {
         { to: '/positions', label: '포지션', icon: '◆' },
         { to: '/trades', label: '거래', icon: '↕' },
         { to: '/analysis', label: '분석', icon: '◎' },
+        { to: '/audit', label: '감사', icon: '▦' },
         { to: '/pending', label: '승인', icon: '✓', badge: pendingCount },
         { to: '/settings', label: '설정', icon: '⚙' },
     ];
@@ -55,6 +59,7 @@ export function App() {
                             <Route path="/positions" element={<PositionsPage />} />
                             <Route path="/trades" element={<TradesPage />} />
                             <Route path="/analysis" element={<AnalysisPage />} />
+                            <Route path="/audit" element={<CronRunsPage />} />
                             <Route path="/pending" element={<PendingPage />} />
                             <Route path="/settings" element={<SettingsPage />} />
                         </Routes>
