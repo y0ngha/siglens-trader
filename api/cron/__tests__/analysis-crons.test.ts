@@ -169,8 +169,8 @@ describe('createAnalysisCronHandler', () => {
         expect(mockGetEnabledWatchlist).not.toHaveBeenCalled();
     });
 
-    it('skips when config is null', async () => {
-        mockGetAnalysisConfig.mockResolvedValue(null);
+    it('skips when config explicitly has enabled:false', async () => {
+        mockGetAnalysisConfig.mockResolvedValue({ ...fakeConfig, enabled: false });
 
         const res = await handler(makeRequest(true));
         const body = await res.json();

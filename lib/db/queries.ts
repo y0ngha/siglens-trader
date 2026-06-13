@@ -42,13 +42,29 @@ export async function toggleWatchlistItem(db: Db, id: number, enabled: boolean) 
 // Analysis config
 // ---------------------------------------------------------------------------
 
+// Default model when no analysis_model_config row exists. Keep in sync with src/pages/Settings.tsx MODELS[0].
+const DEFAULT_ANALYSIS_MODEL = 'gemini-2.5-flash';
+
 export async function getAnalysisConfig(db: Db, type: string) {
     const rows = await db
         .select()
         .from(analysisModelConfig)
         .where(eq(analysisModelConfig.analysisType, type))
         .limit(1);
-    return rows[0] ?? null;
+    // No row = never configured → default to enabled with the default model (matches the
+    // schema's `enabled.default(true)` and the dashboard's empty-state). This is fail-open by
+    // design; live trading remains separately gated by trading_enabled (kill switch) + trading_mode
+    // (defaults to dry_run), so a missing analysis row never causes unintended real orders.
+    return (
+        rows[0] ?? {
+            id: 0,
+            analysisType: type,
+            enabled: true,
+            modelId: DEFAULT_ANALYSIS_MODEL,
+            useByok: false,
+            updatedAt: new Date(),
+        }
+    );
 }
 
 export async function getAllAnalysisConfigs(db: Db) {
@@ -60,10 +76,22 @@ export async function updateAnalysisConfig(
     type: string,
     updates: { modelId?: string; enabled?: boolean; useByok?: boolean },
 ) {
+    const setValues = Object.fromEntries(
+        Object.entries(updates).filter(([, v]) => v !== undefined),
+    ) as Partial<typeof analysisModelConfig.$inferInsert>;
     return db
-        .update(analysisModelConfig)
-        .set({ ...updates, updatedAt: new Date() })
-        .where(eq(analysisModelConfig.analysisType, type));
+        .insert(analysisModelConfig)
+        .values({
+            analysisType: type,
+            enabled: updates.enabled ?? true,
+            modelId: updates.modelId ?? DEFAULT_ANALYSIS_MODEL,
+            useByok: updates.useByok ?? false,
+            updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+            target: analysisModelConfig.analysisType,
+            set: { ...setValues, updatedAt: new Date() },
+        });
 }
 
 // ---------------------------------------------------------------------------

@@ -198,7 +198,14 @@ function setupDefaults() {
     mockGetConfigValue.mockResolvedValue(null); // All config values default to null
     mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
     mockGetOpenPositions.mockResolvedValue([]);
-    mockGetAnalysisConfig.mockResolvedValue(null); // Overall disabled by default
+    mockGetAnalysisConfig.mockResolvedValue({
+        id: 0,
+        analysisType: 'overall',
+        enabled: false,
+        modelId: 'gemini-2.5-flash',
+        useByok: false,
+        updatedAt: new Date(),
+    }); // Explicitly disabled by default
     mockGetLatestAnalysisResult.mockResolvedValue(null);
     mockGetOpenPositionBySymbol.mockResolvedValue(null);
     mockOpenPosition.mockResolvedValue([]);
@@ -1689,8 +1696,12 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('skips overall analysis when config is disabled (null)', async () => {
-            mockGetAnalysisConfig.mockResolvedValue(null);
+        it('skips overall analysis when config has enabled:false', async () => {
+            mockGetAnalysisConfig.mockResolvedValue({
+                enabled: false,
+                modelId: 'gemini-2.5-flash',
+                useByok: false,
+            });
 
             await handler(makeRequest(true));
 
