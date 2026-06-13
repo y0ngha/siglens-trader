@@ -35,6 +35,8 @@ function pnlColorClass(pnl: number | null): string {
 
 export function PositionsPage() {
     const [closeError, setCloseError] = useState<string | null>(null);
+    // Track which position row is awaiting close confirmation (only one at a time).
+    const [confirmingId, setConfirmingId] = useState<number | null>(null);
     // Hold the dismiss timer so repeated failures reset it (no early clear) and it
     // is cleaned up on unmount (no stray setState / leak).
     const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -140,14 +142,42 @@ export function PositionsPage() {
                                 </span>
                             </div>
                             <div className="mt-2">
-                                <button
-                                    type="button"
-                                    onClick={() => closeMutation.mutate(position.id)}
-                                    className="min-h-[36px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
-                                    aria-label={`${position.symbol} 포지션 청산`}
-                                >
-                                    청산
-                                </button>
+                                {confirmingId === position.id ? (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+                                        <p className="text-xs text-red-400">
+                                            정말 청산하시겠습니까?
+                                        </p>
+                                        <div className="mt-2 flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setConfirmingId(null);
+                                                    closeMutation.mutate(position.id);
+                                                }}
+                                                className="min-h-[44px] rounded-md bg-red-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-red-500 active:bg-red-700"
+                                                aria-label={`${position.symbol} 포지션 청산`}
+                                            >
+                                                청산
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setConfirmingId(null)}
+                                                className="min-h-[44px] rounded-md border border-[#262626] px-4 py-1.5 text-xs text-neutral-400 hover:text-neutral-200 active:bg-[#262626]"
+                                            >
+                                                취소
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmingId(position.id)}
+                                        className="min-h-[44px] rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 active:bg-red-500/10"
+                                        aria-label={`${position.symbol} 포지션 청산`}
+                                    >
+                                        청산
+                                    </button>
+                                )}
                             </div>
                         </li>
                     );

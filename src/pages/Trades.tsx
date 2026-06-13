@@ -82,10 +82,10 @@ export function TradesPage() {
                             setModeFilter(value);
                             setVisibleCount(PAGE_SIZE);
                         }}
-                        className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        className={`min-h-[44px] rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                             modeFilter === value
-                                ? 'bg-[#262626] text-white'
-                                : 'text-neutral-500 hover:text-neutral-300'
+                                ? 'bg-[#262626] text-white active:bg-[#363636]'
+                                : 'text-neutral-500 hover:text-neutral-300 active:bg-[#262626]'
                         }`}
                         aria-pressed={modeFilter === value}
                     >

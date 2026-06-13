@@ -125,9 +125,23 @@ describe('TickerSearch', () => {
             expect(screen.getByRole('listbox')).toBeInTheDocument();
         });
 
-        fireEvent.mouseDown(screen.getByText('외부 버튼'));
+        // Changed from mousedown → pointerdown (covers touch + mouse)
+        fireEvent.pointerDown(screen.getByText('외부 버튼'));
 
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    });
+
+    it('has mobile-friendly search input attributes', () => {
+        const onSelect = vi.fn();
+        renderWithQuery(<TickerSearch onSelect={onSelect} />);
+
+        const input = screen.getByRole('combobox');
+        expect(input).toHaveAttribute('type', 'search');
+        expect(input).toHaveAttribute('inputMode', 'search');
+        expect(input).toHaveAttribute('autoCapitalize', 'characters');
+        expect(input).toHaveAttribute('autoCorrect', 'off');
+        expect(input).toHaveAttribute('autoComplete', 'off');
+        expect(input).toHaveAttribute('enterKeyHint', 'search');
     });
 
     it('shows empty state when no results found', async () => {

@@ -48,6 +48,17 @@ function formatUsd(value: number): string {
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function computePositionTargets(p: Position, takeProfitPercent: number, stopLossPercent: number) {
+    const avg = parseFloat(p.avgPrice);
+    const current = p.currentPrice != null ? parseFloat(p.currentPrice) : null;
+    const isLong = p.side === 'long';
+    const tp = isLong ? avg * (1 + takeProfitPercent / 100) : avg * (1 - takeProfitPercent / 100);
+    const sl = isLong ? avg * (1 - stopLossPercent / 100) : avg * (1 + stopLossPercent / 100);
+    const cur = current ?? avg;
+    const profitable = current == null ? null : isLong ? current >= avg : current <= avg;
+    return { avg, cur, tp, sl, profitable };
+}
+
 function computePortfolio(positions: Position[]) {
     const totalInvested = positions.reduce((sum, p) => sum + Number(p.avgPrice) * p.quantity, 0);
     const currentValue = positions.reduce(
@@ -240,17 +251,21 @@ export function StatusPage() {
                                 {openPositions.length > 0 && (
                                     <div className="mt-1 flex flex-wrap gap-1">
                                         {openPositions.slice(0, 5).map((p) => {
-                                            const cur = Number(p.currentPrice ?? p.avgPrice);
-                                            const avg = Number(p.avgPrice);
-                                            const profitable = cur >= avg;
+                                            const { profitable } = computePositionTargets(
+                                                p,
+                                                takeProfitPercent,
+                                                stopLossPercent,
+                                            );
+                                            const chipClass =
+                                                profitable === null
+                                                    ? 'bg-neutral-500/10 text-neutral-400'
+                                                    : profitable
+                                                      ? 'bg-green-500/10 text-green-400'
+                                                      : 'bg-red-500/10 text-red-400';
                                             return (
                                                 <span
                                                     key={p.id}
-                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                                        profitable
-                                                            ? 'bg-green-500/10 text-green-400'
-                                                            : 'bg-red-500/10 text-red-400'
-                                                    }`}
+                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${chipClass}`}
                                                 >
                                                     {p.symbol}
                                                 </span>
@@ -318,7 +333,64 @@ export function StatusPage() {
                                 <h2 className="text-xs font-medium text-neutral-500">
                                     포지션별 목표
                                 </h2>
-                                <div className="rounded-lg border border-[#262626] bg-[#141414]">
+                                {/* Mobile: stacked cards */}
+                                <div
+                                    className="space-y-2 sm:hidden"
+                                    data-testid="position-targets-mobile"
+                                >
+                                    {openPositions.slice(0, 5).map((p) => {
+                                        const { avg, cur, tp, sl, profitable } =
+                                            computePositionTargets(
+                                                p,
+                                                takeProfitPercent,
+                                                stopLossPercent,
+                                            );
+                                        const curColor =
+                                            profitable === null
+                                                ? ''
+                                                : profitable
+                                                  ? 'text-green-400'
+                                                  : 'text-red-400';
+                                        return (
+                                            <div
+                                                key={p.id}
+                                                className="rounded-lg border border-[#262626] bg-[#141414] px-3 py-2.5"
+                                            >
+                                                <p className="text-xs font-semibold">{p.symbol}</p>
+                                                <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                                    <span className="text-neutral-500">매수가</span>
+                                                    <span className="text-right font-mono text-neutral-300">
+                                                        ${avg.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">현재가</span>
+                                                    <span
+                                                        className={`text-right font-mono ${curColor}`}
+                                                    >
+                                                        ${cur.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">익절</span>
+                                                    <span className="text-right font-mono text-green-400">
+                                                        ${tp.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">손절</span>
+                                                    <span className="text-right font-mono text-red-400">
+                                                        ${sl.toFixed(2)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {openPositions.length > 5 && (
+                                        <p className="text-center text-[10px] text-neutral-500">
+                                            +{openPositions.length - 5}개 포지션
+                                        </p>
+                                    )}
+                                </div>
+                                {/* Desktop: table */}
+                                <div
+                                    className="hidden rounded-lg border border-[#262626] bg-[#141414] sm:block"
+                                    data-testid="position-targets-table"
+                                >
                                     <table className="w-full text-[11px]">
                                         <thead>
                                             <tr className="border-b border-[#262626] text-neutral-500">
@@ -341,11 +413,18 @@ export function StatusPage() {
                                         </thead>
                                         <tbody className="divide-y divide-[#262626]">
                                             {openPositions.slice(0, 5).map((p) => {
-                                                const avg = Number(p.avgPrice);
-                                                const cur = Number(p.currentPrice ?? p.avgPrice);
-                                                const tp = avg * (1 + takeProfitPercent / 100);
-                                                const sl = avg * (1 - stopLossPercent / 100);
-                                                const profitable = cur >= avg;
+                                                const { avg, cur, tp, sl, profitable } =
+                                                    computePositionTargets(
+                                                        p,
+                                                        takeProfitPercent,
+                                                        stopLossPercent,
+                                                    );
+                                                const curColor =
+                                                    profitable === null
+                                                        ? ''
+                                                        : profitable
+                                                          ? 'text-green-400'
+                                                          : 'text-red-400';
                                                 return (
                                                     <tr key={p.id}>
                                                         <td className="px-3 py-2 font-medium">
@@ -355,7 +434,7 @@ export function StatusPage() {
                                                             ${avg.toFixed(2)}
                                                         </td>
                                                         <td
-                                                            className={`px-3 py-2 text-right font-mono ${profitable ? 'text-green-400' : 'text-red-400'}`}
+                                                            className={`px-3 py-2 text-right font-mono ${curColor}`}
                                                         >
                                                             ${cur.toFixed(2)}
                                                         </td>
@@ -406,7 +485,7 @@ export function StatusPage() {
                                                 <button
                                                     type="button"
                                                     onClick={() => dismissMutation.mutate(trade.id)}
-                                                    className="rounded px-2 py-0.5 text-[10px] text-yellow-400 hover:bg-yellow-500/10"
+                                                    className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded px-2 text-[10px] text-yellow-400 hover:bg-yellow-500/10 active:bg-yellow-500/10"
                                                 >
                                                     확인
                                                 </button>

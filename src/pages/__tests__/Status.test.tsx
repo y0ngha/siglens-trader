@@ -703,6 +703,30 @@ describe('StatusPage', () => {
         expect(screen.getAllByText('2시간 전')).toHaveLength(2);
     });
 
+    // --- Position targets mobile/desktop render tests ---
+
+    it('renders position-targets mobile cards and desktop table for open positions', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        const { container } = renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('position-targets-mobile')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('position-targets-table')).toBeInTheDocument();
+
+        // Mobile cards: each position has label:value pairs
+        const mobileSection = container.querySelector('[data-testid="position-targets-mobile"]')!;
+        expect(mobileSection).toHaveTextContent('AAPL');
+        expect(mobileSection).toHaveTextContent('NVDA');
+        expect(mobileSection).toHaveTextContent('매수가');
+        expect(mobileSection).toHaveTextContent('현재가');
+        expect(mobileSection).toHaveTextContent('익절');
+        expect(mobileSection).toHaveTextContent('손절');
+    });
+
     // --- Responsive layout tests ---
 
     it('has responsive grid classes', async () => {

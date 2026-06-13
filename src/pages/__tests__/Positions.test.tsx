@@ -208,7 +208,7 @@ describe('PositionsPage', () => {
         expect(screen.getByLabelText('TSLA 포지션 청산')).toBeInTheDocument();
     });
 
-    it('calls closePosition API when close button is clicked', async () => {
+    it('calls closePosition API when close button is clicked then confirmed', async () => {
         const user = userEvent.setup();
         mockedApi.getPositions.mockResolvedValue(mockPositions);
         mockedApi.closePosition.mockResolvedValue(undefined);
@@ -219,9 +219,42 @@ describe('PositionsPage', () => {
             expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
         });
 
+        // First tap: shows inline confirm
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
+
+        // Confirm dialog appears; closePosition NOT yet called
+        expect(screen.getByText('정말 청산하시겠습니까?')).toBeInTheDocument();
+        expect(mockedApi.closePosition).not.toHaveBeenCalled();
+
+        // Second tap: confirm button (aria-label == 'AAPL 포지션 청산' on the confirm btn)
         await user.click(screen.getByLabelText('AAPL 포지션 청산'));
 
         expect(mockedApi.closePosition).toHaveBeenCalledWith(1);
+    });
+
+    it('cancel button dismisses the confirm dialog without calling closePosition', async () => {
+        const user = userEvent.setup();
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+        mockedApi.closePosition.mockResolvedValue(undefined);
+
+        renderWithQuery(<PositionsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
+        });
+
+        // Show confirm
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
+        expect(screen.getByText('정말 청산하시겠습니까?')).toBeInTheDocument();
+
+        // Cancel
+        await user.click(screen.getByRole('button', { name: '취소' }));
+
+        // Confirm dialog gone; closePosition never called
+        expect(screen.queryByText('정말 청산하시겠습니까?')).not.toBeInTheDocument();
+        expect(mockedApi.closePosition).not.toHaveBeenCalled();
+        // The original 청산 button is back
+        expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
     });
 
     it('optimistically removes the position while the close is pending', async () => {
@@ -236,6 +269,8 @@ describe('PositionsPage', () => {
             expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
         });
 
+        // Two-step: click 청산, then confirm
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
         await user.click(screen.getByLabelText('AAPL 포지션 청산'));
 
         await waitFor(() => {
@@ -254,6 +289,8 @@ describe('PositionsPage', () => {
             expect(screen.getByLabelText('AAPL 포지션 청산')).toBeInTheDocument();
         });
 
+        // Two-step: click 청산, then confirm
+        await user.click(screen.getByLabelText('AAPL 포지션 청산'));
         await user.click(screen.getByLabelText('AAPL 포지션 청산'));
 
         await waitFor(() => {

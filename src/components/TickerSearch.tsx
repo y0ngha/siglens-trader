@@ -24,13 +24,13 @@ export function TickerSearch({
     });
 
     useEffect(() => {
-        function handleClickOutside(e: MouseEvent) {
+        function handleClickOutside(e: PointerEvent) {
             if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
                 setIsOpen(false);
             }
         }
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
+        document.addEventListener('pointerdown', handleClickOutside);
+        return () => document.removeEventListener('pointerdown', handleClickOutside);
     }, []);
 
     function handleSelect(result: TickerSearchResult) {
@@ -43,7 +43,13 @@ export function TickerSearch({
         <div ref={containerRef} className="relative">
             <input
                 ref={inputRef}
-                type="text"
+                type="search"
+                inputMode="search"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                autoComplete="off"
+                spellCheck={false}
+                enterKeyHint="search"
                 value={query}
                 onChange={(e) => {
                     setQuery(e.target.value);
@@ -69,7 +75,7 @@ export function TickerSearch({
                             <button
                                 type="button"
                                 onClick={() => handleSelect(result)}
-                                className="flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-[#262626]"
+                                className="flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-[#262626] active:bg-[#262626]"
                                 role="option"
                             >
                                 <div>
