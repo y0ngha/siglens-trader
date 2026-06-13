@@ -566,6 +566,7 @@ export function SettingsPage() {
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
                                 type="number"
+                                inputMode="decimal"
                                 className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
                                 value={getRiskValue(key)}
                                 onChange={(e) =>
@@ -613,6 +614,7 @@ export function SettingsPage() {
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
                                 type="number"
+                                inputMode={key === 'max_trades_per_day' ? 'numeric' : 'decimal'}
                                 className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
                                 value={getRiskValue(key)}
                                 onChange={(e) =>
@@ -650,6 +652,7 @@ export function SettingsPage() {
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
                                 type="number"
+                                inputMode="decimal"
                                 min={0}
                                 max={100}
                                 step={1}
@@ -740,7 +743,7 @@ export function SettingsPage() {
                     </div>
                     <div className="mt-3 space-y-2">
                         {NOTIFICATION_EVENTS.map((event) => (
-                            <label key={event.key} className="flex items-center gap-2">
+                            <label key={event.key} className="flex min-h-[44px] items-center gap-3">
                                 <input
                                     type="checkbox"
                                     className="h-4 w-4 rounded border-[#262626] bg-[#0a0a0a]"

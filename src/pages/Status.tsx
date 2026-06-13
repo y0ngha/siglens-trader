@@ -318,7 +318,57 @@ export function StatusPage() {
                                 <h2 className="text-xs font-medium text-neutral-500">
                                     포지션별 목표
                                 </h2>
-                                <div className="rounded-lg border border-[#262626] bg-[#141414]">
+                                {/* Mobile: stacked cards */}
+                                <div
+                                    className="space-y-2 sm:hidden"
+                                    data-testid="position-targets-mobile"
+                                >
+                                    {openPositions.slice(0, 5).map((p) => {
+                                        const avg = Number(p.avgPrice);
+                                        const cur = Number(p.currentPrice ?? p.avgPrice);
+                                        const tp = avg * (1 + takeProfitPercent / 100);
+                                        const sl = avg * (1 - stopLossPercent / 100);
+                                        const profitable = cur >= avg;
+                                        return (
+                                            <div
+                                                key={p.id}
+                                                className="rounded-lg border border-[#262626] bg-[#141414] px-3 py-2.5"
+                                            >
+                                                <p className="text-xs font-semibold">{p.symbol}</p>
+                                                <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                                    <span className="text-neutral-500">매수가</span>
+                                                    <span className="text-right font-mono text-neutral-300">
+                                                        ${avg.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">현재가</span>
+                                                    <span
+                                                        className={`text-right font-mono ${profitable ? 'text-green-400' : 'text-red-400'}`}
+                                                    >
+                                                        ${cur.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">익절</span>
+                                                    <span className="text-right font-mono text-green-400">
+                                                        ${tp.toFixed(2)}
+                                                    </span>
+                                                    <span className="text-neutral-500">손절</span>
+                                                    <span className="text-right font-mono text-red-400">
+                                                        ${sl.toFixed(2)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {openPositions.length > 5 && (
+                                        <p className="text-center text-[10px] text-neutral-500">
+                                            +{openPositions.length - 5}개 포지션
+                                        </p>
+                                    )}
+                                </div>
+                                {/* Desktop: table */}
+                                <div
+                                    className="hidden rounded-lg border border-[#262626] bg-[#141414] sm:block"
+                                    data-testid="position-targets-table"
+                                >
                                     <table className="w-full text-[11px]">
                                         <thead>
                                             <tr className="border-b border-[#262626] text-neutral-500">
@@ -406,7 +456,7 @@ export function StatusPage() {
                                                 <button
                                                     type="button"
                                                     onClick={() => dismissMutation.mutate(trade.id)}
-                                                    className="rounded px-2 py-0.5 text-[10px] text-yellow-400 hover:bg-yellow-500/10"
+                                                    className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded px-2 text-[10px] text-yellow-400 hover:bg-yellow-500/10 active:bg-yellow-500/10"
                                                 >
                                                     확인
                                                 </button>

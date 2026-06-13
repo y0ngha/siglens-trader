@@ -135,7 +135,7 @@ export function AnalysisPage() {
                                     type="button"
                                     onClick={() => triggerMutation.mutate(symbol)}
                                     disabled={triggerMutation.isPending}
-                                    className="min-h-[36px] rounded-md border border-[#262626] px-2.5 py-1 text-xs text-neutral-400 transition-colors hover:border-neutral-500 hover:text-neutral-200 disabled:opacity-50"
+                                    className="min-h-[44px] rounded-md border border-[#262626] px-2.5 py-1 text-xs text-neutral-400 transition-colors hover:border-neutral-500 hover:text-neutral-200 active:bg-[#262626] disabled:opacity-50"
                                     aria-label={`${symbol} 재분석`}
                                 >
                                     {triggerMutation.isPending &&

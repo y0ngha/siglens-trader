@@ -428,10 +428,10 @@ export function CronRunsPage() {
                             key={value}
                             type="button"
                             onClick={() => setTypeFilter(value)}
-                            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                            className={`min-h-[44px] rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                                 typeFilter === value
-                                    ? 'bg-[#262626] text-white'
-                                    : 'text-neutral-400 hover:text-neutral-200'
+                                    ? 'bg-[#262626] text-white active:bg-[#363636]'
+                                    : 'text-neutral-400 hover:text-neutral-200 active:bg-[#262626]'
                             }`}
                             aria-pressed={typeFilter === value}
                         >
@@ -456,10 +456,10 @@ export function CronRunsPage() {
                                 key={value}
                                 type="button"
                                 onClick={() => setStatusFilter(value)}
-                                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                className={`min-h-[44px] rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                                     statusFilter === value
-                                        ? 'bg-[#262626] text-white'
-                                        : 'text-neutral-400 hover:text-neutral-200'
+                                        ? 'bg-[#262626] text-white active:bg-[#363636]'
+                                        : 'text-neutral-400 hover:text-neutral-200 active:bg-[#262626]'
                                 }`}
                                 aria-pressed={statusFilter === value}
                             >
@@ -484,10 +484,10 @@ export function CronRunsPage() {
                                 key={value}
                                 type="button"
                                 onClick={() => setDatePreset(value)}
-                                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                className={`min-h-[44px] rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                                     datePreset === value
-                                        ? 'bg-[#262626] text-white'
-                                        : 'text-neutral-400 hover:text-neutral-200'
+                                        ? 'bg-[#262626] text-white active:bg-[#363636]'
+                                        : 'text-neutral-400 hover:text-neutral-200 active:bg-[#262626]'
                                 }`}
                                 aria-pressed={datePreset === value}
                             >
