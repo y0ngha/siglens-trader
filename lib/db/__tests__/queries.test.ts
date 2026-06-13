@@ -273,6 +273,31 @@ describe('Analysis config queries', () => {
                 }),
             );
         });
+
+        it('undefined fields are filtered from conflict set to prevent NOT NULL violation', async () => {
+            const db = createMockDb([]);
+
+            await updateAnalysisConfig(db as unknown as Db, 'options', {
+                enabled: false,
+                modelId: undefined,
+            });
+
+            // Insert still uses defaults for the undefined field
+            expect(db._chain.values).toHaveBeenCalledWith({
+                analysisType: 'options',
+                enabled: false,
+                modelId: 'gemini-2.5-flash',
+                useByok: false,
+                updatedAt: expect.any(Date),
+            });
+            // On conflict: modelId must NOT appear in set (undefined filtered out)
+            const setArg = db._chain.onConflictDoUpdate.mock.calls[0][0].set as Record<
+                string,
+                unknown
+            >;
+            expect(setArg).not.toHaveProperty('modelId');
+            expect(setArg).toMatchObject({ enabled: false, updatedAt: expect.any(Date) });
+        });
     });
 });
 

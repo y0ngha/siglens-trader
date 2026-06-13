@@ -51,6 +51,10 @@ export async function getAnalysisConfig(db: Db, type: string) {
         .from(analysisModelConfig)
         .where(eq(analysisModelConfig.analysisType, type))
         .limit(1);
+    // No row = never configured → default to enabled with the default model (matches the
+    // schema's `enabled.default(true)` and the dashboard's empty-state). This is fail-open by
+    // design; live trading remains separately gated by trading_enabled (kill switch) + trading_mode
+    // (defaults to dry_run), so a missing analysis row never causes unintended real orders.
     return (
         rows[0] ?? {
             id: 0,
@@ -72,6 +76,9 @@ export async function updateAnalysisConfig(
     type: string,
     updates: { modelId?: string; enabled?: boolean; useByok?: boolean },
 ) {
+    const setValues = Object.fromEntries(
+        Object.entries(updates).filter(([, v]) => v !== undefined),
+    ) as Partial<typeof analysisModelConfig.$inferInsert>;
     return db
         .insert(analysisModelConfig)
         .values({
@@ -83,7 +90,7 @@ export async function updateAnalysisConfig(
         })
         .onConflictDoUpdate({
             target: analysisModelConfig.analysisType,
-            set: { ...updates, updatedAt: new Date() },
+            set: { ...setValues, updatedAt: new Date() },
         });
 }
 
