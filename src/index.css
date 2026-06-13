@@ -17,6 +17,10 @@
     --color-loss: #ef4444;
 }
 
+html {
+    -webkit-tap-highlight-color: transparent;
+}
+
 body {
     margin: 0;
     background: #0a0a0a;
@@ -29,7 +33,15 @@ body {
 @supports (padding: env(safe-area-inset-top)) {
     body {
         padding-top: env(safe-area-inset-top);
-        padding-bottom: env(safe-area-inset-bottom);
+        /* Do NOT apply padding-bottom here — the fixed MobileNav owns safe-area-inset-bottom */
+    }
+}
+
+@media (max-width: 640px) {
+    input,
+    select,
+    textarea {
+        font-size: 16px;
     }
 }
 
