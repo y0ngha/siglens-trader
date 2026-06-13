@@ -1,6 +1,6 @@
 {
     "name": "siglens-trader",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "private": true,
     "type": "module",
     "author": "신용하 <dev.y0ngha@gmail.com>",

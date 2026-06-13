@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.5.0](https://github.com/y0ngha/siglens-trader/compare/v0.4.0...v0.5.0) (2026-06-13)
+
+
+### Bug Fixes
+
+* 매수/매도 신호 임계값 스케일 정정 — 0~100 정량 점수로 통일(기본 70/30) + 범위 검증 ([1c64a5e](https://github.com/y0ngha/siglens-trader/commit/1c64a5effba68d9301bc2eff670cade877dff9b0))
+* PR [#15](https://github.com/y0ngha/siglens-trader/issues/15) 리뷰 반영 — MobileNav 실제 컴포넌트화·시트 a11y/네비 터치·포지션 타깃 long/short 분기 통합 ([ebbcaeb](https://github.com/y0ngha/siglens-trader/commit/ebbcaeb697dfab95cec4f73ece7c8c3b533108b8))
+
+
+### Features
+
+* **mobile-ux:** 모바일 네비 4+더보기 시트 리디자인 + iOS CSS 개선 (Part A) ([51015f3](https://github.com/y0ngha/siglens-trader/commit/51015f34d2b3a056e8cd1a21e57eb6bca0bb1e3a))
+* **mobile-ux:** 모바일 UX 개선 Part B — 폼 키보드·터치타깃·청산확인·포지션표 ([3c4647e](https://github.com/y0ngha/siglens-trader/commit/3c4647efe10bcb1468f48edacb078c74a95b0bb6))
+
 # [0.4.0](https://github.com/y0ngha/siglens-trader/compare/v0.3.0...v0.4.0) (2026-06-13)
 
 
