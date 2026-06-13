@@ -29,8 +29,8 @@ const mockConfig = {
         { key: 'max_total_exposure', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'stop_loss_percent', value: 5, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'take_profit_percent', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'buy_threshold', value: 0.7, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'sell_threshold', value: -0.7, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'buy_threshold', value: 70, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'sell_threshold', value: 30, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'fixed_exit_enabled', value: false, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
@@ -778,9 +778,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        const buyThresholdInput = screen.getByDisplayValue('70');
         await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '0.8');
+        await user.type(buyThresholdInput, '80');
 
         await user.click(screen.getByRole('button', { name: '취소' }));
 
@@ -963,9 +963,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        const buyThresholdInput = screen.getByDisplayValue('70');
         await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '0.8');
+        await user.type(buyThresholdInput, '80');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
@@ -986,14 +986,83 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('0.7');
+        const buyThresholdInput = screen.getByDisplayValue('70');
         await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '0.8');
+        await user.type(buyThresholdInput, '80');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
         await waitFor(() => {
             expect(screen.getByText('설정이 저장되었습니다')).toBeInTheDocument();
         });
+    });
+
+    // -----------------------------------------------------------------------
+    // Signal threshold scale: 0-100 integer score (not 0..1 ratio)
+    // -----------------------------------------------------------------------
+
+    it('displays buy_threshold default as 70 and sell_threshold default as 30', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
+        });
+
+        expect(screen.getByDisplayValue('70')).toBeInTheDocument();
+        expect(screen.getByDisplayValue('30')).toBeInTheDocument();
+    });
+
+    it('threshold inputs show 0-100 range labels and correct helper text', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('매수 신호 기준 (0~100점)')).toBeInTheDocument();
+        expect(
+            screen.getByText('AI 분석 점수가 이 값 이상이면 매수 (기본 70)'),
+        ).toBeInTheDocument();
+        expect(screen.getByText('매도 신호 기준 (0~100점)')).toBeInTheDocument();
+        expect(
+            screen.getByText('AI 분석 점수가 이 값 이하이면 매도 (기본 30)'),
+        ).toBeInTheDocument();
+    });
+
+    it('threshold inputs have min=0, max=100, step=1 attributes', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
+        });
+
+        const buyInput = screen.getByDisplayValue('70');
+        expect(buyInput).toHaveAttribute('min', '0');
+        expect(buyInput).toHaveAttribute('max', '100');
+        expect(buyInput).toHaveAttribute('step', '1');
+
+        const sellInput = screen.getByDisplayValue('30');
+        expect(sellInput).toHaveAttribute('min', '0');
+        expect(sellInput).toHaveAttribute('max', '100');
+        expect(sellInput).toHaveAttribute('step', '1');
+    });
+
+    it('dollar-amount inputs (max_position_size) do NOT have max=100 cap', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
+        });
+
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        expect(positionSizeInput).not.toHaveAttribute('max', '100');
     });
 });
