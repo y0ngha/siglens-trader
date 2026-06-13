@@ -29,16 +29,26 @@ export const analysisModelConfig = pgTable('analysis_model_config', {
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const analysisResults = pgTable('analysis_results', {
-    id: serial('id').primaryKey(),
-    symbol: text('symbol').notNull(),
-    analysisType: text('analysis_type').notNull(),
-    result: jsonb('result').notNull(),
-    modelId: text('model_id').notNull(),
-    analyzedAt: timestamp('analyzed_at', { withTimezone: true }).notNull(),
-    cronRunId: text('cron_run_id'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+export const analysisResults = pgTable(
+    'analysis_results',
+    {
+        id: serial('id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        analysisType: text('analysis_type').notNull(),
+        result: jsonb('result').notNull(),
+        modelId: text('model_id').notNull(),
+        analyzedAt: timestamp('analyzed_at', { withTimezone: true }).notNull(),
+        cronRunId: text('cron_run_id'),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [
+        index('idx_analysis_symbol_type_date').on(
+            table.symbol,
+            table.analysisType,
+            table.analyzedAt,
+        ),
+    ],
+);
 
 export const positions = pgTable(
     'positions',
@@ -57,38 +67,47 @@ export const positions = pgTable(
         uniqueIndex('idx_positions_symbol_open')
             .on(table.symbol)
             .where(sql`status = 'open'`),
+        index('idx_positions_symbol_status').on(table.symbol, table.status),
     ],
 );
 
-export const trades = pgTable('trades', {
-    id: serial('id').primaryKey(),
-    symbol: text('symbol').notNull(),
-    side: text('side').notNull(),
-    orderType: text('order_type').notNull(),
-    quantity: integer('quantity').notNull(),
-    price: numeric('price').notNull(),
-    executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
-    reason: text('reason'),
-    mode: text('mode').notNull(),
-    cronRunId: text('cron_run_id'),
-    clientOrderId: text('client_order_id'),
-    realizedPnl: numeric('realized_pnl'),
-    dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+export const trades = pgTable(
+    'trades',
+    {
+        id: serial('id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        side: text('side').notNull(),
+        orderType: text('order_type').notNull(),
+        quantity: integer('quantity').notNull(),
+        price: numeric('price').notNull(),
+        executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
+        reason: text('reason'),
+        mode: text('mode').notNull(),
+        cronRunId: text('cron_run_id'),
+        clientOrderId: text('client_order_id'),
+        realizedPnl: numeric('realized_pnl'),
+        dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [index('idx_trades_executed_at').on(table.executedAt)],
+);
 
-export const pendingOrders = pgTable('pending_orders', {
-    id: serial('id').primaryKey(),
-    symbol: text('symbol').notNull(),
-    side: text('side').notNull(),
-    quantity: integer('quantity').notNull(),
-    priceLimit: numeric('price_limit'),
-    analysisSummary: text('analysis_summary'),
-    signalScore: numeric('signal_score'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-    status: text('status').default('pending').notNull(),
-});
+export const pendingOrders = pgTable(
+    'pending_orders',
+    {
+        id: serial('id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        side: text('side').notNull(),
+        quantity: integer('quantity').notNull(),
+        priceLimit: numeric('price_limit'),
+        analysisSummary: text('analysis_summary'),
+        signalScore: numeric('signal_score'),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+        expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+        status: text('status').default('pending').notNull(),
+    },
+    (table) => [index('idx_pending_orders_status').on(table.status, table.expiresAt)],
+);
 
 export const config = pgTable('config', {
     key: text('key').primaryKey(),
