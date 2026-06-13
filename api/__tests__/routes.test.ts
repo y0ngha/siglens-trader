@@ -778,6 +778,66 @@ describe('POST /api/config', () => {
         }
         expect(mockSetConfigValue).toHaveBeenCalledTimes(6);
     });
+
+    // -----------------------------------------------------------------------
+    // T1 — buy_threshold / sell_threshold range validation (0–100)
+    // -----------------------------------------------------------------------
+
+    it('rejects buy_threshold above 100', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'buy_threshold',
+                value: 150,
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('buy_threshold must be between 0 and 100');
+    });
+
+    it('rejects sell_threshold below 0', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'sell_threshold',
+                value: -5,
+            }),
+        );
+        // Negative values are caught by the generic 0–1,000,000 numeric guard
+        // (which fires before the 0–100 range check), so we only assert 400 status
+        expect(res.status).toBe(400);
+    });
+
+    it('accepts buy_threshold=70 and sell_threshold=30 (engine defaults)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        mockGetConfigValue.mockResolvedValue(30); // existing sell_threshold for buy check
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'buy_threshold',
+                value: 70,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'buy_threshold', 70);
+    });
+
+    it('rejects buy_threshold <= sell_threshold (buy=20, existing sell=30)', async () => {
+        mockGetConfigValue.mockResolvedValue(30); // existing sell_threshold
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'buy_threshold',
+                value: 20,
+            }),
+        );
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toBe('buy_threshold must be greater than sell_threshold');
+    });
 });
 
 describe('GET /api/pending', () => {

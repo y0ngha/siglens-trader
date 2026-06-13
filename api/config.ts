@@ -190,6 +190,16 @@ async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
+                // Range validation: buy_threshold and sell_threshold must be within 0-100
+                if (key === 'buy_threshold' || key === 'sell_threshold') {
+                    const numVal = value as number;
+                    if (numVal < 0 || numVal > 100) {
+                        return Response.json(
+                            { error: `${key} must be between 0 and 100` },
+                            { status: 400 },
+                        );
+                    }
+                }
                 // Logical validation: buy_threshold must be greater than sell_threshold
                 if (key === 'buy_threshold' || key === 'sell_threshold') {
                     const otherKey = key === 'buy_threshold' ? 'sell_threshold' : 'buy_threshold';

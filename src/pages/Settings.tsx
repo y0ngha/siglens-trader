@@ -198,8 +198,8 @@ export function SettingsPage() {
         max_total_exposure: 25000,
         stop_loss_percent: 5,
         take_profit_percent: 10,
-        buy_threshold: 0.7,
-        sell_threshold: -0.7,
+        buy_threshold: 70,
+        sell_threshold: 30,
         max_trades_per_day: 20,
         max_daily_loss_usd: 500,
     };
@@ -635,13 +635,13 @@ export function SettingsPage() {
                         [
                             [
                                 'buy_threshold',
-                                '매수 신호 기준 (점)',
-                                'AI 분석 점수가 이 값 이상이면 매수',
+                                '매수 신호 기준 (0~100점)',
+                                'AI 분석 점수가 이 값 이상이면 매수 (기본 70)',
                             ],
                             [
                                 'sell_threshold',
-                                '매도 신호 기준 (점)',
-                                'AI 분석 점수가 이 값 이하이면 매도',
+                                '매도 신호 기준 (0~100점)',
+                                'AI 분석 점수가 이 값 이하이면 매도 (기본 30)',
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (
@@ -650,6 +650,9 @@ export function SettingsPage() {
                             <p className="text-[10px] text-neutral-600">{helper}</p>
                             <input
                                 type="number"
+                                min={0}
+                                max={100}
+                                step={1}
                                 className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
                                 value={getRiskValue(key)}
                                 onChange={(e) =>
