@@ -189,12 +189,19 @@ describe('Analysis config queries', () => {
             expect(result).toEqual(mockRow);
         });
 
-        it('returns null when no rows', async () => {
+        it('returns default-enabled config when no rows exist', async () => {
             const db = createMockDb([]);
 
             const result = await getAnalysisConfig(db as unknown as Db, 'nonexistent');
 
-            expect(result).toBeNull();
+            expect(result).toEqual({
+                id: 0,
+                analysisType: 'nonexistent',
+                enabled: true,
+                modelId: 'gemini-2.5-flash',
+                useByok: false,
+                updatedAt: expect.any(Date),
+            });
         });
     });
 
@@ -214,7 +221,7 @@ describe('Analysis config queries', () => {
     });
 
     describe('updateAnalysisConfig', () => {
-        it('calls update().set().where() with merged updates and updatedAt', async () => {
+        it('upserts: inserts a full row and on conflict updates only the provided fields + updatedAt', async () => {
             const db = createMockDb([]);
 
             await updateAnalysisConfig(db as unknown as Db, 'technical', {
@@ -222,17 +229,49 @@ describe('Analysis config queries', () => {
                 enabled: true,
             });
 
+            // Must use insert (not update) for upsert path
             expect(
-                (db as unknown as { update: ReturnType<typeof vi.fn> }).update,
+                (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
             ).toHaveBeenCalled();
-            expect(db._chain.set).toHaveBeenCalledWith(
+            // Insert supplies a complete row with defaults for missing fields
+            expect(db._chain.values).toHaveBeenCalledWith({
+                analysisType: 'technical',
+                enabled: true,
+                modelId: 'claude-4',
+                useByok: false,
+                updatedAt: expect.any(Date),
+            });
+            // On conflict, only the provided updates + updatedAt are written
+            expect(db._chain.onConflictDoUpdate).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    modelId: 'claude-4',
-                    enabled: true,
-                    updatedAt: expect.any(Date),
+                    set: expect.objectContaining({
+                        modelId: 'claude-4',
+                        enabled: true,
+                        updatedAt: expect.any(Date),
+                    }),
                 }),
             );
-            expect(db._chain.where).toHaveBeenCalled();
+        });
+
+        it('partial update: missing fields use defaults on insert but are excluded from conflict set', async () => {
+            const db = createMockDb([]);
+
+            await updateAnalysisConfig(db as unknown as Db, 'news', { enabled: false });
+
+            // Insert fills defaults for modelId and useByok
+            expect(db._chain.values).toHaveBeenCalledWith({
+                analysisType: 'news',
+                enabled: false,
+                modelId: 'gemini-2.5-flash',
+                useByok: false,
+                updatedAt: expect.any(Date),
+            });
+            // On conflict, only enabled + updatedAt written (modelId/useByok untouched)
+            expect(db._chain.onConflictDoUpdate).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    set: expect.objectContaining({ enabled: false, updatedAt: expect.any(Date) }),
+                }),
+            );
         });
     });
 });

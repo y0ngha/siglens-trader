@@ -1689,8 +1689,12 @@ describe('execute cron handler', () => {
             );
         });
 
-        it('skips overall analysis when config is disabled (null)', async () => {
-            mockGetAnalysisConfig.mockResolvedValue(null);
+        it('skips overall analysis when config has enabled:false', async () => {
+            mockGetAnalysisConfig.mockResolvedValue({
+                enabled: false,
+                modelId: 'gemini-2.5-flash',
+                useByok: false,
+            });
 
             await handler(makeRequest(true));
 
