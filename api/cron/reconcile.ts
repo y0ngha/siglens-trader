@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
@@ -86,13 +87,19 @@ async function handler(req: Request): Promise<Response> {
             results.push({ id: order.id, symbol: order.symbol, action: 'timeout' });
         };
 
+        // Order resolution loop: broker-polling calls are skipped in dry_run — no real
+        // orders are created, so tossOrderId rows won't exist and polling the live
+        // broker from a simulated session would be a latent coupling. However, the
+        // age-based timeout safety net (DB update + email) still runs in dry_run
+        // because it touches no broker and is critical for sell-side safety.
         for (const order of submitted) {
             const age = Date.now() - new Date(order.submittedAt).getTime();
             const isTimedOut = age > SUBMITTED_TIMEOUT_MS;
 
             // First, try to resolve the order via the broker. Only fall back to
             // the age-based timeout path when there is no broker id or polling fails.
-            if (order.tossOrderId) {
+            // Skipped in dry_run: no real orders, no broker coupling.
+            if (order.tossOrderId && tradingMode !== 'dry_run') {
                 const detail = await getOrder(order.tossOrderId).catch(() => null);
                 if (detail) {
                     if (detail.status === 'FILLED') {
@@ -231,7 +238,7 @@ async function handler(req: Request): Promise<Response> {
                 // detail null (getOrder failed) → fall through to the timeout fallback below.
             }
 
-            // No tossOrderId OR getOrder failed: age-based timeout fallback.
+            // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.
             if (isTimedOut) {
                 await timeoutOrder(order, age);
             } else {

@@ -779,6 +779,76 @@ describe('reconcile cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // dry_run broker gate
+    // -----------------------------------------------------------------------
+
+    describe('dry_run broker gate', () => {
+        it('dry_run + timed-out order with tossOrderId: no broker calls, but timeoutOrder (DB+email) still runs', async () => {
+            // The broker-polling block is gated on `tossOrderId && tradingMode !== 'dry_run'`,
+            // so getOrder/cancelOrder are never called. The age-based fallback (DB update +
+            // alert email) still runs because it touches no broker — it is the safety net
+            // for sell-side positions that must not be silently ignored in dry_run.
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ side: 'sell' })]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Broker not touched.
+            expect(mockGetOrder).not.toHaveBeenCalled();
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+            // Age-based timeout fallback ran: DB updated + urgent sell alert emailed.
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'timeout',
+                resolvedAt: expect.any(Date),
+            });
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '[긴급] 매도 주문 타임아웃: AAPL',
+                expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+        });
+
+        it('dry_run + recent order with tossOrderId (not timed out): no broker, result is waiting', async () => {
+            // Within the 30-min window — the age-based fallback produces 'waiting'.
+            // Still no broker call because the tossOrderId gate includes dry_run check.
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockGetPendingSubmittedOrders.mockResolvedValue([recentOrderWith()]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetOrder).not.toHaveBeenCalled();
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 2, symbol: 'AAPL', action: 'waiting' }]);
+        });
+
+        it('dry_run: autoRecoverFilledOrders and checkConsistency still run (DB-only)', async () => {
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockAutoRecoverFilledOrders.mockResolvedValue({
+                recovered: 1,
+                failed: 0,
+                details: ['ok'],
+            });
+            mockCheckConsistency.mockResolvedValue({
+                filledOrdersWithoutTrades: 1,
+                filledOrdersWithoutPositions: 0,
+                openPositionsWithoutTrades: 0,
+                alerts: ['some-alert'],
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockAutoRecoverFilledOrders).toHaveBeenCalled();
+            expect(mockCheckConsistency).toHaveBeenCalled();
+            expect(body.recovery).toEqual({ recovered: 1, failed: 0 });
+            expect(body.consistency).toEqual({ filledOrdersWithoutTrades: 1, alertCount: 1 });
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Holdings reconciliation
     // -----------------------------------------------------------------------
 
