@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.4.0](https://github.com/y0ngha/siglens-trader/compare/v0.3.0...v0.4.0) (2026-06-13)
+
+
+### Bug Fixes
+
+* PR [#13](https://github.com/y0ngha/siglens-trader/issues/13) 리뷰 반영 — queryFn 내부 날짜범위 도출 + 테스트 주석 정정 ([a0b202c](https://github.com/y0ngha/siglens-trader/commit/a0b202cd09c32b55bc8eb43f8b4e25572403f203))
+* PR [#13](https://github.com/y0ngha/siglens-trader/issues/13) 리뷰 반영 — URLSearchParams 이중 인코딩 제거 + limit 안전 파싱 ([f99afb3](https://github.com/y0ngha/siglens-trader/commit/f99afb35d6891daf7993355c32dc76896de9160d))
+
+
+### Features
+
+* 크론 감사 뷰어 백엔드 구현 (쿼리+API+클라이언트+MSW) ([7de37cb](https://github.com/y0ngha/siglens-trader/commit/7de37cbaaba5a0b54edb3ee044b66be3c136c763))
+* 크론 감사 뷰어 프론트엔드 구현 (/audit 페이지) ([cd9452d](https://github.com/y0ngha/siglens-trader/commit/cd9452d77b53377a3c7bbc71164ec764ec62e022))
+
 # [0.3.0](https://github.com/y0ngha/siglens-trader/compare/v0.2.2...v0.3.0) (2026-06-13)
 
 
