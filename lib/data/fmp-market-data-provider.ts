@@ -79,6 +79,7 @@ interface FmpQuote {
 }
 function isValidOhlcv(raw: FmpOhlcvBar): boolean {
     return (
+        raw != null &&
         Number.isFinite(raw.open) &&
         Number.isFinite(raw.high) &&
         Number.isFinite(raw.low) &&

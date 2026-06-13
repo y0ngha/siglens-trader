@@ -1,7 +1,12 @@
 import * as jose from 'jose';
 
 // Cache the JWKS set at module scope so it is not recreated per request.
+// Assumption: CF_ACCESS_TEAM_DOMAIN is fixed for the lifetime of the process,
+// so keying the cache on teamDomain is unnecessary — a single cached instance suffices.
 let jwks: ReturnType<typeof jose.createRemoteJWKSet> | null = null;
+
+// Emit the fallback-mode warning at most once per process to avoid flooding logs.
+let fallbackWarned = false;
 
 function getJwks(teamDomain: string): ReturnType<typeof jose.createRemoteJWKSet> {
     if (!jwks) {
@@ -49,8 +54,9 @@ export async function isAuthenticated(req: Request): Promise<boolean> {
             }
 
             return true;
-        } catch {
+        } catch (err) {
             // Verification failure (expired, tampered, JWKS fetch error, etc.) → fail-closed.
+            console.error('[auth] JWT verification failed:', err);
             return false;
         }
     }
@@ -59,9 +65,12 @@ export async function isAuthenticated(req: Request): Promise<boolean> {
     // Fallback (env NOT configured) — trust the plain header.
     // Weaker mode, but prevents a production lockout before env vars are set.
     // -----------------------------------------------------------------------
-    console.warn(
-        '[auth] CF Access JWT verification not configured; falling back to header trust — set CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD',
-    );
+    if (!fallbackWarned) {
+        console.warn(
+            '[auth] CF Access JWT verification not configured; falling back to header trust — set CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD',
+        );
+        fallbackWarned = true;
+    }
     const cfEmail = req.headers.get('cf-access-authenticated-user-email');
     return Boolean(cfEmail);
 }

@@ -187,6 +187,26 @@ describe('email notification module', () => {
             expect(call.html).toContain('대시보드에서 확인하세요.');
         });
 
+        it('renders plain-text fallback and does not throw when approveUrl is null', async () => {
+            await expect(
+                sendApprovalRequestEmail({ ...baseOrder, approveUrl: null }),
+            ).resolves.not.toThrow();
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain('href=');
+            expect(call.html).toContain('대시보드에서 확인하세요.');
+        });
+
+        it('renders plain-text fallback and does not throw when approveUrl is undefined', async () => {
+            await expect(
+                sendApprovalRequestEmail({ ...baseOrder, approveUrl: undefined }),
+            ).resolves.not.toThrow();
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain('href=');
+            expect(call.html).toContain('대시보드에서 확인하세요.');
+        });
+
         it('includes href link when approveUrl starts with https://', async () => {
             await sendApprovalRequestEmail(baseOrder);
 

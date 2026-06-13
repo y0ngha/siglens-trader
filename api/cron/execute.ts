@@ -1292,6 +1292,7 @@ async function handler(req: Request): Promise<Response> {
                             // we use the request price (filled qty unknown at this point).
                             if (isBuyOrder && remainingBuyingPower != null) {
                                 const priceForDebit =
+                                    orderResult &&
                                     orderResult.status === 'filled' &&
                                     orderResult.avgFilledPrice != null
                                         ? orderResult.avgFilledPrice
@@ -1299,6 +1300,7 @@ async function handler(req: Request): Promise<Response> {
                                 const costActual = priceForDebit * autoQuantity;
                                 const costIntended = currentPrice * autoQuantity;
                                 if (
+                                    orderResult &&
                                     orderResult.status === 'filled' &&
                                     costActual > costIntended * 1.01
                                 ) {

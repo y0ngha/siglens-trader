@@ -317,6 +317,23 @@ describe('FmpMarketProvider', () => {
 
             expect(bars).toEqual([]);
         });
+
+        it('silently drops null/undefined elements in the FMP array (null guard)', async () => {
+            const raw = [
+                // valid bar
+                { date: '2025-06-13 10:00:00', open: 10, high: 12, low: 9, close: 11, volume: 100 },
+                // null element — should not throw, should be dropped
+                null,
+                undefined,
+            ];
+            mockedFmpGet.mockResolvedValueOnce(raw as never);
+
+            const provider = new FmpMarketProvider();
+            // Must resolve (not throw) and return only the valid bar
+            await expect(
+                provider.getBars({ symbol: 'AAPL', timeframe: '1Hour' }),
+            ).resolves.toHaveLength(1);
+        });
     });
 
     describe('getMarketDataProvider', () => {

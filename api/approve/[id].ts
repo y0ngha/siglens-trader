@@ -78,7 +78,9 @@ async function handler(req: Request): Promise<Response> {
         // if trading is disabled, we revert to 'pending' so the user can re-approve later.
         const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
         if (!tradingEnabled) {
-            await revertPendingOrder(db, id).catch(() => {});
+            await revertPendingOrder(db, id).catch((err) =>
+                console.error(`[approve] Failed to revert pending order ${id}:`, err),
+            );
             return Response.json({ error: 'trading is disabled (kill switch)' }, { status: 409 });
         }
 

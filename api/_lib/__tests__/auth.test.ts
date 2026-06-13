@@ -152,6 +152,21 @@ describe('isAuthenticated', () => {
             expect(result).toBe(false);
         });
 
+        it('logs console.error when jwtVerify throws (Fix 2)', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            const jwtErr = new Error('JWTExpired');
+            mockJwtVerify.mockRejectedValue(jwtErr);
+
+            const { isAuthenticated: auth } = await import('../auth');
+            await auth(makeRequest({ 'Cf-Access-Jwt-Assertion': 'tampered.jwt.token' }));
+
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('[auth] JWT verification failed:'),
+                jwtErr,
+            );
+            errorSpy.mockRestore();
+        });
+
         it('returns false when jwtVerify throws a JWKS fetch error (fail-closed)', async () => {
             mockJwtVerify.mockRejectedValue(new Error('Failed to fetch JWKS'));
 
@@ -252,6 +267,20 @@ describe('isAuthenticated', () => {
             expect(warnSpy).toHaveBeenCalledWith(
                 expect.stringContaining('CF Access JWT verification not configured'),
             );
+            warnSpy.mockRestore();
+        });
+
+        it('emits the fallback console.warn only once across multiple requests (Fix 6)', async () => {
+            // vi.resetModules() in afterEach resets module scope so fallbackWarned starts false.
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+            const { isAuthenticated: auth } = await import('../auth');
+            await auth(makeRequest());
+            await auth(makeRequest());
+            await auth(makeRequest());
+
+            // warn should be emitted exactly once no matter how many requests arrive
+            expect(warnSpy).toHaveBeenCalledTimes(1);
             warnSpy.mockRestore();
         });
 
