@@ -779,6 +779,50 @@ describe('reconcile cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // dry_run broker gate
+    // -----------------------------------------------------------------------
+
+    describe('dry_run broker gate', () => {
+        it('dry_run with submitted order: getOrder and cancelOrder are NOT called, results stay empty', async () => {
+            // In dry_run no real orders are submitted, so broker polling must be skipped
+            // even if a submitted row exists (latent coupling guard).
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockGetOrder).not.toHaveBeenCalled();
+            expect(mockCancelOrder).not.toHaveBeenCalled();
+            expect(body.processed).toBe(0);
+            expect(body.results).toEqual([]);
+        });
+
+        it('dry_run: autoRecoverFilledOrders and checkConsistency still run (DB-only)', async () => {
+            mockGetConfigValue.mockResolvedValue('dry_run');
+            mockAutoRecoverFilledOrders.mockResolvedValue({
+                recovered: 1,
+                failed: 0,
+                details: ['ok'],
+            });
+            mockCheckConsistency.mockResolvedValue({
+                filledOrdersWithoutTrades: 1,
+                filledOrdersWithoutPositions: 0,
+                openPositionsWithoutTrades: 0,
+                alerts: ['some-alert'],
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockAutoRecoverFilledOrders).toHaveBeenCalled();
+            expect(mockCheckConsistency).toHaveBeenCalled();
+            expect(body.recovery).toEqual({ recovered: 1, failed: 0 });
+            expect(body.consistency).toEqual({ filledOrdersWithoutTrades: 1, alertCount: 1 });
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Holdings reconciliation
     // -----------------------------------------------------------------------
 

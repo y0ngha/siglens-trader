@@ -1,4 +1,4 @@
-CREATE TABLE "cron_decisions" (
+CREATE TABLE IF NOT EXISTS "cron_decisions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"run_id" text NOT NULL,
 	"cron_type" text NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE "cron_decisions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cron_runs" (
+CREATE TABLE IF NOT EXISTS "cron_runs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"run_id" text NOT NULL,
 	"cron_type" text NOT NULL,
@@ -26,6 +26,6 @@ CREATE TABLE "cron_runs" (
 	CONSTRAINT "cron_runs_run_id_unique" UNIQUE("run_id")
 );
 --> statement-breakpoint
-CREATE INDEX "idx_cron_decisions_run" ON "cron_decisions" USING btree ("run_id");--> statement-breakpoint
-CREATE INDEX "idx_cron_decisions_symbol_created" ON "cron_decisions" USING btree ("symbol","created_at");--> statement-breakpoint
-CREATE INDEX "idx_cron_runs_type_started" ON "cron_runs" USING btree ("cron_type","started_at");
+CREATE INDEX IF NOT EXISTS "idx_cron_decisions_run" ON "cron_decisions" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_cron_decisions_symbol_created" ON "cron_decisions" USING btree ("symbol","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_cron_runs_type_started" ON "cron_runs" USING btree ("cron_type","started_at");
