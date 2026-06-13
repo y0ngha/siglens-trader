@@ -1,5 +1,38 @@
 # Changelog
 
+# [0.3.0](https://github.com/y0ngha/siglens-trader/compare/v0.2.2...v0.3.0) (2026-06-13)
+
+
+### Bug Fixes
+
+* 락 owner 토큰 콜스택 전달, 승인 킬스위치, 분석 크론 TTL (H5/M8/M9) ([270daae](https://github.com/y0ngha/siglens-trader/commit/270daae106b90b165e9c4b10d57c538cfd8762e9))
+* 배포 전 하드닝 3건 (reconcile dry_run 게이트, crypto import, 0007 IF NOT EXISTS) ([ac9f0bc](https://github.com/y0ngha/siglens-trader/commit/ac9f0bc63efc8ee45abea7fe8f6caa815c9710f7))
+* 분석 poll 타임아웃을 150s로 — 직렬 폴링 worst-case를 락 TTL/maxDuration 이내로 ([1893362](https://github.com/y0ngha/siglens-trader/commit/18933620faba9eaec471e7d0a2eb09a137bdb4b6))
+* 이메일 알림 ON/OFF 실동작 + 전 페이지 낙관적 업데이트 ([05773a5](https://github.com/y0ngha/siglens-trader/commit/05773a5db3f5db18c88d5db1761d714296e41a8d))
+* **auth:** Cloudflare Access JWT 검증 강화 + DISABLE_AUTH 프로덕션 가드 ([436fab8](https://github.com/y0ngha/siglens-trader/commit/436fab80a1e5f86560150c903443f053a40c93f9))
+* clear.ts에 order_tracking 추가 및 schema.ts 주석 보강 ([a42d3ce](https://github.com/y0ngha/siglens-trader/commit/a42d3ced815c36236befc4eca24ce82c65dcd463))
+* **cron:** analysis 크론 감사 로그 코드 품질 개선 ([5b577c7](https://github.com/y0ngha/siglens-trader/commit/5b577c7b2a1e49aa8c87b1cff49a3f9db295540b))
+* data/analysis 견고성 강화 (M10/L16/L17/L18) ([c1bef06](https://github.com/y0ngha/siglens-trader/commit/c1bef0603410fc0bfd2e3319fbc7437a1eb1a6cf))
+* **db:** cron 쿼리 헬퍼 코드 품질 개선 (NaN 가드, 판별 유니온, CronType) ([1fed269](https://github.com/y0ngha/siglens-trader/commit/1fed26983ac0310d7ea147bb207d837cf0971070))
+* **db:** H7 스키마 인덱스 드리프트 수정 + M11 recovery NaN 가드 강화 ([d493e47](https://github.com/y0ngha/siglens-trader/commit/d493e4792be6a92e985f1823300dd7255290a5ba))
+* **execute:** 매매 안전 강화 — C1/C2/H3/H4 감사 수정 ([d8baec8](https://github.com/y0ngha/siglens-trader/commit/d8baec814bbe32d8c33cb50a8ac322555cb87b3b))
+* **execute:** 포지션 재평가 hold 결정을 decisions[]에 기록 (감사 로그 누락 수정) ([7e2c17f](https://github.com/y0ngha/siglens-trader/commit/7e2c17f74371b7e492d79fbef9030ae8419ef0f6))
+* **execute:** semi_auto 결정을 executed:false로 기록 (감사 로그 스펙 버그 수정) ([ee86352](https://github.com/y0ngha/siglens-trader/commit/ee86352f9e61c4d241f3fcfb790e3b6012f9a7d2))
+* getAnalysisConfig 기본값 반환 + updateAnalysisConfig upsert 전환 ([9896946](https://github.com/y0ngha/siglens-trader/commit/9896946fbab6ee5a4f1e1c292ec7e1b9f6cf0148))
+* M12/L13/L14/L15 보안·검증·UI 강화 ([c1eb41d](https://github.com/y0ngha/siglens-trader/commit/c1eb41db2bf0e7558d303ff986bb4a89e44e46d9)), closes [#39](https://github.com/y0ngha/siglens-trader/issues/39)
+* PR [#11](https://github.com/y0ngha/siglens-trader/issues/11) 리뷰 반영 — 방어 가드 및 에러 로깅 보강 ([cfc68a6](https://github.com/y0ngha/siglens-trader/commit/cfc68a6dc6e710bcd63de27c77574f84d9f3cb79))
+* PR [#12](https://github.com/y0ngha/siglens-trader/issues/12) 리뷰 반영 — 0007 편집 되돌림 + dry_run 게이트를 브로커 호출만으로 한정(타임아웃 안전망 유지) ([ca5b069](https://github.com/y0ngha/siglens-trader/commit/ca5b06909994a032a83337b42f47d6428fde528e))
+* **review:** execute 오류 알림 게이트 적용 + 청산 이벤트 분기 + 타이머/빈 updates 방어 ([3f30f52](https://github.com/y0ngha/siglens-trader/commit/3f30f5210503ccb2dccecf860822d8185da95350)), closes [#8](https://github.com/y0ngha/siglens-trader/issues/8)
+
+
+### Features
+
+* _run-analysis-cron에 cron_runs 감사 로깅 계측 추가 ([55aef5e](https://github.com/y0ngha/siglens-trader/commit/55aef5e2c81cfcdf56251b2091f4dbab83d5aef9))
+* cron 감사 로그 쿼리 헬퍼 추가 (startCronRun, finishCronRun, insertCronDecisions) ([cd14166](https://github.com/y0ngha/siglens-trader/commit/cd141666286978cd9b3a502a5aa2e12ab52e92e2))
+* cron_runs, cron_decisions 테이블 추가 및 마이그레이션 생성 ([0140d0a](https://github.com/y0ngha/siglens-trader/commit/0140d0a3caa5d962dbb9826813e85c1cd622f5c3))
+* execute 크론에 cron_runs/cron_decisions 감사 로깅 계측 추가 ([f3b1d2d](https://github.com/y0ngha/siglens-trader/commit/f3b1d2dbc60c9d2775e65f75054f47ec69a651a8))
+* reconcile 크론 감사 로그 계측 (Task 5) ([3d1edbf](https://github.com/y0ngha/siglens-trader/commit/3d1edbf07e1d2966981f5da3db525e6bff50d89c))
+
 ## [0.2.2](https://github.com/y0ngha/siglens-trader/compare/v0.2.1...v0.2.2) (2026-06-12)
 
 
