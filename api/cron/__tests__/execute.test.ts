@@ -39,6 +39,7 @@ const mockGetNotificationConfig = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
 const mockInsertCronDecisions = vi.fn();
+const mockGetTodayInflightOrderCount = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -54,6 +55,7 @@ vi.mock('../../../lib/db/queries', () => ({
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
+    getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
     getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
     expireOldPendingOrders: (...args: unknown[]) => mockExpireOldPendingOrders(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
@@ -224,6 +226,7 @@ function setupDefaults() {
     mockInsertPendingOrder.mockResolvedValue([]);
     mockGetPendingOrders.mockResolvedValue([]);
     mockGetTodayTradeCount.mockResolvedValue(0);
+    mockGetTodayInflightOrderCount.mockResolvedValue(0);
     mockGetTodayRealizedPnl.mockResolvedValue(0);
     mockExpireOldPendingOrders.mockResolvedValue([]);
     mockSaveAnalysisResult.mockResolvedValue([]);
@@ -643,6 +646,133 @@ describe('execute cron handler', () => {
                 });
                 // No trades should be inserted since we hit the limit
                 expect(mockInsertTrade).not.toHaveBeenCalled();
+            });
+        });
+
+        describe('buying power fail-closed (auto mode)', () => {
+            beforeEach(() => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_mode') return Promise.resolve('auto');
+                    return Promise.resolve(null);
+                });
+                mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) => {
+                        if (type === 'technical') return Promise.resolve(fakeTechResult);
+                        return Promise.resolve(null);
+                    },
+                );
+            });
+
+            it('auto mode: skips buy when getBuyingPower rejects (fail-closed)', async () => {
+                mockGetBuyingPower.mockRejectedValue(new Error('broker fetch failed'));
+                mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'buy',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'Score 80/100 — BUY',
+                    quantity: 5,
+                });
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                // Buy must be skipped — no broker call
+                expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        action: 'skipped_no_buying_power',
+                    }),
+                );
+            });
+
+            it('auto mode: skips buy when getBuyingPower returns null (fail-closed)', async () => {
+                mockGetBuyingPower.mockResolvedValue(null);
+                mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'buy',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'Score 80/100 — BUY',
+                    quantity: 5,
+                });
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        action: 'skipped_no_buying_power',
+                    }),
+                );
+            });
+
+            it('dry_run mode: still records a simulated trade even when getBuyingPower returns null', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_mode') return Promise.resolve('dry_run');
+                    return Promise.resolve(null);
+                });
+                mockGetBuyingPower.mockResolvedValue(null);
+                mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'buy',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'Score 80/100 — BUY',
+                    quantity: 5,
+                });
+
+                await handler(makeRequest(true));
+
+                // dry_run doesn't consult buying power — trade must be inserted
+                expect(mockInsertTrade).toHaveBeenCalledWith(
+                    fakeDb,
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        mode: 'dry_run',
+                    }),
+                );
+            });
+        });
+
+        describe('daily trade limit with in-flight orders (H3)', () => {
+            it('treats trades + inflight as combined count for the initial limit check', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(20);
+                    return Promise.resolve(null);
+                });
+                // 18 settled + 2 in-flight = 20 => should skip
+                mockGetTodayTradeCount.mockResolvedValue(18);
+                mockGetTodayInflightOrderCount.mockResolvedValue(2);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body.skipped).toBe(true);
+                expect(body.reason).toBe('daily_trade_limit_reached');
+                expect(body.todayCount).toBe(20);
+                expect(body.limit).toBe(20);
+            });
+
+            it('proceeds when trades + inflight is under the limit', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'max_trades_per_day') return Promise.resolve(20);
+                    return Promise.resolve(null);
+                });
+                mockGetTodayTradeCount.mockResolvedValue(10);
+                mockGetTodayInflightOrderCount.mockResolvedValue(5);
+                mockGetEnabledWatchlist.mockResolvedValue([]);
+                mockGetOpenPositions.mockResolvedValue([]);
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body.skipped).toBe(true);
+                expect(body.reason).toBe('empty_watchlist');
             });
         });
 
@@ -4488,13 +4618,20 @@ describe('execute cron handler', () => {
             expect(mockExecuteBuyOrder).toHaveBeenCalled();
         });
 
-        it('does not gate buy when getBuyingPower throws (guard disabled)', async () => {
+        it('skips buy (skipped_no_buying_power) when getBuyingPower throws (fail-closed)', async () => {
             mockGetBuyingPower.mockRejectedValue(new Error('balance API down'));
 
-            await handler(makeRequest(true));
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
 
-            // null buying power → guard skipped, order placed
-            expect(mockExecuteBuyOrder).toHaveBeenCalled();
+            // null buying power → fail-closed, order must NOT be placed
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    action: 'skipped_no_buying_power',
+                }),
+            );
         });
     });
 

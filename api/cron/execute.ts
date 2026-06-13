@@ -15,6 +15,7 @@ import {
     insertPendingOrder,
     getPendingOrders,
     getTodayTradeCount,
+    getTodayInflightOrderCount,
     getTodayRealizedPnl,
     expireOldPendingOrders,
     createOrderTracking,
@@ -130,14 +131,19 @@ async function handler(req: Request): Promise<Response> {
             await expireOldPendingOrders(db);
 
             // Circuit breaker: daily trade limit
+            // Count both settled trades AND in-flight orders (submitted/pending/partial) so
+            // concurrent/rapid runs cannot exceed the limit by racing before any order settles.
             const maxTradesPerDay = (await getConfigValue<number>(db, 'max_trades_per_day')) ?? 20;
-            const todayTradeCount = await getTodayTradeCount(db);
-            if (todayTradeCount >= maxTradesPerDay) {
+            const [todayTradeCount, todayInflightCount] = await Promise.all([
+                getTodayTradeCount(db),
+                getTodayInflightOrderCount(db),
+            ]);
+            if (todayTradeCount + todayInflightCount >= maxTradesPerDay) {
                 finishState = { status: 'skipped', outcome: 'daily_trade_limit', ...elapsed() };
                 return Response.json({
                     skipped: true,
                     reason: 'daily_trade_limit_reached',
-                    todayCount: todayTradeCount,
+                    todayCount: todayTradeCount + todayInflightCount,
                     limit: maxTradesPerDay,
                 });
             }
@@ -176,7 +182,8 @@ async function handler(req: Request): Promise<Response> {
                         const curPrice = livePreCheck ?? safeAnalysisPrice(techForPos?.result);
                         if (curPrice > 0) {
                             const avgP = safeNumber(Number(pos.avgPrice), 0);
-                            unrealizedPnl += (curPrice - avgP) * pos.quantity;
+                            const dir = pos.side === 'short' ? avgP - curPrice : curPrice - avgP;
+                            unrealizedPnl += dir * pos.quantity;
                         }
                     } catch {
                         // Skip this position's unrealized PnL — analysis data unavailable
@@ -837,8 +844,12 @@ async function handler(req: Request): Promise<Response> {
                     });
 
                     // Circuit breaker: re-check daily trade limit before each trade
-                    const currentDayCount = await getTodayTradeCount(db);
-                    if (currentDayCount >= maxTradesPerDay) {
+                    // Include in-flight orders to prevent limit overshoot across concurrent runs.
+                    const [currentDayCount, currentInflightCount] = await Promise.all([
+                        getTodayTradeCount(db),
+                        getTodayInflightOrderCount(db),
+                    ]);
+                    if (currentDayCount + currentInflightCount >= maxTradesPerDay) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'daily_limit',
@@ -917,14 +928,23 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Per-symbol exposure cap for average_in
+                    // Per-symbol exposure cap for average_in: respect BOTH the per-symbol
+                    // limit and the total-exposure budget (whichever is tighter).
                     if (decision.action === 'average_in' && existingPosition) {
                         const existingExposure = currentPrice * existingPosition.quantity;
                         const remainingSymbolBudget = Math.max(
                             0,
                             maxPositionSize - existingExposure,
                         );
-                        const cappedSize = Math.floor(remainingSymbolBudget / currentPrice);
+                        const remainingTotalBudget = Math.max(
+                            0,
+                            maxTotalExposure - currentExposure,
+                        );
+                        const effectiveBudget = Math.min(
+                            remainingSymbolBudget,
+                            remainingTotalBudget,
+                        );
+                        const cappedSize = Math.floor(effectiveBudget / currentPrice);
                         if (cappedSize <= 0) {
                             decisions.push({
                                 symbol: item.symbol,
@@ -1159,6 +1179,19 @@ async function handler(req: Request): Promise<Response> {
                                 decision.action === 'buy' || decision.action === 'average_in';
                             let autoQuantity = decision.quantity;
 
+                            // Buying-power guard (BUY/average_in): fail-closed when buying power is unknown.
+                            // If the broker fetch failed (null), skip all buy orders — we cannot verify
+                            // there is enough cash. Sells are unaffected (closing exposure is safe).
+                            if (isBuyOrder && remainingBuyingPower === null) {
+                                decisions.push({
+                                    symbol: item.symbol,
+                                    action: 'skipped_no_buying_power',
+                                    score: decision.score,
+                                    executed: false,
+                                });
+                                decisionPushed = true;
+                                break;
+                            }
                             // Buying-power guard (BUY/average_in): skip if cost exceeds remaining
                             // USD cash (running balance, decremented after each live buy this run).
                             if (
@@ -1256,9 +1289,29 @@ async function handler(req: Request): Promise<Response> {
                             }
                             // Order is live (filled/partial/pending) and will consume cash —
                             // optimistically decrement the running balance so subsequent buys
-                            // this run see reduced cash. Uses request qty (filled qty unknown for pending).
+                            // this run see reduced cash.
+                            // For a clean fill we use filledPrice (actual cost); for pending/partial
+                            // we use the request price (filled qty unknown at this point).
                             if (isBuyOrder && remainingBuyingPower != null) {
-                                remainingBuyingPower -= currentPrice * autoQuantity;
+                                const priceForDebit =
+                                    orderResult.status === 'filled' &&
+                                    orderResult.avgFilledPrice != null
+                                        ? orderResult.avgFilledPrice
+                                        : currentPrice;
+                                const costActual = priceForDebit * autoQuantity;
+                                const costIntended = currentPrice * autoQuantity;
+                                if (
+                                    orderResult.status === 'filled' &&
+                                    costActual > costIntended * 1.01
+                                ) {
+                                    console.warn(
+                                        '[execute] fill exceeded budget',
+                                        item.symbol,
+                                        `intended=$${costIntended.toFixed(2)}`,
+                                        `actual=$${costActual.toFixed(2)}`,
+                                    );
+                                }
+                                remainingBuyingPower -= costActual;
                             }
                             // pending/partial: NO trade, NO position mutation, NO exposure change.
                             // Reconcile owns final booking (single source of truth → no double-count).
