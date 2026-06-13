@@ -87,52 +87,92 @@ async function handler(req: Request): Promise<Response> {
             results.push({ id: order.id, symbol: order.symbol, action: 'timeout' });
         };
 
-        // Broker-polling loop: skipped in dry_run — no real orders are created, so
-        // no tossOrderId rows exist, and polling the live broker from a simulated
-        // session would be a latent coupling if the mode is ever toggled mid-run.
-        if (tradingMode !== 'dry_run') {
-            for (const order of submitted) {
-                const age = Date.now() - new Date(order.submittedAt).getTime();
-                const isTimedOut = age > SUBMITTED_TIMEOUT_MS;
+        // Order resolution loop: broker-polling calls are skipped in dry_run — no real
+        // orders are created, so tossOrderId rows won't exist and polling the live
+        // broker from a simulated session would be a latent coupling. However, the
+        // age-based timeout safety net (DB update + email) still runs in dry_run
+        // because it touches no broker and is critical for sell-side safety.
+        for (const order of submitted) {
+            const age = Date.now() - new Date(order.submittedAt).getTime();
+            const isTimedOut = age > SUBMITTED_TIMEOUT_MS;
 
-                // First, try to resolve the order via the broker. Only fall back to
-                // the age-based timeout path when there is no broker id or polling fails.
-                if (order.tossOrderId) {
-                    const detail = await getOrder(order.tossOrderId).catch(() => null);
-                    if (detail) {
-                        if (detail.status === 'FILLED') {
-                            // Only auto-book a CLEAN FULL FILL: broker filled qty is a whole
-                            // number equal (within epsilon) to the tracked intended integer
-                            // quantity, AND a real fill price is present. autoRecoverFilledOrders
-                            // books integer order.quantity, so this guarantees it only ever runs
-                            // on orders whose actual fill equals that integer quantity.
-                            const cleanFull =
-                                detail.avgFilledPrice != null &&
-                                Number.isInteger(order.quantity) &&
-                                Math.abs(detail.filledQuantity - order.quantity) < 1e-6;
-                            if (cleanFull) {
-                                await updateOrderTracking(db, order.idempotencyKey, {
-                                    status: 'filled',
-                                    filledPrice: detail.avgFilledPrice ?? undefined,
-                                    resolvedAt: new Date(),
-                                });
-                                results.push({
-                                    id: order.id,
-                                    symbol: order.symbol,
-                                    action: 'resolved_filled',
-                                });
-                                continue;
-                            }
-                            // Short/fractional fill or missing fill price → do NOT auto-book
-                            // (order_tracking.quantity is integer/intended). Route to manual review.
+            // First, try to resolve the order via the broker. Only fall back to
+            // the age-based timeout path when there is no broker id or polling fails.
+            // Skipped in dry_run: no real orders, no broker coupling.
+            if (order.tossOrderId && tradingMode !== 'dry_run') {
+                const detail = await getOrder(order.tossOrderId).catch(() => null);
+                if (detail) {
+                    if (detail.status === 'FILLED') {
+                        // Only auto-book a CLEAN FULL FILL: broker filled qty is a whole
+                        // number equal (within epsilon) to the tracked intended integer
+                        // quantity, AND a real fill price is present. autoRecoverFilledOrders
+                        // books integer order.quantity, so this guarantees it only ever runs
+                        // on orders whose actual fill equals that integer quantity.
+                        const cleanFull =
+                            detail.avgFilledPrice != null &&
+                            Number.isInteger(order.quantity) &&
+                            Math.abs(detail.filledQuantity - order.quantity) < 1e-6;
+                        if (cleanFull) {
                             await updateOrderTracking(db, order.idempotencyKey, {
-                                status: 'needs_review',
+                                status: 'filled',
                                 filledPrice: detail.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
+                            results.push({
+                                id: order.id,
+                                symbol: order.symbol,
+                                action: 'resolved_filled',
+                            });
+                            continue;
+                        }
+                        // Short/fractional fill or missing fill price → do NOT auto-book
+                        // (order_tracking.quantity is integer/intended). Route to manual review.
+                        await updateOrderTracking(db, order.idempotencyKey, {
+                            status: 'needs_review',
+                            filledPrice: detail.avgFilledPrice ?? undefined,
+                            resolvedAt: new Date(),
+                        });
+                        await notifyError(
+                            `체결 수동확인 필요: ${order.symbol}`,
+                            `주문 ${order.tossOrderId} FILLED 이나 체결수량(${detail.filledQuantity})이 의도수량(${order.quantity})과 불일치하거나 소수점. 수동 기록 필요.`,
+                        );
+                        results.push({
+                            id: order.id,
+                            symbol: order.symbol,
+                            action: 'needs_review',
+                        });
+                        continue;
+                    }
+
+                    if (
+                        detail.status === 'REJECTED' ||
+                        detail.status === 'CANCEL_REJECTED' ||
+                        detail.status === 'REPLACE_REJECTED'
+                    ) {
+                        await updateOrderTracking(db, order.idempotencyKey, {
+                            status: 'rejected',
+                            resolvedAt: new Date(),
+                        });
+                        results.push({
+                            id: order.id,
+                            symbol: order.symbol,
+                            action: 'resolved_rejected',
+                        });
+                        continue;
+                    }
+
+                    if (detail.status === 'CANCELED') {
+                        if (detail.filledQuantity > 0) {
+                            // Partial fill then canceled — DO NOT auto-book (qty may be
+                            // fractional/partial; order_tracking.quantity is integer/intended).
+                            // Route to manual review.
+                            await updateOrderTracking(db, order.idempotencyKey, {
+                                status: 'needs_review',
+                                resolvedAt: new Date(),
+                            });
                             await notifyError(
-                                `체결 수동확인 필요: ${order.symbol}`,
-                                `주문 ${order.tossOrderId} FILLED 이나 체결수량(${detail.filledQuantity})이 의도수량(${order.quantity})과 불일치하거나 소수점. 수동 기록 필요.`,
+                                `부분체결 후 취소 — 수동 확인: ${order.symbol}`,
+                                `${order.side} 주문 ${order.tossOrderId} 가 ${detail.filledQuantity}주 부분체결 후 취소됨. 평균체결가 ${detail.avgFilledPrice}. trade/position 수동 기록 필요.`,
                             );
                             results.push({
                                 id: order.id,
@@ -141,107 +181,68 @@ async function handler(req: Request): Promise<Response> {
                             });
                             continue;
                         }
+                        await updateOrderTracking(db, order.idempotencyKey, {
+                            status: 'canceled',
+                            resolvedAt: new Date(),
+                        });
+                        results.push({
+                            id: order.id,
+                            symbol: order.symbol,
+                            action: 'resolved_canceled',
+                        });
+                        continue;
+                    }
 
-                        if (
-                            detail.status === 'REJECTED' ||
-                            detail.status === 'CANCEL_REJECTED' ||
-                            detail.status === 'REPLACE_REJECTED'
-                        ) {
-                            await updateOrderTracking(db, order.idempotencyKey, {
-                                status: 'rejected',
-                                resolvedAt: new Date(),
-                            });
-                            results.push({
-                                id: order.id,
-                                symbol: order.symbol,
-                                action: 'resolved_rejected',
-                            });
-                            continue;
-                        }
-
-                        if (detail.status === 'CANCELED') {
-                            if (detail.filledQuantity > 0) {
-                                // Partial fill then canceled — DO NOT auto-book (qty may be
-                                // fractional/partial; order_tracking.quantity is integer/intended).
-                                // Route to manual review.
-                                await updateOrderTracking(db, order.idempotencyKey, {
-                                    status: 'needs_review',
-                                    resolvedAt: new Date(),
-                                });
-                                await notifyError(
-                                    `부분체결 후 취소 — 수동 확인: ${order.symbol}`,
-                                    `${order.side} 주문 ${order.tossOrderId} 가 ${detail.filledQuantity}주 부분체결 후 취소됨. 평균체결가 ${detail.avgFilledPrice}. trade/position 수동 기록 필요.`,
-                                );
-                                results.push({
-                                    id: order.id,
-                                    symbol: order.symbol,
-                                    action: 'needs_review',
-                                });
-                                continue;
-                            }
-                            await updateOrderTracking(db, order.idempotencyKey, {
-                                status: 'canceled',
-                                resolvedAt: new Date(),
-                            });
-                            results.push({
-                                id: order.id,
-                                symbol: order.symbol,
-                                action: 'resolved_canceled',
-                            });
-                            continue;
-                        }
-
-                        if (detail.status === 'PARTIAL_FILLED') {
-                            if (isTimedOut) {
-                                // Remainder not filling — cancel it, then route the filled
-                                // portion to manual review (don't auto-book partial fills).
-                                await cancelOrder(order.tossOrderId).catch((e) =>
-                                    console.error('[cancel]', e),
-                                );
-                                await updateOrderTracking(db, order.idempotencyKey, {
-                                    status: 'needs_review',
-                                    resolvedAt: new Date(),
-                                });
-                                await notifyError(
-                                    `부분체결 타임아웃 — 수동 확인: ${order.symbol}`,
-                                    `${order.side} 주문 ${order.tossOrderId} 가 30분 경과 부분체결(${detail.filledQuantity}주 @ ${detail.avgFilledPrice}). 잔량 취소 시도함. 수동 기록 필요.`,
-                                );
-                                results.push({
-                                    id: order.id,
-                                    symbol: order.symbol,
-                                    action: 'needs_review',
-                                });
-                                continue;
-                            }
-                            // Within window — leave 'partial', wait.
-                            results.push({
-                                id: order.id,
-                                symbol: order.symbol,
-                                action: 'waiting_partial',
-                            });
-                            continue;
-                        }
-
-                        // PENDING / PENDING_CANCEL / PENDING_REPLACE / REPLACED — still in-flight.
+                    if (detail.status === 'PARTIAL_FILLED') {
                         if (isTimedOut) {
+                            // Remainder not filling — cancel it, then route the filled
+                            // portion to manual review (don't auto-book partial fills).
                             await cancelOrder(order.tossOrderId).catch((e) =>
                                 console.error('[cancel]', e),
                             );
-                            await timeoutOrder(order, age);
+                            await updateOrderTracking(db, order.idempotencyKey, {
+                                status: 'needs_review',
+                                resolvedAt: new Date(),
+                            });
+                            await notifyError(
+                                `부분체결 타임아웃 — 수동 확인: ${order.symbol}`,
+                                `${order.side} 주문 ${order.tossOrderId} 가 30분 경과 부분체결(${detail.filledQuantity}주 @ ${detail.avgFilledPrice}). 잔량 취소 시도함. 수동 기록 필요.`,
+                            );
+                            results.push({
+                                id: order.id,
+                                symbol: order.symbol,
+                                action: 'needs_review',
+                            });
                             continue;
                         }
-                        results.push({ id: order.id, symbol: order.symbol, action: 'waiting' });
+                        // Within window — leave 'partial', wait.
+                        results.push({
+                            id: order.id,
+                            symbol: order.symbol,
+                            action: 'waiting_partial',
+                        });
                         continue;
                     }
-                    // detail null (getOrder failed) → fall through to the timeout fallback below.
-                }
 
-                // No tossOrderId OR getOrder failed: age-based timeout fallback.
-                if (isTimedOut) {
-                    await timeoutOrder(order, age);
-                } else {
+                    // PENDING / PENDING_CANCEL / PENDING_REPLACE / REPLACED — still in-flight.
+                    if (isTimedOut) {
+                        await cancelOrder(order.tossOrderId).catch((e) =>
+                            console.error('[cancel]', e),
+                        );
+                        await timeoutOrder(order, age);
+                        continue;
+                    }
                     results.push({ id: order.id, symbol: order.symbol, action: 'waiting' });
+                    continue;
                 }
+                // detail null (getOrder failed) → fall through to the timeout fallback below.
+            }
+
+            // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.
+            if (isTimedOut) {
+                await timeoutOrder(order, age);
+            } else {
+                results.push({ id: order.id, symbol: order.symbol, action: 'waiting' });
             }
         }
 
