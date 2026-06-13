@@ -15,15 +15,19 @@ function getRedis(): Redis | null {
 const DEFAULT_LOCK_TTL_SECONDS = 900; // 15 minutes
 
 /**
- * In-memory map of lock keys to their owner UUIDs.
- * Used to ensure only the process that acquired the lock can release it.
+ * Attempt to acquire a distributed lock via Redis SETNX.
+ *
+ * Returns the owner token string on success, or null if the lock is already held,
+ * Redis is unavailable in production (fail-closed), or a Redis error occurs.
+ *
+ * The caller must pass the returned token to releaseLock — the token is NOT stored
+ * in module-level state, making this safe across serverless function invocations
+ * where separate instances share no in-process memory.
  */
-const lockValues = new Map<string, string>();
-
 export async function acquireLock(
     key: string,
     ttlSeconds = DEFAULT_LOCK_TTL_SECONDS,
-): Promise<boolean> {
+): Promise<string | null> {
     const r = getRedis();
     if (!r) {
         const isProd =
@@ -32,36 +36,43 @@ export async function acquireLock(
             console.error(
                 '[lock] Redis not configured in production — failing CLOSED (refusing lock) to prevent unlocked concurrent execution',
             );
-            return false;
+            return null;
         }
         console.warn('[lock] Redis not configured — lock disabled (dev mode)');
-        return true;
+        // In dev mode return a synthetic token so callers can proceed without Redis.
+        return `dev-${crypto.randomUUID()}`;
     }
     try {
         const value = crypto.randomUUID();
         const result = await r.set(key, value, { nx: true, ex: ttlSeconds });
         if (result === 'OK') {
-            lockValues.set(key, value);
-            return true;
+            return value;
         }
-        return false;
+        return null;
     } catch (err) {
         console.error('[lock] Redis error during acquireLock:', err);
-        return false; // Fail closed — don't execute without lock
+        return null; // Fail closed — don't execute without lock
     }
 }
 
-export async function releaseLock(key: string): Promise<void> {
+/**
+ * Release a distributed lock using a Lua compare-and-delete script.
+ *
+ * Only deletes the Redis key if its stored value matches the provided token,
+ * preventing a timed-out lock from being released by a later invocation that
+ * re-acquired it with a different token.
+ *
+ * If token is null/undefined (e.g. lock was never acquired), this is a no-op.
+ */
+export async function releaseLock(key: string, token: string | null | undefined): Promise<void> {
     const r = getRedis();
     if (!r) return;
-    const expectedValue = lockValues.get(key);
-    if (!expectedValue) return;
+    if (!token) return;
     try {
         // Atomic check-and-delete via Lua script to prevent releasing another owner's lock
         const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
-        await r.eval(script, [key], [expectedValue]);
+        await r.eval(script, [key], [token]);
     } catch (err) {
         console.error('[lock] Redis error during releaseLock:', err);
     }
-    lockValues.delete(key);
 }

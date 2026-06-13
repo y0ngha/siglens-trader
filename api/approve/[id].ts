@@ -73,6 +73,15 @@ async function handler(req: Request): Promise<Response> {
             return Response.json({ error: 'Order was already processed' }, { status: 409 });
         }
 
+        // Kill switch: refuse execution if trading has been disabled since the order was queued.
+        // Checked after the atomic approvePendingOrder to prevent the order from being lost —
+        // if trading is disabled, we revert to 'pending' so the user can re-approve later.
+        const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+        if (!tradingEnabled) {
+            await revertPendingOrder(db, id).catch(() => {});
+            return Response.json({ error: 'trading is disabled (kill switch)' }, { status: 409 });
+        }
+
         // Determine trading mode and attempt real execution when applicable
         let filledPrice = price;
         let actualQuantity = order.quantity;

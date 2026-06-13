@@ -98,14 +98,12 @@ async function handler(req: Request): Promise<Response> {
         }
 
         const LOCK_KEY = 'cron:execute:lock';
-        let lockAcquired = false;
         // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-        const locked = await acquireLock(LOCK_KEY, 780);
-        if (!locked) {
+        const lockToken = await acquireLock(LOCK_KEY, 780);
+        if (!lockToken) {
             finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
         }
-        lockAcquired = true;
 
         try {
             // Email notification gate — respect the dashboard ON/OFF toggle + per-event
@@ -292,7 +290,7 @@ async function handler(req: Request): Promise<Response> {
             }
 
             // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
-            // null => guard disabled (fetch failed or non-auto mode) — fall back to prior behavior.
+            // null => fetch failed — fail CLOSED: all buy orders are skipped until the next run.
             const usdBuyingPower =
                 tradingMode === 'auto' ? await getBuyingPower('USD').catch(() => null) : null;
             // Running balance: optimistically decremented after each live buy so multiple
@@ -1572,8 +1570,7 @@ async function handler(req: Request): Promise<Response> {
             };
             return Response.json({ cronRunId, tradingMode, decisions });
         } finally {
-            if (lockAcquired)
-                await releaseLock(LOCK_KEY).catch((e) => console.error('[lock-release]', e));
+            await releaseLock(LOCK_KEY, lockToken).catch((e) => console.error('[lock-release]', e));
         }
     } catch (e) {
         finishState = {

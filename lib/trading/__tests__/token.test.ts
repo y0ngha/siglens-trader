@@ -14,9 +14,9 @@ vi.mock('@upstash/redis', () => ({
     Redis: vi.fn(() => ({ get: mockGet, set: mockSet, eval: vi.fn(async () => 1) })),
 }));
 
-// lock 모킹 — 기본값: 락 획득 성공(true)으로 기존 테스트 유지
+// lock 모킹 — 기본값: 락 획득 성공 (token string) → 기존 테스트 유지
 vi.mock('../../lock', () => ({
-    acquireLock: vi.fn(async () => true),
+    acquireLock: vi.fn(async () => 'test-refresh-lock-token'),
     releaseLock: vi.fn(async () => {}),
 }));
 
@@ -104,7 +104,7 @@ describe('token manager', () => {
             tokenResponse({ access_token: 'new-tok', token_type: 'Bearer', expires_in: 100 }),
         );
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce('refresh-lock-token');
         const { forceRefreshToken } = await import('../token');
         const token = await forceRefreshToken();
         expect(token).toBe('new-tok');
@@ -186,7 +186,7 @@ describe('token manager', () => {
             .mockResolvedValueOnce(null) // 최초 캐시 확인: 미스
             .mockResolvedValue('polled-tok'); // 폴링 시 캐시 히트
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(false);
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(null);
 
         vi.useFakeTimers();
         try {
@@ -206,7 +206,7 @@ describe('token manager', () => {
         // 초기 캐시 미스 → 락 획득 계속 실패 → 폴링 전체 캐시 미스 → 타임아웃 throw
         mockGet.mockResolvedValue(null);
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValue(false);
+        vi.mocked(lockMod.acquireLock).mockResolvedValue(null);
 
         vi.useFakeTimers();
         try {
@@ -224,7 +224,7 @@ describe('token manager', () => {
     it('forceRefreshToken(staleToken) — 캐시가 staleToken과 다르면 재발급 없이 캐시 반환', async () => {
         redisStore.set('toss:oauth:token', 'fresh-Y');
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce('refresh-lock-token');
         const { forceRefreshToken } = await import('../token');
         const result = await forceRefreshToken('stale-X');
         expect(result).toBe('fresh-Y');
@@ -237,7 +237,7 @@ describe('token manager', () => {
             tokenResponse({ access_token: 'brand-new', token_type: 'Bearer', expires_in: 100 }),
         );
         const lockMod = await import('../../lock');
-        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce(true);
+        vi.mocked(lockMod.acquireLock).mockResolvedValueOnce('refresh-lock-token');
         const { forceRefreshToken } = await import('../token');
         const result = await forceRefreshToken('stale-X');
         expect(result).toBe('brand-new');

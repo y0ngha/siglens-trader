@@ -128,7 +128,7 @@ vi.mock('../../../lib/data/live-price', () => ({
     fetchLivePrice: (...args: [string]) => mockFetchLivePrice(...args),
 }));
 
-const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
@@ -195,7 +195,7 @@ function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
     mockVerifyCronSecret.mockReturnValue(true);
     mockIsEtRegularSessionOpen.mockReturnValue(true);
-    mockAcquireLock.mockResolvedValue(true);
+    mockAcquireLock.mockResolvedValue('test-lock-token');
     mockReleaseLock.mockResolvedValue(undefined);
     mockGetConfigValue.mockResolvedValue(null); // All config values default to null
     mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
@@ -325,7 +325,7 @@ describe('execute cron handler', () => {
 
     describe('distributed lock', () => {
         it('returns skipped response when lock cannot be acquired', async () => {
-            mockAcquireLock.mockResolvedValue(false);
+            mockAcquireLock.mockResolvedValue(null);
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
@@ -340,7 +340,7 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock', 'test-lock-token');
         });
 
         it('releases lock even when handler throws', async () => {
@@ -348,7 +348,7 @@ describe('execute cron handler', () => {
 
             await expect(handler(makeRequest(true))).rejects.toThrow('DB connection failed');
 
-            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock', 'test-lock-token');
         });
     });
 
@@ -404,7 +404,10 @@ describe('execute cron handler', () => {
 
                 await handler(makeRequest(true));
 
-                expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+                expect(mockReleaseLock).toHaveBeenCalledWith(
+                    'cron:execute:lock',
+                    'test-lock-token',
+                );
             });
         });
 
@@ -484,7 +487,10 @@ describe('execute cron handler', () => {
 
                 await handler(makeRequest(true));
 
-                expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+                expect(mockReleaseLock).toHaveBeenCalledWith(
+                    'cron:execute:lock',
+                    'test-lock-token',
+                );
             });
         });
 
@@ -610,7 +616,10 @@ describe('execute cron handler', () => {
 
                 await handler(makeRequest(true));
 
-                expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+                expect(mockReleaseLock).toHaveBeenCalledWith(
+                    'cron:execute:lock',
+                    'test-lock-token',
+                );
             });
         });
 
@@ -4516,7 +4525,7 @@ describe('execute cron handler', () => {
             expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
             // Lock still released via finally
-            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock');
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:execute:lock', 'test-lock-token');
         });
 
         it('does NOT gate in dry_run mode (isUsMarketOpen not consulted)', async () => {
@@ -5154,7 +5163,7 @@ describe('execute cron handler', () => {
         });
 
         it('records skipped/locked when lock is not acquired', async () => {
-            mockAcquireLock.mockResolvedValue(false);
+            mockAcquireLock.mockResolvedValue(null);
 
             await handler(makeRequest(true));
 

@@ -15,7 +15,7 @@ vi.mock('../../_lib/db', () => ({
     getDb: () => mockGetDb(),
 }));
 
-const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
@@ -82,7 +82,7 @@ function makeRequest(authorized: boolean): Request {
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
     mockVerifyCronSecret.mockReturnValue(true);
-    mockAcquireLock.mockResolvedValue(true);
+    mockAcquireLock.mockResolvedValue('test-lock-token');
     mockReleaseLock.mockResolvedValue(undefined);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
@@ -179,7 +179,7 @@ describe('reconcile cron handler', () => {
 
     describe('distributed lock', () => {
         it('returns skipped response when lock cannot be acquired', async () => {
-            mockAcquireLock.mockResolvedValue(false);
+            mockAcquireLock.mockResolvedValue(null);
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
@@ -197,7 +197,7 @@ describe('reconcile cron handler', () => {
         it('releases lock after successful execution', async () => {
             await handler(makeRequest(true));
 
-            expect(mockReleaseLock).toHaveBeenCalledWith('cron:reconcile:lock');
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:reconcile:lock', 'test-lock-token');
         });
 
         it('releases lock even when handler throws', async () => {
@@ -205,7 +205,7 @@ describe('reconcile cron handler', () => {
 
             await expect(handler(makeRequest(true))).rejects.toThrow('DB error');
 
-            expect(mockReleaseLock).toHaveBeenCalledWith('cron:reconcile:lock');
+            expect(mockReleaseLock).toHaveBeenCalledWith('cron:reconcile:lock', 'test-lock-token');
         });
     });
 
@@ -1019,7 +1019,7 @@ describe('reconcile cron handler', () => {
         });
 
         it('locked run → finishCronRun called with status:skipped, outcome:locked', async () => {
-            mockAcquireLock.mockResolvedValue(false);
+            mockAcquireLock.mockResolvedValue(null);
 
             await handler(makeRequest(true));
 
@@ -1031,7 +1031,7 @@ describe('reconcile cron handler', () => {
         });
 
         it('locked run → insertCronDecisions called with empty decisions array', async () => {
-            mockAcquireLock.mockResolvedValue(false);
+            mockAcquireLock.mockResolvedValue(null);
 
             await handler(makeRequest(true));
 

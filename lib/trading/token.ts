@@ -86,8 +86,8 @@ async function issueUnderLock(
 ): Promise<string> {
     const deadline = Date.now() + MAX_WAIT_MS;
     for (;;) {
-        const locked = await acquireLock(REFRESH_LOCK_KEY, LOCK_TTL_S);
-        if (locked) {
+        const lockToken = await acquireLock(REFRESH_LOCK_KEY, LOCK_TTL_S);
+        if (lockToken) {
             try {
                 if (allowReuse) {
                     const fresh = await r.get<string>(REDIS_TOKEN_KEY);
@@ -97,7 +97,7 @@ async function issueUnderLock(
                 await cacheToken(token, ttl);
                 return token;
             } finally {
-                await releaseLock(REFRESH_LOCK_KEY);
+                await releaseLock(REFRESH_LOCK_KEY, lockToken);
             }
         }
         // 다른 인스턴스가 발급 중 — 캐시에 토큰이 올라오면 재사용
