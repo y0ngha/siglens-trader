@@ -1,6 +1,6 @@
 /**
- * Mobile nav redesign tests (4 primary tabs + 더보기 overflow sheet).
- * Tests the actual App component's MobileNav/MoreSheet behavior.
+ * Mobile nav tests (4 primary tabs + 더보기 overflow sheet).
+ * Tests the REAL MobileNav component from src/components/MobileNav.tsx.
  */
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,6 +8,8 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { api } from '@/lib/api';
+import { MobileNav } from '@/components/MobileNav';
+import type { NavItem } from '@/components/MobileNav';
 
 // Mock the API so the pending badge query resolves without network
 vi.mock('@/lib/api', () => ({
@@ -17,23 +19,6 @@ vi.mock('@/lib/api', () => ({
 }));
 
 const mockedApi = vi.mocked(api);
-
-// Import the internal components directly — we re-export them for testability via named exports.
-// Since App.tsx doesn't export MobileNav, we test via the full App render but replace BrowserRouter
-// with MemoryRouter so we can control the initial route.
-
-// Inline a minimal version of App that uses MemoryRouter for route control.
-// This mirrors the real App but is self-contained in the test without page lazy-loading.
-import { NavLink, useLocation } from 'react-router';
-import { useState, useEffect, useCallback } from 'react';
-
-interface NavItem {
-    to: string;
-    label: string;
-    icon: string;
-    badge?: number;
-    primary: boolean;
-}
 
 const TEST_NAV_ITEMS: NavItem[] = [
     { to: '/', label: '상태', icon: '●', primary: true },
@@ -45,90 +30,6 @@ const TEST_NAV_ITEMS: NavItem[] = [
     { to: '/settings', label: '설정', icon: '⚙', primary: false },
 ];
 
-function TestMobileNav({ navItems }: { navItems: NavItem[] }) {
-    const [sheetOpen, setSheetOpen] = useState(false);
-    const location = useLocation();
-
-    const primaryItems = navItems.filter((item) => item.primary);
-    const overflowItems = navItems.filter((item) => !item.primary);
-    const overflowPaths = overflowItems.map((item) => item.to);
-    const isOverflowActive = overflowPaths.includes(location.pathname);
-
-    const closeSheet = useCallback(() => setSheetOpen(false), []);
-
-    useEffect(() => {
-        closeSheet();
-    }, [location.pathname, closeSheet]);
-
-    useEffect(() => {
-        if (!sheetOpen) return;
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') closeSheet();
-        };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [sheetOpen, closeSheet]);
-
-    return (
-        <>
-            {sheetOpen && (
-                <div data-testid="sheet-backdrop" aria-hidden="true" onClick={closeSheet} />
-            )}
-
-            <div
-                role="dialog"
-                aria-label="더보기 메뉴"
-                aria-modal="true"
-                data-testid="overflow-sheet"
-                data-open={sheetOpen}
-                className={sheetOpen ? 'translate-y-0' : 'translate-y-full'}
-            >
-                {overflowItems.map((item) => (
-                    <NavLink
-                        key={item.to}
-                        to={item.to}
-                        end={item.to === '/'}
-                        onClick={closeSheet}
-                        data-testid={`overflow-link-${item.label}`}
-                    >
-                        <span aria-hidden="true">{item.icon}</span>
-                        <span>{item.label}</span>
-                    </NavLink>
-                ))}
-            </div>
-
-            <nav aria-label="Mobile navigation" data-testid="mobile-nav">
-                {primaryItems.map((item) => (
-                    <NavLink
-                        key={item.to}
-                        to={item.to}
-                        end={item.to === '/'}
-                        data-testid={`primary-link-${item.label}`}
-                    >
-                        <span aria-hidden="true">{item.icon}</span>
-                        <span>{item.label}</span>
-                        {item.badge != null && item.badge > 0 && (
-                            <span data-testid="badge">{item.badge > 9 ? '9+' : item.badge}</span>
-                        )}
-                    </NavLink>
-                ))}
-
-                <button
-                    type="button"
-                    aria-expanded={sheetOpen}
-                    aria-label="더보기 메뉴 열기"
-                    data-testid="more-button"
-                    onClick={() => setSheetOpen((prev) => !prev)}
-                    data-overflow-active={isOverflowActive || sheetOpen}
-                >
-                    <span aria-hidden="true">⋯</span>
-                    <span>더보기</span>
-                </button>
-            </nav>
-        </>
-    );
-}
-
 function renderMobileNav(initialRoute = '/') {
     const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false } },
@@ -137,7 +38,7 @@ function renderMobileNav(initialRoute = '/') {
     return render(
         <QueryClientProvider client={queryClient}>
             <MemoryRouter initialEntries={[initialRoute]}>
-                <TestMobileNav navItems={TEST_NAV_ITEMS} />
+                <MobileNav navItems={TEST_NAV_ITEMS} />
             </MemoryRouter>
         </QueryClientProvider>,
     );
@@ -190,20 +91,19 @@ describe('MobileNav — overflow sheet', () => {
         mockedApi.getPending.mockResolvedValue([]);
     });
 
-    it('overflow items are not visible before sheet opens', () => {
+    it('overflow sheet is NOT in the DOM before sheet opens', () => {
         renderMobileNav();
-        const sheet = screen.getByTestId('overflow-sheet');
-        expect(sheet).toHaveAttribute('data-open', 'false');
+        expect(screen.queryByTestId('overflow-sheet')).not.toBeInTheDocument();
     });
 
-    it('clicking 더보기 opens the sheet', async () => {
+    it('clicking 더보기 mounts and opens the sheet', async () => {
         const user = userEvent.setup();
         renderMobileNav();
 
         const btn = screen.getByTestId('more-button');
         await user.click(btn);
 
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'true');
+        expect(screen.getByTestId('overflow-sheet')).toBeInTheDocument();
         expect(btn).toHaveAttribute('aria-expanded', 'true');
     });
 
@@ -219,29 +119,32 @@ describe('MobileNav — overflow sheet', () => {
         expect(within(sheet).getByText('설정')).toBeInTheDocument();
     });
 
-    it('clicking backdrop closes the sheet', async () => {
+    it('clicking backdrop closes the sheet and removes it from DOM', async () => {
         const user = userEvent.setup();
         renderMobileNav();
 
         await user.click(screen.getByTestId('more-button'));
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'true');
+        expect(screen.getByTestId('overflow-sheet')).toBeInTheDocument();
 
-        await user.click(screen.getByTestId('sheet-backdrop'));
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'false');
+        // The backdrop is the sibling div with aria-hidden
+        const backdrop = document.querySelector('[aria-hidden="true"]') as HTMLElement;
+        await user.click(backdrop);
+
+        expect(screen.queryByTestId('overflow-sheet')).not.toBeInTheDocument();
     });
 
-    it('pressing Escape closes the sheet', async () => {
+    it('pressing Escape closes the sheet and removes it from DOM', async () => {
         const user = userEvent.setup();
         renderMobileNav();
 
         await user.click(screen.getByTestId('more-button'));
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'true');
+        expect(screen.getByTestId('overflow-sheet')).toBeInTheDocument();
 
         await user.keyboard('{Escape}');
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'false');
+        expect(screen.queryByTestId('overflow-sheet')).not.toBeInTheDocument();
     });
 
-    it('clicking an overflow item closes the sheet', async () => {
+    it('clicking an overflow item closes the sheet and removes it from DOM', async () => {
         const user = userEvent.setup();
         renderMobileNav();
 
@@ -250,7 +153,7 @@ describe('MobileNav — overflow sheet', () => {
         const analysisLink = screen.getByTestId('overflow-link-분석');
         await user.click(analysisLink);
 
-        expect(screen.getByTestId('overflow-sheet')).toHaveAttribute('data-open', 'false');
+        expect(screen.queryByTestId('overflow-sheet')).not.toBeInTheDocument();
     });
 });
 
@@ -296,7 +199,7 @@ describe('MobileNav — 승인 badge', () => {
         render(
             <QueryClientProvider client={queryClient}>
                 <MemoryRouter initialEntries={['/']}>
-                    <TestMobileNav navItems={itemsWithBadge} />
+                    <MobileNav navItems={itemsWithBadge} />
                 </MemoryRouter>
             </QueryClientProvider>,
         );
@@ -310,7 +213,7 @@ describe('MobileNav — 승인 badge', () => {
         render(
             <QueryClientProvider client={queryClient}>
                 <MemoryRouter initialEntries={['/']}>
-                    <TestMobileNav navItems={TEST_NAV_ITEMS} />
+                    <MobileNav navItems={TEST_NAV_ITEMS} />
                 </MemoryRouter>
             </QueryClientProvider>,
         );
