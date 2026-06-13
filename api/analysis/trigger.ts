@@ -1,7 +1,7 @@
 import { isAuthenticated } from '../_lib/auth.js';
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
     let body: { symbol?: string };

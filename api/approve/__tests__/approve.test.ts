@@ -5,7 +5,7 @@ import { POST as handler } from '../[id]';
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockIsAuthenticated = vi.fn<(req: Request) => boolean>();
+const mockIsAuthenticated = vi.fn<(req: Request) => Promise<boolean>>();
 vi.mock('../../_lib/auth', () => ({
     isAuthenticated: (...args: [Request]) => mockIsAuthenticated(...args),
 }));
@@ -98,7 +98,7 @@ function makeApproveRequest(id: number, action: string): Request {
 
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
-    mockIsAuthenticated.mockReturnValue(true);
+    mockIsAuthenticated.mockResolvedValue(true);
     mockApprovePendingOrder.mockResolvedValue(true);
     mockRevertPendingOrder.mockResolvedValue(true);
     mockRejectPendingOrder.mockResolvedValue(true);

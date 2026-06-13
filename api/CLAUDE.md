@@ -57,7 +57,7 @@ Single-purpose routes can also export the method function directly
 
 ## Authentication
 
-- **Dashboard routes**: `isAuthenticated(req)` checks `cf-access-authenticated-user-email` header or `DISABLE_AUTH=true` env var. Returns 403 on failure.
+- **Dashboard routes**: `isAuthenticated(req)` is async (`Promise<boolean>`). When `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` are set, verifies the `Cf-Access-Jwt-Assertion` JWT via JWKS (strict mode). Otherwise falls back to trusting the `cf-access-authenticated-user-email` header. `DISABLE_AUTH=true` bypasses auth only in non-production. Returns 403 on failure.
 - **Cron routes**: `verifyCronSecret(req)` checks `Authorization: Bearer <CRON_SECRET>` header. Returns 401 on failure.
 
 ## Config POST Security

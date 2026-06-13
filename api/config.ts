@@ -15,7 +15,7 @@ import {
 } from '../lib/db/queries.js';
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
 
     const db = getDb();
 

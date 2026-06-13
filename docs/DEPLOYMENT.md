@@ -166,7 +166,33 @@ Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
 4. 인증 방법: **One-time PIN** (이메일 OTP)
    - 접속 시 이메일로 6자리 코드 발송 → 입력하면 7일간 유효
 
-**API 인증 체계**: 인증된 사용자는 `cf-access-authenticated-user-email` 헤더가 설정됨. `api/_lib/auth.ts`에서 이 헤더로 인증 여부를 판단. 로컬 개발 시 `DISABLE_AUTH=true`를 `.env.local`에 설정하면 인증 없이 API 사용 가능.
+### API 인증 체계 (JWT 검증)
+
+`api/_lib/auth.ts`의 `isAuthenticated()` 동작:
+
+| 상황 | 동작 |
+|------|------|
+| `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` 환경변수 설정됨 | `Cf-Access-Jwt-Assertion` JWT 헤더를 JWKS로 검증 (엄격 모드) |
+| 위 환경변수 미설정 | `cf-access-authenticated-user-email` 헤더를 신뢰 (fallback, 약한 모드) — `[auth]` 경고 로그 출력 |
+| `DISABLE_AUTH=true` (비프로덕션 환경) | 모든 인증 우회 (로컬 개발 전용) |
+| `DISABLE_AUTH=true` (프로덕션 환경) | **무시됨** — 프로덕션에서는 DISABLE_AUTH가 동작하지 않음 |
+
+**JWT 검증 활성화 환경변수** (Vercel Dashboard → Settings → Environment Variables):
+
+```
+# Cloudflare Access JWT 검증 (엄격 모드 — 설정 권장)
+CF_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+CF_ACCESS_AUD=<Access Application Audience Tag>
+
+# 선택: 쉼표로 구분된 허용 이메일 목록 (설정 시 이 목록에 없는 이메일은 거부)
+CF_ACCESS_ALLOWED_EMAILS=dev.y0ngha@gmail.com
+```
+
+`CF_ACCESS_TEAM_DOMAIN`과 `CF_ACCESS_AUD`를 설정하기 전까지는 fallback(헤더 신뢰) 모드로 동작한다. 이 모드는 Cloudflare Access가 정상적으로 설정된 경우 현재 프로덕션 상태를 유지하지만, JWT 검증보다 약하다. **가능한 한 빨리 JWT 검증 환경변수를 설정할 것을 권장한다.**
+
+`CF_ACCESS_AUD`는 Cloudflare Dashboard → Zero Trust → Access → Applications → 해당 앱 → Overview → **Application Audience (AUD) Tag**에서 확인할 수 있다.
+
+로컬 개발 시 `DISABLE_AUTH=true`를 `.env.local`에 설정하면 인증 없이 API 사용 가능 (비프로덕션 환경에서만 동작).
 
 ---
 
@@ -303,7 +329,8 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS realized_pnl numeric;
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | Cron 401 | CRON_SECRET 불일치 | Vercel env vars 확인 |
-| Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true |
+| Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true (프로덕션에서는 무시됨) |
+| Dashboard 403 (JWT) | CF_ACCESS_TEAM_DOMAIN/AUD 설정 후 JWT 검증 실패 | Cf-Access-Jwt-Assertion 헤더 존재 여부 확인, AUD Tag 오타 점검 |
 | 분석 안 됨 | WORKER_URL/SECRET 미설정 | siglens-worker 정보 확인 |
 | 빈 대시보드 | watchlist 비어있음 | 설정에서 종목 추가 |
 | 이메일 안 옴 | RESEND_API_KEY 미설정 | Resend 대시보드 확인 |

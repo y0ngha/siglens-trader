@@ -10,7 +10,7 @@ vi.mock('../../_lib/db', () => ({
 }));
 
 vi.mock('../../_lib/auth', () => ({
-    isAuthenticated: () => true,
+    isAuthenticated: () => Promise.resolve(true),
 }));
 
 const mockClosePosition = vi.fn();
