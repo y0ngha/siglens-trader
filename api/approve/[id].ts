@@ -20,7 +20,7 @@ import { sendErrorEmail } from '../../lib/notification/email.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
     const url = new URL(req.url, 'http://localhost');
@@ -71,6 +71,17 @@ async function handler(req: Request): Promise<Response> {
         const updated = await approvePendingOrder(db, id);
         if (!updated) {
             return Response.json({ error: 'Order was already processed' }, { status: 409 });
+        }
+
+        // Kill switch: refuse execution if trading has been disabled since the order was queued.
+        // Checked after the atomic approvePendingOrder to prevent the order from being lost —
+        // if trading is disabled, we revert to 'pending' so the user can re-approve later.
+        const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+        if (!tradingEnabled) {
+            await revertPendingOrder(db, id).catch((err) =>
+                console.error(`[approve] Failed to revert pending order ${id}:`, err),
+            );
+            return Response.json({ error: 'trading is disabled (kill switch)' }, { status: 409 });
         }
 
         // Determine trading mode and attempt real execution when applicable

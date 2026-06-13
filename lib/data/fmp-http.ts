@@ -17,5 +17,18 @@ export async function fmpGet<T>(path: string, query: Record<string, string> = {}
         throw new Error(`FMP ${path} ${res.status}`);
     }
     // Adapter methods narrow the result via explicit field mapping; malformation surfaces as TypeError in the mapper.
-    return (await res.json()) as T;
+    const json = (await res.json()) as unknown;
+    // FMP sometimes returns a 200 with an error object instead of the expected payload.
+    // Detect this shape and surface it as a thrown error so callers see status:'error'.
+    if (
+        json !== null &&
+        typeof json === 'object' &&
+        !Array.isArray(json) &&
+        'Error Message' in json
+    ) {
+        throw new Error(
+            `FMP ${path}: ${String((json as Record<string, unknown>)['Error Message'])}`,
+        );
+    }
+    return json as T;
 }

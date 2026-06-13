@@ -298,6 +298,24 @@ export async function getTodayTradeCount(db: Db) {
 }
 
 /**
+ * Counts order_tracking rows created today (NY timezone) whose status is
+ * 'submitted', 'pending', or 'partial'. These are orders that have been
+ * submitted to the broker but not yet settled — they represent "in-flight"
+ * orders that will eventually become trades but haven't been counted yet.
+ * Used alongside getTodayTradeCount to prevent exceeding the daily trade limit.
+ */
+export async function getTodayInflightOrderCount(db: Db): Promise<number> {
+    const rows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(orderTracking)
+        .where(
+            sql`${orderTracking.submittedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                AND ${orderTracking.status} IN ('submitted', 'pending', 'partial')`,
+        );
+    return Number(rows[0]?.count ?? 0);
+}
+
+/**
  * Returns today's realized PnL by summing the `realized_pnl` recorded on each
  * of today's sell trades.
  *

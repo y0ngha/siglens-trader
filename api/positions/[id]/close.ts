@@ -11,7 +11,7 @@ class AlreadyClosedError extends Error {
 }
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'POST') return new Response(null, { status: 405 });
 
     const url = new URL(req.url, 'http://localhost');

@@ -117,8 +117,8 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
 
         // Auto-recover: create the missing trade + position
         try {
-            const price = order.filledPrice ? Number(order.filledPrice) : 0;
-            if (price <= 0) {
+            const price = Number(order.filledPrice);
+            if (!Number.isFinite(price) || price <= 0) {
                 details.push(
                     `${order.symbol} ${order.side}: 체결가 없어 자동 복구 불가 (수동 확인 필요)`,
                 );
@@ -136,9 +136,10 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
             // realized PnL for sells that close/reduce a known long position.
             // lib/db는 lib/strategy 임포트 금지 → realizedPnlForSell 공식 인라인 (센트 반올림).
             // Buys / no-position sells → undefined.
+            const avgPrice = existingPosition ? Number(existingPosition.avgPrice) : NaN;
             const recoveredRealizedPnl =
-                order.side === 'sell' && existingPosition
-                    ? Math.round((price - Number(existingPosition.avgPrice)) * quantity * 100) / 100
+                order.side === 'sell' && existingPosition && Number.isFinite(avgPrice)
+                    ? Math.round((price - avgPrice) * quantity * 100) / 100
                     : undefined;
 
             await db.transaction(async (tx) => {

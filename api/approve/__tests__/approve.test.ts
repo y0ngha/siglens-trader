@@ -5,7 +5,7 @@ import { POST as handler } from '../[id]';
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockIsAuthenticated = vi.fn<(req: Request) => boolean>();
+const mockIsAuthenticated = vi.fn<(req: Request) => Promise<boolean>>();
 vi.mock('../../_lib/auth', () => ({
     isAuthenticated: (...args: [Request]) => mockIsAuthenticated(...args),
 }));
@@ -98,7 +98,7 @@ function makeApproveRequest(id: number, action: string): Request {
 
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
-    mockIsAuthenticated.mockReturnValue(true);
+    mockIsAuthenticated.mockResolvedValue(true);
     mockApprovePendingOrder.mockResolvedValue(true);
     mockRevertPendingOrder.mockResolvedValue(true);
     mockRejectPendingOrder.mockResolvedValue(true);
@@ -244,6 +244,65 @@ describe('approve handler', () => {
             await handler(makeApproveRequest(1, 'approve'));
 
             expect(mockCreateOrderTracking).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Kill switch (trading_enabled = false)
+    // -----------------------------------------------------------------------
+
+    describe('kill switch (trading_enabled)', () => {
+        it('refuses approval and reverts order when trading_enabled is false', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_enabled') return Promise.resolve(false);
+                return Promise.resolve(null);
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            // Must refuse with a clear error — not 200
+            expect(res.status).toBe(409);
+            expect(body.error).toContain('kill switch');
+
+            // Order must NOT be placed
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+
+            // No trade must be recorded
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockOpenPosition).not.toHaveBeenCalled();
+
+            // Order reverted to pending so user can re-approve once trading is re-enabled
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+        });
+
+        it('proceeds normally when trading_enabled is true', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_enabled') return Promise.resolve(true);
+                return Promise.resolve(null); // trading_mode defaults to dry_run
+            });
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body.success).toBe(true);
+            // In dry_run (trading_mode=null=>dry_run) no Toss API should be called
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            // But trade must be recorded
+            expect(mockInsertTrade).toHaveBeenCalled();
+        });
+
+        it('proceeds normally when trading_enabled is null (defaults to true)', async () => {
+            // setupDefaults already sets mockGetConfigValue.mockResolvedValue(null) which
+            // covers trading_enabled=null => true. Verify the default path still succeeds.
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body.success).toBe(true);
+            expect(mockInsertTrade).toHaveBeenCalled();
         });
     });
 

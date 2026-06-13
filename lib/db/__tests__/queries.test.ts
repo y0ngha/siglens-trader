@@ -25,6 +25,7 @@ import {
     insertTrade,
     getRecentTrades,
     getTodayTradeCount,
+    getTodayInflightOrderCount,
     getTodayRealizedPnl,
     insertPendingOrder,
     getPendingOrders,
@@ -753,6 +754,33 @@ describe('Trades queries', () => {
             const db = createMockDb([{ count: 0 }]);
 
             const result = await getTodayTradeCount(db as unknown as Db);
+
+            expect(result).toBe(0);
+        });
+    });
+
+    describe('getTodayInflightOrderCount', () => {
+        it('returns count of today in-flight order_tracking rows', async () => {
+            const db = createMockDb([{ count: 3 }]);
+
+            const result = await getTodayInflightOrderCount(db as unknown as Db);
+
+            expect(db._chain.where).toHaveBeenCalled();
+            expect(result).toBe(3);
+        });
+
+        it('returns 0 when no in-flight orders today', async () => {
+            const db = createMockDb([{ count: 0 }]);
+
+            const result = await getTodayInflightOrderCount(db as unknown as Db);
+
+            expect(result).toBe(0);
+        });
+
+        it('returns 0 when result row is missing (empty array)', async () => {
+            const db = createMockDb([]);
+
+            const result = await getTodayInflightOrderCount(db as unknown as Db);
 
             expect(result).toBe(0);
         });

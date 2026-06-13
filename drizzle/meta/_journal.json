@@ -57,6 +57,13 @@
       "when": 1781273299393,
       "tag": "0007_little_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781319069255,
+      "tag": "0008_hesitant_saracen",
+      "breakpoints": true
     }
   ]
 }

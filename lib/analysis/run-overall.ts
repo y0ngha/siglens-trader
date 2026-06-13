@@ -14,8 +14,10 @@ const newsClient = new FmpNewsClient();
  * Run overall (4-axis) analysis for the given symbol.
  *
  * Fetches news + options data in parallel, builds the dependency inputs,
- * and submits to siglens-core's overall analysis pipeline. Handles
- * `pending_dependencies` by polling the overall job until resolution.
+ * and submits to siglens-core's overall analysis pipeline. If sub-axis
+ * dependencies are not yet cached (`pending_dependencies`), returns
+ * `status:'skipped'` — the axis crons populate those caches independently,
+ * and the next execute-cron invocation will retry.
  *
  * NOTE: Like `runNewsAnalysis`, raw news items are cast to `EnrichedNewsItem[]`
  * because per-card enrichment is not performed in this automated context.
@@ -56,9 +58,10 @@ export async function runOverallAnalysis(options: RunAnalysisOptions): Promise<A
             return { status: 'cached', result: submission.result };
         }
         if (submission.status === 'pending_dependencies' && submission.pendingJobs) {
-            // Overall analysis has pending sub-axes; poll the overall job
-            // The caller should retry submitOverallAnalysis after dependencies resolve.
-            // For simplicity, we wait and re-submit in a loop.
+            // Sub-axis dependencies (technical/news/options/fundamental) are not yet cached.
+            // We return 'skipped' here — no retry loop is attempted in this invocation.
+            // The individual axis crons run in parallel; once they complete and cache their
+            // results, the next execute cron will find them cached and submit successfully.
             return { status: 'skipped', error: 'Dependencies still pending' };
         }
         if (submission.status !== 'submitted' || !('jobId' in submission)) {

@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 
 vi.mock('../../_lib/auth', () => ({
-    isAuthenticated: () => true,
+    isAuthenticated: () => Promise.resolve(true),
 }));
 
 // ---------------------------------------------------------------------------

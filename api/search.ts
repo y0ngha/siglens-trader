@@ -6,7 +6,7 @@ const FMP_SEARCH_LIMIT = 10;
 const US_EXCHANGES = new Set(['NYSE', 'NASDAQ', 'AMEX', 'NYSEArca']);
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
     if (req.method !== 'GET') return new Response(null, { status: 405 });
 
     const url = new URL(req.url, 'http://localhost');

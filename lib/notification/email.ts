@@ -5,7 +5,8 @@ function escapeHtml(str: string): string {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function getResend() {
@@ -32,7 +33,7 @@ export interface ApprovalNotification {
     quantity: number;
     score: number;
     reason: string;
-    approveUrl: string;
+    approveUrl: string | null | undefined;
 }
 
 export async function sendTradeExecutedEmail(trade: TradeNotification, to?: string): Promise<void> {
@@ -66,7 +67,7 @@ export async function sendApprovalRequestEmail(
             <p><strong>${escapeHtml(order.symbol)}</strong> ${order.side === 'buy' ? '매수' : '매도'} ${order.quantity}주</p>
             <p>신호 점수: ${order.score}/100</p>
             <p>사유: ${escapeHtml(order.reason)}</p>
-            <p><a href="${escapeHtml(order.approveUrl)}">대시보드에서 확인</a></p>
+            ${order.approveUrl && order.approveUrl.startsWith('https://') ? `<p><a href="${escapeHtml(order.approveUrl)}">대시보드에서 확인</a></p>` : '<p>대시보드에서 확인하세요.</p>'}
         `,
     });
 }

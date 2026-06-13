@@ -7,7 +7,7 @@ Wraps siglens-core's submit/poll pattern into single-call "run analysis" functio
 | File | Responsibility |
 |------|---------------|
 | `types.ts` | `RunAnalysisOptions`, `AnalysisRunResult`, `AnalysisType` |
-| `poll-until-done.ts` | Generic poll loop (2s interval, 10min timeout) |
+| `poll-until-done.ts` | Generic poll loop (2s interval, 2.5min timeout) |
 | `run-technical.ts` | Calls `submitAnalysis` → `pollAnalysis` from siglens-core |
 | `run-news.ts` | Fetches news from FMP → `submitNewsAnalysis` → poll |
 | `run-options.ts` | Fetches options from Yahoo → `submitOptionsAnalysis` → poll |

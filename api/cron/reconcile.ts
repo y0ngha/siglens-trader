@@ -44,16 +44,14 @@ async function handler(req: Request): Promise<Response> {
     const results: Array<{ id: number; symbol: string; action: string }> = [];
 
     const LOCK_KEY = 'cron:reconcile:lock';
-    let lockAcquired = false;
+    // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
+    const lockToken = await acquireLock(LOCK_KEY, 780);
 
     try {
-        // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-        const locked = await acquireLock(LOCK_KEY, 780);
-        if (!locked) {
+        if (!lockToken) {
             finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'locked' });
         }
-        lockAcquired = true;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
 
         // Reconcile alerts are system/safety notifications — gated on the dashboard
@@ -346,8 +344,7 @@ async function handler(req: Request): Promise<Response> {
         };
         throw e;
     } finally {
-        if (lockAcquired)
-            await releaseLock(LOCK_KEY).catch((e) => console.error('[lock-release]', e));
+        await releaseLock(LOCK_KEY, lockToken).catch((e) => console.error('[lock-release]', e));
         if (finishState) {
             await safe(finishCronRun(db, runId, finishState));
             await safe(

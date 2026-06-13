@@ -48,9 +48,9 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 return Response.json({ skipped: true, reason: 'market_closed' });
             }
 
-            let lockAcquired = false;
-            const locked = await acquireLock(LOCK_KEY);
-            if (!locked) {
+            // TTL 780s < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap).
+            const lockToken = await acquireLock(LOCK_KEY, 780);
+            if (!lockToken) {
                 finishState = {
                     status: 'skipped',
                     outcome: 'locked',
@@ -58,7 +58,6 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 };
                 return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
             }
-            lockAcquired = true;
 
             try {
                 const config = await getAnalysisConfig(db, analysisType);
@@ -125,8 +124,9 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 };
                 return Response.json({ cronRunId, results });
             } finally {
-                if (lockAcquired)
-                    await releaseLock(LOCK_KEY).catch((e) => console.error('[lock-release]', e));
+                await releaseLock(LOCK_KEY, lockToken).catch((e) =>
+                    console.error('[lock-release]', e),
+                );
             }
         } catch (e) {
             finishState = {

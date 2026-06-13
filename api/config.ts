@@ -15,7 +15,7 @@ import {
 } from '../lib/db/queries.js';
 
 async function handler(req: Request): Promise<Response> {
-    if (!isAuthenticated(req)) return new Response('Forbidden', { status: 403 });
+    if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
 
     const db = getDb();
 
@@ -129,6 +129,16 @@ async function handler(req: Request): Promise<Response> {
                     }
                     const w = value as Record<string, unknown>;
                     const requiredKeys = ['technical', 'news', 'options', 'fundamental', 'overall'];
+                    const requiredKeySet = new Set(requiredKeys);
+                    const extraKeys = Object.keys(w).filter((k) => !requiredKeySet.has(k));
+                    if (extraKeys.length > 0) {
+                        return Response.json(
+                            {
+                                error: `score_weights contains unknown key(s): ${extraKeys.join(', ')}`,
+                            },
+                            { status: 400 },
+                        );
+                    }
                     for (const k of requiredKeys) {
                         if (
                             typeof w[k] !== 'number' ||
@@ -142,6 +152,13 @@ async function handler(req: Request): Promise<Response> {
                                 { status: 400 },
                             );
                         }
+                    }
+                    const weightSum = requiredKeys.reduce((sum, k) => sum + (w[k] as number), 0);
+                    if (weightSum <= 0) {
+                        return Response.json(
+                            { error: 'score_weights sum must be greater than 0' },
+                            { status: 400 },
+                        );
                     }
                 }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {

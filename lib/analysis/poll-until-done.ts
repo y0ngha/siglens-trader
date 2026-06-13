@@ -1,5 +1,6 @@
 const POLL_INTERVAL_MS = 2_000;
-const MAX_POLL_TIME_MS = 120_000;
+// 2.5min per symbol; serial over watchlist (max 5) → ≤750s, under lock TTL 780s / maxDuration 800s
+const MAX_POLL_TIME_MS = 150_000;
 
 export async function pollUntilDone<T>(
     pollFn: (jobId: string) => Promise<{ status: string; result?: T; error?: string }>,

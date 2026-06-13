@@ -98,6 +98,23 @@ describe('email notification module', () => {
         });
     });
 
+    describe('escapeHtml security', () => {
+        it('escapes single quotes in html body', async () => {
+            await sendTradeExecutedEmail({
+                symbol: "O'NEIL",
+                side: 'buy',
+                quantity: 1,
+                price: 100,
+                reason: "it's a test",
+                mode: 'auto',
+            });
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain("O'NEIL");
+            expect(call.html).toContain('&#39;');
+        });
+    });
+
     describe('sendApprovalRequestEmail', () => {
         const baseOrder: ApprovalNotification = {
             symbol: 'TSLA',
@@ -156,6 +173,45 @@ describe('email notification module', () => {
             await expect(sendApprovalRequestEmail(baseOrder)).rejects.toThrow(
                 'RESEND_API_KEY is required',
             );
+        });
+
+        it('omits href link when approveUrl is not https', async () => {
+            await sendApprovalRequestEmail({
+                ...baseOrder,
+                approveUrl: 'javascript:alert(1)',
+            });
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain('href=');
+            expect(call.html).not.toContain('javascript:');
+            expect(call.html).toContain('대시보드에서 확인하세요.');
+        });
+
+        it('renders plain-text fallback and does not throw when approveUrl is null', async () => {
+            await expect(
+                sendApprovalRequestEmail({ ...baseOrder, approveUrl: null }),
+            ).resolves.not.toThrow();
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain('href=');
+            expect(call.html).toContain('대시보드에서 확인하세요.');
+        });
+
+        it('renders plain-text fallback and does not throw when approveUrl is undefined', async () => {
+            await expect(
+                sendApprovalRequestEmail({ ...baseOrder, approveUrl: undefined }),
+            ).resolves.not.toThrow();
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).not.toContain('href=');
+            expect(call.html).toContain('대시보드에서 확인하세요.');
+        });
+
+        it('includes href link when approveUrl starts with https://', async () => {
+            await sendApprovalRequestEmail(baseOrder);
+
+            const call = mockSend.mock.calls[0][0];
+            expect(call.html).toContain('href="https://trader.siglens.io/approve/123"');
         });
     });
 

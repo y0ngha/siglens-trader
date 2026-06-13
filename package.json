@@ -42,6 +42,7 @@
         "@y0ngha/siglens-core": "0.21.1",
         "clsx": "^2.1.1",
         "drizzle-orm": "^0.45.2",
+        "jose": "^6.2.3",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
         "react-error-boundary": "^6.1.1",

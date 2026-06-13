@@ -462,6 +462,72 @@ describe('autoRecoverFilledOrders', () => {
         expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
+    it('fails when filledPrice is non-numeric (NaN) — Number.isFinite guard', async () => {
+        const mockDb = createChainableMockDb();
+        const orderBadPrice = {
+            id: 4,
+            idempotencyKey: 'exec-nan-AAPL-buy',
+            symbol: 'AAPL',
+            side: 'buy',
+            quantity: 2,
+            filledPrice: 'abc', // Number('abc') === NaN — <= 0 alone would pass
+            submittedAt: new Date('2026-05-24T13:00:00Z'),
+            resolvedAt: new Date('2026-05-24T13:01:00Z'),
+            cronRunId: 'run-4',
+        };
+
+        mockDb.where.mockResolvedValueOnce([orderBadPrice]);
+        mockDb.limit.mockResolvedValueOnce([]);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(0);
+        expect(result.failed).toBe(1);
+        expect(result.details[0]).toContain('체결가 없어 자동 복구 불가');
+        expect(result.details[0]).toContain('AAPL');
+        expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it('sell with non-finite avgPrice — realizedPnl is undefined, still recovers trade', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 5,
+            idempotencyKey: 'exec-nan-avg-TSLA-sell',
+            symbol: 'TSLA',
+            side: 'sell',
+            quantity: 5,
+            filledPrice: '200.00',
+            clientOrderId: null,
+            submittedAt: new Date('2026-05-24T14:00:00Z'),
+            resolvedAt: new Date('2026-05-24T14:01:00Z'),
+            cronRunId: 'run-5',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+
+        // avgPrice is corrupt — Number('bad') === NaN
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 9,
+            symbol: 'TSLA',
+            quantity: 5,
+            avgPrice: 'bad',
+            status: 'open',
+        } as any);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(1);
+        // realizedPnl must NOT be a NaN value — guard must suppress it to undefined
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ realizedPnl: undefined }),
+        );
+    });
+
     it('increments failed count when DB transaction throws', async () => {
         const mockDb = createChainableMockDb();
         const filledOrder = {

@@ -202,6 +202,138 @@ describe('FmpMarketProvider', () => {
             const provider = new FmpMarketProvider();
             expect(await provider.getQuote('AAPL')).toBeNull();
         });
+
+        it('returns null when price is NaN', async () => {
+            mockedFmpGet.mockResolvedValueOnce([
+                { price: NaN, changePercentage: 0, name: 'Broken Corp.' },
+            ] as never);
+
+            const provider = new FmpMarketProvider();
+            expect(await provider.getQuote('BRKN')).toBeNull();
+        });
+
+        it('returns null when price is Infinity', async () => {
+            mockedFmpGet.mockResolvedValueOnce([
+                { price: Infinity, changePercentage: 0, name: 'Broken Corp.' },
+            ] as never);
+
+            const provider = new FmpMarketProvider();
+            expect(await provider.getQuote('BRKN')).toBeNull();
+        });
+
+        it('returns null when price is zero', async () => {
+            mockedFmpGet.mockResolvedValueOnce([
+                { price: 0, changePercentage: 0, name: 'Broken Corp.' },
+            ] as never);
+
+            const provider = new FmpMarketProvider();
+            expect(await provider.getQuote('BRKN')).toBeNull();
+        });
+
+        it('returns null when price is negative', async () => {
+            mockedFmpGet.mockResolvedValueOnce([
+                { price: -5, changePercentage: 0, name: 'Broken Corp.' },
+            ] as never);
+
+            const provider = new FmpMarketProvider();
+            expect(await provider.getQuote('BRKN')).toBeNull();
+        });
+    });
+
+    describe('getBars — bar OHLCV NaN filtering', () => {
+        it('drops intraday bars with non-finite OHLCV and keeps valid ones', async () => {
+            const raw = [
+                // valid bar (newest first — reversed to chronological)
+                { date: '2025-06-13 10:00:00', open: 10, high: 12, low: 9, close: 11, volume: 100 },
+                // bar with NaN close — should be dropped
+                { date: '2025-06-13 09:00:00', open: 8, high: 11, low: 7, close: NaN, volume: 90 },
+                // bar with Infinity volume — should be dropped
+                {
+                    date: '2025-06-13 08:00:00',
+                    open: 7,
+                    high: 10,
+                    low: 6,
+                    close: 9,
+                    volume: Infinity,
+                },
+            ];
+            mockedFmpGet.mockResolvedValueOnce(raw as never);
+
+            const provider = new FmpMarketProvider();
+            const bars = await provider.getBars({ symbol: 'AAPL', timeframe: '1Hour' });
+
+            expect(bars).toHaveLength(1);
+            expect(bars[0]!.close).toBe(11);
+        });
+
+        it('drops daily bars with non-finite OHLCV and keeps valid ones', async () => {
+            const eod = [
+                { date: '2025-06-13', open: 10, high: 12, low: 9, close: 11, volume: 100 },
+                // bar with NaN open — should be dropped
+                { date: '2025-06-12', open: NaN, high: 11, low: 7, close: 10, volume: 90 },
+            ];
+            const quote = [
+                {
+                    price: 13,
+                    open: 11,
+                    dayHigh: 14,
+                    dayLow: 10,
+                    volume: 120,
+                    timestamp: utcSeconds('2025-06-14T18:00:00Z'),
+                    changePercentage: 1.5,
+                    name: 'Apple Inc.',
+                },
+            ];
+            mockedFmpGet.mockImplementation(async (path: string) => {
+                if (path === 'historical-price-eod/full') return eod as never;
+                if (path === 'quote') return quote as never;
+                throw new Error(`unexpected path ${path}`);
+            });
+
+            const provider = new FmpMarketProvider();
+            const bars = await provider.getBars({ symbol: 'AAPL', timeframe: '1Day' });
+
+            // Only the valid EOD bar + today's quote bar
+            expect(bars).toHaveLength(2);
+            expect(bars[0]!.close).toBe(11);
+            expect(bars[1]!.close).toBe(13);
+        });
+
+        it('returns empty array when all intraday bars are malformed', async () => {
+            const raw = [
+                {
+                    date: '2025-06-13 10:00:00',
+                    open: NaN,
+                    high: NaN,
+                    low: NaN,
+                    close: NaN,
+                    volume: NaN,
+                },
+            ];
+            mockedFmpGet.mockResolvedValueOnce(raw as never);
+
+            const provider = new FmpMarketProvider();
+            const bars = await provider.getBars({ symbol: 'AAPL', timeframe: '5Min' });
+
+            expect(bars).toEqual([]);
+        });
+
+        it('silently drops null/undefined elements in the FMP array (null guard)', async () => {
+            const raw = [
+                // valid bar
+                { date: '2025-06-13 10:00:00', open: 10, high: 12, low: 9, close: 11, volume: 100 },
+                // null element — should not throw, should be dropped
+                null,
+                undefined,
+            ];
+            mockedFmpGet.mockResolvedValueOnce(raw as never);
+
+            const provider = new FmpMarketProvider();
+            // Must resolve (not throw) and return only the valid bar
+            await expect(
+                provider.getBars({ symbol: 'AAPL', timeframe: '1Hour' }),
+            ).resolves.toHaveLength(1);
+        });
     });
 
     describe('getMarketDataProvider', () => {
