@@ -838,6 +838,24 @@ describe('POST /api/config', () => {
         const data = await res.json();
         expect(data.error).toBe('buy_threshold must be greater than sell_threshold');
     });
+
+    // T2 — transition-scale: new-scale buy_threshold accepted when stored sell is old-scale
+    it('accepts buy_threshold=70 when stored sell_threshold is old-scale (e.g. 30)', async () => {
+        // Documents that the buy > sell cross-check reads the stored counterpart via getConfigValue.
+        // A stored sell of 30 (valid 0–100 scale) satisfies buy(70) > sell(30).
+        mockSetConfigValue.mockResolvedValue(undefined);
+        mockGetConfigValue.mockResolvedValue(30); // stored sell_threshold counterpart
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'buy_threshold',
+                value: 70,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'buy_threshold', 70);
+    });
 });
 
 describe('GET /api/pending', () => {

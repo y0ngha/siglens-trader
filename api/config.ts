@@ -190,22 +190,20 @@ async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
-                // Range validation: buy_threshold and sell_threshold must be within 0-100
+                // Range + logical validation for buy_threshold / sell_threshold
+                // Lower bound (>= 0) is enforced by the generic NUMERIC_CONFIG_KEYS guard above.
                 if (key === 'buy_threshold' || key === 'sell_threshold') {
                     const numVal = value as number;
-                    if (numVal < 0 || numVal > 100) {
+                    if (numVal > 100) {
                         return Response.json(
                             { error: `${key} must be between 0 and 100` },
                             { status: 400 },
                         );
                     }
-                }
-                // Logical validation: buy_threshold must be greater than sell_threshold
-                if (key === 'buy_threshold' || key === 'sell_threshold') {
                     const otherKey = key === 'buy_threshold' ? 'sell_threshold' : 'buy_threshold';
                     const otherValue = await getConfigValue<number>(db, otherKey);
-                    const buyT = key === 'buy_threshold' ? (value as number) : (otherValue ?? 70);
-                    const sellT = key === 'sell_threshold' ? (value as number) : (otherValue ?? 30);
+                    const buyT = key === 'buy_threshold' ? numVal : (otherValue ?? 70);
+                    const sellT = key === 'sell_threshold' ? numVal : (otherValue ?? 30);
                     if (buyT <= sellT) {
                         return Response.json(
                             { error: 'buy_threshold must be greater than sell_threshold' },
