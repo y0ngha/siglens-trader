@@ -62,7 +62,7 @@ describe('pollUntilDone', () => {
         let callCount = 0;
         vi.spyOn(Date, 'now').mockImplementation(() => {
             callCount++;
-            // First call sets deadline (0 + 600_000 = 600_000)
+            // First call sets deadline (0 + 300_000 = 300_000)
             // Second call checks loop condition — return past deadline
             return callCount === 1 ? 0 : 700_000;
         });

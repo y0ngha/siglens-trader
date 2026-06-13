@@ -6,6 +6,7 @@ import type {
     Timeframe,
 } from '@y0ngha/siglens-core';
 import { fmpGet } from './fmp-http.js';
+import { isFinitePositive } from '../validation.js';
 
 const MS_PER_SECOND = 1000;
 const ISO_DATE_PREFIX_LENGTH = 10;
@@ -76,6 +77,15 @@ interface FmpQuote {
     changePercentage: number;
     name: string;
 }
+function isValidOhlcv(raw: FmpOhlcvBar): boolean {
+    return (
+        Number.isFinite(raw.open) &&
+        Number.isFinite(raw.high) &&
+        Number.isFinite(raw.low) &&
+        Number.isFinite(raw.close) &&
+        Number.isFinite(raw.volume)
+    );
+}
 function toFmpBar(raw: FmpOhlcvBar): Bar {
     return {
         time: fmpIntradayDateToUtcSeconds(raw.date),
@@ -120,7 +130,7 @@ export class FmpMarketProvider implements MarketDataProvider {
             buildBarsQuery(symbol, fromDate, endDate),
         );
         if (!Array.isArray(raw)) return [];
-        return [...raw.map((r) => toFmpBar(r))].reverse();
+        return [...raw.filter(isValidOhlcv).map((r) => toFmpBar(r))].reverse();
     }
     private async getDailyBars(
         symbol: string,
@@ -135,7 +145,7 @@ export class FmpMarketProvider implements MarketDataProvider {
             endDate === undefined ? this.fetchTodayQuoteBar(symbol) : Promise.resolve(null),
         ]);
         if (!Array.isArray(raw)) return [];
-        const eodBars = [...raw.map((r) => toFmpDailyBar(r))].reverse();
+        const eodBars = [...raw.filter(isValidOhlcv).map((r) => toFmpDailyBar(r))].reverse();
         if (todayBar === null) return eodBars;
         const lastBar = eodBars.at(-1);
         if (lastBar !== undefined && lastBar.time >= todayBar.time) return eodBars;
@@ -146,6 +156,7 @@ export class FmpMarketProvider implements MarketDataProvider {
             const raw = await fmpGet<FmpQuote[]>('quote', { symbol });
             if (!Array.isArray(raw) || raw.length === 0) return null;
             const quote = raw[0]!;
+            if (!isFinitePositive(quote.price)) return null;
             return {
                 symbol,
                 price: quote.price,
