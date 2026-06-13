@@ -1469,6 +1469,61 @@ describe('GET /api/cron-runs', () => {
         );
     });
 
+    it('passes valid limit to getCronRuns', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?limit=50'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ limit: 50 }),
+        );
+    });
+
+    it('ignores NaN limit (limit=abc) — passes limit: undefined', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?limit=abc'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ limit: undefined }),
+        );
+    });
+
+    it('ignores negative limit (limit=-5) — passes limit: undefined', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?limit=-5'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ limit: undefined }),
+        );
+    });
+
+    it('ignores zero limit (limit=0) — passes limit: undefined', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?limit=0'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ limit: undefined }),
+        );
+    });
+
+    it('truncates float limit (limit=10.9) — passes limit: 10', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?limit=10.9'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ limit: 10 }),
+        );
+    });
+
     it('returns decisions when runId param present', async () => {
         const decisions = [{ id: 1, runId: 'execute-123', action: 'buy', executed: true }];
         mockGetCronDecisions.mockResolvedValue(decisions);

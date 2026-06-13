@@ -51,7 +51,11 @@ async function handler(req: Request): Promise<Response> {
         if (!isNaN(d.getTime())) to = d;
     }
 
-    const limit = limitParam ? Number(limitParam) : undefined;
+    let limit: number | undefined;
+    if (limitParam) {
+        const parsed = parseInt(limitParam, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) limit = parsed;
+    }
 
     const runs = await getCronRuns(db, { cronType, status, from, to, limit });
     return Response.json({ runs });

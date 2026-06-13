@@ -130,10 +130,10 @@ export const api = {
         signal?: AbortSignal,
     ) => {
         const qs = new URLSearchParams();
-        if (filters.type) qs.set('type', encodeURIComponent(filters.type));
-        if (filters.status) qs.set('status', encodeURIComponent(filters.status));
-        if (filters.from) qs.set('from', encodeURIComponent(filters.from));
-        if (filters.to) qs.set('to', encodeURIComponent(filters.to));
+        if (filters.type) qs.set('type', filters.type);
+        if (filters.status) qs.set('status', filters.status);
+        if (filters.from) qs.set('from', filters.from);
+        if (filters.to) qs.set('to', filters.to);
         const query = qs.toString();
         return fetchJson<{ runs: CronRun[] }>(`/cron-runs${query ? `?${query}` : ''}`, { signal });
     },
