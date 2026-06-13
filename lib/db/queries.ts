@@ -1,4 +1,4 @@
-import { eq, desc, and, sql, inArray } from 'drizzle-orm';
+import { eq, desc, and, gte, lte, sql, inArray } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import {
     watchlist,
@@ -626,4 +626,35 @@ export async function insertCronDecisions(
             detail: d.detail,
         })),
     );
+}
+
+export async function getCronRuns(
+    db: Db,
+    filters: {
+        cronType?: string;
+        status?: string;
+        from?: Date;
+        to?: Date;
+        limit?: number;
+    } = {},
+) {
+    const conds = [];
+    if (filters.cronType) conds.push(eq(cronRuns.cronType, filters.cronType));
+    if (filters.status) conds.push(eq(cronRuns.status, filters.status));
+    if (filters.from) conds.push(gte(cronRuns.startedAt, filters.from));
+    if (filters.to) conds.push(lte(cronRuns.startedAt, filters.to));
+    return db
+        .select()
+        .from(cronRuns)
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(cronRuns.startedAt))
+        .limit(Math.min(filters.limit ?? 200, 500));
+}
+
+export async function getCronDecisions(db: Db, runId: string) {
+    return db
+        .select()
+        .from(cronDecisions)
+        .where(eq(cronDecisions.runId, runId))
+        .orderBy(desc(cronDecisions.createdAt));
 }

@@ -40,6 +40,8 @@ import {
     startCronRun,
     finishCronRun,
     insertCronDecisions,
+    getCronRuns,
+    getCronDecisions,
 } from '../queries';
 import type { Db } from '../index';
 
@@ -1418,5 +1420,127 @@ describe('Cron audit log queries', () => {
                 expect.objectContaining({ symbol: undefined, action: 'consistency_check' }),
             ]);
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// getCronRuns / getCronDecisions
+// ---------------------------------------------------------------------------
+
+describe('getCronRuns', () => {
+    it('returns all runs ordered desc with default limit when no filters given', async () => {
+        const mockRows = [{ id: 2 }, { id: 1 }];
+        const db = createMockDb(mockRows);
+
+        const result = await getCronRuns(db as unknown as Db);
+
+        expect(db._chain.from).toHaveBeenCalled();
+        // where() not called (no conditions) — but orderBy + limit are
+        expect(db._chain.orderBy).toHaveBeenCalled();
+        expect(db._chain.limit).toHaveBeenCalledWith(200); // default limit
+        expect(result).toEqual(mockRows);
+    });
+
+    it('applies cronType filter via eq when cronType is provided', async () => {
+        const db = createMockDb([]);
+
+        await getCronRuns(db as unknown as Db, { cronType: 'execute' });
+
+        expect(db._chain.where).toHaveBeenCalled();
+        expect(db._chain.orderBy).toHaveBeenCalled();
+        expect(db._chain.limit).toHaveBeenCalled();
+    });
+
+    it('applies status filter via eq when status is provided', async () => {
+        const db = createMockDb([]);
+
+        await getCronRuns(db as unknown as Db, { status: 'error' });
+
+        expect(db._chain.where).toHaveBeenCalled();
+    });
+
+    it('applies from filter via gte when from is provided', async () => {
+        const db = createMockDb([]);
+        const from = new Date('2026-06-12T00:00:00Z');
+
+        await getCronRuns(db as unknown as Db, { from });
+
+        expect(db._chain.where).toHaveBeenCalled();
+    });
+
+    it('applies to filter via lte when to is provided', async () => {
+        const db = createMockDb([]);
+        const to = new Date('2026-06-12T23:59:59Z');
+
+        await getCronRuns(db as unknown as Db, { to });
+
+        expect(db._chain.where).toHaveBeenCalled();
+    });
+
+    it('combines multiple filters with and(...) when several filters given', async () => {
+        const db = createMockDb([]);
+        const from = new Date('2026-06-12T13:00:00Z');
+        const to = new Date('2026-06-12T21:00:00Z');
+
+        await getCronRuns(db as unknown as Db, {
+            cronType: 'technical',
+            status: 'completed',
+            from,
+            to,
+        });
+
+        // where() must be called once (and() wraps all conditions)
+        expect(db._chain.where).toHaveBeenCalledTimes(1);
+        expect(db._chain.orderBy).toHaveBeenCalled();
+    });
+
+    it('caps limit at 500 when caller requests more', async () => {
+        const db = createMockDb([]);
+
+        await getCronRuns(db as unknown as Db, { limit: 9999 });
+
+        expect(db._chain.limit).toHaveBeenCalledWith(500);
+    });
+
+    it('uses provided limit when within allowed range', async () => {
+        const db = createMockDb([]);
+
+        await getCronRuns(db as unknown as Db, { limit: 50 });
+
+        expect(db._chain.limit).toHaveBeenCalledWith(50);
+    });
+
+    it('orders by startedAt desc', async () => {
+        const db = createMockDb([]);
+
+        await getCronRuns(db as unknown as Db);
+
+        expect(db._chain.orderBy).toHaveBeenCalled();
+    });
+});
+
+describe('getCronDecisions', () => {
+    it('calls select().from(cronDecisions).where(runId).orderBy(desc(createdAt))', async () => {
+        const mockRows = [
+            { id: 2, runId: 'run-execute-abc', action: 'buy', createdAt: new Date() },
+            { id: 1, runId: 'run-execute-abc', action: 'hold', createdAt: new Date() },
+        ];
+        const db = createMockDb(mockRows);
+
+        const result = await getCronDecisions(db as unknown as Db, 'run-execute-abc');
+
+        expect(db._chain.from).toHaveBeenCalled();
+        expect(db._chain.where).toHaveBeenCalled();
+        expect(db._chain.orderBy).toHaveBeenCalled();
+        expect(result).toEqual(mockRows);
+    });
+
+    it('returns empty array when no decisions exist for runId', async () => {
+        const db = createMockDb([]);
+
+        const result = await getCronDecisions(db as unknown as Db, 'run-nonexistent');
+
+        expect(db._chain.where).toHaveBeenCalled();
+        expect(result).toEqual([]);
     });
 });

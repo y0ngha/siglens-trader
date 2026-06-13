@@ -9,8 +9,9 @@ vi.mock('../_lib/db', () => ({
     getDb: () => mockGetDb(),
 }));
 
+const mockIsAuthenticated = vi.fn().mockResolvedValue(true);
 vi.mock('../_lib/auth', () => ({
-    isAuthenticated: () => Promise.resolve(true),
+    isAuthenticated: (...args: unknown[]) => mockIsAuthenticated(...args),
 }));
 
 const mockExecuteBuyOrder = vi.fn();
@@ -54,6 +55,8 @@ const mockCreateOrderTracking = vi.fn().mockResolvedValue([]);
 const mockUpdateOrderTracking = vi.fn().mockResolvedValue([]);
 const mockAverageIntoPosition = vi.fn().mockResolvedValue(undefined);
 const mockReducePositionQuantity = vi.fn().mockResolvedValue(true);
+const mockGetCronRuns = vi.fn();
+const mockGetCronDecisions = vi.fn();
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
@@ -85,6 +88,8 @@ vi.mock('../../lib/db/queries', () => ({
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
     reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
+    getCronRuns: (...args: unknown[]) => mockGetCronRuns(...args),
+    getCronDecisions: (...args: unknown[]) => mockGetCronDecisions(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -111,6 +116,7 @@ function makeRequest(url: string, method = 'GET', body?: unknown): Request {
 
 beforeEach(() => {
     vi.resetAllMocks();
+    mockIsAuthenticated.mockResolvedValue(true);
     mockGetDb.mockReturnValue(fakeDb);
     mockSendErrorEmail.mockResolvedValue(undefined);
     mockCreateOrderTracking.mockResolvedValue([]);
@@ -1349,5 +1355,133 @@ describe('POST /api/config — notification channel allowlist', () => {
             }),
         );
         expect(res.status).toBe(200);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/cron-runs
+// ---------------------------------------------------------------------------
+
+describe('GET /api/cron-runs', () => {
+    let handler: (req: Request) => Promise<Response>;
+
+    beforeEach(async () => {
+        handler = (await import('../cron-runs')).GET;
+    });
+
+    it('returns 403 when not authenticated', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs'));
+        expect(res.status).toBe(403);
+    });
+
+    it('returns 405 on non-GET methods', async () => {
+        const res = await handler(makeRequest('https://example.com/api/cron-runs', 'POST'));
+        expect(res.status).toBe(405);
+    });
+
+    it('returns runs list when authed and no runId', async () => {
+        const runs = [{ id: 1, runId: 'execute-123', cronType: 'execute', status: 'completed' }];
+        mockGetCronRuns.mockResolvedValue(runs);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs'));
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({ runs });
+        expect(mockGetCronRuns).toHaveBeenCalledWith(fakeDb, {
+            cronType: undefined,
+            status: undefined,
+            from: undefined,
+            to: undefined,
+            limit: undefined,
+        });
+    });
+
+    it('passes valid type filter to getCronRuns', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?type=technical'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ cronType: 'technical' }),
+        );
+    });
+
+    it('ignores unknown type filter (does not 400)', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?type=astrology'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ cronType: undefined }),
+        );
+    });
+
+    it('passes valid status filter to getCronRuns', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?status=error'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ status: 'error' }),
+        );
+    });
+
+    it('ignores unknown status filter (does not 400)', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/cron-runs?status=unknown_status'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ status: undefined }),
+        );
+    });
+
+    it('parses valid from ISO date into Date object', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/cron-runs?from=2026-06-12T13:00:00.000Z'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ from: new Date('2026-06-12T13:00:00.000Z') }),
+        );
+    });
+
+    it('ignores invalid from date (passes undefined)', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?from=not-a-date'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ from: undefined }),
+        );
+    });
+
+    it('returns decisions when runId param present', async () => {
+        const decisions = [{ id: 1, runId: 'execute-123', action: 'buy', executed: true }];
+        mockGetCronDecisions.mockResolvedValue(decisions);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/cron-runs?runId=execute-123'),
+        );
+        expect(res.status).toBe(200);
+
+        const data = await res.json();
+        expect(data).toEqual({ decisions });
+        expect(mockGetCronDecisions).toHaveBeenCalledWith(fakeDb, 'execute-123');
+        // getCronRuns should NOT be called when runId is present
+        expect(mockGetCronRuns).not.toHaveBeenCalled();
     });
 });

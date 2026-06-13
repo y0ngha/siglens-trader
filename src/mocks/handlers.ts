@@ -518,6 +518,206 @@ const analysisResults = [
     },
 ];
 
+// --- Cron audit fixtures ---
+
+interface CronRunFixture {
+    id: number;
+    runId: string;
+    cronType: string;
+    status: string;
+    outcome: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    durationMs: number | null;
+    summary: unknown;
+    error: string | null;
+    createdAt: string;
+}
+
+interface CronDecisionFixture {
+    id: number;
+    runId: string;
+    cronType: string;
+    symbol: string | null;
+    action: string;
+    executed: boolean;
+    score: string | null;
+    reason: string | null;
+    detail: unknown;
+    createdAt: string;
+}
+
+const cronRuns: CronRunFixture[] = [
+    {
+        id: 1,
+        runId: 'execute-20260612-1307',
+        cronType: 'execute',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 50 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 49 * 60000).toISOString(),
+        durationMs: 4823,
+        summary: { symbolsEvaluated: 3, decisionsByAction: { buy: 1, hold: 2, sell: 0 } },
+        error: null,
+        createdAt: new Date(Date.now() - 50 * 60000).toISOString(),
+    },
+    {
+        id: 2,
+        runId: 'technical-20260612-1300',
+        cronType: 'technical',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 57 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 55 * 60000).toISOString(),
+        durationMs: 12340,
+        summary: { processed: 3, saved: 3 },
+        error: null,
+        createdAt: new Date(Date.now() - 57 * 60000).toISOString(),
+    },
+    {
+        id: 3,
+        runId: 'news-20260612-1300',
+        cronType: 'news',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 56 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 54 * 60000).toISOString(),
+        durationMs: 9870,
+        summary: { processed: 3, saved: 3 },
+        error: null,
+        createdAt: new Date(Date.now() - 56 * 60000).toISOString(),
+    },
+    {
+        id: 4,
+        runId: 'reconcile-20260612-1310',
+        cronType: 'reconcile',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 47 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 46 * 60000 - 30000).toISOString(),
+        durationMs: 1520,
+        summary: {
+            processed: 2,
+            actionsByType: { timeout: 0, consistency_fix: 0 },
+            inconsistencies: 0,
+        },
+        error: null,
+        createdAt: new Date(Date.now() - 47 * 60000).toISOString(),
+    },
+    {
+        id: 5,
+        runId: 'execute-20260612-1207',
+        cronType: 'execute',
+        status: 'skipped',
+        outcome: 'market_closed',
+        startedAt: new Date(Date.now() - 110 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 109 * 60000 - 50000).toISOString(),
+        durationMs: 70,
+        summary: null,
+        error: null,
+        createdAt: new Date(Date.now() - 110 * 60000).toISOString(),
+    },
+    {
+        id: 6,
+        runId: 'execute-20260611-2007',
+        cronType: 'execute',
+        status: 'skipped',
+        outcome: 'daily_loss_limit',
+        startedAt: new Date(Date.now() - 19 * 3600000).toISOString(),
+        finishedAt: new Date(Date.now() - 19 * 3600000 + 90).toISOString(),
+        durationMs: 90,
+        summary: null,
+        error: null,
+        createdAt: new Date(Date.now() - 19 * 3600000).toISOString(),
+    },
+    {
+        id: 7,
+        runId: 'technical-20260611-1900',
+        cronType: 'technical',
+        status: 'error',
+        outcome: null,
+        startedAt: new Date(Date.now() - 20 * 3600000).toISOString(),
+        finishedAt: new Date(Date.now() - 20 * 3600000 + 5000).toISOString(),
+        durationMs: 5000,
+        summary: null,
+        error: 'FMP API rate limit exceeded (HTTP 429)',
+        createdAt: new Date(Date.now() - 20 * 3600000).toISOString(),
+    },
+    {
+        id: 8,
+        runId: 'reconcile-20260611-1920',
+        cronType: 'reconcile',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 18 * 3600000).toISOString(),
+        finishedAt: new Date(Date.now() - 18 * 3600000 + 2100).toISOString(),
+        durationMs: 2100,
+        summary: {
+            processed: 1,
+            actionsByType: { timeout: 1, consistency_fix: 0 },
+            inconsistencies: 0,
+        },
+        error: null,
+        createdAt: new Date(Date.now() - 18 * 3600000).toISOString(),
+    },
+];
+
+const cronDecisions: CronDecisionFixture[] = [
+    // Decisions for execute-20260612-1307
+    {
+        id: 1,
+        runId: 'execute-20260612-1307',
+        cronType: 'execute',
+        symbol: 'AAPL',
+        action: 'buy',
+        executed: true,
+        score: '78.2',
+        reason: '신호 78/100 — 매수 (기술:85, 뉴스:70, 옵션:75, 펀더멘털:65, 종합:72)',
+        detail: { technical: 85, news: 70, options: 75, fundamental: 65, overall: 72 },
+        createdAt: new Date(Date.now() - 49 * 60000 + 2000).toISOString(),
+    },
+    {
+        id: 2,
+        runId: 'execute-20260612-1307',
+        cronType: 'execute',
+        symbol: 'NVDA',
+        action: 'hold',
+        executed: false,
+        score: '55.1',
+        reason: '신호 55/100 — 보류 (매수/매도 임계값 사이)',
+        detail: { technical: 60, news: 50, options: 55, fundamental: 52, overall: 54 },
+        createdAt: new Date(Date.now() - 49 * 60000 + 3000).toISOString(),
+    },
+    {
+        id: 3,
+        runId: 'execute-20260612-1307',
+        cronType: 'execute',
+        symbol: 'TSLA',
+        action: 'hold',
+        executed: false,
+        score: '48.3',
+        reason: '신호 48/100 — 보류 (매수/매도 임계값 사이)',
+        detail: { technical: 45, news: 52, options: 48, fundamental: 50, overall: 47 },
+        createdAt: new Date(Date.now() - 49 * 60000 + 4000).toISOString(),
+    },
+    // Decisions for reconcile-20260611-1920 (timeout action)
+    {
+        id: 4,
+        runId: 'reconcile-20260611-1920',
+        cronType: 'reconcile',
+        symbol: 'MSFT',
+        action: 'timeout',
+        executed: true,
+        score: null,
+        reason: '주문 30분 초과 — 타임아웃 처리',
+        detail: {
+            orderId: 'ORD-8821',
+            submittedAt: new Date(Date.now() - 19 * 3600000).toISOString(),
+        },
+        createdAt: new Date(Date.now() - 18 * 3600000 + 1500).toISOString(),
+    },
+];
+
 // --- Handlers ---
 
 export const handlers = [
@@ -748,6 +948,44 @@ export const handlers = [
             default:
                 return HttpResponse.json({ error: 'Unknown type' }, { status: 400 });
         }
+    }),
+
+    // Cron runs audit log
+    http.get('/api/cron-runs', ({ request }) => {
+        const url = new URL(request.url);
+        const runId = url.searchParams.get('runId');
+
+        if (runId) {
+            const decisions = cronDecisions.filter((d) => d.runId === runId);
+            return HttpResponse.json({ decisions });
+        }
+
+        const typeFilter = url.searchParams.get('type');
+        const statusFilter = url.searchParams.get('status');
+        const fromFilter = url.searchParams.get('from');
+        const toFilter = url.searchParams.get('to');
+
+        let runs = [...cronRuns];
+
+        if (typeFilter) runs = runs.filter((r) => r.cronType === typeFilter);
+        if (statusFilter) runs = runs.filter((r) => r.status === statusFilter);
+        if (fromFilter) {
+            const from = new Date(fromFilter);
+            if (!isNaN(from.getTime())) {
+                runs = runs.filter((r) => new Date(r.startedAt) >= from);
+            }
+        }
+        if (toFilter) {
+            const to = new Date(toFilter);
+            if (!isNaN(to.getTime())) {
+                runs = runs.filter((r) => new Date(r.startedAt) <= to);
+            }
+        }
+
+        // Sort by startedAt desc (matches DB query order)
+        runs.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+        return HttpResponse.json({ runs });
     }),
 
     // Search
