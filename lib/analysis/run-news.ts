@@ -1,28 +1,24 @@
 import { submitNewsAnalysis, pollNewsAnalysis } from '@y0ngha/siglens-core';
-import type { EnrichedNewsItem, EarningsCalendarItem } from '@y0ngha/siglens-core';
+import type { EarningsCalendarItem } from '@y0ngha/siglens-core';
 import { FmpNewsClient } from '../data/fmp-news.js';
 import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
 import { pollUntilDone } from './poll-until-done.js';
+import { enrichNewsCards } from './enrich-news-cards.js';
 import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
 
 const newsClient = new FmpNewsClient();
 const fundamentalClient = new FmpFundamentalClient();
 
-/**
- * Run news analysis for the given symbol.
- *
- * Fetches raw news and earnings data, converts to the format expected by
- * siglens-core's `submitNewsAnalysis`, and polls until done.
- *
- * NOTE: `submitNewsAnalysis` expects `EnrichedNewsItem[]` (news items with
- * per-card AI analysis). This runner casts raw `NewsItem[]` to satisfy the
- * type constraint — the core worker handles missing card data gracefully
- * for automated trading contexts where per-card enrichment is not required.
- */
 export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
+    if (!options.cardStore) {
+        return { status: 'error', error: 'cardStore not provided to runNewsAnalysis' };
+    }
     try {
         const news = await newsClient.fetchNews(options.symbol, '7d');
         if (news.length === 0) return { status: 'skipped' };
+
+        const enriched = await enrichNewsCards(options.cardStore, options.symbol, news);
+        if (enriched.length === 0) return { status: 'skipped' };
 
         const earningsReports = await fundamentalClient.getEarningsReports(options.symbol);
         const upcomingCalendar: EarningsCalendarItem[] = earningsReports.map((r) => ({
@@ -38,7 +34,7 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
         const submission = await submitNewsAnalysis({
             symbol: options.symbol,
             modelId: options.modelId,
-            news: news as unknown as EnrichedNewsItem[],
+            news: enriched,
             upcomingCalendar,
             userApiKey: options.userApiKey,
         });

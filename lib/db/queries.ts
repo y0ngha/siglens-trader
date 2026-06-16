@@ -1,5 +1,6 @@
 import { eq, desc, and, gte, lte, sql, inArray } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
+import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
 import {
     watchlist,
     analysisModelConfig,
@@ -12,6 +13,7 @@ import {
     orderTracking,
     cronRuns,
     cronDecisions,
+    newsCards,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,20 @@ export async function getLatestAnalysisResults(db: Db, symbol: string, limit = 5
         .where(eq(analysisResults.symbol, symbol))
         .orderBy(desc(analysisResults.analyzedAt))
         .limit(limit);
+}
+
+export async function getAllLatestAnalysisResults(db: Db) {
+    // PostgreSQL DISTINCT ON으로 (symbol, analysis_type)별 최신 1행만 DB에서 직접 추출.
+    // 전체 스캔/메모리 dedup을 피해 누적 시 OOM·네트워크 폭증 방지.
+    // idx_analysis_symbol_type_date 인덱스가 ORDER BY와 일치하여 효율적.
+    return db
+        .selectDistinctOn([analysisResults.symbol, analysisResults.analysisType])
+        .from(analysisResults)
+        .orderBy(
+            analysisResults.symbol,
+            analysisResults.analysisType,
+            desc(analysisResults.analyzedAt),
+        );
 }
 
 // ---------------------------------------------------------------------------
@@ -657,4 +673,28 @@ export async function getCronDecisions(db: Db, runId: string) {
         .from(cronDecisions)
         .where(eq(cronDecisions.runId, runId))
         .orderBy(desc(cronDecisions.createdAt));
+}
+
+// ---------------------------------------------------------------------------
+// News cards (dedup persistence; PK newsId = URL SHA-256 from FmpNewsClient)
+// ---------------------------------------------------------------------------
+
+export async function getNewsCards(
+    db: Db,
+    newsIds: string[],
+): Promise<Map<string, NewsCardAnalysis>> {
+    if (newsIds.length === 0) return new Map();
+    const rows = await db
+        .select({ newsId: newsCards.newsId, card: newsCards.card })
+        .from(newsCards)
+        .where(inArray(newsCards.newsId, newsIds));
+    return new Map(rows.map((r) => [r.newsId, r.card as NewsCardAnalysis]));
+}
+
+export async function upsertNewsCards(
+    db: Db,
+    rows: { newsId: string; symbol: string; card: NewsCardAnalysis; modelId: string }[],
+): Promise<void> {
+    if (rows.length === 0) return;
+    await db.insert(newsCards).values(rows).onConflictDoNothing();
 }

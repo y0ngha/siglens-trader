@@ -25,17 +25,49 @@ vi.mock('../poll-until-done', () => ({
     pollUntilDone: vi.fn(),
 }));
 
+vi.mock('../enrich-news-cards', () => ({
+    enrichNewsCards: vi.fn(),
+}));
+
 const { submitNewsAnalysis, pollNewsAnalysis } = await import('@y0ngha/siglens-core');
 const { pollUntilDone } = await import('../poll-until-done');
+const { enrichNewsCards } = await import('../enrich-news-cards');
 const { runNewsAnalysis } = await import('../run-news');
 
 const mockedSubmit = vi.mocked(submitNewsAnalysis);
 const mockedPoll = vi.mocked(pollUntilDone);
+const mockedEnrich = vi.mocked(enrichNewsCards);
+
+const enrichedFixture = [
+    {
+        id: 'n1',
+        symbol: 'TSLA',
+        source: 'site',
+        url: 'https://x/n1',
+        publishedAt: '2026-06-15T00:00:00Z',
+        titleEn: 't',
+        bodyEn: 'b',
+        card: {
+            titleKo: 't',
+            bodyKo: null,
+            summaryKo: 's',
+            sentiment: 'neutral',
+            category: 'other',
+            priceImpact: 'low',
+        },
+    } as any,
+];
+
+const fakeCardStore = {
+    getCards: vi.fn(async () => new Map()),
+    upsertCards: vi.fn(async () => undefined),
+};
 
 const baseOptions: RunAnalysisOptions = {
     symbol: 'TSLA',
     companyName: 'Tesla Inc.',
     modelId: 'claude-sonnet-4-20250514' as any,
+    cardStore: fakeCardStore,
 };
 
 describe('runNewsAnalysis', () => {
@@ -54,6 +86,7 @@ describe('runNewsAnalysis', () => {
 
     it('returns cached result from submitNewsAnalysis', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Tesla earnings beat' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
         mockedSubmit.mockResolvedValue({
             status: 'cached',
@@ -67,6 +100,7 @@ describe('runNewsAnalysis', () => {
 
     it('completes full flow: fetch news + earnings -> submit -> poll -> done', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Breaking news' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([
             {
                 symbol: 'TSLA',
@@ -101,6 +135,7 @@ describe('runNewsAnalysis', () => {
 
     it('returns skipped when submit status is not submitted', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Some news' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
         mockedSubmit.mockResolvedValue({ status: 'miss_no_trigger' } as any);
 
@@ -111,6 +146,7 @@ describe('runNewsAnalysis', () => {
 
     it('returns error when submit throws', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Some news' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
         mockedSubmit.mockRejectedValue(new Error('API timeout'));
 
@@ -121,6 +157,7 @@ describe('runNewsAnalysis', () => {
 
     it('returns error when poll returns error', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'News item' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
         mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'news-j-2' } as any);
         mockedPoll.mockResolvedValue({ error: 'Worker crashed' });
@@ -128,5 +165,32 @@ describe('runNewsAnalysis', () => {
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'error', error: 'Worker crashed' });
+    });
+
+    it('returns error when cardStore not provided', async () => {
+        const optsNoStore: RunAnalysisOptions = { ...baseOptions };
+        delete optsNoStore.cardStore;
+        const result = await runNewsAnalysis(optsNoStore);
+        expect(result.status).toBe('error');
+        expect(result.error).toMatch(/cardStore not provided/);
+        expect(mockFetchNews).not.toHaveBeenCalled();
+    });
+
+    it('returns skipped when enrich returns empty', async () => {
+        mockFetchNews.mockResolvedValue([
+            {
+                id: 'n1',
+                symbol: 'TSLA',
+                source: 's',
+                url: 'u',
+                publishedAt: 'p',
+                titleEn: 't',
+                bodyEn: 'b',
+            },
+        ]);
+        mockedEnrich.mockResolvedValue([]);
+        const result = await runNewsAnalysis(baseOptions);
+        expect(result.status).toBe('skipped');
+        expect(mockedSubmit).not.toHaveBeenCalled();
     });
 });

@@ -16,6 +16,7 @@ import {
     saveAnalysisResult,
     getLatestAnalysisResult,
     getLatestAnalysisResults,
+    getAllLatestAnalysisResults,
     getOpenPositions,
     getOpenPositionBySymbol,
     openPosition,
@@ -42,6 +43,8 @@ import {
     insertCronDecisions,
     getCronRuns,
     getCronDecisions,
+    getNewsCards,
+    upsertNewsCards,
 } from '../queries';
 import type { Db } from '../index';
 
@@ -79,6 +82,7 @@ function createMockDb(resolvedValue: unknown = []) {
 
     const db = {
         select: vi.fn().mockReturnValue(chainMethods),
+        selectDistinctOn: vi.fn().mockReturnValue(chainMethods),
         insert: vi.fn().mockReturnValue(chainMethods),
         update: vi.fn().mockReturnValue(chainMethods),
         delete: vi.fn().mockReturnValue(chainMethods),
@@ -448,6 +452,56 @@ describe('Analysis results queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+
+    describe('getAllLatestAnalysisResults', () => {
+        it('빈 테이블 → 빈 배열', async () => {
+            const db = createMockDb([]);
+
+            const result = await getAllLatestAnalysisResults(db as unknown as Db);
+
+            // DB 측 DISTINCT ON 호출 — 메모리 dedup 회귀 방지
+            expect(
+                (db as unknown as { selectDistinctOn: ReturnType<typeof vi.fn> }).selectDistinctOn,
+            ).toHaveBeenCalledTimes(1);
+            expect(db._chain.from).toHaveBeenCalled();
+            expect(db._chain.orderBy).toHaveBeenCalled();
+            expect(result).toEqual([]);
+        });
+
+        it('selectDistinctOn은 (symbol, analysisType) 컬럼으로, orderBy는 동일 컬럼+analyzedAt desc로 호출', async () => {
+            const dedupedRows = [
+                {
+                    id: 12,
+                    symbol: 'NVDA',
+                    analysisType: 'technical',
+                    result: { v: 'new' },
+                    analyzedAt: '2026-06-15T19:00:00Z',
+                },
+                {
+                    id: 11,
+                    symbol: 'NVDA',
+                    analysisType: 'news',
+                    result: {},
+                    analyzedAt: '2026-06-15T18:00:00Z',
+                },
+            ];
+            const db = createMockDb(dedupedRows);
+
+            const result = await getAllLatestAnalysisResults(db as unknown as Db);
+
+            const distinctOnMock = (db as unknown as { selectDistinctOn: ReturnType<typeof vi.fn> })
+                .selectDistinctOn;
+            expect(distinctOnMock).toHaveBeenCalledTimes(1);
+            // 첫 인자: distinct 컬럼 배열 (symbol, analysisType)
+            const distinctCols = distinctOnMock.mock.calls[0][0] as unknown[];
+            expect(distinctCols).toHaveLength(2);
+            // orderBy: distinct 컬럼 + analyzedAt desc — 3 인자
+            const orderArgs = db._chain.orderBy.mock.calls[0];
+            expect(orderArgs).toHaveLength(3);
+            // DB가 이미 dedup된 결과를 반환하므로 핸들러는 그대로 통과
+            expect(result).toEqual(dedupedRows);
         });
     });
 });
@@ -1543,5 +1597,89 @@ describe('getCronDecisions', () => {
 
         expect(db._chain.where).toHaveBeenCalled();
         expect(result).toEqual([]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// News cards (dedup persistence)
+// ---------------------------------------------------------------------------
+
+describe('getNewsCards', () => {
+    it('빈 id 배열 입력 시 빈 Map 반환 (DB 호출 없음)', async () => {
+        const db = createMockDb([]);
+
+        const result = await getNewsCards(db as unknown as Db, []);
+
+        expect(result.size).toBe(0);
+        expect(
+            (db as unknown as { select: ReturnType<typeof vi.fn> }).select,
+        ).not.toHaveBeenCalled();
+    });
+
+    it('id 배열에 대해 inArray 조회 후 Map(id→card) 반환', async () => {
+        const cardA = {
+            sentiment: 'bullish',
+            summaryKo: 'A',
+            titleKo: 't',
+            bodyKo: null,
+            category: 'general',
+            priceImpact: 'low',
+        };
+        const cardB = {
+            sentiment: 'neutral',
+            summaryKo: 'B',
+            titleKo: 't',
+            bodyKo: null,
+            category: 'general',
+            priceImpact: 'low',
+        };
+        const db = createMockDb([
+            { newsId: 'a', card: cardA },
+            { newsId: 'b', card: cardB },
+        ]);
+
+        const result = await getNewsCards(db as unknown as Db, ['a', 'b', 'c']);
+
+        expect(db._chain.from).toHaveBeenCalled();
+        expect(db._chain.where).toHaveBeenCalled();
+        expect(result.get('a')).toEqual(cardA);
+        expect(result.get('b')).toEqual(cardB);
+        expect(result.has('c')).toBe(false);
+    });
+});
+
+describe('upsertNewsCards', () => {
+    it('빈 배열 입력 시 no-op (insert 호출 없음)', async () => {
+        const db = createMockDb([]);
+
+        await upsertNewsCards(db as unknown as Db, []);
+
+        expect(
+            (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+        ).not.toHaveBeenCalled();
+    });
+
+    it('rows 전달 시 onConflictDoNothing 호출', async () => {
+        const db = createMockDb([]);
+
+        await upsertNewsCards(db as unknown as Db, [
+            {
+                newsId: 'x',
+                symbol: 'NVDA',
+                card: { sentiment: 'bullish' } as never,
+                modelId: 'gemini-2.5-flash-lite',
+            },
+        ]);
+
+        expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
+        expect(db._chain.values).toHaveBeenCalledWith([
+            {
+                newsId: 'x',
+                symbol: 'NVDA',
+                card: { sentiment: 'bullish' },
+                modelId: 'gemini-2.5-flash-lite',
+            },
+        ]);
+        expect(db._chain.onConflictDoNothing).toHaveBeenCalled();
     });
 });
