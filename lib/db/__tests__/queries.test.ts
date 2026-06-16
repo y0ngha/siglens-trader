@@ -82,6 +82,7 @@ function createMockDb(resolvedValue: unknown = []) {
 
     const db = {
         select: vi.fn().mockReturnValue(chainMethods),
+        selectDistinctOn: vi.fn().mockReturnValue(chainMethods),
         insert: vi.fn().mockReturnValue(chainMethods),
         update: vi.fn().mockReturnValue(chainMethods),
         delete: vi.fn().mockReturnValue(chainMethods),
@@ -460,13 +461,17 @@ describe('Analysis results queries', () => {
 
             const result = await getAllLatestAnalysisResults(db as unknown as Db);
 
+            // DB 측 DISTINCT ON 호출 — 메모리 dedup 회귀 방지
+            expect(
+                (db as unknown as { selectDistinctOn: ReturnType<typeof vi.fn> }).selectDistinctOn,
+            ).toHaveBeenCalledTimes(1);
             expect(db._chain.from).toHaveBeenCalled();
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual([]);
         });
 
-        it('(symbol, analysis_type) 중복 시 최신 1행만 채택 (메모리 dedup)', async () => {
-            const rawRows = [
+        it('selectDistinctOn은 (symbol, analysisType) 컬럼으로, orderBy는 동일 컬럼+analyzedAt desc로 호출', async () => {
+            const dedupedRows = [
                 {
                     id: 12,
                     symbol: 'NVDA',
@@ -481,23 +486,22 @@ describe('Analysis results queries', () => {
                     result: {},
                     analyzedAt: '2026-06-15T18:00:00Z',
                 },
-                {
-                    id: 10,
-                    symbol: 'NVDA',
-                    analysisType: 'technical',
-                    result: { v: 'old' },
-                    analyzedAt: '2026-06-15T18:00:00Z',
-                },
             ];
-            const db = createMockDb(rawRows);
+            const db = createMockDb(dedupedRows);
 
             const result = await getAllLatestAnalysisResults(db as unknown as Db);
 
-            expect(result).toHaveLength(2);
-            const technical = result.find(
-                (r: { analysisType: string }) => r.analysisType === 'technical',
-            );
-            expect((technical as { result: { v: string } }).result.v).toBe('new');
+            const distinctOnMock = (db as unknown as { selectDistinctOn: ReturnType<typeof vi.fn> })
+                .selectDistinctOn;
+            expect(distinctOnMock).toHaveBeenCalledTimes(1);
+            // 첫 인자: distinct 컬럼 배열 (symbol, analysisType)
+            const distinctCols = distinctOnMock.mock.calls[0][0] as unknown[];
+            expect(distinctCols).toHaveLength(2);
+            // orderBy: distinct 컬럼 + analyzedAt desc — 3 인자
+            const orderArgs = db._chain.orderBy.mock.calls[0];
+            expect(orderArgs).toHaveLength(3);
+            // DB가 이미 dedup된 결과를 반환하므로 핸들러는 그대로 통과
+            expect(result).toEqual(dedupedRows);
         });
     });
 });

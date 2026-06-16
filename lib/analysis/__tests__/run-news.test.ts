@@ -58,11 +58,16 @@ const enrichedFixture = [
     } as any,
 ];
 
+const fakeCardStore = {
+    getCards: vi.fn(async () => new Map()),
+    upsertCards: vi.fn(async () => undefined),
+};
+
 const baseOptions: RunAnalysisOptions = {
     symbol: 'TSLA',
     companyName: 'Tesla Inc.',
     modelId: 'claude-sonnet-4-20250514' as any,
-    db: {} as any,
+    cardStore: fakeCardStore,
 };
 
 describe('runNewsAnalysis', () => {
@@ -162,12 +167,12 @@ describe('runNewsAnalysis', () => {
         expect(result).toEqual({ status: 'error', error: 'Worker crashed' });
     });
 
-    it('returns error when db not provided', async () => {
-        const optsNoDb: RunAnalysisOptions = { ...baseOptions };
-        delete optsNoDb.db;
-        const result = await runNewsAnalysis(optsNoDb);
+    it('returns error when cardStore not provided', async () => {
+        const optsNoStore: RunAnalysisOptions = { ...baseOptions };
+        delete optsNoStore.cardStore;
+        const result = await runNewsAnalysis(optsNoStore);
         expect(result.status).toBe('error');
-        expect(result.error).toMatch(/db not provided/);
+        expect(result.error).toMatch(/cardStore not provided/);
         expect(mockFetchNews).not.toHaveBeenCalled();
     });
 

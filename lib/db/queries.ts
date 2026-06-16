@@ -158,17 +158,17 @@ export async function getLatestAnalysisResults(db: Db, symbol: string, limit = 5
 }
 
 export async function getAllLatestAnalysisResults(db: Db) {
-    // analyzedAt 내림차순으로 가져온 뒤 (symbol, analysis_type) 첫 매칭만 채택 = 최신 1행/조합.
-    const rows = await db.select().from(analysisResults).orderBy(desc(analysisResults.analyzedAt));
-    const seen = new Set<string>();
-    const latest: typeof rows = [];
-    for (const r of rows) {
-        const key = `${r.symbol}:${r.analysisType}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        latest.push(r);
-    }
-    return latest;
+    // PostgreSQL DISTINCT ON으로 (symbol, analysis_type)별 최신 1행만 DB에서 직접 추출.
+    // 전체 스캔/메모리 dedup을 피해 누적 시 OOM·네트워크 폭증 방지.
+    // idx_analysis_symbol_type_date 인덱스가 ORDER BY와 일치하여 효율적.
+    return db
+        .selectDistinctOn([analysisResults.symbol, analysisResults.analysisType])
+        .from(analysisResults)
+        .orderBy(
+            analysisResults.symbol,
+            analysisResults.analysisType,
+            desc(analysisResults.analyzedAt),
+        );
 }
 
 // ---------------------------------------------------------------------------

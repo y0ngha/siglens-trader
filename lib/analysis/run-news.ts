@@ -10,14 +10,14 @@ const newsClient = new FmpNewsClient();
 const fundamentalClient = new FmpFundamentalClient();
 
 export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
-    if (!options.db) {
-        return { status: 'error', error: 'db not provided to runNewsAnalysis' };
+    if (!options.cardStore) {
+        return { status: 'error', error: 'cardStore not provided to runNewsAnalysis' };
     }
     try {
         const news = await newsClient.fetchNews(options.symbol, '7d');
         if (news.length === 0) return { status: 'skipped' };
 
-        const enriched = await enrichNewsCards(options.db, options.symbol, news);
+        const enriched = await enrichNewsCards(options.cardStore, options.symbol, news);
         if (enriched.length === 0) return { status: 'skipped' };
 
         const earningsReports = await fundamentalClient.getEarningsReports(options.symbol);

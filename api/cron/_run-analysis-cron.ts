@@ -8,9 +8,15 @@ import {
     saveAnalysisResult,
     startCronRun,
     finishCronRun,
+    getNewsCards,
+    upsertNewsCards,
 } from '../../lib/db/queries.js';
 import type { CronRunFinish, CronType } from '../../lib/db/queries.js';
-import type { AnalysisRunResult, RunAnalysisOptions } from '../../lib/analysis/types.js';
+import type {
+    AnalysisRunResult,
+    NewsCardStore,
+    RunAnalysisOptions,
+} from '../../lib/analysis/types.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
@@ -85,6 +91,12 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
 
                 const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
 
+                // Port 구현체: analysis 레이어가 db 직접 의존하지 않도록 cron 레이어에서 주입.
+                const cardStore: NewsCardStore = {
+                    getCards: (ids) => getNewsCards(db, ids),
+                    upsertCards: (rows) => upsertNewsCards(db, [...rows]),
+                };
+
                 // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
                 for (const item of watchlistItems) {
                     const result = await runner({
@@ -93,7 +105,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         modelId: config.modelId as RunAnalysisOptions['modelId'],
                         userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
                         timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
-                        db,
+                        cardStore,
                     });
 
                     if (result.status === 'done' || result.status === 'cached') {
