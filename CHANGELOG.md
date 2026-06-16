@@ -1,5 +1,21 @@
 # Changelog
 
+# [0.6.0](https://github.com/y0ngha/siglens-trader/compare/v0.5.0...v0.6.0) (2026-06-16)
+
+
+### Bug Fixes
+
+* **analysis-api:** symbol 미지정 시 전체 최신 결과 반환 ([0c4225c](https://github.com/y0ngha/siglens-trader/commit/0c4225c9a5471519cd9eb0eb6c16237beeac5c50))
+* **cron:** 펀더멘털 스케줄 0 13 → 0 15 UTC로 이동 ([24c7bb0](https://github.com/y0ngha/siglens-trader/commit/24c7bb0bcee349a5de1c23c786f202552879c8aa))
+* **news:** runNewsAnalysis에 카드 enrich 단계 통합 ([2788476](https://github.com/y0ngha/siglens-trader/commit/278847627b1fd585cae3782e065dd7c7ff43323a))
+* **yahoo-options:** v3 default export 호환을 위한 인스턴스화 ([98752c0](https://github.com/y0ngha/siglens-trader/commit/98752c0a278e8bd338b96c51fa80d8466263e68c))
+
+
+### Features
+
+* **news-cards:** news_cards 테이블·쿼리·마이그레이션 추가 ([9943ae4](https://github.com/y0ngha/siglens-trader/commit/9943ae48857082b3703eb73b39394da49aa74288))
+* **news-enrich:** NewsItem → EnrichedNewsItem 변환 헬퍼 ([8abcca7](https://github.com/y0ngha/siglens-trader/commit/8abcca7490f007ae0b9be9e610210cea46be26fd))
+
 # [0.5.0](https://github.com/y0ngha/siglens-trader/compare/v0.4.0...v0.5.0) (2026-06-13)
 
 
