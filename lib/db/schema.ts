@@ -176,3 +176,15 @@ export const cronDecisions = pgTable(
         index('idx_cron_decisions_symbol_created').on(table.symbol, table.createdAt),
     ],
 );
+
+export const newsCards = pgTable(
+    'news_cards',
+    {
+        newsId: text('news_id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        card: jsonb('card').notNull(),
+        modelId: text('model_id').notNull(),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [index('idx_news_cards_symbol_created').on(table.symbol, table.createdAt)],
+);

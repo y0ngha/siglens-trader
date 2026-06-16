@@ -42,6 +42,8 @@ import {
     insertCronDecisions,
     getCronRuns,
     getCronDecisions,
+    getNewsCards,
+    upsertNewsCards,
 } from '../queries';
 import type { Db } from '../index';
 
@@ -1543,5 +1545,89 @@ describe('getCronDecisions', () => {
 
         expect(db._chain.where).toHaveBeenCalled();
         expect(result).toEqual([]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// News cards (dedup persistence)
+// ---------------------------------------------------------------------------
+
+describe('getNewsCards', () => {
+    it('빈 id 배열 입력 시 빈 Map 반환 (DB 호출 없음)', async () => {
+        const db = createMockDb([]);
+
+        const result = await getNewsCards(db as unknown as Db, []);
+
+        expect(result.size).toBe(0);
+        expect(
+            (db as unknown as { select: ReturnType<typeof vi.fn> }).select,
+        ).not.toHaveBeenCalled();
+    });
+
+    it('id 배열에 대해 inArray 조회 후 Map(id→card) 반환', async () => {
+        const cardA = {
+            sentiment: 'bullish',
+            summaryKo: 'A',
+            titleKo: 't',
+            bodyKo: null,
+            category: 'general',
+            priceImpact: 'low',
+        };
+        const cardB = {
+            sentiment: 'neutral',
+            summaryKo: 'B',
+            titleKo: 't',
+            bodyKo: null,
+            category: 'general',
+            priceImpact: 'low',
+        };
+        const db = createMockDb([
+            { newsId: 'a', card: cardA },
+            { newsId: 'b', card: cardB },
+        ]);
+
+        const result = await getNewsCards(db as unknown as Db, ['a', 'b', 'c']);
+
+        expect(db._chain.from).toHaveBeenCalled();
+        expect(db._chain.where).toHaveBeenCalled();
+        expect(result.get('a')).toEqual(cardA);
+        expect(result.get('b')).toEqual(cardB);
+        expect(result.has('c')).toBe(false);
+    });
+});
+
+describe('upsertNewsCards', () => {
+    it('빈 배열 입력 시 no-op (insert 호출 없음)', async () => {
+        const db = createMockDb([]);
+
+        await upsertNewsCards(db as unknown as Db, []);
+
+        expect(
+            (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
+        ).not.toHaveBeenCalled();
+    });
+
+    it('rows 전달 시 onConflictDoNothing 호출', async () => {
+        const db = createMockDb([]);
+
+        await upsertNewsCards(db as unknown as Db, [
+            {
+                newsId: 'x',
+                symbol: 'NVDA',
+                card: { sentiment: 'bullish' } as never,
+                modelId: 'gemini-2.5-flash-lite',
+            },
+        ]);
+
+        expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
+        expect(db._chain.values).toHaveBeenCalledWith([
+            {
+                newsId: 'x',
+                symbol: 'NVDA',
+                card: { sentiment: 'bullish' },
+                modelId: 'gemini-2.5-flash-lite',
+            },
+        ]);
+        expect(db._chain.onConflictDoNothing).toHaveBeenCalled();
     });
 });

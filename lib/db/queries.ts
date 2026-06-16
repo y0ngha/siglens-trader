@@ -1,5 +1,6 @@
 import { eq, desc, and, gte, lte, sql, inArray } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
+import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
 import {
     watchlist,
     analysisModelConfig,
@@ -12,6 +13,7 @@ import {
     orderTracking,
     cronRuns,
     cronDecisions,
+    newsCards,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -657,4 +659,28 @@ export async function getCronDecisions(db: Db, runId: string) {
         .from(cronDecisions)
         .where(eq(cronDecisions.runId, runId))
         .orderBy(desc(cronDecisions.createdAt));
+}
+
+// ---------------------------------------------------------------------------
+// News cards (dedup persistence; PK newsId = URL SHA-256 from FmpNewsClient)
+// ---------------------------------------------------------------------------
+
+export async function getNewsCards(
+    db: Db,
+    newsIds: string[],
+): Promise<Map<string, NewsCardAnalysis>> {
+    if (newsIds.length === 0) return new Map();
+    const rows = await db
+        .select({ newsId: newsCards.newsId, card: newsCards.card })
+        .from(newsCards)
+        .where(inArray(newsCards.newsId, newsIds));
+    return new Map(rows.map((r) => [r.newsId, r.card as NewsCardAnalysis]));
+}
+
+export async function upsertNewsCards(
+    db: Db,
+    rows: { newsId: string; symbol: string; card: NewsCardAnalysis; modelId: string }[],
+): Promise<void> {
+    if (rows.length === 0) return;
+    await db.insert(newsCards).values(rows).onConflictDoNothing();
 }
