@@ -14,8 +14,20 @@ export default defineConfig({
         setupFiles: ['./src/__tests__/setup.ts'],
         coverage: {
             provider: 'v8',
-            include: ['lib/trading/**/*.ts'],
-            exclude: ['lib/trading/**/*.test.ts', 'lib/trading/types.ts', 'lib/trading/CLAUDE.md'],
+            include: [
+                'lib/trading/**/*.ts',
+                'lib/data/yahoo-options.ts',
+                'lib/analysis/enrich-news-cards.ts',
+                'lib/analysis/run-news.ts',
+                'lib/db/queries.ts',
+                'api/analysis.ts',
+            ],
+            exclude: [
+                'lib/trading/**/*.test.ts',
+                'lib/trading/types.ts',
+                'lib/trading/CLAUDE.md',
+                '**/__tests__/**',
+            ],
             thresholds: {
                 lines: 90,
                 functions: 90,

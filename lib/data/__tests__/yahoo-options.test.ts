@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockOptions = vi.fn();
+const mockConstructor = vi.fn(() => ({ options: mockOptions }));
 vi.mock('yahoo-finance2', () => ({
-    default: { options: mockOptions },
+    default: mockConstructor,
 }));
 
 describe('fetchOptionsSnapshot', () => {
     beforeEach(() => {
         mockOptions.mockReset();
+        mockConstructor.mockClear();
     });
 
     it('fetches and normalizes snapshot on success', async () => {
@@ -70,5 +72,23 @@ describe('fetchOptionsSnapshot', () => {
         const result = await fetchOptionsSnapshot('ZZZZZ');
 
         expect(result).toBeNull();
+    });
+
+    it('인스턴스는 모듈당 1회만 생성된다', async () => {
+        vi.resetModules();
+        mockConstructor.mockClear();
+        const { fetchOptionsSnapshot } = await import('../yahoo-options');
+        mockOptions.mockResolvedValue({
+            underlyingSymbol: 'AAPL',
+            expirationDates: [],
+            strikes: [],
+            hasMiniOptions: false,
+            quote: { regularMarketPrice: 100 },
+            options: [],
+        });
+        await fetchOptionsSnapshot('AAPL');
+        await fetchOptionsSnapshot('AAPL');
+        await fetchOptionsSnapshot('AAPL');
+        expect(mockConstructor).toHaveBeenCalledTimes(1);
     });
 });
