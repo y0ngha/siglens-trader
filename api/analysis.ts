@@ -1,6 +1,6 @@
 import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
-import { getLatestAnalysisResults } from '../lib/db/queries.js';
+import { getLatestAnalysisResults, getAllLatestAnalysisResults } from '../lib/db/queries.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -9,12 +9,10 @@ async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url, 'http://localhost');
     const symbol = url.searchParams.get('symbol');
 
-    if (!symbol) {
-        return Response.json([]);
-    }
-
     const db = getDb();
-    const results = await getLatestAnalysisResults(db, symbol);
+    const results = symbol
+        ? await getLatestAnalysisResults(db, symbol)
+        : await getAllLatestAnalysisResults(db);
 
     return Response.json(results);
 }

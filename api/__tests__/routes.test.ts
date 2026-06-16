@@ -31,6 +31,7 @@ const mockGetConfigValue = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockGetRecentTrades = vi.fn();
 const mockGetLatestAnalysisResults = vi.fn();
+const mockGetAllLatestAnalysisResults = vi.fn();
 const mockGetAllConfig = vi.fn();
 const mockGetAllWatchlist = vi.fn();
 const mockGetAllAnalysisConfigs = vi.fn();
@@ -64,6 +65,7 @@ vi.mock('../../lib/db/queries', () => ({
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
     getLatestAnalysisResults: (...args: unknown[]) => mockGetLatestAnalysisResults(...args),
+    getAllLatestAnalysisResults: (...args: unknown[]) => mockGetAllLatestAnalysisResults(...args),
     getAllConfig: (...args: unknown[]) => mockGetAllConfig(...args),
     getAllWatchlist: (...args: unknown[]) => mockGetAllWatchlist(...args),
     getAllAnalysisConfigs: (...args: unknown[]) => mockGetAllAnalysisConfigs(...args),
@@ -267,10 +269,29 @@ describe('GET /api/analysis', () => {
         expect(res.status).toBe(405);
     });
 
-    it('returns empty array when no symbol provided', async () => {
+    it('returns all latest results when no symbol provided', async () => {
+        const all = [
+            {
+                id: 1,
+                symbol: 'NVDA',
+                analysisType: 'technical',
+                result: {},
+                analyzedAt: '2026-06-15T19:00:00Z',
+            },
+            {
+                id: 2,
+                symbol: 'NVDA',
+                analysisType: 'news',
+                result: {},
+                analyzedAt: '2026-06-15T18:00:00Z',
+            },
+        ];
+        mockGetAllLatestAnalysisResults.mockResolvedValueOnce(all);
+
         const res = await handler(makeRequest('https://example.com/api/analysis'));
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual([]);
+        expect(await res.json()).toEqual(all);
+        expect(mockGetAllLatestAnalysisResults).toHaveBeenCalled();
         expect(mockGetLatestAnalysisResults).not.toHaveBeenCalled();
     });
 
@@ -282,6 +303,13 @@ describe('GET /api/analysis', () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual(results);
         expect(mockGetLatestAnalysisResults).toHaveBeenCalledWith(fakeDb, 'AAPL');
+        expect(mockGetAllLatestAnalysisResults).not.toHaveBeenCalled();
+    });
+
+    it('미인증 → 403', async () => {
+        mockIsAuthenticated.mockResolvedValueOnce(false);
+        const res = await handler(makeRequest('https://example.com/api/analysis'));
+        expect(res.status).toBe(403);
     });
 });
 

@@ -16,6 +16,7 @@ import {
     saveAnalysisResult,
     getLatestAnalysisResult,
     getLatestAnalysisResults,
+    getAllLatestAnalysisResults,
     getOpenPositions,
     getOpenPositionBySymbol,
     openPosition,
@@ -450,6 +451,53 @@ describe('Analysis results queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+
+    describe('getAllLatestAnalysisResults', () => {
+        it('빈 테이블 → 빈 배열', async () => {
+            const db = createMockDb([]);
+
+            const result = await getAllLatestAnalysisResults(db as unknown as Db);
+
+            expect(db._chain.from).toHaveBeenCalled();
+            expect(db._chain.orderBy).toHaveBeenCalled();
+            expect(result).toEqual([]);
+        });
+
+        it('(symbol, analysis_type) 중복 시 최신 1행만 채택 (메모리 dedup)', async () => {
+            const rawRows = [
+                {
+                    id: 12,
+                    symbol: 'NVDA',
+                    analysisType: 'technical',
+                    result: { v: 'new' },
+                    analyzedAt: '2026-06-15T19:00:00Z',
+                },
+                {
+                    id: 11,
+                    symbol: 'NVDA',
+                    analysisType: 'news',
+                    result: {},
+                    analyzedAt: '2026-06-15T18:00:00Z',
+                },
+                {
+                    id: 10,
+                    symbol: 'NVDA',
+                    analysisType: 'technical',
+                    result: { v: 'old' },
+                    analyzedAt: '2026-06-15T18:00:00Z',
+                },
+            ];
+            const db = createMockDb(rawRows);
+
+            const result = await getAllLatestAnalysisResults(db as unknown as Db);
+
+            expect(result).toHaveLength(2);
+            const technical = result.find(
+                (r: { analysisType: string }) => r.analysisType === 'technical',
+            );
+            expect((technical as { result: { v: string } }).result.v).toBe('new');
         });
     });
 });

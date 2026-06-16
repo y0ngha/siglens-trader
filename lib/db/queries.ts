@@ -157,6 +157,20 @@ export async function getLatestAnalysisResults(db: Db, symbol: string, limit = 5
         .limit(limit);
 }
 
+export async function getAllLatestAnalysisResults(db: Db) {
+    // analyzedAt 내림차순으로 가져온 뒤 (symbol, analysis_type) 첫 매칭만 채택 = 최신 1행/조합.
+    const rows = await db.select().from(analysisResults).orderBy(desc(analysisResults.analyzedAt));
+    const seen = new Set<string>();
+    const latest: typeof rows = [];
+    for (const r of rows) {
+        const key = `${r.symbol}:${r.analysisType}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        latest.push(r);
+    }
+    return latest;
+}
+
 // ---------------------------------------------------------------------------
 // Positions
 // ---------------------------------------------------------------------------
