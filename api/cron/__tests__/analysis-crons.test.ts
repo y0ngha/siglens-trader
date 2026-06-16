@@ -242,12 +242,14 @@ describe('createAnalysisCronHandler', () => {
 
         await handler(makeRequest(true));
 
-        expect(mockRunner).toHaveBeenCalledWith({
-            symbol: 'AAPL',
-            companyName: 'Apple Inc.',
-            modelId: 'claude-sonnet-4-20250514',
-            userApiKey: 'sk-ant-test',
-        });
+        expect(mockRunner).toHaveBeenCalledWith(
+            expect.objectContaining({
+                symbol: 'AAPL',
+                companyName: 'Apple Inc.',
+                modelId: 'claude-sonnet-4-20250514',
+                userApiKey: 'sk-ant-test',
+            }),
+        );
     });
 
     it('does not pass userApiKey when useByok is false', async () => {
@@ -256,12 +258,14 @@ describe('createAnalysisCronHandler', () => {
 
         await handler(makeRequest(true));
 
-        expect(mockRunner).toHaveBeenCalledWith({
-            symbol: 'AAPL',
-            companyName: 'Apple Inc.',
-            modelId: 'claude-sonnet-4-20250514',
-            userApiKey: undefined,
-        });
+        expect(mockRunner).toHaveBeenCalledWith(
+            expect.objectContaining({
+                symbol: 'AAPL',
+                companyName: 'Apple Inc.',
+                modelId: 'claude-sonnet-4-20250514',
+                userApiKey: undefined,
+            }),
+        );
     });
 
     it('includes error field in results only when present', async () => {

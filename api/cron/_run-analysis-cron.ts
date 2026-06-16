@@ -93,6 +93,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         modelId: config.modelId as RunAnalysisOptions['modelId'],
                         userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
                         timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
+                        db,
                     });
 
                     if (result.status === 'done' || result.status === 'cached') {
