@@ -325,7 +325,39 @@ describe('createAnalysisCronHandler', () => {
             expect.objectContaining({
                 status: 'completed',
                 outcome: 'completed',
-                summary: { processed: fakeWatchlist.length, saved: fakeWatchlist.length },
+                summary: {
+                    processed: fakeWatchlist.length,
+                    saved: fakeWatchlist.length,
+                    byStatus: { done: fakeWatchlist.length, cached: 0, skipped: 0, error: 0 },
+                    results: [
+                        { symbol: 'AAPL', status: 'done' },
+                        { symbol: 'TSLA', status: 'done' },
+                    ],
+                },
+            }),
+        );
+    });
+
+    it('records analysis result status counts and per-symbol errors in the audit summary', async () => {
+        mockRunner
+            .mockResolvedValueOnce({ status: 'done', result: { trend: 'bullish' } })
+            .mockResolvedValueOnce({ status: 'error', error: 'worker timeout' });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.stringMatching(/^technical-/),
+            expect.objectContaining({
+                summary: {
+                    processed: 2,
+                    saved: 1,
+                    byStatus: { done: 1, cached: 0, skipped: 0, error: 1 },
+                    results: [
+                        { symbol: 'AAPL', status: 'done' },
+                        { symbol: 'TSLA', status: 'error', error: 'worker timeout' },
+                    ],
+                },
             }),
         );
     });

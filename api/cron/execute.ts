@@ -28,7 +28,7 @@ import {
     finishCronRun,
     insertCronDecisions,
 } from '../../lib/db/queries.js';
-import type { CronRunFinish } from '../../lib/db/queries.js';
+import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import {
@@ -53,7 +53,8 @@ import type { ScoreWeights } from '../../lib/strategy/types.js';
 import { resolveApiKey } from './_run-analysis-cron.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
-import { fetchLivePrice } from '../../lib/data/live-price.js';
+import { fetchLivePrice, fetchLivePriceDetail } from '../../lib/data/live-price.js';
+import type { LivePriceDetail } from '../../lib/data/live-price.js';
 import { safeNumber } from '../../lib/validation.js';
 import {
     safeRecord,
@@ -72,6 +73,40 @@ import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 /** Maximum age for analysis results before they are considered stale (4 hours). */
 const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
 
+type ExecuteDecision = CronDecisionInput & { symbol?: string; score: number };
+
+function noPriceDetail(
+    symbol: string,
+    livePriceDetail: LivePriceDetail | undefined,
+    technicalResult: unknown,
+) {
+    return {
+        symbol,
+        priceSources: {
+            live: livePriceDetail ?? {
+                source: 'fmp_quote',
+                price: null,
+                reason: 'not_available',
+                error: 'FMP quote did not return a usable positive price',
+            },
+            analysisFallback: {
+                source: 'technical.keyLevels.currentPrice',
+                price: safeAnalysisPrice(technicalResult),
+                usable: safeAnalysisPrice(technicalResult) > 0,
+            },
+        },
+    };
+}
+
+function publicDecision(decision: ExecuteDecision) {
+    return {
+        symbol: decision.symbol,
+        action: decision.action,
+        score: decision.score,
+        ...(decision.executed !== undefined ? { executed: decision.executed } : {}),
+    };
+}
+
 async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
         return new Response('Unauthorized', { status: 401 });
@@ -88,8 +123,7 @@ async function handler(req: Request): Promise<Response> {
     await safe(startCronRun(db, { runId: cronRunId, cronType: 'execute', startedAt }));
 
     let finishState: CronRunFinish | null = null;
-    const decisions: Array<{ symbol: string; action: string; score: number; executed?: boolean }> =
-        [];
+    const decisions: ExecuteDecision[] = [];
 
     try {
         // Skip trade execution outside the U.S. regular session (cron schedule is a static approximation)
@@ -282,12 +316,22 @@ async function handler(req: Request): Promise<Response> {
 
             // --- Price cache: batch fetch all needed symbols once ---
             const priceCache = new Map<string, number>();
+            const priceFailures = new Map<string, LivePriceDetail>();
             const allSymbols = new Set<string>();
             for (const p of openPositions) allSymbols.add(p.symbol);
             for (const w of watchlistItems) allSymbols.add(w.symbol);
             for (const sym of allSymbols) {
-                const price = await fetchLivePrice(sym).catch(() => null);
-                if (price) priceCache.set(sym, price);
+                const detail = await fetchLivePriceDetail(sym).catch((err) => ({
+                    source: 'fmp_quote' as const,
+                    price: null,
+                    reason: 'request_failed' as const,
+                    error: err instanceof Error ? err.message : String(err),
+                }));
+                if (detail.price && detail.price > 0) {
+                    priceCache.set(sym, detail.price);
+                } else {
+                    priceFailures.set(sym, detail);
+                }
             }
 
             // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
@@ -348,6 +392,11 @@ async function handler(req: Request): Promise<Response> {
                             symbol: position.symbol,
                             action: 'skipped_no_price',
                             score: 0,
+                            detail: noPriceDetail(
+                                position.symbol,
+                                priceFailures.get(position.symbol),
+                                techResult,
+                            ),
                         });
                         await notifyError(
                             `가격 데이터 없음: ${position.symbol}`,
@@ -831,6 +880,11 @@ async function handler(req: Request): Promise<Response> {
                             symbol: item.symbol,
                             action: 'skipped_no_price',
                             score: 0,
+                            detail: noPriceDetail(
+                                item.symbol,
+                                priceFailures.get(item.symbol),
+                                tech?.result,
+                            ),
                         });
                         continue;
                     }
@@ -1571,7 +1625,11 @@ async function handler(req: Request): Promise<Response> {
                 },
                 ...elapsed(),
             };
-            return Response.json({ cronRunId, tradingMode, decisions });
+            return Response.json({
+                cronRunId,
+                tradingMode,
+                decisions: decisions.map(publicDecision),
+            });
         } finally {
             await releaseLock(LOCK_KEY, lockToken).catch((e) => console.error('[lock-release]', e));
         }
@@ -1595,6 +1653,8 @@ async function handler(req: Request): Promise<Response> {
                         action: d.action,
                         score: d.score,
                         executed: d.executed ?? false,
+                        reason: d.reason,
+                        detail: d.detail,
                     })),
                 ),
             );

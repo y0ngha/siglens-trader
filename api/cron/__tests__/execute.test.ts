@@ -124,8 +124,17 @@ vi.mock('../_run-analysis-cron', () => ({
 }));
 
 const mockFetchLivePrice = vi.fn<(symbol: string) => Promise<number | null>>();
+const mockFetchLivePriceDetail = vi.fn<
+    (symbol: string) => Promise<{
+        source: 'fmp_quote';
+        price: number | null;
+        reason?: string;
+        error?: string;
+    }>
+>();
 vi.mock('../../../lib/data/live-price', () => ({
     fetchLivePrice: (...args: [string]) => mockFetchLivePrice(...args),
+    fetchLivePriceDetail: (...args: [string]) => mockFetchLivePriceDetail(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
@@ -255,6 +264,12 @@ function setupDefaults() {
     mockReducePositionQuantity.mockResolvedValue(true);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockFetchLivePrice.mockResolvedValue(null);
+    mockFetchLivePriceDetail.mockResolvedValue({
+        source: 'fmp_quote',
+        price: null,
+        reason: 'request_failed',
+        error: 'mock no live price',
+    });
     mockStartCronRun.mockResolvedValue(undefined);
     mockFinishCronRun.mockResolvedValue(undefined);
     mockInsertCronDecisions.mockResolvedValue(undefined);
@@ -4410,7 +4425,7 @@ describe('execute cron handler', () => {
                 },
             });
             // Live price is different
-            mockFetchLivePrice.mockResolvedValue(155);
+            mockFetchLivePriceDetail.mockResolvedValue({ source: 'fmp_quote', price: 155 });
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockCalculatePositionSize.mockReturnValue(5);
             mockMakeTradeDecision.mockReturnValue({
@@ -4439,7 +4454,12 @@ describe('execute cron handler', () => {
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            mockFetchLivePrice.mockResolvedValue(null); // no live price
+            mockFetchLivePriceDetail.mockResolvedValue({
+                source: 'fmp_quote',
+                price: null,
+                reason: 'request_failed',
+                error: 'mock no live price',
+            });
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockCalculatePositionSize.mockReturnValue(5);
             mockMakeTradeDecision.mockReturnValue({
@@ -4461,6 +4481,47 @@ describe('execute cron handler', () => {
             );
         });
 
+        it('stores live-price failure detail on skipped_no_price audit decisions', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockResolvedValue({ result: { trend: 'bullish' } });
+            mockFetchLivePriceDetail.mockResolvedValue({
+                source: 'fmp_quote',
+                price: null,
+                reason: 'request_failed',
+                error: 'FMP quote 429',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'skipped_no_price', score: 0 },
+            ]);
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        action: 'skipped_no_price',
+                        detail: expect.objectContaining({
+                            priceSources: expect.objectContaining({
+                                live: expect.objectContaining({
+                                    reason: 'request_failed',
+                                    error: 'FMP quote 429',
+                                }),
+                            }),
+                        }),
+                    }),
+                ]),
+            );
+        });
+
         it('fetches price once per symbol even when symbol appears in both positions and watchlist', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
@@ -4474,7 +4535,7 @@ describe('execute cron handler', () => {
                 ]) // main positions
                 .mockResolvedValueOnce([]); // recalc
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            mockFetchLivePrice.mockResolvedValue(155);
+            mockFetchLivePriceDetail.mockResolvedValue({ source: 'fmp_quote', price: 155 });
             mockEvaluateExistingPosition.mockReturnValue({
                 action: 'hold',
                 reason: '유지 (조건 미충족)',
@@ -4483,16 +4544,13 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // fetchLivePrice for the cache is called once per unique symbol
+            // fetchLivePriceDetail for the cache is called once per unique symbol
             // AAPL appears in both positions and watchlist, but should be fetched once
             // Plus pre-loop checks may also call fetchLivePrice
-            const aaplCalls = mockFetchLivePrice.mock.calls.filter(
+            const aaplCalls = mockFetchLivePriceDetail.mock.calls.filter(
                 (c: [string]) => c[0] === 'AAPL',
             );
-            // Pre-loop calls (unrealized PnL + exposure) + cache = multiple,
-            // but the cache itself should only fetch once
-            // We just verify fetchLivePrice was called (not zero times — proving the mock works)
-            expect(aaplCalls.length).toBeGreaterThan(0);
+            expect(aaplCalls).toHaveLength(1);
         });
     });
 

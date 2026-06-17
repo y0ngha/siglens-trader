@@ -5,7 +5,7 @@ vi.mock('../fmp-http', () => ({
     fmpGet: (...args: unknown[]) => mockFmpGet(...args),
 }));
 
-import { fetchLivePrice } from '../live-price';
+import { fetchLivePrice, fetchLivePriceDetail } from '../live-price';
 
 describe('fetchLivePrice', () => {
     beforeEach(() => {
@@ -87,5 +87,33 @@ describe('fetchLivePrice', () => {
         const result = await fetchLivePrice('AAPL');
 
         expect(result).toBeNull();
+    });
+
+    it('returns diagnostic detail for request failures', async () => {
+        mockFmpGet.mockRejectedValue(new Error('FMP quote 500'));
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        const result = await fetchLivePriceDetail('AAPL');
+
+        expect(result).toEqual({
+            source: 'fmp_quote',
+            price: null,
+            reason: 'request_failed',
+            error: 'FMP quote 500',
+        });
+        expect(warn).toHaveBeenCalledWith(
+            '[live-price] price unavailable',
+            expect.objectContaining({ symbol: 'AAPL', reason: 'request_failed' }),
+        );
+    });
+
+    it('can suppress diagnostic warning logs', async () => {
+        mockFmpGet.mockResolvedValue([]);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        const result = await fetchLivePriceDetail('AAPL', { log: false });
+
+        expect(result.reason).toBe('empty_response');
+        expect(warn).not.toHaveBeenCalled();
     });
 });

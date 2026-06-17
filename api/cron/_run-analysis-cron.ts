@@ -87,7 +87,11 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     return Response.json({ skipped: true, reason: 'empty_watchlist' });
                 }
 
-                const results: Array<{ symbol: string; status: string; error?: string }> = [];
+                const results: Array<{
+                    symbol: string;
+                    status: AnalysisRunResult['status'];
+                    error?: string;
+                }> = [];
 
                 const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
 
@@ -133,6 +137,12 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         processed: results.length,
                         saved: results.filter((r) => r.status === 'done' || r.status === 'cached')
                             .length,
+                        byStatus: countResultsByStatus(results),
+                        results: results.map((r) => ({
+                            symbol: r.symbol,
+                            status: r.status,
+                            ...(r.error ? { error: r.error } : {}),
+                        })),
                     },
                     ...elapsed(),
                 };
@@ -155,6 +165,16 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             }
         }
     };
+}
+
+function countResultsByStatus(results: Array<{ status: AnalysisRunResult['status'] }>) {
+    return results.reduce<Record<AnalysisRunResult['status'], number>>(
+        (acc, result) => {
+            acc[result.status] += 1;
+            return acc;
+        },
+        { done: 0, cached: 0, skipped: 0, error: 0 },
+    );
 }
 
 export function resolveApiKey(modelId: string): string | undefined {
