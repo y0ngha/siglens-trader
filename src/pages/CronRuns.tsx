@@ -23,6 +23,16 @@ type DatePreset = 'today' | '7d' | '30d';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
+const ANALYSIS_CRON_TYPES = ['technical', 'news', 'options', 'fundamental'] as const;
+
+function isAnalysisCronType(cronType: string): boolean {
+    return ANALYSIS_CRON_TYPES.includes(cronType as (typeof ANALYSIS_CRON_TYPES)[number]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function timeAgo(dateStr: string): string {
     const diff = Date.now() - new Date(dateStr).getTime();
     const minutes = Math.floor(diff / 60_000);
@@ -157,8 +167,8 @@ function actionChipClass(action: string): string {
 
 function parseSummary(cronType: string, summary: unknown): string {
     try {
-        if (summary == null || typeof summary !== 'object') return '';
-        const s = summary as Record<string, unknown>;
+        if (!isRecord(summary)) return '';
+        const s = summary;
 
         if (cronType === 'execute') {
             const parts: string[] = [];
@@ -176,7 +186,15 @@ function parseSummary(cronType: string, summary: unknown): string {
             return parts.join(' / ');
         }
 
-        if (['technical', 'news', 'options', 'fundamental'].includes(cronType)) {
+        if (isAnalysisCronType(cronType)) {
+            if (isRecord(s.byStatus)) {
+                const status = s.byStatus as Record<string, unknown>;
+                const done = typeof status.done === 'number' ? status.done : 0;
+                const cached = typeof status.cached === 'number' ? status.cached : 0;
+                const skipped = typeof status.skipped === 'number' ? status.skipped : 0;
+                const error = typeof status.error === 'number' ? status.error : 0;
+                return `done ${done} · cached ${cached} · skipped ${skipped} · error ${error}`;
+            }
             const saved =
                 s.saved ?? s.analysisCount ?? s.savedCount ?? s.count ?? s.resultsCount ?? null;
             const processed = s.processed ?? s.total ?? s.symbolsProcessed ?? null;
@@ -209,16 +227,59 @@ function parseSummary(cronType: string, summary: unknown): string {
 
 function summaryHasAlert(cronType: string, summary: unknown): boolean {
     try {
-        if (cronType !== 'reconcile' || summary == null || typeof summary !== 'object')
-            return false;
-        const s = summary as Record<string, unknown>;
+        if (!isRecord(summary)) return false;
+        const s = summary;
+        if (isAnalysisCronType(cronType) && isRecord(s.byStatus)) {
+            return typeof s.byStatus.error === 'number' && s.byStatus.error > 0;
+        }
+        if (cronType !== 'reconcile') return false;
         const alerts =
             (typeof s.consistencyAlerts === 'number' ? s.consistencyAlerts : 0) +
-            (typeof s.holdingsMismatches === 'number' ? s.holdingsMismatches : 0);
+            (typeof s.holdingsMismatches === 'number' ? s.holdingsMismatches : 0) +
+            (typeof s.brokerPollFailures === 'number' ? s.brokerPollFailures : 0) +
+            (typeof s.holdingsCheckFailed === 'number' ? s.holdingsCheckFailed : 0);
         return alerts > 0;
     } catch {
         return false;
     }
+}
+
+function analysisResults(summary: unknown) {
+    if (!isRecord(summary) || !Array.isArray(summary.results)) return [];
+    return summary.results.filter(isRecord).map((item) => ({
+        symbol: typeof item.symbol === 'string' ? item.symbol : '—',
+        status: typeof item.status === 'string' ? item.status : 'unknown',
+        error: typeof item.error === 'string' ? item.error : undefined,
+    }));
+}
+
+function AnalysisSummaryDetails({ summary }: { summary: unknown }) {
+    const results = analysisResults(summary);
+    if (results.length === 0) return null;
+
+    return (
+        <div className="border-b border-[#262626] px-4 py-2.5">
+            <ul className="space-y-1.5">
+                {results.map((result) => (
+                    <li key={`${result.symbol}-${result.status}`} className="text-[11px]">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs text-[#fafafa]">
+                                {result.symbol}
+                            </span>
+                            <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${actionChipClass(result.status)}`}
+                            >
+                                {result.status}
+                            </span>
+                        </div>
+                        {result.error && (
+                            <p className="mt-0.5 line-clamp-2 text-neutral-500">{result.error}</p>
+                        )}
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
 }
 
 // ─── DecisionsList ────────────────────────────────────────────────────────────
@@ -297,6 +358,11 @@ function DecisionsList({ runId }: { runId: string }) {
                             {decision.reason}
                         </p>
                     )}
+                    {decision.detail != null && (
+                        <pre className="max-h-28 overflow-auto rounded border border-[#262626] bg-[#0a0a0a] p-2 text-[10px] leading-relaxed text-neutral-500">
+                            {JSON.stringify(decision.detail, null, 2)}
+                        </pre>
+                    )}
                 </li>
             ))}
         </ul>
@@ -366,6 +432,9 @@ function RunRow({ run }: { run: CronRun }) {
             {/* Drill-down */}
             {expanded && (
                 <div className="border-t border-[#262626]">
+                    {isAnalysisCronType(run.cronType) && (
+                        <AnalysisSummaryDetails summary={run.summary} />
+                    )}
                     <DecisionsList runId={run.runId} />
                 </div>
             )}

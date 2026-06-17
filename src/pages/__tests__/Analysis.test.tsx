@@ -1,5 +1,4 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { AnalysisPage } from '../Analysis';
@@ -174,9 +173,9 @@ describe('AnalysisPage', () => {
         expect(listItem).toHaveClass('border-yellow-500/30');
     });
 
-    // --- Re-analysis trigger tests ---
+    // --- Re-analysis trigger visibility ---
 
-    it('shows re-analysis button for each symbol group', async () => {
+    it('hides re-analysis buttons for symbol groups', async () => {
         mockedApi.getAnalysis.mockResolvedValue([
             {
                 id: 1,
@@ -197,14 +196,14 @@ describe('AnalysisPage', () => {
         renderWithQuery(<AnalysisPage />);
 
         await waitFor(() => {
-            expect(screen.getByLabelText('AAPL 재분석')).toBeInTheDocument();
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        expect(screen.getByLabelText('TSLA 재분석')).toBeInTheDocument();
+        expect(screen.queryByLabelText('AAPL 재분석')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('TSLA 재분석')).not.toBeInTheDocument();
     });
 
-    it('calls triggerAnalysis API when re-analysis button is clicked', async () => {
-        const user = userEvent.setup();
+    it('does not call triggerAnalysis from the analysis page', async () => {
         mockedApi.getAnalysis.mockResolvedValue([
             {
                 id: 1,
@@ -214,43 +213,13 @@ describe('AnalysisPage', () => {
                 createdAt: new Date().toISOString(),
             },
         ]);
-        mockedApi.triggerAnalysis.mockResolvedValue(undefined);
-
         renderWithQuery(<AnalysisPage />);
 
         await waitFor(() => {
-            expect(screen.getByLabelText('AAPL 재분석')).toBeInTheDocument();
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
         });
 
-        await user.click(screen.getByLabelText('AAPL 재분석'));
-
-        expect(mockedApi.triggerAnalysis).toHaveBeenCalledWith('AAPL');
-    });
-
-    it('shows loading state on re-analysis button while mutation is pending', async () => {
-        const user = userEvent.setup();
-        mockedApi.getAnalysis.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                analysisType: 'technical',
-                result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date().toISOString(),
-            },
-        ]);
-        mockedApi.triggerAnalysis.mockReturnValue(new Promise(() => {}));
-
-        renderWithQuery(<AnalysisPage />);
-
-        await waitFor(() => {
-            expect(screen.getByLabelText('AAPL 재분석')).toBeInTheDocument();
-        });
-
-        await user.click(screen.getByLabelText('AAPL 재분석'));
-
-        await waitFor(() => {
-            expect(screen.getByText('분석 중...')).toBeInTheDocument();
-        });
+        expect(mockedApi.triggerAnalysis).not.toHaveBeenCalled();
     });
 
     // --- Signal extraction tests ---

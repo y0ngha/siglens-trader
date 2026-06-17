@@ -84,18 +84,33 @@ async function handler(req: Request): Promise<Response> {
             return Response.json({ error: 'trading is disabled (kill switch)' }, { status: 409 });
         }
 
-        // Determine trading mode and attempt real execution when applicable
+        // Determine trading mode and attempt real execution when applicable.
+        // dry_run keeps the existing simulated approval behavior; semi_auto and auto both
+        // place a real Toss order after explicit user approval.
         let filledPrice = price;
         let actualQuantity = order.quantity;
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+        const shouldPlaceLiveOrder = tradingMode === 'semi_auto' || tradingMode === 'auto';
 
         // Facade-order idempotency key (== Toss clientOrderId) for the auto path.
         // Threaded onto the booked trade so reconcile can match by client_order_id.
-        // Only meaningful in 'auto' mode (a real Toss order was placed); undefined otherwise.
+        // Only meaningful when a real Toss order was placed; undefined otherwise.
         const idempotencyKey = `approve-${id}`;
-        const bookingClientOrderId = tradingMode === 'auto' ? idempotencyKey : undefined;
+        const bookingClientOrderId = shouldPlaceLiveOrder ? idempotencyKey : undefined;
+        let filledTossOrderId: string | undefined;
+        const bookedMode = shouldPlaceLiveOrder ? tradingMode : 'semi_auto';
 
-        if (tradingMode === 'auto') {
+        const markFilledInTracking = async (tx: Parameters<typeof updateOrderTracking>[0]) => {
+            if (!shouldPlaceLiveOrder) return;
+            await updateOrderTracking(tx, idempotencyKey, {
+                tossOrderId: filledTossOrderId,
+                status: 'filled',
+                filledPrice,
+                resolvedAt: new Date(),
+            });
+        };
+
+        if (shouldPlaceLiveOrder) {
             try {
                 await createOrderTracking(db, {
                     idempotencyKey,
@@ -109,17 +124,13 @@ async function handler(req: Request): Promise<Response> {
                 const orderFn = order.side === 'buy' ? executeBuyOrder : executeSellOrder;
                 const result = await orderFn(order.symbol, order.quantity, idempotencyKey);
 
-                await updateOrderTracking(db, idempotencyKey, {
-                    tossOrderId: result.orderId || undefined,
-                    status: result.status,
-                    filledPrice: result.avgFilledPrice ?? undefined,
-                    resolvedAt:
-                        result.status === 'pending' || result.status === 'partial'
-                            ? undefined
-                            : new Date(),
-                });
-
                 if (result.status === 'rejected' || result.status === 'canceled') {
+                    await updateOrderTracking(db, idempotencyKey, {
+                        tossOrderId: result.orderId || undefined,
+                        status: result.status,
+                        filledPrice: result.avgFilledPrice ?? undefined,
+                        resolvedAt: new Date(),
+                    });
                     await revertPendingOrder(db, id).catch(() => {});
                     return Response.json(
                         { error: `Order ${result.status}: ${result.rejectReason ?? 'unknown'}` },
@@ -127,6 +138,12 @@ async function handler(req: Request): Promise<Response> {
                     );
                 }
                 if (result.status === 'pending' || result.status === 'partial') {
+                    await updateOrderTracking(db, idempotencyKey, {
+                        tossOrderId: result.orderId || undefined,
+                        status: result.status,
+                        filledPrice: result.avgFilledPrice ?? undefined,
+                        resolvedAt: undefined,
+                    });
                     // 접수됐으나 미확정 — 거래는 reconcile cron이 확정/기록. 여기서는 기록하지 않음.
                     const msg =
                         result.status === 'partial'
@@ -165,6 +182,7 @@ async function handler(req: Request): Promise<Response> {
                 }
                 filledPrice = result.avgFilledPrice!; // non-null: cleanFullFill requires avgFilledPrice != null
                 actualQuantity = order.quantity; // integer, == filledQ
+                filledTossOrderId = result.orderId || undefined;
             } catch (err) {
                 // Toss API failed — mark order tracking as error and revert pending status
                 await updateOrderTracking(db, idempotencyKey, {
@@ -203,7 +221,7 @@ async function handler(req: Request): Promise<Response> {
                         reason: existingPos
                             ? `${order.analysisSummary ?? '수동 승인'} (기존 포지션에 추가)`
                             : (order.analysisSummary ?? '수동 승인'),
-                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                        mode: bookedMode,
                         clientOrderId: bookingClientOrderId,
                     });
                     if (existingPos) {
@@ -216,21 +234,25 @@ async function handler(req: Request): Promise<Response> {
                             avgPrice: filledPrice,
                         });
                     }
+                    await markFilledInTracking(tx);
                 });
             } else if (order.side === 'sell') {
                 const pos = await getOpenPositionBySymbol(db, order.symbol);
                 if (!pos) {
                     // No position to sell — record trade but warn
-                    await insertTrade(db, {
-                        symbol: order.symbol,
-                        side: 'sell',
-                        orderType: 'market',
-                        quantity: actualQuantity,
-                        price: filledPrice,
-                        executedAt: new Date(),
-                        reason: `${order.analysisSummary ?? '수동 승인'} (포지션 미확인 — 수동 확인 필요)`,
-                        mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
-                        clientOrderId: bookingClientOrderId,
+                    await db.transaction(async (tx) => {
+                        await insertTrade(tx, {
+                            symbol: order.symbol,
+                            side: 'sell',
+                            orderType: 'market',
+                            quantity: actualQuantity,
+                            price: filledPrice,
+                            executedAt: new Date(),
+                            reason: `${order.analysisSummary ?? '수동 승인'} (포지션 미확인 — 수동 확인 필요)`,
+                            mode: bookedMode,
+                            clientOrderId: bookingClientOrderId,
+                        });
+                        await markFilledInTracking(tx);
                     });
                     await sendErrorEmail(
                         `포지션 미확인 매도: ${order.symbol}`,
@@ -249,7 +271,7 @@ async function handler(req: Request): Promise<Response> {
                             price: filledPrice,
                             executedAt: new Date(),
                             reason: order.analysisSummary ?? '수동 승인',
-                            mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                            mode: bookedMode,
                             clientOrderId: bookingClientOrderId,
                             realizedPnl: realizedPnlForSell(
                                 filledPrice,
@@ -257,6 +279,7 @@ async function handler(req: Request): Promise<Response> {
                                 actualQuantity,
                             ),
                         });
+                        await markFilledInTracking(tx);
                     });
                 } else {
                     // Partial close
@@ -270,7 +293,7 @@ async function handler(req: Request): Promise<Response> {
                             price: filledPrice,
                             executedAt: new Date(),
                             reason: `${order.analysisSummary ?? '수동 승인'} (부분 매도)`,
-                            mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
+                            mode: bookedMode,
                             clientOrderId: bookingClientOrderId,
                             realizedPnl: realizedPnlForSell(
                                 filledPrice,
@@ -278,19 +301,23 @@ async function handler(req: Request): Promise<Response> {
                                 actualQuantity,
                             ),
                         });
+                        await markFilledInTracking(tx);
                     });
                 }
             } else {
-                await insertTrade(db, {
-                    symbol: order.symbol,
-                    side: order.side,
-                    orderType: 'market',
-                    quantity: actualQuantity,
-                    price: filledPrice,
-                    executedAt: new Date(),
-                    reason: order.analysisSummary ?? '수동 승인',
-                    mode: tradingMode === 'auto' ? 'auto' : 'semi_auto',
-                    clientOrderId: bookingClientOrderId,
+                await db.transaction(async (tx) => {
+                    await insertTrade(tx, {
+                        symbol: order.symbol,
+                        side: order.side,
+                        orderType: 'market',
+                        quantity: actualQuantity,
+                        price: filledPrice,
+                        executedAt: new Date(),
+                        reason: order.analysisSummary ?? '수동 승인',
+                        mode: bookedMode,
+                        clientOrderId: bookingClientOrderId,
+                    });
+                    await markFilledInTracking(tx);
                 });
             }
         } catch (err) {

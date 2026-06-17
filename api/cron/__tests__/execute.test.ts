@@ -1967,6 +1967,51 @@ describe('execute cron handler', () => {
                 }),
             );
         });
+
+        it('includes existing in-flight buy orders in currentExposure', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                {
+                    symbol: 'MSFT',
+                    side: 'buy',
+                    status: 'pending',
+                    quantity: 4,
+                },
+            ]);
+            mockFetchLivePriceDetail.mockImplementation(async (symbol: string) => ({
+                source: 'fmp_quote',
+                price: symbol === 'MSFT' ? 150 : null,
+                reason: symbol === 'MSFT' ? undefined : 'request_failed',
+                error: symbol === 'MSFT' ? undefined : 'mock no live price',
+            }));
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+
+            await handler(makeRequest(true));
+
+            expect(mockGetPendingSubmittedOrders).toHaveBeenCalled();
+            expect(mockFetchLivePriceDetail).toHaveBeenCalledWith('MSFT');
+            expect(mockCalculatePositionSize).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    currentExposure: 600,
+                }),
+            );
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({
+                    summary: expect.objectContaining({
+                        pendingBuyExposure: 600,
+                        pendingBuyExposureMissingPrice: [],
+                    }),
+                }),
+            );
+        });
     });
 
     // -----------------------------------------------------------------------
@@ -4612,7 +4657,7 @@ describe('execute cron handler', () => {
             expect(mockInsertTrade).toHaveBeenCalled();
         });
 
-        it('proceeds (fail-open) when isUsMarketOpen throws in auto mode', async () => {
+        it('skips fail-closed when isUsMarketOpen throws in auto mode', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 return Promise.resolve(null);
@@ -4632,9 +4677,16 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            // catch(() => true) → fall back to time-based behavior, order placed
-            expect(body.skipped).not.toBe(true);
-            expect(mockExecuteBuyOrder).toHaveBeenCalled();
+            expect(body).toEqual({
+                skipped: true,
+                reason: 'market_status_unavailable',
+                error: 'calendar down',
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '미국장 상태 조회 실패',
+                expect.stringContaining('calendar down'),
+            );
         });
     });
 

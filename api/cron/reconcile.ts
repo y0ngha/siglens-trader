@@ -42,7 +42,13 @@ async function handler(req: Request): Promise<Response> {
     await safe(startCronRun(db, { runId, cronType: 'reconcile', startedAt }));
 
     let finishState: CronRunFinish | null = null;
-    const results: Array<{ id: number; symbol: string; action: string }> = [];
+    const results: Array<{
+        id?: number;
+        symbol?: string;
+        action: string;
+        reason?: string;
+        detail?: unknown;
+    }> = [];
 
     const LOCK_KEY = 'cron:reconcile:lock';
     // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
@@ -68,7 +74,11 @@ async function handler(req: Request): Promise<Response> {
 
         // Marks an order as timed out and emails an alert (urgent for sells).
         // Used both for orders with no broker id and when getOrder polling fails.
-        const timeoutOrder = async (order: (typeof submitted)[number], age: number) => {
+        const timeoutOrder = async (
+            order: (typeof submitted)[number],
+            age: number,
+            detail?: unknown,
+        ) => {
             await updateOrderTracking(db, order.idempotencyKey, {
                 status: 'timeout',
                 resolvedAt: new Date(),
@@ -84,8 +94,12 @@ async function handler(req: Request): Promise<Response> {
                 : `${order.symbol} ${order.side} ${order.quantity}주 주문이 ${Math.round(age / 60000)}분째 미체결 상태입니다. 수동 확인이 필요합니다.\nIdempotency Key: ${order.idempotencyKey}`;
 
             await notifyError(subject, body);
-            results.push({ id: order.id, symbol: order.symbol, action: 'timeout' });
+            results.push({ id: order.id, symbol: order.symbol, action: 'timeout', detail });
         };
+
+        let brokerPollFailures = 0;
+        let holdingsCheckFailed = 0;
+        let holdingsError: string | undefined;
 
         // Order resolution loop: broker-polling calls are skipped in dry_run — no real
         // orders are created, so tossOrderId rows won't exist and polling the live
@@ -95,12 +109,22 @@ async function handler(req: Request): Promise<Response> {
         for (const order of submitted) {
             const age = Date.now() - new Date(order.submittedAt).getTime();
             const isTimedOut = age > SUBMITTED_TIMEOUT_MS;
+            let brokerPollError: string | undefined;
 
             // First, try to resolve the order via the broker. Only fall back to
             // the age-based timeout path when there is no broker id or polling fails.
             // Skipped in dry_run: no real orders, no broker coupling.
             if (order.tossOrderId && tradingMode !== 'dry_run') {
-                const detail = await getOrder(order.tossOrderId).catch(() => null);
+                const detail = await getOrder(order.tossOrderId).catch((err) => {
+                    brokerPollFailures++;
+                    brokerPollError = err instanceof Error ? err.message : String(err);
+                    console.warn('[reconcile] broker order polling failed', {
+                        orderId: order.tossOrderId,
+                        symbol: order.symbol,
+                        error: brokerPollError,
+                    });
+                    return null;
+                });
                 if (detail) {
                     if (detail.status === 'FILLED') {
                         // Only auto-book a CLEAN FULL FILL: broker filled qty is a whole
@@ -240,9 +264,37 @@ async function handler(req: Request): Promise<Response> {
 
             // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.
             if (isTimedOut) {
-                await timeoutOrder(order, age);
+                await timeoutOrder(
+                    order,
+                    age,
+                    brokerPollError
+                        ? {
+                              brokerPoll: {
+                                  status: 'failed',
+                                  orderId: order.tossOrderId,
+                                  error: brokerPollError,
+                              },
+                          }
+                        : undefined,
+                );
             } else {
-                results.push({ id: order.id, symbol: order.symbol, action: 'waiting' });
+                results.push({
+                    id: order.id,
+                    symbol: order.symbol,
+                    action: 'waiting',
+                    ...(brokerPollError
+                        ? {
+                              reason: 'broker_poll_failed',
+                              detail: {
+                                  brokerPoll: {
+                                      status: 'failed',
+                                      orderId: order.tossOrderId,
+                                      error: brokerPollError,
+                                  },
+                              },
+                          }
+                        : {}),
+                });
             }
         }
 
@@ -271,7 +323,12 @@ async function handler(req: Request): Promise<Response> {
         // would cause constant false-positive "broker holding without DB position" alerts.
         let holdingsMismatchCount = 0;
         if (tradingMode !== 'dry_run') {
-            const holdings = await getHoldings().catch(() => null);
+            const holdings = await getHoldings().catch((err) => {
+                holdingsCheckFailed = 1;
+                holdingsError = err instanceof Error ? err.message : String(err);
+                console.warn('[reconcile] holdings check failed', { error: holdingsError });
+                return null;
+            });
             if (holdings) {
                 const usHoldings = holdings.filter(
                     (h) => h.currency === 'USD' || h.marketCountry === 'US',
@@ -324,6 +381,9 @@ async function handler(req: Request): Promise<Response> {
                 recoveryFailed: recovery.failed,
                 consistencyAlerts: consistency.alerts.length,
                 holdingsMismatches: holdingsMismatchCount,
+                brokerPollFailures,
+                holdingsCheckFailed,
+                ...(holdingsError ? { holdingsError } : {}),
                 actionsByType,
             },
             ...elapsed(),
@@ -341,6 +401,10 @@ async function handler(req: Request): Promise<Response> {
             },
             holdings: {
                 mismatchCount: holdingsMismatchCount,
+                ...(holdingsCheckFailed > 0 ? { checkFailed: true } : {}),
+            },
+            brokerPoll: {
+                failureCount: brokerPollFailures,
             },
         });
     } catch (e) {
@@ -359,7 +423,12 @@ async function handler(req: Request): Promise<Response> {
                     db,
                     runId,
                     'reconcile',
-                    results.map((r) => ({ symbol: r.symbol, action: r.action })),
+                    results.map((r) => ({
+                        symbol: r.symbol,
+                        action: r.action,
+                        reason: r.reason,
+                        detail: r.detail,
+                    })),
                 ),
             );
         }

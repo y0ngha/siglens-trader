@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/Badge';
 import { EmptyState } from '@/components/EmptyState';
@@ -86,16 +86,9 @@ function getLatestDate(entries: AnalysisEntry[]): string {
 }
 
 export function AnalysisPage() {
-    const queryClient = useQueryClient();
-
     const { data, isLoading, error } = useQuery({
         queryKey: ['analysis'],
         queryFn: ({ signal }) => api.getAnalysis(undefined, signal) as Promise<AnalysisEntry[]>,
-    });
-
-    const triggerMutation = useMutation({
-        mutationFn: (symbol: string) => api.triggerAnalysis(symbol),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['analysis'] }),
     });
 
     if (isLoading) return <LoadingSkeleton />;
@@ -131,18 +124,6 @@ export function AnalysisPage() {
                                         </span>
                                     )}
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => triggerMutation.mutate(symbol)}
-                                    disabled={triggerMutation.isPending}
-                                    className="min-h-[44px] rounded-md border border-[#262626] px-2.5 py-1 text-xs text-neutral-400 transition-colors hover:border-neutral-500 hover:text-neutral-200 active:bg-[#262626] disabled:opacity-50"
-                                    aria-label={`${symbol} 재분석`}
-                                >
-                                    {triggerMutation.isPending &&
-                                    triggerMutation.variables === symbol
-                                        ? '분석 중...'
-                                        : '재분석'}
-                                </button>
                             </div>
                             <ul className="mt-2 space-y-1.5">
                                 {entries.map((entry) => {

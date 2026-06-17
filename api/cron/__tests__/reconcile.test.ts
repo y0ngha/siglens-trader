@@ -759,7 +759,20 @@ describe('reconcile cron handler', () => {
                 status: 'timeout',
                 resolvedAt: expect.any(Date),
             });
-            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+            expect(body.results).toEqual([
+                {
+                    id: 1,
+                    symbol: 'AAPL',
+                    action: 'timeout',
+                    detail: {
+                        brokerPoll: {
+                            status: 'failed',
+                            orderId: 'toss-1',
+                            error: 'broker down',
+                        },
+                    },
+                },
+            ]);
         });
 
         it('order with no tossOrderId past window → timeout (existing path), getOrder not called', async () => {
@@ -929,7 +942,7 @@ describe('reconcile cron handler', () => {
             const body = await res.json();
 
             expect(mockGetOpenPositions).not.toHaveBeenCalled();
-            expect(body.holdings).toEqual({ mismatchCount: 0 });
+            expect(body.holdings).toEqual({ mismatchCount: 0, checkFailed: true });
         });
 
         it('non-US holding (KRW/KR) with no DB position → NOT treated as mismatch (filtered out)', async () => {

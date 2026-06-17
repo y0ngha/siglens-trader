@@ -568,6 +568,7 @@ export type CronOutcome =
     | 'empty_watchlist'
     | 'locked'
     | 'disabled'
+    | 'market_status_unavailable'
     | 'daily_trade_limit'
     | 'daily_loss_limit';
 

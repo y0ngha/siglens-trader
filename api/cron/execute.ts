@@ -265,7 +265,26 @@ async function handler(req: Request): Promise<Response> {
             // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
             // gated by wall-clock at entry; this catches holidays the static schedule misses.
             if (tradingMode !== 'dry_run') {
-                const marketOpen = await isUsMarketOpen().catch(() => true); // 조회 실패 시 기존 시간기반 동작 유지
+                let marketOpen: boolean;
+                try {
+                    marketOpen = await isUsMarketOpen();
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    await notifyError(
+                        '미국장 상태 조회 실패',
+                        `브로커 시장 캘린더 조회에 실패하여 ${tradingMode} 주문 실행을 건너뜁니다.\n오류: ${message}`,
+                    );
+                    finishState = {
+                        status: 'skipped',
+                        outcome: 'market_status_unavailable',
+                        ...elapsed(),
+                    };
+                    return Response.json({
+                        skipped: true,
+                        reason: 'market_status_unavailable',
+                        error: message,
+                    });
+                }
                 if (!marketOpen) {
                     finishState = {
                         status: 'skipped',
@@ -281,6 +300,7 @@ async function handler(req: Request): Promise<Response> {
             // Calculate current exposure using current market prices when available,
             // falling back to avgPrice when no analysis data exists.
             const openPositions = await getOpenPositions(db);
+            const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
 
             if (watchlistItems.length === 0 && openPositions.length === 0) {
                 finishState = { status: 'skipped', outcome: 'empty_watchlist', ...elapsed() };
@@ -320,6 +340,7 @@ async function handler(req: Request): Promise<Response> {
             const allSymbols = new Set<string>();
             for (const p of openPositions) allSymbols.add(p.symbol);
             for (const w of watchlistItems) allSymbols.add(w.symbol);
+            for (const order of pendingSubmittedOrders) allSymbols.add(order.symbol);
             for (const sym of allSymbols) {
                 const detail = await fetchLivePriceDetail(sym).catch((err) => ({
                     source: 'fmp_quote' as const,
@@ -334,6 +355,38 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
+            let pendingBuyExposure = 0;
+            const pendingBuyExposureMissingPrice: string[] = [];
+            for (const order of pendingSubmittedOrders) {
+                if (
+                    order.side !== 'buy' ||
+                    !['submitted', 'pending', 'partial'].includes(order.status)
+                ) {
+                    continue;
+                }
+
+                let priceForPending = priceCache.get(order.symbol) ?? 0;
+                if (priceForPending <= 0) {
+                    try {
+                        const techForPending = await getLatestAnalysisResult(
+                            db,
+                            order.symbol,
+                            'technical',
+                        );
+                        priceForPending = safeAnalysisPrice(techForPending?.result);
+                    } catch {
+                        priceForPending = 0;
+                    }
+                }
+
+                if (priceForPending > 0) {
+                    pendingBuyExposure += priceForPending * order.quantity;
+                } else {
+                    pendingBuyExposureMissingPrice.push(order.symbol);
+                }
+            }
+            currentExposure += pendingBuyExposure;
+
             // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
             // null => fetch failed — fail CLOSED: all buy orders are skipped until the next run.
             const usdBuyingPower =
@@ -342,9 +395,6 @@ async function handler(req: Request): Promise<Response> {
             // buys in one run don't all authorize against the same un-decremented cash.
             // null => guard disabled. Reconcile/next-run corrects against broker reality.
             let remainingBuyingPower: number | null = usdBuyingPower;
-
-            // Fetch pending submitted orders once for sell-guard checks
-            const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
 
             // --- Position re-evaluation ---
             for (const position of openPositions) {
@@ -767,6 +817,7 @@ async function handler(req: Request): Promise<Response> {
                 }
                 currentExposure += priceForRecalc * p.quantity;
             }
+            currentExposure += pendingBuyExposure;
 
             for (const item of watchlistItems) {
                 try {
@@ -1622,6 +1673,8 @@ async function handler(req: Request): Promise<Response> {
                 summary: {
                     symbolsEvaluated: decisions.length,
                     decisionsByAction,
+                    pendingBuyExposure,
+                    pendingBuyExposureMissingPrice,
                 },
                 ...elapsed(),
             };
