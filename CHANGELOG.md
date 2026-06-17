@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.7.0](https://github.com/y0ngha/siglens-trader/compare/v0.6.0...v0.7.0) (2026-06-17)
+
+
+### Features
+
+* 오류 로그 더 상세히 남기도록 수정 ([18081ab](https://github.com/y0ngha/siglens-trader/commit/18081ab91ff4ace64fbe6d5bf2c1f150d5279893))
+
 # [0.6.0](https://github.com/y0ngha/siglens-trader/compare/v0.5.0...v0.6.0) (2026-06-16)
 
 
