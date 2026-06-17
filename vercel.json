@@ -10,7 +10,8 @@
     "framework": "vite",
     "functions": {
         "api/**/*.ts": {
-            "maxDuration": 800
+            "maxDuration": 800,
+            "includeFiles": "skills/**"
         }
     },
     "crons": [
