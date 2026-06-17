@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.8.0](https://github.com/y0ngha/siglens-trader/compare/v0.7.0...v0.8.0) (2026-06-17)
+
+
+### Features
+
+* 운영 효율화 ([43e3dde](https://github.com/y0ngha/siglens-trader/commit/43e3dde1056ffc5ed67d4ba57f8b52e13b476533))
+
 # [0.7.0](https://github.com/y0ngha/siglens-trader/compare/v0.6.0...v0.7.0) (2026-06-17)
 
 
