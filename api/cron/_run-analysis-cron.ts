@@ -17,6 +17,7 @@ import type {
     NewsCardStore,
     RunAnalysisOptions,
 } from '../../lib/analysis/types.js';
+import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
@@ -113,12 +114,14 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     });
 
                     if (result.status === 'done' || result.status === 'cached') {
+                        const savedAt = new Date();
                         await saveAnalysisResult(db, {
                             symbol: item.symbol,
                             analysisType,
                             result: result.result,
                             modelId: config.modelId,
-                            analyzedAt: new Date(),
+                            analyzedAt: savedAt,
+                            sourceAnalyzedAt: extractSourceAnalyzedAt(result.result, savedAt),
                             cronRunId,
                         });
                     }

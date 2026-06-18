@@ -190,7 +190,10 @@ describe('createAnalysisCronHandler', () => {
 
     it('runs analysis for each watchlist item and saves successful results', async () => {
         mockRunner
-            .mockResolvedValueOnce({ status: 'done', result: { trend: 'bullish' } })
+            .mockResolvedValueOnce({
+                status: 'done',
+                result: { trend: 'bullish', analyzedAt: '2026-05-24T09:55:00Z' },
+            })
             .mockResolvedValueOnce({ status: 'cached', result: { trend: 'bearish' } });
 
         const res = await handler(makeRequest(true));
@@ -207,9 +210,19 @@ describe('createAnalysisCronHandler', () => {
         expect(mockSaveAnalysisResult).toHaveBeenCalledWith(fakeDb, {
             symbol: 'AAPL',
             analysisType: 'technical',
-            result: { trend: 'bullish' },
+            result: { trend: 'bullish', analyzedAt: '2026-05-24T09:55:00Z' },
             modelId: 'claude-sonnet-4-20250514',
             analyzedAt: new Date('2026-05-24T10:00:00.000Z'),
+            sourceAnalyzedAt: new Date('2026-05-24T09:55:00.000Z'),
+            cronRunId: expect.stringMatching(/^technical-/),
+        });
+        expect(mockSaveAnalysisResult).toHaveBeenCalledWith(fakeDb, {
+            symbol: 'TSLA',
+            analysisType: 'technical',
+            result: { trend: 'bearish' },
+            modelId: 'claude-sonnet-4-20250514',
+            analyzedAt: new Date('2026-05-24T10:00:00.000Z'),
+            sourceAnalyzedAt: new Date('2026-05-24T10:00:00.000Z'),
             cronRunId: expect.stringMatching(/^technical-/),
         });
     });

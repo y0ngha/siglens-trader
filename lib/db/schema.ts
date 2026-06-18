@@ -38,6 +38,7 @@ export const analysisResults = pgTable(
         result: jsonb('result').notNull(),
         modelId: text('model_id').notNull(),
         analyzedAt: timestamp('analyzed_at', { withTimezone: true }).notNull(),
+        sourceAnalyzedAt: timestamp('source_analyzed_at', { withTimezone: true }),
         cronRunId: text('cron_run_id'),
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     },

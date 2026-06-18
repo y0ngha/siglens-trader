@@ -401,6 +401,7 @@ describe('Analysis results queries', () => {
                 result: { score: 85 },
                 modelId: 'claude-4',
                 analyzedAt: new Date('2026-01-15'),
+                sourceAnalyzedAt: new Date('2026-01-15T01:23:45Z'),
                 cronRunId: 'run-123',
             };
             const mockReturned = [{ id: 1, ...params }];

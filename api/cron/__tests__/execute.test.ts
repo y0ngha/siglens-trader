@@ -1816,7 +1816,10 @@ describe('execute cron handler', () => {
                 modelId: 'claude-sonnet-4-20250514',
                 useByok: true,
             });
-            const fakeOverallResult = { integratedConclusionKo: '매수 추천' };
+            const fakeOverallResult = {
+                integratedConclusionKo: '매수 추천',
+                analyzedAt: '2026-05-24T14:25:00.123Z',
+            };
             mockRunOverallAnalysis.mockResolvedValue({
                 status: 'done',
                 result: fakeOverallResult,
@@ -1838,16 +1841,49 @@ describe('execute cron handler', () => {
                     analysisType: 'overall',
                     result: fakeOverallResult,
                     modelId: 'claude-sonnet-4-20250514',
+                    analyzedAt: new Date('2026-05-24T14:30:00.000Z'),
+                    sourceAnalyzedAt: new Date('2026-05-24T14:25:00.123Z'),
                 }),
             );
 
             // Score signals should receive the overall result
             expect(mockScoreSignals).toHaveBeenCalledWith(
-                expect.objectContaining({ overall: fakeOverallResult }),
+                expect.objectContaining({
+                    overall: expect.objectContaining({
+                        integratedConclusionKo: fakeOverallResult.integratedConclusionKo,
+                    }),
+                }),
                 expect.any(Object),
                 expect.any(Number),
                 expect.any(Number),
             );
+        });
+
+        it.each([
+            ['missing', { integratedConclusionKo: '매수 추천' }],
+            [
+                'invalid',
+                {
+                    integratedConclusionKo: '매수 추천',
+                    analyzedAt: '2026-02-30T00:00:00Z',
+                },
+            ],
+        ])('falls back to the saved time for %s overall analyzedAt', async (_, result) => {
+            mockGetAnalysisConfig.mockResolvedValue({
+                enabled: true,
+                modelId: 'claude-sonnet-4-20250514',
+                useByok: false,
+            });
+            mockRunOverallAnalysis.mockResolvedValue({ status: 'done', result });
+
+            await handler(makeRequest(true));
+
+            const saved = mockSaveAnalysisResult.mock.calls[0]?.[1] as {
+                analyzedAt: Date;
+                sourceAnalyzedAt: Date;
+            };
+            expect(saved.analyzedAt).toEqual(new Date('2026-05-24T14:30:00.000Z'));
+            expect(saved.sourceAnalyzedAt).toBe(saved.analyzedAt);
         });
 
         it('skips overall analysis when config has enabled:false', async () => {

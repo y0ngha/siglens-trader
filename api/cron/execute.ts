@@ -30,6 +30,7 @@ import {
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
+import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import {
     calculatePositionSize,
@@ -867,12 +868,14 @@ async function handler(req: Request): Promise<Response> {
                                 overallResult.status === 'cached'
                             ) {
                                 overall = overallResult.result;
+                                const savedAt = new Date();
                                 await saveAnalysisResult(db, {
                                     symbol: item.symbol,
                                     analysisType: 'overall',
                                     result: overall,
                                     modelId: overallConfig.modelId,
-                                    analyzedAt: new Date(),
+                                    analyzedAt: savedAt,
+                                    sourceAnalyzedAt: extractSourceAnalyzedAt(overall, savedAt),
                                     cronRunId,
                                 });
                             }

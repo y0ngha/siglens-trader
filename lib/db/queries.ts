@@ -132,6 +132,7 @@ export async function saveAnalysisResult(
         result: unknown;
         modelId: string;
         analyzedAt: Date;
+        sourceAnalyzedAt?: Date;
         cronRunId?: string;
     },
 ) {
