@@ -61,6 +61,11 @@ describe('seed', () => {
                 'useByok' in call[0],
         );
         expect(modelConfigCalls.length).toBe(4);
+        expect(
+            modelConfigCalls.every(
+                ([value]) => (value as { modelId?: unknown }).modelId === 'gemini-2.5-flash-lite',
+            ),
+        ).toBe(true);
     });
 
     it('inserts notification config', async () => {
@@ -143,6 +148,11 @@ describe('seed', () => {
         );
         // 5 symbols x 4 types = 20
         expect(analysisCalls.length).toBe(20);
+        expect(
+            analysisCalls.every(
+                ([value]) => (value as { modelId?: unknown }).modelId === 'gemini-2.5-flash-lite',
+            ),
+        ).toBe(true);
     });
 
     it('inserts mock pending orders', async () => {

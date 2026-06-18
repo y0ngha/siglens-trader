@@ -65,4 +65,13 @@ describe('0010 cron analysis reliability migration', () => {
     it('inserts analysis model config rows idempotently', () => {
         expect(sql).toContain(`ON CONFLICT ("analysis_type") DO NOTHING`);
     });
+
+    it('uses Flash Lite for fresh database analysis configs', () => {
+        expect(sql.match(/'gemini-2\.5-flash-lite'/g)).toHaveLength(4);
+    });
+
+    it('does not overwrite existing analysis model configs', () => {
+        expect(sql).toContain(`ON CONFLICT ("analysis_type") DO NOTHING`);
+        expect(sql).not.toMatch(/UPDATE\s+"analysis_model_config"/i);
+    });
 });

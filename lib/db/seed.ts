@@ -46,10 +46,30 @@ export async function seed() {
 
     console.log('Seeding analysis model configs...');
     const models = [
-        { analysisType: 'technical', modelId: 'claude-opus-4-7', enabled: true, useByok: true },
-        { analysisType: 'news', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
-        { analysisType: 'options', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
-        { analysisType: 'fundamental', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
+        {
+            analysisType: 'technical',
+            modelId: 'gemini-2.5-flash-lite',
+            enabled: true,
+            useByok: true,
+        },
+        {
+            analysisType: 'news',
+            modelId: 'gemini-2.5-flash-lite',
+            enabled: true,
+            useByok: true,
+        },
+        {
+            analysisType: 'options',
+            modelId: 'gemini-2.5-flash-lite',
+            enabled: true,
+            useByok: true,
+        },
+        {
+            analysisType: 'fundamental',
+            modelId: 'gemini-2.5-flash-lite',
+            enabled: true,
+            useByok: true,
+        },
     ];
     for (const m of models) {
         await db
@@ -227,7 +247,7 @@ export async function seed() {
                 symbol,
                 analysisType: type,
                 result: generateMockAnalysisResult(type, symbol),
-                modelId: type === 'technical' ? 'claude-opus-4-7' : 'gemini-2.5-flash',
+                modelId: 'gemini-2.5-flash-lite',
                 analyzedAt: hoursAgo(1),
                 cronRunId: `${type}-mock`,
             });

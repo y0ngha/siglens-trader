@@ -21,8 +21,8 @@ WHERE "key" = 'analysis_timeframe'
 INSERT INTO "analysis_model_config"
     ("analysis_type", "enabled", "model_id", "use_byok")
 VALUES
-    ('technical', true, 'gemini-2.5-flash', false),
-    ('news', true, 'gemini-2.5-flash', false),
-    ('options', true, 'gemini-2.5-flash', false),
-    ('fundamental', true, 'gemini-2.5-flash', false)
+    ('technical', true, 'gemini-2.5-flash-lite', false),
+    ('news', true, 'gemini-2.5-flash-lite', false),
+    ('options', true, 'gemini-2.5-flash-lite', false),
+    ('fundamental', true, 'gemini-2.5-flash-lite', false)
 ON CONFLICT ("analysis_type") DO NOTHING;
