@@ -77,12 +77,15 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
    - Skip positions with pending sell in-flight
    - Track stop-loss closures for cooldown
 7. Recalculate exposure after any closures (using market prices)
-8. Score signals for watchlist symbols (runs overall analysis if stale >2h)
+8. Score signals for watchlist symbols
+   - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
+   - Runs overall analysis if stale >2h
 9. Make trade decisions (buy/sell/hold/average_in)
    - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
    - Pending sell guard: skip sell if submitted sell order exists
    - Per-symbol exposure cap for average_in
    - Re-check kill switch before each trade
+   - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
 10. Execute per mode:
     - `dry_run` → DB transaction (trade + position atomically)
     - `semi_auto` → pending order + email notification
@@ -121,5 +124,6 @@ createOrderTracking(submitted) → API call → updateOrderTracking(filled/rejec
 - All errors caught per-symbol in execute cron — one failure doesn't stop the loop.
 - Position close uses atomic DB update (`WHERE status = 'open'`) — returns 409 on race condition.
 - Execute and reconcile crons use distributed locks (Redis SETNX) — concurrent invocations return `{ skipped: true }`.
+- Cron runs write a `cron_runs` audit row (`running` → `completed`/`skipped`/`error`). A row stuck in `running` past `CRON_STALE_AFTER_MS` (15 min) belongs to an invocation that timed out before writing its finish row; the next cron invocation finalizes it to `error`/`timeout` via `finalizeStaleCronRuns` (never deletes).
 - Trade + position mutations are wrapped in DB transactions for atomicity.
 - `health.ts` requires no authentication — designed for uptime monitoring services.

@@ -66,6 +66,8 @@ US 주식 자동매매 시스템. AI 분석 결과를 기반으로 매매 신호
 
 분석 로직과 프롬프트 빌딩은 [`@y0ngha/siglens-core`](https://github.com/y0ngha/siglens-core)에서 관리한다.
 
+기술적 분석의 봉 주기는 대시보드 설정 `analysis_timeframe`으로 조정한다. 허용 값은 `15Min` / `30Min` / `1Hour`이며 기본값은 `1Hour`이다. execute cron은 이 주기에 맞춰 분석 신선도(staleness)를 판단한다 (15Min→45분, 30Min→90분, 1Hour→2시간).
+
 ### 신호 가중치
 
 priority-weighted average (합 26):
