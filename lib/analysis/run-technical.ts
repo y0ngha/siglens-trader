@@ -2,12 +2,14 @@ import { submitAnalysis, pollAnalysis } from '@y0ngha/siglens-core';
 import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
 import { pollUntilDone } from './poll-until-done.js';
 import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
+import { DEFAULT_ANALYSIS_TIMEFRAME } from './timeframe.js';
 
 export async function runTechnicalAnalysis(
     options: RunAnalysisOptions,
 ): Promise<AnalysisRunResult> {
     try {
-        const timeframe = options.timeframe ?? '1Day';
+        // 미지정 시 분석 타임프레임 계약의 기본값(1Hour)으로. '1Day'는 계약 밖이라 금지.
+        const timeframe = options.timeframe ?? DEFAULT_ANALYSIS_TIMEFRAME;
         const submission = await submitAnalysis(
             options.symbol,
             options.companyName,

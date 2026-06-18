@@ -82,7 +82,7 @@ describe('runTechnicalAnalysis', () => {
 
         await runTechnicalAnalysis({ ...baseOptions, userApiKey: 'sk-123' });
 
-        expect(mockedSubmit).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Day', false, undefined, {
+        expect(mockedSubmit).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', false, undefined, {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,

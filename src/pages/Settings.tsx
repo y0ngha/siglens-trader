@@ -5,7 +5,17 @@ import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { TickerSearch } from '@/components/TickerSearch';
-import { normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe';
+
+// 서버의 analysis_timeframe 계약(15Min/30Min/1Hour, 기본 1Hour)을 프런트에서 미러링.
+// src/는 lib/(서버 코드)를 import하지 않으므로 클라이언트용 최소 정규화를 둔다.
+const ANALYSIS_TIMEFRAMES = ['15Min', '30Min', '1Hour'] as const;
+type AnalysisTimeframe = (typeof ANALYSIS_TIMEFRAMES)[number];
+const DEFAULT_ANALYSIS_TIMEFRAME: AnalysisTimeframe = '1Hour';
+function normalizeAnalysisTimeframe(value: unknown): AnalysisTimeframe {
+    return ANALYSIS_TIMEFRAMES.includes(value as AnalysisTimeframe)
+        ? (value as AnalysisTimeframe)
+        : DEFAULT_ANALYSIS_TIMEFRAME;
+}
 
 const MODELS = [
     'gemini-2.5-flash',
