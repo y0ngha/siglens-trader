@@ -672,8 +672,8 @@ const cronDecisions: CronDecisionFixture[] = [
         action: 'buy',
         executed: true,
         score: '78.2',
-        reason: '신호 78/100 — 매수 (기술:85, 뉴스:70, 옵션:75, 펀더멘털:65, 종합:72)',
-        detail: { technical: 85, news: 70, options: 75, fundamental: 65, overall: 72 },
+        reason: '신호 78/100 — 매수 (기술:85, 뉴스:70, 옵션:75, 펀더멘털:65)',
+        detail: { technical: 85, news: 70, options: 75, fundamental: 65 },
         createdAt: new Date(Date.now() - 49 * 60000 + 2000).toISOString(),
     },
     {
@@ -685,7 +685,7 @@ const cronDecisions: CronDecisionFixture[] = [
         executed: false,
         score: '55.1',
         reason: '신호 55/100 — 보류 (매수/매도 임계값 사이)',
-        detail: { technical: 60, news: 50, options: 55, fundamental: 52, overall: 54 },
+        detail: { technical: 60, news: 50, options: 55, fundamental: 52 },
         createdAt: new Date(Date.now() - 49 * 60000 + 3000).toISOString(),
     },
     {
@@ -697,7 +697,7 @@ const cronDecisions: CronDecisionFixture[] = [
         executed: false,
         score: '48.3',
         reason: '신호 48/100 — 보류 (매수/매도 임계값 사이)',
-        detail: { technical: 45, news: 52, options: 48, fundamental: 50, overall: 47 },
+        detail: { technical: 45, news: 52, options: 48, fundamental: 50 },
         createdAt: new Date(Date.now() - 49 * 60000 + 4000).toISOString(),
     },
     // Decisions for reconcile-20260611-1920 (timeout action)

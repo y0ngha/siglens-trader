@@ -9,7 +9,7 @@ INSERT INTO "config" ("key", "value") VALUES
 ('buy_threshold', '70'::jsonb),
 ('sell_threshold', '30'::jsonb),
 ('analysis_timeframe', '"1Hour"'::jsonb),
-('score_weights', '{"technical":8,"news":6,"options":5,"fundamental":4,"overall":3}'::jsonb),
+('score_weights', '{"technical":8,"news":6,"options":5,"fundamental":4}'::jsonb),
 ('fixed_exit_enabled', 'false'::jsonb),
 ('max_trades_per_day', '20'::jsonb),
 ('max_daily_loss_usd', '500'::jsonb)
@@ -24,6 +24,5 @@ VALUES
     ('technical', true, 'gemini-2.5-flash', false),
     ('news', true, 'gemini-2.5-flash', false),
     ('options', true, 'gemini-2.5-flash', false),
-    ('fundamental', true, 'gemini-2.5-flash', false),
-    ('overall', true, 'gemini-2.5-flash', false)
+    ('fundamental', true, 'gemini-2.5-flash', false)
 ON CONFLICT ("analysis_type") DO NOTHING;

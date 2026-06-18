@@ -14,7 +14,6 @@ describe('scoreSignals', () => {
                         signals: [{ type: 'bullish' }, { type: 'bullish' }, { type: 'bullish' }],
                     },
                     fundamental: { overallSentiment: 'bullish' },
-                    overall: { integratedConclusionKo: '강한 매수 신호입니다' },
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -40,7 +39,6 @@ describe('scoreSignals', () => {
                         signals: [{ type: 'bearish' }, { type: 'bearish' }, { type: 'bearish' }],
                     },
                     fundamental: { overallSentiment: 'bearish' },
-                    overall: { integratedConclusionKo: '강한 매도 신호입니다' },
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -64,7 +62,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'neutral' },
                     options: { signals: [{ type: 'bullish' }, { type: 'bearish' }] },
                     fundamental: { overallSentiment: 'neutral' },
-                    overall: { integratedConclusionKo: '관망이 적절합니다' },
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -85,7 +82,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -98,7 +94,6 @@ describe('scoreSignals', () => {
             expect(result.components.news).toBe(50);
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(50);
-            expect(result.components.overall).toBe(50);
         });
     });
 
@@ -110,21 +105,20 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: { overallSentiment: 'bullish' },
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // technical = 95, news = 50, options = 50, fundamental = 80, overall = 50
-            // weighted: (95*8 + 50*6 + 50*5 + 80*4 + 50*3) / 26 = 68 → hold (below 70)
+            // technical = 95, news = 50, options = 50, fundamental = 80
+            // weighted: (95*8 + 50*6 + 50*5 + 80*4) / 23 = 1630/23 = 70.9 → 71 → buy
             expect(result.components.technical).toBe(95);
             expect(result.components.news).toBe(50);
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(80);
-            expect(result.components.overall).toBe(50);
-            expect(result.signal).toBe('hold');
+            expect(result.total).toBe(71);
+            expect(result.signal).toBe('buy');
         });
 
         it('handles technical with missing fields', () => {
@@ -134,7 +128,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -149,9 +142,8 @@ describe('scoreSignals', () => {
     describe('boundary — buy threshold', () => {
         it('returns buy when score is exactly at buy threshold', () => {
             // We need to craft inputs that produce exactly 70
-            // With default weights: tech=40, news=20, options=20, fundamental=10, overall=10
-            // If we get components that weighted-average to exactly 70:
-            // tech=70, news=70, options=70, fundamental=70, overall=70 → total=70
+            // With default weights: tech=8, news=6, options=5, fundamental=4 (sum 23)
+            // If every component weighted-averages to ~70 the total is ~70
             const result = scoreSignals(
                 {
                     technical: { trend: 'bullish', riskLevel: 'high' },
@@ -162,8 +154,6 @@ describe('scoreSignals', () => {
                     // 50 (equal split)
                     fundamental: { overallSentiment: 'neutral' },
                     // 50
-                    overall: { integratedConclusionKo: '중립적 시장' },
-                    // neutral → 50
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -189,7 +179,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'neutral' },
                     options: { signals: [] },
                     fundamental: { overallSentiment: 'neutral' },
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 50, // buyThreshold = 50
@@ -214,8 +203,6 @@ describe('scoreSignals', () => {
                     // 0
                     fundamental: { overallSentiment: 'bearish' },
                     // 20
-                    overall: { integratedConclusionKo: '하락' },
-                    // bearish → 20
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -234,7 +221,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'neutral' },
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -253,7 +239,6 @@ describe('scoreSignals', () => {
                 news: 5,
                 options: 5,
                 fundamental: 5,
-                overall: 5,
             };
 
             const inputs = {
@@ -261,7 +246,6 @@ describe('scoreSignals', () => {
                 news: { overallSentiment: 'bearish' },
                 options: { signals: [{ type: 'bearish' }] },
                 fundamental: { overallSentiment: 'bearish' },
-                overall: { integratedConclusionKo: '하락 전망' },
             };
 
             const defaultResult = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
@@ -278,7 +262,6 @@ describe('scoreSignals', () => {
                 news: 20,
                 options: 20,
                 fundamental: 20,
-                overall: 20,
             };
 
             const result = scoreSignals(
@@ -291,15 +274,13 @@ describe('scoreSignals', () => {
                     // 50
                     fundamental: { overallSentiment: 'neutral' },
                     // 50
-                    overall: null,
-                    // 50
                 },
                 equalWeights,
                 70,
                 30,
             );
 
-            // (85 + 20 + 50 + 50 + 50) / 5 = 51
+            // (85 + 20 + 50 + 50) / 4 = 51.25 → 51
             expect(result.total).toBe(51);
         });
     });
@@ -312,14 +293,14 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'neutral' },
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 60, // lower buy threshold
                 30,
             );
 
-            // tech=85*0.4=34, news=50*0.2=10, options=50*0.2=10, fund=50*0.1=5, overall=50*0.1=5 → 64
+            // tech=85, news=50, options=50, fund=50
+            // (85*8 + 50*6 + 50*5 + 50*4) / 23 = 1430/23 = 62.2 → 62 ≥ 60 → buy
             expect(result.total).toBeGreaterThanOrEqual(60);
             expect(result.signal).toBe('buy');
         });
@@ -331,7 +312,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'neutral' },
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -351,7 +331,6 @@ describe('scoreSignals', () => {
                 news: null,
                 options: null,
                 fundamental: null,
-                overall: null,
             });
 
             // bullish + low = 85 + 10 = 95
@@ -415,7 +394,6 @@ describe('scoreSignals', () => {
                 news: { overallSentiment: sentiment },
                 options: null,
                 fundamental: null,
-                overall: null,
             });
 
             expect(
@@ -435,7 +413,6 @@ describe('scoreSignals', () => {
                 news: null,
                 options: null,
                 fundamental: { overallSentiment: sentiment },
-                overall: null,
             });
 
             expect(
@@ -448,78 +425,6 @@ describe('scoreSignals', () => {
                 scoreSignals(makeInput('bearish'), DEFAULT_WEIGHTS, 70, 30).components.fundamental,
             ).toBe(20);
         });
-
-        it('calculates overall score from integratedConclusionKo', () => {
-            const makeInput = (conclusion: string) => ({
-                technical: null,
-                news: null,
-                options: null,
-                fundamental: null,
-                overall: { integratedConclusionKo: conclusion },
-            });
-
-            // bullish keywords: 매수, 상승, 강세
-            expect(
-                scoreSignals(makeInput('매수 추천'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(80);
-            expect(
-                scoreSignals(makeInput('상승 전망'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(80);
-            expect(
-                scoreSignals(makeInput('강세 지속'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(80);
-
-            // bearish keywords: 매도, 하락, 약세
-            expect(
-                scoreSignals(makeInput('매도 권고'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(20);
-            expect(
-                scoreSignals(makeInput('하락 예상'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(20);
-            expect(
-                scoreSignals(makeInput('약세 전환'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(20);
-
-            // neutral (no keywords)
-            expect(
-                scoreSignals(makeInput('시장 관망'), DEFAULT_WEIGHTS, 70, 30).components.overall,
-            ).toBe(50);
-        });
-
-        it('returns 50 for overall with undefined integratedConclusionKo', () => {
-            const result = scoreSignals(
-                {
-                    technical: null,
-                    news: null,
-                    options: null,
-                    fundamental: null,
-                    overall: { integratedConclusionKo: undefined },
-                },
-                DEFAULT_WEIGHTS,
-                70,
-                30,
-            );
-
-            expect(result.components.overall).toBe(50);
-        });
-
-        it('returns 50 for overall with both bullish and bearish keywords', () => {
-            const result = scoreSignals(
-                {
-                    technical: null,
-                    news: null,
-                    options: null,
-                    fundamental: null,
-                    overall: { integratedConclusionKo: '상승과 하락이 공존하는 시장' },
-                },
-                DEFAULT_WEIGHTS,
-                70,
-                30,
-            );
-
-            // Both bullish (상승) and bearish (하락) detected → neutral 50
-            expect(result.components.overall).toBe(50);
-        });
     });
 
     describe('edge case — options with no signals', () => {
@@ -530,7 +435,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: { signals: [] },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -547,7 +451,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: { signals: undefined },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -573,7 +476,6 @@ describe('scoreSignals', () => {
                         ],
                     },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -595,7 +497,6 @@ describe('scoreSignals', () => {
                         signals: [{ type: 'bullish' }, { type: 'bullish' }, { type: 'bullish' }],
                     },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -615,7 +516,6 @@ describe('scoreSignals', () => {
                         signals: [{ type: 'bearish' }, { type: 'bearish' }, { type: 'bearish' }],
                     },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -635,7 +535,6 @@ describe('scoreSignals', () => {
                         signals: [{ type: 'unknown' }, { type: 'bullish' }],
                     },
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -656,7 +555,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'bullish' },
                     options: { signals: [{ type: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
-                    overall: { integratedConclusionKo: '강한 매수' },
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -674,7 +572,6 @@ describe('scoreSignals', () => {
                     news: { overallSentiment: 'bearish' },
                     options: { signals: [{ type: 'bearish' }] },
                     fundamental: { overallSentiment: 'bearish' },
-                    overall: { integratedConclusionKo: '강한 매도' },
                 },
                 DEFAULT_WEIGHTS,
                 70,
@@ -683,6 +580,25 @@ describe('scoreSignals', () => {
 
             expect(result.total).toBeGreaterThanOrEqual(0);
             expect(result.total).toBeLessThanOrEqual(100);
+        });
+    });
+
+    describe('zero total weight', () => {
+        it('returns 50 / hold when all weights are zero', () => {
+            const result = scoreSignals(
+                {
+                    technical: { trend: 'bullish', riskLevel: 'low' },
+                    news: { overallSentiment: 'bullish' },
+                    options: { signals: [{ type: 'bullish' }] },
+                    fundamental: { overallSentiment: 'bullish' },
+                },
+                { technical: 0, news: 0, options: 0, fundamental: 0 },
+                70,
+                30,
+            );
+
+            expect(result.total).toBe(50);
+            expect(result.signal).toBe('hold');
         });
     });
 
@@ -698,7 +614,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -711,7 +626,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -735,7 +649,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -757,7 +670,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -779,7 +691,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -792,7 +703,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -809,7 +719,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -831,7 +740,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,
@@ -853,7 +761,6 @@ describe('scoreSignals', () => {
                     news: null,
                     options: null,
                     fundamental: null,
-                    overall: null,
                 },
                 DEFAULT_WEIGHTS,
                 DEFAULT_BUY_THRESHOLD,

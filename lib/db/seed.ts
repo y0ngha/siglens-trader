@@ -30,7 +30,7 @@ export async function seed() {
         { key: 'analysis_timeframe', value: '1Hour' },
         {
             key: 'score_weights',
-            value: { technical: 8, news: 6, options: 5, fundamental: 4, overall: 3 },
+            value: { technical: 8, news: 6, options: 5, fundamental: 4 },
         },
         { key: 'fixed_exit_enabled', value: false },
         { key: 'trading_enabled', value: true },
@@ -50,7 +50,6 @@ export async function seed() {
         { analysisType: 'news', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
         { analysisType: 'options', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
         { analysisType: 'fundamental', modelId: 'gemini-2.5-flash', enabled: true, useByok: true },
-        { analysisType: 'overall', modelId: 'claude-opus-4-7', enabled: true, useByok: true },
     ];
     for (const m of models) {
         await db
@@ -122,7 +121,7 @@ export async function seed() {
             quantity: 5,
             price: '189.50',
             executedAt: daysAgo(3),
-            reason: 'Score 78/100 — BUY (tech:85, news:70, opt:75, fund:65, overall:72)',
+            reason: 'Score 78/100 — BUY (tech:85, news:70, opt:75, fund:65)',
             mode: 'dry_run',
         },
         {
@@ -132,7 +131,7 @@ export async function seed() {
             quantity: 3,
             price: '875.20',
             executedAt: daysAgo(5),
-            reason: 'Score 82/100 — BUY (tech:90, news:80, opt:70, fund:75, overall:80)',
+            reason: 'Score 82/100 — BUY (tech:90, news:80, opt:70, fund:75)',
             mode: 'dry_run',
         },
         {
@@ -142,7 +141,7 @@ export async function seed() {
             quantity: 8,
             price: '248.60',
             executedAt: daysAgo(1),
-            reason: 'Score 71/100 — BUY (tech:75, news:65, opt:72, fund:60, overall:68)',
+            reason: 'Score 71/100 — BUY (tech:75, news:65, opt:72, fund:60)',
             mode: 'dry_run',
         },
         {
@@ -152,7 +151,7 @@ export async function seed() {
             quantity: 4,
             price: '176.30',
             executedAt: daysAgo(7),
-            reason: 'Score 73/100 — BUY (tech:80, news:68, opt:65, fund:70, overall:72)',
+            reason: 'Score 73/100 — BUY (tech:80, news:68, opt:65, fund:70)',
             mode: 'dry_run',
         },
         {
@@ -162,7 +161,7 @@ export async function seed() {
             quantity: 4,
             price: '181.90',
             executedAt: daysAgo(4),
-            reason: 'Score 28/100 — SELL (tech:20, news:35, opt:30, fund:40, overall:25)',
+            reason: 'Score 28/100 — SELL (tech:20, news:35, opt:30, fund:40)',
             mode: 'dry_run',
         },
         {
@@ -172,7 +171,7 @@ export async function seed() {
             quantity: 3,
             price: '428.50',
             executedAt: daysAgo(6),
-            reason: 'Score 76/100 — BUY (tech:82, news:72, opt:68, fund:78, overall:75)',
+            reason: 'Score 76/100 — BUY (tech:82, news:72, opt:68, fund:78)',
             mode: 'dry_run',
         },
         {
@@ -182,7 +181,7 @@ export async function seed() {
             quantity: 3,
             price: '435.20',
             executedAt: daysAgo(2),
-            reason: 'Score 25/100 — SELL (tech:18, news:30, opt:25, fund:35, overall:22)',
+            reason: 'Score 25/100 — SELL (tech:18, news:30, opt:25, fund:35)',
             mode: 'dry_run',
         },
         {
@@ -212,7 +211,7 @@ export async function seed() {
             quantity: 5,
             price: '255.30',
             executedAt: hoursAgo(6),
-            reason: 'Score 22/100 — SELL (tech:15, news:28, opt:20, fund:30, overall:18)',
+            reason: 'Score 22/100 — SELL (tech:15, news:28, opt:20, fund:30)',
             mode: 'dry_run',
         },
     ];
@@ -242,7 +241,7 @@ export async function seed() {
             side: 'buy',
             quantity: 3,
             priceLimit: '195.00',
-            analysisSummary: 'Score 74/100 — BUY (tech:82, news:70, opt:68, fund:72, overall:71)',
+            analysisSummary: 'Score 74/100 — BUY (tech:82, news:70, opt:68, fund:72)',
             signalScore: '74',
             expiresAt: new Date(Date.now() + 10 * 60 * 1000),
             status: 'pending',
@@ -252,7 +251,7 @@ export async function seed() {
             side: 'buy',
             quantity: 5,
             priceLimit: '178.50',
-            analysisSummary: 'Score 72/100 — BUY (tech:78, news:65, opt:70, fund:68, overall:70)',
+            analysisSummary: 'Score 72/100 — BUY (tech:78, news:65, opt:70, fund:68)',
             signalScore: '72',
             expiresAt: new Date(Date.now() + 12 * 60 * 1000),
             status: 'pending',

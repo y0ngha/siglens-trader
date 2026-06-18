@@ -87,12 +87,11 @@ useQuery({
 
 ## Signal Scoring
 
-Priority-weighted average (weights sum to 26):
+Priority-weighted average (weights sum to 23):
 - Technical: 8
 - News: 6
 - Options: 5
 - Fundamental: 4
-- Overall: 3
 
 Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 

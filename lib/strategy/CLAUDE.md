@@ -6,7 +6,7 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{technical:8, news:6, options:5, fundamental:4, overall:3}`, DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{technical:8, news:6, options:5, fundamental:4}`, DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
@@ -21,12 +21,11 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 ## Signal Scoring
 
-Priority-weighted average of 5 analysis axes (weights sum to 26):
+Priority-weighted average of 4 analysis axes (weights sum to 23):
 - Technical (8): trend + riskLevel + actionRecommendation.confidence
 - News (6): overallSentiment
 - Options (5): bullish/bearish signal ratio
 - Fundamental (4): overallSentiment
-- Overall (3): integratedConclusionKo keyword matching
 
 ## Position Re-evaluation Priority
 

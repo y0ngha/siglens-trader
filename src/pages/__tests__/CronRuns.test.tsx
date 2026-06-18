@@ -313,7 +313,6 @@ describe('CronRunsPage', () => {
                             news: 52,
                             options: 53,
                             fundamental: 54,
-                            overall: 55,
                         },
                         signal: 'hold',
                         thresholds: { buy: 70, sell: 30 },
@@ -345,7 +344,6 @@ describe('CronRunsPage', () => {
         expect(componentsLine).toHaveTextContent('뉴스 52');
         expect(componentsLine).toHaveTextContent('옵션 53');
         expect(componentsLine).toHaveTextContent('펀더멘털 54');
-        expect(componentsLine).toHaveTextContent('종합 55');
     });
 
     it('renders a decision with null detail without crashing and shows no component line', async () => {
@@ -402,7 +400,7 @@ describe('CronRunsPage', () => {
                     executed: false,
                     score: '50.0',
                     reason: '부분 점수',
-                    // Missing options/fundamental/overall → readScoreComponents returns null
+                    // Missing options/fundamental → readScoreComponents returns null
                     detail: { components: { technical: 50, news: 50 } },
                     createdAt: new Date().toISOString(),
                 },

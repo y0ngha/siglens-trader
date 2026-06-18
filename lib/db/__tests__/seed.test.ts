@@ -47,7 +47,7 @@ describe('seed', () => {
         expect(configValueCalls.length).toBe(13);
     });
 
-    it('inserts analysis model configs (5 types)', async () => {
+    it('inserts analysis model configs (4 types)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -60,7 +60,7 @@ describe('seed', () => {
                 'modelId' in call[0] &&
                 'useByok' in call[0],
         );
-        expect(modelConfigCalls.length).toBe(5);
+        expect(modelConfigCalls.length).toBe(4);
     });
 
     it('inserts notification config', async () => {

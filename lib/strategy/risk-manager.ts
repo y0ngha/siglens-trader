@@ -20,8 +20,6 @@ export interface EvaluatePositionParams {
     technicalTrend?: string;
     /** if news turned bearish -> tighten stops */
     newsSentiment?: string;
-    /** sell signal from overall -> close */
-    overallSignal?: string;
 }
 
 interface PositionSizeParams {
@@ -140,19 +138,6 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             return { action: 'take_profit', reason: '뉴스 악재 + 수익 구간 — 선제 익절' };
         }
         return { action: 'stop_loss', reason: '뉴스 악재 + 손실 구간 — 손절' };
-    }
-
-    // 7. Overall AI signal suggests exit
-    if (params.overallSignal) {
-        const bearishKeywords = ['매도', '하락', '약세'];
-        const isBearish = bearishKeywords.some((k) => params.overallSignal!.includes(k));
-        if (isBearish) {
-            const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
-            if (gainPercent >= 0) {
-                return { action: 'take_profit', reason: 'AI 종합 분석 매도 신호 — 수익 구간 익절' };
-            }
-            return { action: 'stop_loss', reason: 'AI 종합 분석 매도 신호 — 손실 구간 손절' };
-        }
     }
 
     return { action: 'hold', reason: '유지 (조건 미충족)' };

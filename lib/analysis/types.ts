@@ -1,6 +1,6 @@
 import type { ModelId, Timeframe, NewsCardAnalysis } from '@y0ngha/siglens-core';
 
-export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental' | 'overall';
+export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental';
 
 // Port: db 의존을 analysis 레이어 밖으로 분리한다. 구현체는 api/cron 레이어가 주입.
 export interface NewsCardStore {

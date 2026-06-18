@@ -11,7 +11,6 @@ export interface SignalScore {
         news: number;
         options: number;
         fundamental: number;
-        overall: number;
     };
     signal: SignalDirection;
 }
@@ -21,7 +20,6 @@ export interface ScoreWeights {
     news: number;
     options: number;
     fundamental: number;
-    overall: number;
 }
 
 export const DEFAULT_WEIGHTS: ScoreWeights = {
@@ -29,7 +27,6 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
     news: 6,
     options: 5,
     fundamental: 4,
-    overall: 3,
 };
 
 export const DEFAULT_BUY_THRESHOLD = 70;

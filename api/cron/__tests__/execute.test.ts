@@ -17,14 +17,12 @@ vi.mock('../../_lib/db', () => ({
 
 const mockGetEnabledWatchlist = vi.fn();
 const mockGetConfigValue = vi.fn();
-const mockGetAnalysisConfig = vi.fn();
 const mockGetLatestAnalysisResult = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetOpenPositionBySymbol = vi.fn();
 const mockOpenPosition = vi.fn();
 const mockClosePosition = vi.fn();
 const mockReducePositionQuantity = vi.fn();
-const mockSaveAnalysisResult = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
@@ -44,14 +42,12 @@ const mockGetTodayInflightOrderCount = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
-    getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
     getLatestAnalysisResult: (...args: unknown[]) => mockGetLatestAnalysisResult(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getOpenPositionBySymbol: (...args: unknown[]) => mockGetOpenPositionBySymbol(...args),
     openPosition: (...args: unknown[]) => mockOpenPosition(...args),
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
     reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
-    saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
@@ -68,11 +64,6 @@ vi.mock('../../../lib/db/queries', () => ({
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
     insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
-}));
-
-const mockRunOverallAnalysis = vi.fn();
-vi.mock('../../../lib/analysis/run-overall', () => ({
-    runOverallAnalysis: (...args: unknown[]) => mockRunOverallAnalysis(...args),
 }));
 
 const mockScoreSignals = vi.fn();
@@ -174,19 +165,19 @@ const fakeFundamentalResult = { result: { overallSentiment: 'neutral' } };
 
 const fakeBuySignalScore = {
     total: 80,
-    components: { technical: 95, news: 80, options: 75, fundamental: 50, overall: 50 },
+    components: { technical: 95, news: 80, options: 75, fundamental: 50 },
     signal: 'buy' as const,
 };
 
 const fakeSellSignalScore = {
     total: 20,
-    components: { technical: 15, news: 20, options: 25, fundamental: 50, overall: 50 },
+    components: { technical: 15, news: 20, options: 25, fundamental: 50 },
     signal: 'sell' as const,
 };
 
 const fakeHoldSignalScore = {
     total: 50,
-    components: { technical: 50, news: 50, options: 50, fundamental: 50, overall: 50 },
+    components: { technical: 50, news: 50, options: 50, fundamental: 50 },
     signal: 'hold' as const,
 };
 
@@ -211,14 +202,6 @@ function setupDefaults() {
     mockGetConfigValue.mockResolvedValue(null); // All config values default to null
     mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
     mockGetOpenPositions.mockResolvedValue([]);
-    mockGetAnalysisConfig.mockResolvedValue({
-        id: 0,
-        analysisType: 'overall',
-        enabled: false,
-        modelId: 'gemini-2.5-flash',
-        useByok: false,
-        updatedAt: new Date(),
-    }); // Explicitly disabled by default
     mockGetLatestAnalysisResult.mockResolvedValue(null);
     mockGetOpenPositionBySymbol.mockResolvedValue(null);
     mockOpenPosition.mockResolvedValue([]);
@@ -240,7 +223,6 @@ function setupDefaults() {
     mockGetTodayInflightOrderCount.mockResolvedValue(0);
     mockGetTodayRealizedPnl.mockResolvedValue(0);
     mockExpireOldPendingOrders.mockResolvedValue([]);
-    mockSaveAnalysisResult.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
     mockSendErrorEmail.mockResolvedValue(undefined);
@@ -1714,7 +1696,6 @@ describe('execute cron handler', () => {
                     news: { overallSentiment: 'bullish' },
                     options: { signals: [{ type: 'bullish' }] },
                     fundamental: { overallSentiment: 'neutral' },
-                    overall: null,
                 },
                 expect.any(Object), // weights
                 expect.any(Number), // buyThreshold
@@ -1791,181 +1772,6 @@ describe('execute cron handler', () => {
 
             expect(res.status).toBe(200);
             expect(body.decisions).toEqual([{ symbol: 'AAPL', action: 'error', score: 0 }]);
-        });
-    });
-
-    // -----------------------------------------------------------------------
-    // Overall analysis
-    // -----------------------------------------------------------------------
-
-    describe('overall analysis', () => {
-        beforeEach(() => {
-            mockGetConfigValue.mockResolvedValue(null);
-            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
-            mockMakeTradeDecision.mockReturnValue({
-                action: 'hold',
-                symbol: 'AAPL',
-                score: 50,
-                reason: 'Score 50/100 — HOLD',
-                quantity: 0,
-            });
-        });
-
-        it('runs runOverallAnalysis and saves result when overall config is enabled', async () => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: true,
-                modelId: 'claude-sonnet-4-20250514',
-                useByok: true,
-            });
-            const fakeOverallResult = {
-                integratedConclusionKo: '매수 추천',
-                analyzedAt: '2026-05-24T14:25:00.123Z',
-            };
-            mockRunOverallAnalysis.mockResolvedValue({
-                status: 'done',
-                result: fakeOverallResult,
-            });
-
-            await handler(makeRequest(true));
-
-            expect(mockRunOverallAnalysis).toHaveBeenCalledWith({
-                symbol: 'AAPL',
-                companyName: 'Apple Inc.',
-                modelId: 'claude-sonnet-4-20250514',
-                userApiKey: 'sk-ant-test',
-            });
-
-            expect(mockSaveAnalysisResult).toHaveBeenCalledWith(
-                fakeDb,
-                expect.objectContaining({
-                    symbol: 'AAPL',
-                    analysisType: 'overall',
-                    result: fakeOverallResult,
-                    modelId: 'claude-sonnet-4-20250514',
-                    analyzedAt: new Date('2026-05-24T14:30:00.000Z'),
-                    sourceAnalyzedAt: new Date('2026-05-24T14:25:00.123Z'),
-                }),
-            );
-
-            // Score signals should receive the overall result
-            expect(mockScoreSignals).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    overall: expect.objectContaining({
-                        integratedConclusionKo: fakeOverallResult.integratedConclusionKo,
-                    }),
-                }),
-                expect.any(Object),
-                expect.any(Number),
-                expect.any(Number),
-            );
-        });
-
-        it.each([
-            ['missing', { integratedConclusionKo: '매수 추천' }],
-            [
-                'invalid',
-                {
-                    integratedConclusionKo: '매수 추천',
-                    analyzedAt: '2026-02-30T00:00:00Z',
-                },
-            ],
-        ])('falls back to the saved time for %s overall analyzedAt', async (_, result) => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: true,
-                modelId: 'claude-sonnet-4-20250514',
-                useByok: false,
-            });
-            mockRunOverallAnalysis.mockResolvedValue({ status: 'done', result });
-
-            await handler(makeRequest(true));
-
-            const saved = mockSaveAnalysisResult.mock.calls[0]?.[1] as {
-                analyzedAt: Date;
-                sourceAnalyzedAt: Date;
-            };
-            expect(saved.analyzedAt).toEqual(new Date('2026-05-24T14:30:00.000Z'));
-            expect(saved.sourceAnalyzedAt).toBe(saved.analyzedAt);
-        });
-
-        it('skips overall analysis when config has enabled:false', async () => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: false,
-                modelId: 'gemini-2.5-flash',
-                useByok: false,
-            });
-
-            await handler(makeRequest(true));
-
-            expect(mockRunOverallAnalysis).not.toHaveBeenCalled();
-            expect(mockScoreSignals).toHaveBeenCalledWith(
-                expect.objectContaining({ overall: null }),
-                expect.any(Object),
-                expect.any(Number),
-                expect.any(Number),
-            );
-        });
-
-        it('skips overall when overallConfig.enabled is false', async () => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: false,
-                modelId: 'claude-sonnet-4-20250514',
-            });
-
-            await handler(makeRequest(true));
-
-            expect(mockRunOverallAnalysis).not.toHaveBeenCalled();
-        });
-
-        it('uses cached overall result', async () => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: true,
-                modelId: 'claude-sonnet-4-20250514',
-                useByok: false,
-            });
-            const cachedResult = { integratedConclusionKo: '캐시됨' };
-            mockRunOverallAnalysis.mockResolvedValue({
-                status: 'cached',
-                result: cachedResult,
-            });
-
-            await handler(makeRequest(true));
-
-            expect(mockSaveAnalysisResult).toHaveBeenCalledWith(
-                fakeDb,
-                expect.objectContaining({
-                    result: cachedResult,
-                }),
-            );
-            expect(mockScoreSignals).toHaveBeenCalledWith(
-                expect.objectContaining({ overall: cachedResult }),
-                expect.any(Object),
-                expect.any(Number),
-                expect.any(Number),
-            );
-        });
-
-        it('does not save overall result when analysis returns error/skipped', async () => {
-            mockGetAnalysisConfig.mockResolvedValue({
-                enabled: true,
-                modelId: 'claude-sonnet-4-20250514',
-                useByok: true,
-            });
-            mockRunOverallAnalysis.mockResolvedValue({
-                status: 'error',
-                error: 'API failed',
-            });
-
-            await handler(makeRequest(true));
-
-            expect(mockSaveAnalysisResult).not.toHaveBeenCalled();
-            expect(mockScoreSignals).toHaveBeenCalledWith(
-                expect.objectContaining({ overall: null }),
-                expect.any(Object),
-                expect.any(Number),
-                expect.any(Number),
-            );
         });
     });
 
@@ -2247,7 +2053,6 @@ describe('execute cron handler', () => {
                                 news: expect.any(Number),
                                 options: expect.any(Number),
                                 fundamental: expect.any(Number),
-                                overall: expect.any(Number),
                             },
                             signal: 'hold',
                             thresholds: { buy: 70, sell: 30 },

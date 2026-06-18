@@ -121,7 +121,7 @@ async function handler(req: Request): Promise<Response> {
                         );
                     }
                     const w = value as Record<string, unknown>;
-                    const requiredKeys = ['technical', 'news', 'options', 'fundamental', 'overall'];
+                    const requiredKeys = ['technical', 'news', 'options', 'fundamental'];
                     const requiredKeySet = new Set(requiredKeys);
                     const extraKeys = Object.keys(w).filter((k) => !requiredKeySet.has(k));
                     if (extraKeys.length > 0) {
@@ -263,7 +263,6 @@ async function handler(req: Request): Promise<Response> {
                     'news',
                     'options',
                     'fundamental',
-                    'overall',
                 ]);
                 if (!ALLOWED_ANALYSIS_TYPES.has(analysisType)) {
                     return Response.json({ error: 'Unknown analysis type' }, { status: 400 });

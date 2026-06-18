@@ -38,10 +38,9 @@ type ScoreComponents = {
     news: number;
     options: number;
     fundamental: number;
-    overall: number;
 };
 
-const COMPONENT_KEYS = ['technical', 'news', 'options', 'fundamental', 'overall'] as const;
+const COMPONENT_KEYS = ['technical', 'news', 'options', 'fundamental'] as const;
 
 /** Safely read `detail.components` from an untyped decision detail blob. */
 function readScoreComponents(detail: unknown): ScoreComponents | null {
@@ -53,7 +52,6 @@ function readScoreComponents(detail: unknown): ScoreComponents | null {
         news: c.news as number,
         options: c.options as number,
         fundamental: c.fundamental as number,
-        overall: c.overall as number,
     };
 }
 
@@ -388,8 +386,7 @@ function DecisionsList({ runId }: { runId: string }) {
                             return (
                                 <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
                                     기술 {components.technical} · 뉴스 {components.news} · 옵션{' '}
-                                    {components.options} · 펀더멘털 {components.fundamental} · 종합{' '}
-                                    {components.overall}
+                                    {components.options} · 펀더멘털 {components.fundamental}
                                 </span>
                             );
                         }

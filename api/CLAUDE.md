@@ -79,7 +79,6 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 7. Recalculate exposure after any closures (using market prices)
 8. Score signals for watchlist symbols
    - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
-   - Runs overall analysis if stale >2h
 9. Make trade decisions (buy/sell/hold/average_in)
    - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
    - Pending sell guard: skip sell if submitted sell order exists

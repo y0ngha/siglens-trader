@@ -610,13 +610,13 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'score_weights',
-                value: { technical: 30, news: 20, options: 20, fundamental: 20 },
-                // missing 'overall'
+                value: { technical: 30, news: 20, options: 20 },
+                // missing 'fundamental'
             }),
         );
         expect(res.status).toBe(400);
         const data = await res.json();
-        expect(data.error).toBe('score_weights.overall must be a non-negative number');
+        expect(data.error).toBe('score_weights.fundamental must be a non-negative number');
     });
 
     it('rejects score_weights with negative value', async () => {
@@ -624,7 +624,7 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'score_weights',
-                value: { technical: -5, news: 20, options: 20, fundamental: 20, overall: 10 },
+                value: { technical: -5, news: 20, options: 20, fundamental: 20 },
             }),
         );
         expect(res.status).toBe(400);
@@ -637,7 +637,7 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'score_weights',
-                value: { technical: 'high', news: 20, options: 20, fundamental: 20, overall: 10 },
+                value: { technical: 'high', news: 20, options: 20, fundamental: 20 },
             }),
         );
         expect(res.status).toBe(400);
@@ -652,7 +652,7 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'score_weights',
-                value: { technical: 30, news: 20, options: 20, fundamental: 20, overall: 10 },
+                value: { technical: 30, news: 20, options: 20, fundamental: 20 },
             }),
         );
         expect(res.status).toBe(200);
@@ -661,7 +661,6 @@ describe('POST /api/config', () => {
             news: 20,
             options: 20,
             fundamental: 20,
-            overall: 10,
         });
     });
 
@@ -675,7 +674,6 @@ describe('POST /api/config', () => {
                     news: 20,
                     options: 20,
                     fundamental: 20,
-                    overall: 10,
                     sentiment: 5,
                 },
             }),
@@ -691,7 +689,7 @@ describe('POST /api/config', () => {
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
                 key: 'score_weights',
-                value: { technical: 0, news: 0, options: 0, fundamental: 0, overall: 0 },
+                value: { technical: 0, news: 0, options: 0, fundamental: 0 },
             }),
         );
         expect(res.status).toBe(400);
@@ -1416,7 +1414,7 @@ describe('POST /api/config — analysis type allowlist', () => {
     it('accepts valid analysis types', async () => {
         mockUpdateAnalysisConfig.mockResolvedValue(undefined);
 
-        for (const analysisType of ['technical', 'news', 'options', 'fundamental', 'overall']) {
+        for (const analysisType of ['technical', 'news', 'options', 'fundamental']) {
             const res = await handler(
                 makeRequest('https://example.com/api/config', 'POST', {
                     type: 'analysis',
@@ -1426,7 +1424,7 @@ describe('POST /api/config — analysis type allowlist', () => {
             );
             expect(res.status).toBe(200);
         }
-        expect(mockUpdateAnalysisConfig).toHaveBeenCalledTimes(5);
+        expect(mockUpdateAnalysisConfig).toHaveBeenCalledTimes(4);
     });
 });
 

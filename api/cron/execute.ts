@@ -4,14 +4,12 @@ import { getDb } from '../_lib/db.js';
 import {
     getEnabledWatchlist,
     getConfigValue,
-    getAnalysisConfig,
     getLatestAnalysisResult,
     getOpenPositions,
     getOpenPositionBySymbol,
     openPosition,
     closePosition,
     reducePositionQuantity,
-    saveAnalysisResult,
     insertTrade,
     insertPendingOrder,
     getPendingOrders,
@@ -30,11 +28,7 @@ import {
     insertCronDecisions,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
-import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
-import {
-    extractSourceAnalyzedAt,
-    getAnalysisReferenceTime,
-} from '../../lib/analysis/source-time.js';
+import { getAnalysisReferenceTime } from '../../lib/analysis/source-time.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import {
@@ -56,7 +50,6 @@ import {
     DEFAULT_SELL_THRESHOLD,
 } from '../../lib/strategy/types.js';
 import type { ScoreWeights, SignalScore } from '../../lib/strategy/types.js';
-import { resolveApiKey } from './_run-analysis-cron.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 import { fetchLivePrice, fetchLivePriceDetail } from '../../lib/data/live-price.js';
@@ -365,8 +358,6 @@ async function handler(req: Request): Promise<Response> {
                 currentExposure += priceForExposure * p.quantity;
             }
 
-            const overallConfig = await getAnalysisConfig(db, 'overall');
-
             // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
             const recentStopLossSymbols = new Set<string>();
 
@@ -451,10 +442,9 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const [tech, news, overallResult] = await Promise.all([
+                    const [tech, news] = await Promise.all([
                         getLatestAnalysisResult(db, position.symbol, 'technical'),
                         getLatestAnalysisResult(db, position.symbol, 'news'),
-                        getLatestAnalysisResult(db, position.symbol, 'overall'),
                     ]);
 
                     // Staleness check: skip position if technical analysis is too old
@@ -497,10 +487,6 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const overallSentiment = overallResult?.result
-                        ? safeString(safeRecord(overallResult.result)?.integratedConclusionKo)
-                        : undefined;
-
                     const evaluation = evaluateExistingPosition({
                         avgPrice: safeNumber(Number(position.avgPrice), 0),
                         currentPrice,
@@ -512,7 +498,6 @@ async function handler(req: Request): Promise<Response> {
                         targetPrice: safeAnalysisTargetPrice(techResult),
                         technicalTrend: safeAnalysisTrend(techResult),
                         newsSentiment: safeAnalysisSentiment(news?.result),
-                        overallSignal: overallSentiment,
                     });
 
                     if (evaluation.action === 'hold') {
@@ -891,49 +876,6 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Optional: run overall analysis (skip if recent cache exists)
-                    let overall = null;
-                    if (overallConfig?.enabled) {
-                        const existingOverall = await getLatestAnalysisResult(
-                            db,
-                            item.symbol,
-                            'overall',
-                        );
-                        const TWO_HOURS = 2 * 60 * 60 * 1000;
-                        const overallAge = existingOverall
-                            ? Date.now() - new Date(existingOverall.analyzedAt).getTime()
-                            : Infinity;
-
-                        if (overallAge <= TWO_HOURS) {
-                            overall = existingOverall!.result;
-                        } else {
-                            const overallResult = await runOverallAnalysis({
-                                symbol: item.symbol,
-                                companyName: item.companyName,
-                                modelId: overallConfig.modelId as any,
-                                userApiKey: overallConfig.useByok
-                                    ? resolveApiKey(overallConfig.modelId)
-                                    : undefined,
-                            });
-                            if (
-                                overallResult.status === 'done' ||
-                                overallResult.status === 'cached'
-                            ) {
-                                overall = overallResult.result;
-                                const savedAt = new Date();
-                                await saveAnalysisResult(db, {
-                                    symbol: item.symbol,
-                                    analysisType: 'overall',
-                                    result: overall,
-                                    modelId: overallConfig.modelId,
-                                    analyzedAt: savedAt,
-                                    sourceAnalyzedAt: extractSourceAnalyzedAt(overall, savedAt),
-                                    cronRunId,
-                                });
-                            }
-                        }
-                    }
-
                     // Score signals — build type-safe inputs from untyped AI results
                     const signalInputs = {
                         technical: tech?.result
@@ -958,14 +900,6 @@ async function handler(req: Request): Promise<Response> {
                         fundamental: fundamental?.result
                             ? {
                                   overallSentiment: safeAnalysisSentiment(fundamental.result),
-                              }
-                            : null,
-                        overall: overall
-                            ? {
-                                  integratedConclusionKo: safeString(
-                                      safeRecord(overall)?.integratedConclusionKo,
-                                  ),
-                                  scenarios: safeArray(overall, 'scenarios'),
                               }
                             : null,
                     };

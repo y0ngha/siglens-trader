@@ -14,7 +14,6 @@ export interface AnalysisInputs {
     news: { overallSentiment?: string } | null;
     options: { signals?: Array<{ type?: string }> } | null;
     fundamental: { overallSentiment?: string } | null;
-    overall: { integratedConclusionKo?: string; scenarios?: unknown[] } | null;
 }
 
 /**
@@ -34,11 +33,9 @@ export function scoreSignals(
         news: scoreSentiment(inputs.news),
         options: scoreOptions(inputs.options),
         fundamental: scoreSentiment(inputs.fundamental),
-        overall: scoreOverall(inputs.overall),
     };
 
-    const totalWeight =
-        weights.technical + weights.news + weights.options + weights.fundamental + weights.overall;
+    const totalWeight = weights.technical + weights.news + weights.options + weights.fundamental;
 
     if (totalWeight === 0) {
         return { total: 50, components, signal: 'hold' as const };
@@ -48,8 +45,7 @@ export function scoreSignals(
         components.technical * weights.technical +
         components.news * weights.news +
         components.options * weights.options +
-        components.fundamental * weights.fundamental +
-        components.overall * weights.overall;
+        components.fundamental * weights.fundamental;
 
     const total = clamp(Math.round(weightedSum / totalWeight), 0, 100);
 
@@ -142,25 +138,6 @@ function scoreOptions(input: { signals?: Array<{ type?: string }> } | null): num
 
     const ratio = (bullishCount - bearishCount) / signals.length;
     return clamp(Math.round(50 + ratio * 50), 0, 100);
-}
-
-function scoreOverall(
-    input: { integratedConclusionKo?: string; scenarios?: unknown[] } | null,
-): number {
-    if (!input) return 50;
-
-    const conclusion = input.integratedConclusionKo;
-    if (!conclusion) return 50;
-
-    const bullishKeywords = ['매수', '상승', '강세'];
-    const bearishKeywords = ['매도', '하락', '약세'];
-
-    const hasBullish = bullishKeywords.some((kw) => conclusion.includes(kw));
-    const hasBearish = bearishKeywords.some((kw) => conclusion.includes(kw));
-
-    if (hasBullish && !hasBearish) return 80;
-    if (hasBearish && !hasBullish) return 20;
-    return 50;
 }
 
 function determineSignal(
