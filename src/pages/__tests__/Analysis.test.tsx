@@ -173,6 +173,48 @@ describe('AnalysisPage', () => {
         expect(listItem).toHaveClass('border-yellow-500/30');
     });
 
+    it('uses sourceAnalyzedAt before fresh analyzedAt and createdAt for display and staleness', async () => {
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'technical',
+                result: JSON.stringify({ signal: 'bullish' }),
+                createdAt: new Date().toISOString(),
+                analyzedAt: new Date().toISOString(),
+                sourceAnalyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('오래됨')).toBeInTheDocument();
+        });
+        expect(screen.getByText('5시간 전')).toHaveClass('text-yellow-500');
+    });
+
+    it('falls back from null sourceAnalyzedAt to analyzedAt', async () => {
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'technical',
+                result: JSON.stringify({ signal: 'bullish' }),
+                createdAt: new Date().toISOString(),
+                analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                sourceAnalyzedAt: null,
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('오래됨')).toBeInTheDocument();
+        });
+        expect(screen.getByText('5시간 전')).toHaveClass('text-yellow-500');
+    });
+
     // --- Re-analysis trigger visibility ---
 
     it('hides re-analysis buttons for symbol groups', async () => {

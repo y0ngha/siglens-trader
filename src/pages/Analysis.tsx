@@ -11,6 +11,8 @@ interface AnalysisEntry {
     analysisType: string;
     result: unknown;
     createdAt: string;
+    analyzedAt?: string | null;
+    sourceAnalyzedAt?: string | null;
 }
 
 /** Analysis older than 4 hours is considered stale */
@@ -77,12 +79,17 @@ function isStale(dateStr: string): boolean {
     return Date.now() - new Date(dateStr).getTime() > STALE_THRESHOLD_MS;
 }
 
+function getReferenceDate(entry: AnalysisEntry): string {
+    return entry.sourceAnalyzedAt ?? entry.analyzedAt ?? entry.createdAt;
+}
+
 function getLatestDate(entries: AnalysisEntry[]): string {
-    return entries.reduce(
-        (latest, e) =>
-            new Date(e.createdAt).getTime() > new Date(latest).getTime() ? e.createdAt : latest,
-        entries[0].createdAt,
-    );
+    return entries.reduce((latest, entry) => {
+        const referenceDate = getReferenceDate(entry);
+        return new Date(referenceDate).getTime() > new Date(latest).getTime()
+            ? referenceDate
+            : latest;
+    }, getReferenceDate(entries[0]));
 }
 
 export function AnalysisPage() {
@@ -128,6 +135,7 @@ export function AnalysisPage() {
                             <ul className="mt-2 space-y-1.5">
                                 {entries.map((entry) => {
                                     const signal = extractSignal(entry.result);
+                                    const referenceDate = getReferenceDate(entry);
                                     return (
                                         <li
                                             key={entry.id}
@@ -143,9 +151,9 @@ export function AnalysisPage() {
                                                 />
                                             </div>
                                             <span
-                                                className={`${isStale(entry.createdAt) ? 'text-yellow-500' : 'text-neutral-500'}`}
+                                                className={`${isStale(referenceDate) ? 'text-yellow-500' : 'text-neutral-500'}`}
                                             >
-                                                {timeAgo(entry.createdAt)}
+                                                {timeAgo(referenceDate)}
                                             </span>
                                         </li>
                                     );

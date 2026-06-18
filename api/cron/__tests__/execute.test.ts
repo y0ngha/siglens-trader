@@ -2838,18 +2838,80 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('stale analysis', () => {
-        it('skips symbol when technical analysis is older than 4 hours', async () => {
+        it.each([
+            ['15Min', 46, 45 * 60_000],
+            ['30Min', 91, 90 * 60_000],
+            ['1Hour', 121, 2 * 60 * 60_000],
+        ])(
+            'skips symbol when %s technical analysis is older than its timeframe limit',
+            async (timeframe, ageMinutes, maxAgeMs) => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                    if (key === 'trading_mode') return Promise.resolve('dry_run');
+                    if (key === 'analysis_timeframe') return Promise.resolve(timeframe);
+                    return Promise.resolve(null);
+                });
+                mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+                const analyzedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) => {
+                        if (type === 'technical') {
+                            return Promise.resolve({
+                                ...fakeTechResult,
+                                analyzedAt,
+                                sourceAnalyzedAt: analyzedAt,
+                            });
+                        }
+                        return Promise.resolve(null);
+                    },
+                );
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(body.decisions).toContainEqual({
+                    symbol: 'AAPL',
+                    action: 'stale_analysis',
+                    score: 0,
+                });
+                expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                    fakeDb,
+                    expect.any(String),
+                    'execute',
+                    expect.arrayContaining([
+                        expect.objectContaining({
+                            symbol: 'AAPL',
+                            action: 'stale_analysis',
+                            detail: {
+                                timeframe,
+                                maxAgeMs,
+                                sourceAnalyzedAt: analyzedAt,
+                            },
+                        }),
+                    ]),
+                );
+                expect(
+                    mockGetConfigValue.mock.calls.filter(([, key]) => key === 'analysis_timeframe'),
+                ).toHaveLength(1);
+                expect(mockScoreSignals).not.toHaveBeenCalled();
+                expect(mockInsertTrade).not.toHaveBeenCalled();
+            },
+        );
+
+        it('rejects a fresh DB save timestamp when the source analysis is stale', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'analysis_timeframe') return Promise.resolve('1Hour');
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            const sourceAnalyzedAt = new Date(Date.now() - 121 * 60_000).toISOString();
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') {
                         return Promise.resolve({
                             ...fakeTechResult,
-                            analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                            analyzedAt: new Date().toISOString(),
+                            sourceAnalyzedAt,
                         });
                     }
                     return Promise.resolve(null);
@@ -2864,9 +2926,61 @@ describe('execute cron handler', () => {
                 action: 'stale_analysis',
                 score: 0,
             });
-            // Should not proceed to score or trade
-            expect(mockScoreSignals).not.toHaveBeenCalled();
-            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        action: 'stale_analysis',
+                        detail: {
+                            timeframe: '1Hour',
+                            maxAgeMs: 2 * 60 * 60_000,
+                            sourceAnalyzedAt,
+                        },
+                    }),
+                ]),
+            );
+        });
+
+        it('uses analyzedAt when legacy technical analysis has no source timestamp', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'analysis_timeframe') return Promise.resolve('15Min');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            const analyzedAt = new Date(Date.now() - 46 * 60_000).toISOString();
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            ...fakeTechResult,
+                            analyzedAt,
+                            sourceAnalyzedAt: null,
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        action: 'stale_analysis',
+                        detail: {
+                            timeframe: '15Min',
+                            maxAgeMs: 45 * 60_000,
+                            sourceAnalyzedAt: analyzedAt,
+                        },
+                    }),
+                ]),
+            );
         });
 
         it('skips symbol when no technical analysis exists', async () => {
@@ -2887,9 +3001,10 @@ describe('execute cron handler', () => {
             });
         });
 
-        it('proceeds when technical analysis is fresh (under 4 hours)', async () => {
+        it('proceeds when technical analysis is fresh for the configured timeframe', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'analysis_timeframe') return Promise.resolve('1Hour');
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
@@ -3889,6 +4004,7 @@ describe('execute cron handler', () => {
         it('skips position re-evaluation when analysis is stale', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'analysis_timeframe') return Promise.resolve('15Min');
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([]);
@@ -3898,10 +4014,11 @@ describe('execute cron handler', () => {
                     { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
                 ])
                 .mockResolvedValueOnce([]); // recalc
-            // Analysis is 5 hours old (over 4-hour limit)
+            const sourceAnalyzedAt = new Date(Date.now() - 46 * 60_000).toISOString();
             mockGetLatestAnalysisResult.mockResolvedValue({
                 result: { keyLevels: { currentPrice: 95 }, trend: 'bearish' },
-                analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                analyzedAt: new Date().toISOString(),
+                sourceAnalyzedAt,
             });
 
             const res = await handler(makeRequest(true));
@@ -3914,6 +4031,22 @@ describe('execute cron handler', () => {
             });
             // Should not evaluate the position
             expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'AAPL',
+                        action: 'stale_analysis',
+                        detail: {
+                            timeframe: '15Min',
+                            maxAgeMs: 45 * 60_000,
+                            sourceAnalyzedAt,
+                        },
+                    }),
+                ]),
+            );
         });
     });
 

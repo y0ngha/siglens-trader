@@ -30,7 +30,11 @@ import {
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { runOverallAnalysis } from '../../lib/analysis/run-overall.js';
-import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
+import {
+    extractSourceAnalyzedAt,
+    getAnalysisReferenceTime,
+} from '../../lib/analysis/source-time.js';
+import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import {
     calculatePositionSize,
@@ -70,9 +74,6 @@ import {
     safeActionRecommendation,
 } from '../../lib/strategy/safe-extract.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
-
-/** Maximum age for analysis results before they are considered stale (4 hours). */
-const MAX_ANALYSIS_AGE_MS = 4 * 60 * 60 * 1000;
 
 type ExecuteDecision = CronDecisionInput & { symbol?: string; score: number };
 
@@ -262,6 +263,10 @@ async function handler(req: Request): Promise<Response> {
                 (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
             const fixedExitEnabled =
                 (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
+            const analysisTimeframe = normalizeAnalysisTimeframe(
+                await getConfigValue<unknown>(db, 'analysis_timeframe'),
+            );
+            const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
 
             // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
             // gated by wall-clock at entry; this catches holidays the static schedule misses.
@@ -423,14 +428,20 @@ async function handler(req: Request): Promise<Response> {
                     ]);
 
                     // Staleness check: skip position if technical analysis is too old
-                    const techAge = tech
-                        ? Date.now() - new Date(tech.analyzedAt).getTime()
+                    const techReferenceTime = tech ? getAnalysisReferenceTime(tech) : null;
+                    const techAge = techReferenceTime
+                        ? Date.now() - techReferenceTime.getTime()
                         : Infinity;
-                    if (techAge > MAX_ANALYSIS_AGE_MS) {
+                    if (techAge > maxTechnicalAge) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'stale_analysis',
                             score: 0,
+                            detail: {
+                                timeframe: analysisTimeframe,
+                                maxAgeMs: maxTechnicalAge,
+                                sourceAnalyzedAt: techReferenceTime?.toISOString() ?? null,
+                            },
                         });
                         continue;
                     }
@@ -831,11 +842,21 @@ async function handler(req: Request): Promise<Response> {
                     ]);
 
                     // Staleness check: skip symbol if technical analysis is too old
-                    const techAge = tech
-                        ? Date.now() - new Date(tech.analyzedAt).getTime()
+                    const techReferenceTime = tech ? getAnalysisReferenceTime(tech) : null;
+                    const techAge = techReferenceTime
+                        ? Date.now() - techReferenceTime.getTime()
                         : Infinity;
-                    if (techAge > MAX_ANALYSIS_AGE_MS) {
-                        decisions.push({ symbol: item.symbol, action: 'stale_analysis', score: 0 });
+                    if (techAge > maxTechnicalAge) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'stale_analysis',
+                            score: 0,
+                            detail: {
+                                timeframe: analysisTimeframe,
+                                maxAgeMs: maxTechnicalAge,
+                                sourceAnalyzedAt: techReferenceTime?.toISOString() ?? null,
+                            },
+                        });
                         continue;
                     }
 
