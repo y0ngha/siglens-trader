@@ -779,22 +779,26 @@ describe('POST /api/config', () => {
     });
 
     // K1b — analysis_timeframe enum validation
-    it('rejects invalid analysis_timeframe value', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'analysis_timeframe',
-                value: '1Min',
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toContain('analysis_timeframe must be one of');
-    });
+    it.each(['5Min', '4Hour', '1Day', 'arbitrary'])(
+        'rejects unsupported analysis_timeframe value %s',
+        async (timeframe) => {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'analysis_timeframe',
+                    value: timeframe,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect(await res.json()).toEqual({
+                error: 'analysis_timeframe must be one of: 15Min, 30Min, 1Hour',
+            });
+        },
+    );
 
-    it('accepts valid analysis_timeframe values', async () => {
+    it('accepts supported analysis_timeframe values', async () => {
         mockSetConfigValue.mockResolvedValue(undefined);
-        for (const tf of ['5Min', '15Min', '30Min', '1Hour', '4Hour', '1Day']) {
+        for (const tf of ['15Min', '30Min', '1Hour']) {
             const res = await handler(
                 makeRequest('https://example.com/api/config', 'POST', {
                     type: 'config',
@@ -804,7 +808,7 @@ describe('POST /api/config', () => {
             );
             expect(res.status).toBe(200);
         }
-        expect(mockSetConfigValue).toHaveBeenCalledTimes(6);
+        expect(mockSetConfigValue).toHaveBeenCalledTimes(3);
     });
 
     // -----------------------------------------------------------------------

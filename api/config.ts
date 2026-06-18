@@ -13,6 +13,7 @@ import {
     getNotificationConfig,
     updateNotificationConfig,
 } from '../lib/db/queries.js';
+import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -103,18 +104,10 @@ async function handler(req: Request): Promise<Response> {
                     return Response.json({ error: `${key} must be a boolean` }, { status: 400 });
                 }
                 if (key === 'analysis_timeframe') {
-                    const ALLOWED_TF = new Set([
-                        '5Min',
-                        '15Min',
-                        '30Min',
-                        '1Hour',
-                        '4Hour',
-                        '1Day',
-                    ]);
-                    if (!ALLOWED_TF.has(value as string)) {
+                    if (!isAnalysisTimeframe(value)) {
                         return Response.json(
                             {
-                                error: 'analysis_timeframe must be one of: 5Min, 15Min, 30Min, 1Hour, 4Hour, 1Day',
+                                error: 'analysis_timeframe must be one of: 15Min, 30Min, 1Hour',
                             },
                             { status: 400 },
                         );
