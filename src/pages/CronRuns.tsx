@@ -33,6 +33,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
+type ScoreComponents = {
+    technical: number;
+    news: number;
+    options: number;
+    fundamental: number;
+    overall: number;
+};
+
+const COMPONENT_KEYS = ['technical', 'news', 'options', 'fundamental', 'overall'] as const;
+
+/** Safely read `detail.components` from an untyped decision detail blob. */
+function readScoreComponents(detail: unknown): ScoreComponents | null {
+    if (!isRecord(detail) || !isRecord(detail.components)) return null;
+    const c = detail.components;
+    if (!COMPONENT_KEYS.every((k) => typeof c[k] === 'number')) return null;
+    return {
+        technical: c.technical as number,
+        news: c.news as number,
+        options: c.options as number,
+        fundamental: c.fundamental as number,
+        overall: c.overall as number,
+    };
+}
+
 function timeAgo(dateStr: string): string {
     const diff = Date.now() - new Date(dateStr).getTime();
     const minutes = Math.floor(diff / 60_000);
@@ -358,11 +382,26 @@ function DecisionsList({ runId }: { runId: string }) {
                             {decision.reason}
                         </p>
                     )}
-                    {decision.detail != null && (
-                        <pre className="max-h-28 overflow-auto rounded border border-[#262626] bg-[#0a0a0a] p-2 text-[10px] leading-relaxed text-neutral-500">
-                            {JSON.stringify(decision.detail, null, 2)}
-                        </pre>
-                    )}
+                    {(() => {
+                        const components = readScoreComponents(decision.detail);
+                        if (components) {
+                            return (
+                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                    기술 {components.technical} · 뉴스 {components.news} · 옵션{' '}
+                                    {components.options} · 펀더멘털 {components.fundamental} · 종합{' '}
+                                    {components.overall}
+                                </span>
+                            );
+                        }
+                        if (decision.detail != null) {
+                            return (
+                                <pre className="max-h-28 overflow-auto rounded border border-[#262626] bg-[#0a0a0a] p-2 text-[10px] leading-relaxed text-neutral-500">
+                                    {JSON.stringify(decision.detail, null, 2)}
+                                </pre>
+                            );
+                        }
+                        return null;
+                    })()}
                 </li>
             ))}
         </ul>

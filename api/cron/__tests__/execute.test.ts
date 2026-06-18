@@ -2195,6 +2195,104 @@ describe('execute cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Decision audit detail (reason + score components)
+    // -----------------------------------------------------------------------
+
+    describe('decision audit detail', () => {
+        beforeEach(() => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([{ symbol: 'NVDA', companyName: 'NVIDIA' }]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') {
+                        return Promise.resolve({
+                            result: { trend: 'neutral', keyLevels: { currentPrice: 150 } },
+                            analyzedAt: '2026-05-24T14:25:00.000Z',
+                            sourceAnalyzedAt: '2026-05-24T14:25:00.000Z',
+                        });
+                    }
+                    return Promise.resolve(null);
+                },
+            );
+        });
+
+        it('records reason + score components for a hold decision', async () => {
+            mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'hold',
+                symbol: 'NVDA',
+                score: 50,
+                reason: '신호 50/100 — 대기 (기술:50, 뉴스:50, 옵션:50, 펀더멘털:50, 종합:50)',
+                quantity: 0,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'NVDA',
+                        action: 'hold',
+                        executed: false,
+                        reason: expect.stringContaining('신호'),
+                        detail: {
+                            components: {
+                                technical: expect.any(Number),
+                                news: expect.any(Number),
+                                options: expect.any(Number),
+                                fundamental: expect.any(Number),
+                                overall: expect.any(Number),
+                            },
+                            signal: 'hold',
+                            thresholds: { buy: 70, sell: 30 },
+                            sourceAnalyzedAt: expect.any(String),
+                        },
+                    }),
+                ]),
+            );
+        });
+
+        it('carries the same score detail into an executed buy decision', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'NVDA',
+                score: 80,
+                reason: '신호 80/100 — 매수 (기술:95, 뉴스:80, 옵션:75, 펀더멘털:50, 종합:50)',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                'execute',
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        symbol: 'NVDA',
+                        action: 'buy',
+                        executed: true,
+                        reason: expect.stringContaining('신호'),
+                        detail: expect.objectContaining({
+                            components: expect.objectContaining({ technical: expect.any(Number) }),
+                            signal: 'buy',
+                            thresholds: { buy: 70, sell: 30 },
+                            sourceAnalyzedAt: expect.any(String),
+                        }),
+                    }),
+                ]),
+            );
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Response format
     // -----------------------------------------------------------------------
 
@@ -2354,7 +2452,8 @@ describe('execute cron handler', () => {
                     executed: false,
                 }),
             );
-            // insertCronDecisions must receive the hold entry.
+            // insertCronDecisions must receive the hold entry, including the
+            // evaluation reason so the audit row records why it was held.
             expect(mockInsertCronDecisions).toHaveBeenCalledWith(
                 fakeDb,
                 expect.any(String), // cronRunId
@@ -2364,6 +2463,7 @@ describe('execute cron handler', () => {
                         symbol: 'AAPL',
                         action: 'hold',
                         executed: false,
+                        reason: '유지 (조건 미충족)',
                     }),
                 ]),
             );

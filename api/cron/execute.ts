@@ -55,7 +55,7 @@ import {
     DEFAULT_BUY_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
 } from '../../lib/strategy/types.js';
-import type { ScoreWeights } from '../../lib/strategy/types.js';
+import type { ScoreWeights, SignalScore } from '../../lib/strategy/types.js';
 import { resolveApiKey } from './_run-analysis-cron.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
@@ -98,6 +98,32 @@ function noPriceDetail(
                 usable: safeAnalysisPrice(technicalResult) > 0,
             },
         },
+    };
+}
+
+/**
+ * Audit detail recorded for every decision produced from a real signal score
+ * (hold/buy/sell/average_in). Captures the component breakdown, the raw signal,
+ * the active thresholds, and the source-analysis timestamp so a held or executed
+ * decision can be explained after the fact.
+ */
+function scoreDecisionDetail(
+    signalScore: SignalScore,
+    buyThreshold: number,
+    sellThreshold: number,
+    sourceAnalyzedAt: Date | null,
+) {
+    // Guard against an Invalid Date (e.g. analysis row without a parseable
+    // timestamp) — toISOString() would throw on a NaN-time Date.
+    const sourceIso =
+        sourceAnalyzedAt && Number.isFinite(sourceAnalyzedAt.getTime())
+            ? sourceAnalyzedAt.toISOString()
+            : null;
+    return {
+        components: signalScore.components,
+        signal: signalScore.signal,
+        thresholds: { buy: buyThreshold, sell: sellThreshold },
+        sourceAnalyzedAt: sourceIso,
     };
 }
 
@@ -495,6 +521,7 @@ async function handler(req: Request): Promise<Response> {
                             action: 'hold',
                             score: 0,
                             executed: false,
+                            reason: evaluation.reason,
                         });
                         continue;
                     }
@@ -1125,6 +1152,13 @@ async function handler(req: Request): Promise<Response> {
                             action: decision.action,
                             score: decision.score,
                             executed: false,
+                            reason: decision.reason,
+                            detail: scoreDecisionDetail(
+                                signalScore,
+                                buyThreshold,
+                                sellThreshold,
+                                techReferenceTime,
+                            ),
                         });
                         continue;
                     }
@@ -1683,6 +1717,13 @@ async function handler(req: Request): Promise<Response> {
                             action: decision.action,
                             score: decision.score,
                             executed: true,
+                            reason: decision.reason,
+                            detail: scoreDecisionDetail(
+                                signalScore,
+                                buyThreshold,
+                                sellThreshold,
+                                techReferenceTime,
+                            ),
                         });
                     }
                 } catch (err) {

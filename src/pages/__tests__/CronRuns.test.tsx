@@ -293,6 +293,143 @@ describe('CronRunsPage', () => {
         expect(screen.getByText(/RSI oversold/)).toBeInTheDocument();
     });
 
+    it('renders reason and structured score components when decision detail is present', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 201,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'hold',
+                    executed: false,
+                    score: '50.0',
+                    reason: '신호 50/100 — 대기',
+                    detail: {
+                        components: {
+                            technical: 51,
+                            news: 52,
+                            options: 53,
+                            fundamental: 54,
+                            overall: 55,
+                        },
+                        signal: 'hold',
+                        thresholds: { buy: 70, sell: 30 },
+                        sourceAnalyzedAt: '2026-05-24T14:25:00.000Z',
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        const rowBtn = screen.getByRole('button', { expanded: false });
+        await user.click(rowBtn);
+
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+
+        // reason shown
+        expect(screen.getByText(/대기/)).toBeInTheDocument();
+        // structured component scores rendered (not raw JSON)
+        const componentsLine = screen.getByText(/기술 51/);
+        expect(componentsLine).toBeInTheDocument();
+        expect(componentsLine).toHaveTextContent('뉴스 52');
+        expect(componentsLine).toHaveTextContent('옵션 53');
+        expect(componentsLine).toHaveTextContent('펀더멘털 54');
+        expect(componentsLine).toHaveTextContent('종합 55');
+    });
+
+    it('renders a decision with null detail without crashing and shows no component line', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 202,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'hold',
+                    executed: false,
+                    score: '0.0',
+                    reason: '유지 (조건 미충족)',
+                    detail: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        const rowBtn = screen.getByRole('button', { expanded: false });
+        await user.click(rowBtn);
+
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+
+        // reason still shown
+        expect(screen.getByText(/유지/)).toBeInTheDocument();
+        // no component-scores line, and no raw JSON <pre> fallback
+        expect(screen.queryByText(/기술 /)).not.toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    it('falls back to raw JSON for a partial components object (missing keys)', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 203,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'hold',
+                    executed: false,
+                    score: '50.0',
+                    reason: '부분 점수',
+                    // Missing options/fundamental/overall → readScoreComponents returns null
+                    detail: { components: { technical: 50, news: 50 } },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        const rowBtn = screen.getByRole('button', { expanded: false });
+        await user.click(rowBtn);
+
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+
+        // No structured component line (requires all five numeric keys)
+        expect(screen.queryByText(/기술 50/)).not.toBeInTheDocument();
+        // Falls back to raw JSON <pre> path
+        const pre = document.querySelector('pre');
+        expect(pre).not.toBeNull();
+        expect(pre).toHaveTextContent('"technical": 50');
+    });
+
     it('shows empty decisions message when decisions array is empty', async () => {
         const user = userEvent.setup();
         mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[1]] });
