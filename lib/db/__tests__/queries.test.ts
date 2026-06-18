@@ -207,7 +207,7 @@ describe('Analysis config queries', () => {
                 id: 0,
                 analysisType: 'nonexistent',
                 enabled: true,
-                modelId: 'gemini-2.5-flash',
+                modelId: 'gemini-2.5-flash-lite',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
@@ -271,7 +271,7 @@ describe('Analysis config queries', () => {
             expect(db._chain.values).toHaveBeenCalledWith({
                 analysisType: 'news',
                 enabled: false,
-                modelId: 'gemini-2.5-flash',
+                modelId: 'gemini-2.5-flash-lite',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
@@ -295,7 +295,7 @@ describe('Analysis config queries', () => {
             expect(db._chain.values).toHaveBeenCalledWith({
                 analysisType: 'options',
                 enabled: false,
-                modelId: 'gemini-2.5-flash',
+                modelId: 'gemini-2.5-flash-lite',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
