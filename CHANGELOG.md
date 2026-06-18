@@ -1,5 +1,26 @@
 # Changelog
 
+# [0.9.0](https://github.com/y0ngha/siglens-trader/compare/v0.8.0...v0.9.0) (2026-06-18)
+
+
+### Bug Fixes
+
+* align analysis page staleness with execute freshness gate ([9e9242d](https://github.com/y0ngha/siglens-trader/commit/9e9242d7cf8004629f3c5871c8bbb9342e44acad))
+* remove src→lib layer violation and constrain technical default ([bca23e5](https://github.com/y0ngha/siglens-trader/commit/bca23e5c28fed084d6e5b2c72938a643a2de16f0))
+
+
+### Features
+
+* add technical timeframe setting ([81c5949](https://github.com/y0ngha/siglens-trader/commit/81c5949127c97fab064c1b37821418e421f2830f))
+* audit trading decision rationale ([1207e02](https://github.com/y0ngha/siglens-trader/commit/1207e02f1fcdfbac2081dc660eed7b5bdd87b0ad))
+* bound news card concurrency and runtime ([1335e43](https://github.com/y0ngha/siglens-trader/commit/1335e437c203ea1146538865f39fc3307aa66fe5))
+* constrain technical analysis timeframes ([b89fc0c](https://github.com/y0ngha/siglens-trader/commit/b89fc0c0d2a23810f9833eb91ee1a9d5d2ff7236))
+* enforce timeframe-aware analysis freshness ([4efe293](https://github.com/y0ngha/siglens-trader/commit/4efe29360531f999af7811fcd2bcead4aaad88ea))
+* finalize timed out cron audit rows ([83b88eb](https://github.com/y0ngha/siglens-trader/commit/83b88eb90325caf05ff66e2a15db22a96459f332))
+* migrate analysis timestamps and operational defaults ([1413bb5](https://github.com/y0ngha/siglens-trader/commit/1413bb5b431b032617fdf51d2b8d0fb52ec9bc36))
+* preserve source analysis timestamps ([7862c86](https://github.com/y0ngha/siglens-trader/commit/7862c8662c128ab932a315ce1917eeea837729b2))
+* remove overall analysis axis ([ea90486](https://github.com/y0ngha/siglens-trader/commit/ea90486e533b51075c33db14c39d3d2c4d219ff7))
+
 # [0.8.0](https://github.com/y0ngha/siglens-trader/compare/v0.7.0...v0.8.0) (2026-06-17)
 
 
