@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -631,6 +631,40 @@ describe('SettingsPage', () => {
             type: 'analysis',
             analysisType: 'technical',
             updates: { modelId: 'claude-sonnet-4-6' },
+        });
+    });
+
+    it('offers flash lite while preserving the configured technical analysis model', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        const technicalItem = (await screen.findByText('기술적 분석')).closest('li');
+        expect(technicalItem).not.toBeNull();
+
+        const modelSelect = within(technicalItem!).getByRole('combobox');
+        expect(modelSelect).toHaveValue('gemini-2.5-flash');
+        expect(
+            within(modelSelect).getByRole('option', { name: 'gemini-2.5-flash-lite' }),
+        ).toBeInTheDocument();
+    });
+
+    it('defaults all synthesized analysis configurations to flash lite', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            analysis: [],
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        const analysisHeading = await screen.findByText('분석 설정');
+        const analysisList = analysisHeading.closest('section')?.querySelector('ul');
+        expect(analysisList).not.toBeNull();
+
+        const modelSelects = within(analysisList!).getAllByRole('combobox');
+        expect(modelSelects).toHaveLength(4);
+        modelSelects.forEach((select) => {
+            expect(select).toHaveValue('gemini-2.5-flash-lite');
         });
     });
 
