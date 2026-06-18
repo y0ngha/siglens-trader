@@ -40,6 +40,8 @@ import {
     getPendingSubmittedOrders,
     startCronRun,
     finishCronRun,
+    finalizeStaleCronRuns,
+    CRON_STALE_AFTER_MS,
     insertCronDecisions,
     getCronRuns,
     getCronDecisions,
@@ -1342,6 +1344,70 @@ describe('Cron audit log queries', () => {
                     finishedAt,
                 }),
             );
+        });
+
+        it('writes outcome on the error variant when provided (e.g. timeout)', async () => {
+            const finishedAt = new Date('2026-06-12T14:15:00Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'run-execute-timeout', {
+                status: 'error',
+                outcome: 'timeout',
+                error: 'Cron exceeded maximum execution time',
+                finishedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'error',
+                    outcome: 'timeout',
+                    error: 'Cron exceeded maximum execution time',
+                    finishedAt,
+                }),
+            );
+        });
+    });
+
+    describe('finalizeStaleCronRuns', () => {
+        it('exposes a 15-minute stale threshold constant', () => {
+            expect(CRON_STALE_AFTER_MS).toBe(15 * 60_000);
+        });
+
+        it('executes a single atomic UPDATE marking running rows older than the cutoff as error/timeout', async () => {
+            const db = createMockDb({ rowCount: 2 } as any);
+            const now = new Date('2026-06-18T15:00:00.000Z');
+
+            await finalizeStaleCronRuns(db as unknown as Db, now);
+
+            // Atomic SQL path — no select/update builder chain
+            expect(db.execute).toHaveBeenCalledTimes(1);
+            expect(db.select).not.toHaveBeenCalled();
+
+            // Inspect the interpolated SQL: status/outcome/error literals + the cutoff
+            // and finished_at bind values must all be present.
+            const sqlArg = db.execute.mock.calls[0][0] as {
+                queryChunks?: unknown[];
+                strings?: string[];
+            };
+            const rendered = JSON.stringify(sqlArg);
+            expect(rendered).toContain('cron_runs');
+            expect(rendered).toContain("'error'");
+            expect(rendered).toContain("'timeout'");
+            expect(rendered).toContain('Cron exceeded maximum execution time');
+            expect(rendered).toContain("'running'");
+            // cutoff = now - 15 minutes
+            const cutoff = new Date(now.getTime() - CRON_STALE_AFTER_MS);
+            expect(rendered).toContain(cutoff.toISOString());
+            // finished_at = now
+            expect(rendered).toContain(now.toISOString());
+        });
+
+        it('defaults now to the current time when omitted', async () => {
+            const db = createMockDb({ rowCount: 0 } as any);
+
+            await finalizeStaleCronRuns(db as unknown as Db);
+
+            expect(db.execute).toHaveBeenCalledTimes(1);
         });
     });
 

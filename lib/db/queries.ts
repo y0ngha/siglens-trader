@@ -571,7 +571,44 @@ export type CronOutcome =
     | 'disabled'
     | 'market_status_unavailable'
     | 'daily_trade_limit'
-    | 'daily_loss_limit';
+    | 'daily_loss_limit'
+    | 'timeout';
+
+/**
+ * A cron audit row left in `running` for longer than this is considered stale
+ * (its function timed out / was killed mid-run before it could write a finish
+ * row). The reliability finalizer rewrites such rows to error/timeout so the
+ * audit log never shows a perpetually-running invocation.
+ *
+ * Must stay greater than the Vercel function `maxDuration` (800s, see
+ * vercel.json) — otherwise a live, still-running invocation could be swept
+ * mid-execution.
+ */
+export const CRON_STALE_AFTER_MS = 15 * 60_000;
+
+/**
+ * Atomically finalize any `running` cron audit rows whose `started_at` is older
+ * than {@link CRON_STALE_AFTER_MS}. Such rows belong to invocations that timed
+ * out (Vercel maxDuration) before writing their own finish row, so they would
+ * otherwise stay `running` forever.
+ *
+ * Best-effort: callers wrap this in their `[cron-audit]` safe() helper so a
+ * failure never aborts the current cron. Concurrent calls are safe — after the
+ * first UPDATE commits, no rows match the `status = 'running'` predicate.
+ */
+export async function finalizeStaleCronRuns(db: Db, now = new Date()): Promise<void> {
+    const cutoff = new Date(now.getTime() - CRON_STALE_AFTER_MS);
+    await db.execute(sql`
+        UPDATE cron_runs
+        SET status = 'error',
+            outcome = 'timeout',
+            finished_at = ${now},
+            duration_ms = FLOOR(EXTRACT(EPOCH FROM (${now} - started_at)) * 1000),
+            error = 'Cron exceeded maximum execution time'
+        WHERE status = 'running'
+          AND started_at < ${cutoff}
+    `);
+}
 
 export async function startCronRun(
     db: Db,
@@ -597,7 +634,13 @@ export type CronRunFinish =
           finishedAt: Date;
       }
     | { status: 'skipped'; outcome: CronOutcome; durationMs?: number; finishedAt: Date }
-    | { status: 'error'; error: string; durationMs?: number; finishedAt: Date };
+    | {
+          status: 'error';
+          error: string;
+          outcome?: 'timeout';
+          durationMs?: number;
+          finishedAt: Date;
+      };
 
 export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
     const set: Partial<typeof cronRuns.$inferInsert> = {
@@ -607,6 +650,9 @@ export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
     };
     if (p.status === 'error') {
         set.error = p.error;
+        // Error rows may carry a machine-readable outcome (e.g. 'timeout') so the
+        // dashboard/alerts can distinguish a finalized stale run from a crash.
+        if (p.outcome !== undefined) set.outcome = p.outcome;
     } else {
         set.outcome = p.outcome;
         if (p.status === 'completed' && p.summary !== undefined) {

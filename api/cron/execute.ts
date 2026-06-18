@@ -26,6 +26,7 @@ import {
     getNotificationConfig,
     startCronRun,
     finishCronRun,
+    finalizeStaleCronRuns,
     insertCronDecisions,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
@@ -122,6 +123,9 @@ async function handler(req: Request): Promise<Response> {
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
 
+    // Finalize any audit rows stuck in 'running' past the stale threshold (a
+    // prior invocation that timed out before writing its finish row). Best-effort.
+    await safe(finalizeStaleCronRuns(db, startedAt));
     await safe(startCronRun(db, { runId: cronRunId, cronType: 'execute', startedAt }));
 
     let finishState: CronRunFinish | null = null;

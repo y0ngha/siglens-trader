@@ -29,6 +29,7 @@ const mockGetConfigValue = vi.fn();
 const mockGetNotificationConfig = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
+const mockFinalizeStaleCronRuns = vi.fn();
 const mockInsertCronDecisions = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
@@ -38,6 +39,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
+    finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
     insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
 }));
 
@@ -110,6 +112,7 @@ function setupDefaults() {
     ]);
     mockStartCronRun.mockResolvedValue(undefined);
     mockFinishCronRun.mockResolvedValue(undefined);
+    mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
     mockInsertCronDecisions.mockResolvedValue(undefined);
 }
 
@@ -1066,6 +1069,25 @@ describe('reconcile cron handler', () => {
                 fakeDb,
                 expect.objectContaining({ cronType: 'reconcile' }),
             );
+        });
+
+        it('finalizes stale running rows before inserting the new audit row', async () => {
+            await handler(makeRequest(true));
+
+            expect(mockFinalizeStaleCronRuns).toHaveBeenCalledWith(fakeDb, expect.any(Date));
+            // Must run BEFORE startCronRun so the new row isn't itself swept.
+            expect(mockFinalizeStaleCronRuns.mock.invocationCallOrder[0]).toBeLessThan(
+                mockStartCronRun.mock.invocationCallOrder[0],
+            );
+        });
+
+        it('finalizeStaleCronRuns rejecting → reconcile still runs (best-effort)', async () => {
+            mockFinalizeStaleCronRuns.mockRejectedValue(new Error('audit DB down'));
+
+            const res = await handler(makeRequest(true));
+
+            expect(res.status).toBe(200);
+            expect(mockStartCronRun).toHaveBeenCalled();
         });
 
         it('normal run → finishCronRun called with status:completed, outcome:completed', async () => {

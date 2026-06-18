@@ -21,6 +21,7 @@ const mockGetConfigValue = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
+const mockFinalizeStaleCronRuns = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
@@ -28,6 +29,7 @@ vi.mock('../../../lib/db/queries', () => ({
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
+    finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
@@ -84,6 +86,7 @@ describe('createAnalysisCronHandler', () => {
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
+        mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
         mockVerifyCronSecret.mockReturnValue(true);
         mockIsEtRegularSessionOpen.mockReturnValue(true);
         mockAcquireLock.mockResolvedValue('test-lock-token');
@@ -325,6 +328,28 @@ describe('createAnalysisCronHandler', () => {
             fakeDb,
             expect.objectContaining({ cronType: 'technical' }),
         );
+    });
+
+    it('finalizes stale running rows before inserting the new audit row', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinalizeStaleCronRuns).toHaveBeenCalledWith(fakeDb, expect.any(Date));
+        // Must run BEFORE startCronRun so the new row isn't itself swept.
+        expect(mockFinalizeStaleCronRuns.mock.invocationCallOrder[0]).toBeLessThan(
+            mockStartCronRun.mock.invocationCallOrder[0],
+        );
+    });
+
+    it('does not break the cron when finalizeStaleCronRuns fails', async () => {
+        mockFinalizeStaleCronRuns.mockRejectedValue(new Error('audit DB down'));
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        const res = await handler(makeRequest(true));
+
+        expect(res.status).toBe(200);
+        expect(mockStartCronRun).toHaveBeenCalled();
     });
 
     it('calls finishCronRun with status:completed and outcome:completed on normal run', async () => {

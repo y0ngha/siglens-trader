@@ -38,6 +38,7 @@ const mockAverageIntoPosition = vi.fn();
 const mockGetNotificationConfig = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
+const mockFinalizeStaleCronRuns = vi.fn();
 const mockInsertCronDecisions = vi.fn();
 const mockGetTodayInflightOrderCount = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
@@ -65,6 +66,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
+    finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
     insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
 }));
 
@@ -272,6 +274,7 @@ function setupDefaults() {
     });
     mockStartCronRun.mockResolvedValue(undefined);
     mockFinishCronRun.mockResolvedValue(undefined);
+    mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
     mockInsertCronDecisions.mockResolvedValue(undefined);
     // Default: email channel enabled with all events selected so existing
     // notification assertions still fire. Tests that exercise the gate override this.
@@ -5388,6 +5391,30 @@ describe('execute cron handler', () => {
                 fakeDb,
                 expect.objectContaining({ cronType: 'execute' }),
             );
+        });
+
+        it('finalizes stale running rows before inserting the new audit row', async () => {
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            await handler(makeRequest(true));
+
+            expect(mockFinalizeStaleCronRuns).toHaveBeenCalledWith(fakeDb, expect.any(Date));
+            // Must run BEFORE startCronRun so the new row isn't itself swept.
+            expect(mockFinalizeStaleCronRuns.mock.invocationCallOrder[0]).toBeLessThan(
+                mockStartCronRun.mock.invocationCallOrder[0],
+            );
+        });
+
+        it('audit failures do not abort trading (finalizeStaleCronRuns throws → handler still runs)', async () => {
+            mockFinalizeStaleCronRuns.mockRejectedValue(new Error('audit DB down'));
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({ skipped: true, reason: 'empty_watchlist' });
         });
 
         it('records completed finishState on normal completion', async () => {

@@ -8,6 +8,7 @@ import {
     saveAnalysisResult,
     startCronRun,
     finishCronRun,
+    finalizeStaleCronRuns,
     getNewsCards,
     upsertNewsCards,
 } from '../../lib/db/queries.js';
@@ -41,6 +42,9 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
         const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
         const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
 
+        // Finalize any audit rows stuck in 'running' past the stale threshold (a
+        // prior invocation that timed out before writing its finish row). Best-effort.
+        await safe(finalizeStaleCronRuns(db, startedAt));
         await safe(startCronRun(db, { runId: cronRunId, cronType, startedAt }));
 
         let finishState: CronRunFinish | null = null;
