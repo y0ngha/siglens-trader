@@ -7,11 +7,18 @@ import { api } from '@/lib/api';
 vi.mock('@/lib/api', () => ({
     api: {
         getAnalysis: vi.fn(),
+        getConfig: vi.fn(),
         triggerAnalysis: vi.fn(),
     },
 }));
 
 const mockedApi = vi.mocked(api);
+
+function mockTimeframe(value: string) {
+    mockedApi.getConfig.mockResolvedValue({
+        config: [{ key: 'analysis_timeframe', value }],
+    } as never);
+}
 
 function renderWithQuery(component: React.ReactElement) {
     const queryClient = new QueryClient({
@@ -23,6 +30,7 @@ function renderWithQuery(component: React.ReactElement) {
 describe('AnalysisPage', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mockTimeframe('1Hour');
     });
 
     it('shows loading skeleton initially', () => {
@@ -213,6 +221,67 @@ describe('AnalysisPage', () => {
             expect(screen.getByText('오래됨')).toBeInTheDocument();
         });
         expect(screen.getByText('5시간 전')).toHaveClass('text-yellow-500');
+    });
+
+    it('marks technical analysis stale at the 1Hour timeframe limit (2h), not the old 4h', async () => {
+        mockTimeframe('1Hour');
+        // 3h old: fresh under the old 4h rule, but stale under the 1Hour→2h execute gate
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'technical',
+                result: JSON.stringify({ signal: 'bullish' }),
+                createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('오래됨')).toBeInTheDocument();
+        });
+    });
+
+    it('applies the tighter 15Min limit (45m) to technical analysis', async () => {
+        mockTimeframe('15Min');
+        // 1h old: stale under 15Min→45m, even though fresh under 1Hour→2h
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'technical',
+                result: JSON.stringify({ signal: 'bullish' }),
+                createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('오래됨')).toBeInTheDocument();
+        });
+    });
+
+    it('keeps the default 4h threshold for non-technical analysis', async () => {
+        mockTimeframe('1Hour');
+        // 3h old news: not gated by the technical timeframe limit, stays fresh under 4h
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'news',
+                result: JSON.stringify({ signal: 'neutral' }),
+                createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('오래됨')).not.toBeInTheDocument();
     });
 
     // --- Re-analysis trigger visibility ---

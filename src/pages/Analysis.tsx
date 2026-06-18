@@ -15,8 +15,39 @@ interface AnalysisEntry {
     sourceAnalyzedAt?: string | null;
 }
 
-/** Analysis older than 4 hours is considered stale */
-const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+interface ConfigEntry {
+    key: string;
+    value: unknown;
+}
+interface ConfigData {
+    config: ConfigEntry[];
+}
+
+// 서버의 analysis_timeframe 계약(15Min/30Min/1Hour, 기본 1Hour) 미러.
+// src/는 lib/(서버 코드)를 import하지 않으므로 클라이언트용 최소 정의를 둔다.
+const ANALYSIS_TIMEFRAMES = ['15Min', '30Min', '1Hour'] as const;
+type AnalysisTimeframe = (typeof ANALYSIS_TIMEFRAMES)[number];
+const DEFAULT_ANALYSIS_TIMEFRAME: AnalysisTimeframe = '1Hour';
+function normalizeAnalysisTimeframe(value: unknown): AnalysisTimeframe {
+    return ANALYSIS_TIMEFRAMES.includes(value as AnalysisTimeframe)
+        ? (value as AnalysisTimeframe)
+        : DEFAULT_ANALYSIS_TIMEFRAME;
+}
+
+// 기술적 분석은 execute 크론과 동일한 타임프레임별 신선도 한도를 사용한다
+// (lib/analysis/timeframe.ts getTechnicalMaxAgeMs 미러). 그래야 화면의 "오래됨"
+// 표시가 execute가 stale_analysis로 매매를 건너뛰는 기준과 어긋나지 않는다.
+const TECHNICAL_MAX_AGE_MS: Record<AnalysisTimeframe, number> = {
+    '15Min': 45 * 60_000,
+    '30Min': 90 * 60_000,
+    '1Hour': 2 * 60 * 60_000,
+};
+// 뉴스/옵션/펀더멘털은 execute에 하드 신선도 게이트가 없어 일반 기준(4시간)을 쓴다.
+const DEFAULT_STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+
+function staleThresholdMs(type: string, timeframe: AnalysisTimeframe): number {
+    return type === 'technical' ? TECHNICAL_MAX_AGE_MS[timeframe] : DEFAULT_STALE_THRESHOLD_MS;
+}
 
 function typeLabel(type: string): string {
     switch (type) {
@@ -75,21 +106,21 @@ function timeAgo(dateStr: string): string {
     return `${days}일 전`;
 }
 
-function isStale(dateStr: string): boolean {
-    return Date.now() - new Date(dateStr).getTime() > STALE_THRESHOLD_MS;
-}
-
 function getReferenceDate(entry: AnalysisEntry): string {
     return entry.sourceAnalyzedAt ?? entry.analyzedAt ?? entry.createdAt;
 }
 
-function getLatestDate(entries: AnalysisEntry[]): string {
-    return entries.reduce((latest, entry) => {
-        const referenceDate = getReferenceDate(entry);
-        return new Date(referenceDate).getTime() > new Date(latest).getTime()
-            ? referenceDate
-            : latest;
-    }, getReferenceDate(entries[0]));
+function isEntryStale(entry: AnalysisEntry, timeframe: AnalysisTimeframe): boolean {
+    const age = Date.now() - new Date(getReferenceDate(entry)).getTime();
+    return age > staleThresholdMs(entry.analysisType, timeframe);
+}
+
+function getLatestEntry(entries: AnalysisEntry[]): AnalysisEntry {
+    return entries.reduce((latest, entry) =>
+        new Date(getReferenceDate(entry)).getTime() > new Date(getReferenceDate(latest)).getTime()
+            ? entry
+            : latest,
+    );
 }
 
 export function AnalysisPage() {
@@ -97,6 +128,14 @@ export function AnalysisPage() {
         queryKey: ['analysis'],
         queryFn: ({ signal }) => api.getAnalysis(undefined, signal) as Promise<AnalysisEntry[]>,
     });
+    const { data: configData } = useQuery({
+        queryKey: ['config'],
+        queryFn: ({ signal }) => api.getConfig(signal) as Promise<ConfigData>,
+    });
+
+    const analysisTimeframe = normalizeAnalysisTimeframe(
+        configData?.config?.find((c) => c.key === 'analysis_timeframe')?.value,
+    );
 
     if (isLoading) return <LoadingSkeleton />;
     if (error) return <ErrorMessage error={error as Error} />;
@@ -114,8 +153,7 @@ export function AnalysisPage() {
             <h1 className="text-lg font-semibold">분석 결과</h1>
             <ul className="space-y-3">
                 {Object.entries(grouped).map(([symbol, entries]) => {
-                    const latestDate = getLatestDate(entries);
-                    const stale = isStale(latestDate);
+                    const stale = isEntryStale(getLatestEntry(entries), analysisTimeframe);
 
                     return (
                         <li
@@ -151,7 +189,7 @@ export function AnalysisPage() {
                                                 />
                                             </div>
                                             <span
-                                                className={`${isStale(referenceDate) ? 'text-yellow-500' : 'text-neutral-500'}`}
+                                                className={`${isEntryStale(entry, analysisTimeframe) ? 'text-yellow-500' : 'text-neutral-500'}`}
                                             >
                                                 {timeAgo(referenceDate)}
                                             </span>
