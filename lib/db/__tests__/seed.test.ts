@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const mockOnConflictDoNothing = vi.fn().mockResolvedValue(undefined);
-const mockValues = vi.fn().mockReturnValue({ onConflictDoNothing: mockOnConflictDoNothing });
+interface ValuesOperation {
+    value: unknown;
+    onConflictDoNothing: ReturnType<typeof vi.fn>;
+}
+
+const valuesOperations: ValuesOperation[] = [];
+const mockValues = vi.fn((value: unknown) => {
+    const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+    valuesOperations.push({ value, onConflictDoNothing });
+    return { onConflictDoNothing };
+});
 const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
 
 const mockDb = {
@@ -21,6 +30,7 @@ describe('seed', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        valuesOperations.length = 0;
         process.env = { ...originalEnv, DATABASE_URL: 'postgresql://test:test@localhost/test' };
     });
 
@@ -66,6 +76,20 @@ describe('seed', () => {
                 ([value]) => (value as { modelId?: unknown }).modelId === 'gemini-2.5-flash-lite',
             ),
         ).toBe(true);
+
+        const modelConfigOperations = valuesOperations.filter(
+            ({ value }) =>
+                value &&
+                typeof value === 'object' &&
+                !Array.isArray(value) &&
+                'analysisType' in value &&
+                'modelId' in value &&
+                'useByok' in value,
+        );
+        expect(modelConfigOperations).toHaveLength(4);
+        for (const { onConflictDoNothing } of modelConfigOperations) {
+            expect(onConflictDoNothing).toHaveBeenCalledOnce();
+        }
     });
 
     it('inserts notification config', async () => {
