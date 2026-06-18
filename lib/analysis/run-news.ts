@@ -13,12 +13,17 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
     if (!options.cardStore) {
         return { status: 'error', error: 'cardStore not provided to runNewsAnalysis' };
     }
+    const deadlineMs = options.deadlineMs ?? Number.POSITIVE_INFINITY;
     try {
         const news = await newsClient.fetchNews(options.symbol, '7d');
         if (news.length === 0) return { status: 'skipped' };
 
-        const enriched = await enrichNewsCards(options.cardStore, options.symbol, news);
-        if (enriched.length === 0) return { status: 'skipped' };
+        const enriched = await enrichNewsCards(options.cardStore, options.symbol, news, {
+            deadlineMs,
+        });
+        // enrich가 비었거나 새 LLM 작업을 시작할 시간이 없으면 aggregate 단계를 건너뛴다.
+        // 한 심볼이 전체 cron의 audit 마감을 막지 못하도록.
+        if (enriched.length === 0 || Date.now() >= deadlineMs) return { status: 'skipped' };
 
         const earningsReports = await fundamentalClient.getEarningsReports(options.symbol);
         const upcomingCalendar: EarningsCalendarItem[] = earningsReports.map((r) => ({

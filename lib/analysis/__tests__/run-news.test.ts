@@ -193,4 +193,32 @@ describe('runNewsAnalysis', () => {
         expect(result.status).toBe('skipped');
         expect(mockedSubmit).not.toHaveBeenCalled();
     });
+
+    it('forwards deadlineMs to enrichNewsCards', async () => {
+        const deadlineMs = Date.now() + 600_000;
+        mockFetchNews.mockResolvedValue([{ title: 'news' }]);
+        mockedEnrich.mockResolvedValue(enrichedFixture);
+        mockGetEarningsReports.mockResolvedValue([]);
+        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'j' } as any);
+        mockedPoll.mockResolvedValue({ result: { ok: true } });
+
+        await runNewsAnalysis({ ...baseOptions, deadlineMs });
+
+        expect(mockedEnrich).toHaveBeenCalledWith(fakeCardStore, 'TSLA', expect.anything(), {
+            deadlineMs,
+        });
+    });
+
+    it('skips the aggregate submission when the deadline has passed', async () => {
+        mockFetchNews.mockResolvedValue([{ title: 'news' }]);
+        // enrich returns cards but no time remains for the aggregate LLM call
+        mockedEnrich.mockResolvedValue(enrichedFixture);
+        mockGetEarningsReports.mockResolvedValue([]);
+
+        const result = await runNewsAnalysis({ ...baseOptions, deadlineMs: Date.now() - 1 });
+
+        expect(result).toEqual({ status: 'skipped' });
+        expect(mockGetEarningsReports).not.toHaveBeenCalled();
+        expect(mockedSubmit).not.toHaveBeenCalled();
+    });
 });

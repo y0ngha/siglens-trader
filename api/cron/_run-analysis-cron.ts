@@ -19,6 +19,7 @@ import type {
     RunAnalysisOptions,
 } from '../../lib/analysis/types.js';
 import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
+import { toCoreTimeframe } from '../../lib/analysis/timeframe.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
@@ -98,7 +99,13 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     error?: string;
                 }> = [];
 
-                const timeframe = await getConfigValue<string>(db, 'analysis_timeframe');
+                const timeframe = toCoreTimeframe(
+                    await getConfigValue<string>(db, 'analysis_timeframe'),
+                );
+
+                // 새 LLM 작업 컷오프: cron 시작 + 690s. maxDuration(800s) 안에서 한 심볼이
+                // 전체 cron의 audit 마감을 막지 못하도록 runner에 deadline을 전달한다.
+                const analysisDeadlineMs = startedMs + 690_000;
 
                 // Port 구현체: analysis 레이어가 db 직접 의존하지 않도록 cron 레이어에서 주입.
                 const cardStore: NewsCardStore = {
@@ -113,8 +120,9 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         companyName: item.companyName,
                         modelId: config.modelId as RunAnalysisOptions['modelId'],
                         userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
-                        timeframe: (timeframe as RunAnalysisOptions['timeframe']) ?? undefined,
+                        timeframe,
                         cardStore,
+                        deadlineMs: analysisDeadlineMs,
                     });
 
                     if (result.status === 'done' || result.status === 'cached') {

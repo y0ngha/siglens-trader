@@ -23,6 +23,11 @@ export interface RunAnalysisOptions {
     timeframe?: Timeframe;
     /** news enrich에 필요. factory가 항상 주입. */
     cardStore?: NewsCardStore;
+    /**
+     * 새 LLM 작업을 시작하지 않을 절대 시각(epoch ms). cron 시작 + 690s.
+     * 이 시각 이후엔 news enrich/aggregate submit을 시작하지 않고 캐시/완료분만 반환.
+     */
+    deadlineMs?: number;
 }
 
 export interface AnalysisRunResult {

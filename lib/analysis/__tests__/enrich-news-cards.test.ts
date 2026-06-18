@@ -57,6 +57,7 @@ describe('enrichNewsCards', () => {
         mockPoll.mockReset();
         mockGetCards.mockReset();
         mockUpsertCards.mockReset();
+        mockUpsertCards.mockResolvedValue(undefined);
     });
 
     it('happy: 신규 5건 → submit+poll 5회 → upsert 1회 → EnrichedNewsItem 5건', async () => {
@@ -65,11 +66,11 @@ describe('enrichNewsCards', () => {
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
         const news = [1, 2, 3, 4, 5].map((i) => makeNews(`n${i}`));
-        const result = await enrichNewsCards(fakeStore, 'NVDA', news);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', news, { deadlineMs: Infinity });
         expect(mockSubmit).toHaveBeenCalledTimes(5);
         expect(mockUpsertCards).toHaveBeenCalledTimes(1);
         expect(result).toHaveLength(5);
-        expect(result[0].card.summaryKo).toBe('ok');
+        expect(result.every((r) => r.card.summaryKo === 'ok')).toBe(true);
     });
 
     it('이중 과금 방지: 전부 캐시 hit → submit 호출 0회', async () => {
@@ -79,59 +80,142 @@ describe('enrichNewsCards', () => {
         ]);
         mockGetCards.mockResolvedValueOnce(cached);
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')]);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')], {
+            deadlineMs: Infinity,
+        });
         expect(mockSubmit).toHaveBeenCalledTimes(0);
         expect(mockUpsertCards).not.toHaveBeenCalled();
         expect(result).toHaveLength(2);
     });
 
-    it('부분 hit: 15 캐시 + 5 신규 → submit 5회, 결과 20건', async () => {
+    it('부분 hit: 7 캐시 + 3 신규 → submit 3회, 결과 10건', async () => {
         const cached = new Map(
-            Array.from({ length: 15 }, (_, i) => [`n${i}`, card(`c${i}`)] as const),
+            Array.from({ length: 7 }, (_, i) => [`n${i}`, card(`c${i}`)] as const),
         );
         mockGetCards.mockResolvedValueOnce(cached);
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('new') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const news = Array.from({ length: 20 }, (_, i) => makeNews(`n${i}`));
-        const result = await enrichNewsCards(fakeStore, 'NVDA', news);
-        expect(mockSubmit).toHaveBeenCalledTimes(5);
-        expect(result).toHaveLength(20);
+        const news = Array.from({ length: 10 }, (_, i) => makeNews(`n${i}`));
+        const result = await enrichNewsCards(fakeStore, 'NVDA', news, { deadlineMs: Infinity });
+        expect(mockSubmit).toHaveBeenCalledTimes(3);
+        expect(result).toHaveLength(10);
     });
 
-    it('상한 정확성: 100건 입력 → 21번째 기사는 어떤 경로로도 카드 생성 안 됨', async () => {
+    it('caps input at 10 articles', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
         const news = Array.from({ length: 100 }, (_, i) => makeNews(`n${i}`));
-        await enrichNewsCards(fakeStore, 'NVDA', news);
+        await enrichNewsCards(fakeStore, 'NVDA', news, { deadlineMs: Infinity });
         const ids = mockGetCards.mock.calls[0][0] as string[];
-        expect(ids).toHaveLength(20);
-        expect(mockSubmit).toHaveBeenCalledTimes(20);
+        expect(ids).toHaveLength(10);
+        expect(mockSubmit).toHaveBeenCalledTimes(10);
         const rows = mockUpsertCards.mock.calls[0][0] as unknown[];
-        expect(rows).toHaveLength(20);
+        expect(rows).toHaveLength(10);
     });
 
-    it('부분 실패: 5건 중 2건 poll error → 성공 3건만 enrich/persist', async () => {
+    it('never exceeds concurrency 3', async () => {
+        mockGetCards.mockResolvedValueOnce(new Map());
+        const news = Array.from({ length: 10 }, (_, i) => makeNews(`n${i}`));
+        // Deterministic: each submit blocks on a per-id gate; we release them in order
+        // only after observing peak concurrency.
+        const resolvers: Record<string, () => void> = {};
+        const gates: Record<string, Promise<void>> = {};
+        for (const item of news) {
+            gates[item.id] = new Promise<void>((resolve) => {
+                resolvers[item.id] = resolve;
+            });
+        }
+        let active = 0;
+        let maxActive = 0;
+        // submit returns jobId == news id; poll blocks on the per-id gate.
+        mockSubmit.mockImplementation(async (arg: { item: NewsItem }) => ({
+            status: 'submitted',
+            jobId: arg.item.id,
+        }));
+        mockPoll.mockImplementation(async (jobId: string) => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await gates[jobId];
+            active -= 1;
+            return { status: 'done', result: card('ok') };
+        });
+
+        const { enrichNewsCards } = await import('../enrich-news-cards');
+        const promise = enrichNewsCards(fakeStore, 'NVDA', news, { deadlineMs: Infinity });
+        // Drain microtasks so the pool spins up its workers and reaches peak concurrency,
+        // then release the gates one at a time.
+        for (const item of news) {
+            await Promise.resolve();
+            await Promise.resolve();
+            resolvers[item.id]();
+        }
+        await promise;
+        expect(maxActive).toBe(3);
+    });
+
+    it('does not submit new cards after the deadline', async () => {
+        mockGetCards.mockResolvedValueOnce(new Map());
+        const { enrichNewsCards } = await import('../enrich-news-cards');
+        const news = Array.from({ length: 10 }, (_, i) => makeNews(`n${i}`));
+        const result = await enrichNewsCards(fakeStore, 'NVDA', news, {
+            deadlineMs: Date.now() - 1,
+        });
+        expect(mockSubmit).not.toHaveBeenCalled();
+        expect(result).toEqual([]);
+    });
+
+    it('returns cached cards even when deadline already passed (no new submits)', async () => {
+        const cached = new Map([['n0', card('c0')]]);
+        mockGetCards.mockResolvedValueOnce(cached);
+        const { enrichNewsCards } = await import('../enrich-news-cards');
+        const news = [makeNews('n0'), makeNews('n1')];
+        const result = await enrichNewsCards(fakeStore, 'NVDA', news, {
+            deadlineMs: Date.now() - 1,
+        });
+        expect(mockSubmit).not.toHaveBeenCalled();
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('n0');
+    });
+
+    it('stops new work after six total failures', async () => {
+        mockGetCards.mockResolvedValueOnce(new Map());
+        mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
+        mockPoll.mockResolvedValue({ status: 'error', error: 'worker down' });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { enrichNewsCards } = await import('../enrich-news-cards');
+        const tenNews = Array.from({ length: 10 }, (_, i) => makeNews(`n${i}`));
+        const result = await enrichNewsCards(fakeStore, 'NVDA', tenNews, { deadlineMs: Infinity });
+        // Total-failure limit is 6; with concurrency 3 a couple already-in-flight
+        // workers may finish, but new work stops well short of all 10.
+        // 실패 상한이 6이므로 최소 6건은 제출되어야 하고(너무 일찍 멈추지 않음),
+        // concurrency 3의 in-flight 슬랙으로 최대 8건까지만 허용된다.
+        expect(mockSubmit.mock.calls.length).toBeGreaterThanOrEqual(6);
+        expect(mockSubmit.mock.calls.length).toBeLessThanOrEqual(8);
+        expect(result).toEqual([]);
+        warnSpy.mockRestore();
+    });
+
+    it('부분 실패: 신규 5건 중 2건 poll error → 성공 3건만 enrich/persist', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
         let i = 0;
         mockPoll.mockImplementation(async () => {
             i += 1;
-            // 비연속 실패 분포(2, 4): short-circuit 임계(3 연속) 미만이라 끝까지 진행.
             if (i === 2 || i === 4) return { status: 'error', error: 'rate-limit' };
             return { status: 'done', result: card(`ok${i}`) };
         });
         const { enrichNewsCards } = await import('../enrich-news-cards');
         const news = [1, 2, 3, 4, 5].map((n) => makeNews(`n${n}`));
-        const result = await enrichNewsCards(fakeStore, 'NVDA', news);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', news, { deadlineMs: Infinity });
         expect(result).toHaveLength(3);
         const persistedRows = mockUpsertCards.mock.calls[0][0] as { newsId: string }[];
         expect(persistedRows).toHaveLength(3);
     });
 
-    it('전부 실패: 5건 모두 poll error → 빈 배열 반환, upsert 호출 0회', async () => {
+    it('전부 실패: 신규 5건 모두 poll error → 빈 배열 반환, upsert 호출 0회', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
         mockPoll.mockImplementation(async () => ({ status: 'error', error: 'down' }));
@@ -140,6 +224,7 @@ describe('enrichNewsCards', () => {
             fakeStore,
             'NVDA',
             [1, 2, 3, 4, 5].map((n) => makeNews(`n${n}`)),
+            { deadlineMs: Infinity },
         );
         expect(result).toEqual([]);
         expect(mockUpsertCards).not.toHaveBeenCalled();
@@ -155,7 +240,9 @@ describe('enrichNewsCards', () => {
         });
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')]);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')], {
+            deadlineMs: Infinity,
+        });
         expect(result).toHaveLength(1);
     });
 
@@ -169,7 +256,9 @@ describe('enrichNewsCards', () => {
         });
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')]);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')], {
+            deadlineMs: Infinity,
+        });
         expect(result).toHaveLength(1);
     });
 
@@ -180,7 +269,9 @@ describe('enrichNewsCards', () => {
         mockUpsertCards.mockRejectedValueOnce(new Error('neon down'));
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')]);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1'), makeNews('n2')], {
+            deadlineMs: Infinity,
+        });
         expect(result).toHaveLength(2);
         // 핵심 invariant: persist 실패에도 메모리 카드가 실제로 결과에 실려야 함
         expect(result[0].card.summaryKo).toBe('ok');
@@ -194,34 +285,26 @@ describe('enrichNewsCards', () => {
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
         mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1')]);
+        await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1')], { deadlineMs: Infinity });
         expect(mockSubmit).toHaveBeenCalledWith(expect.objectContaining({ thinkingBudget: 0 }));
     });
 
     it('빈 news 입력 → 빈 배열, submit/upsert 모두 호출 없음', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const result = await enrichNewsCards(fakeStore, 'NVDA', []);
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [], { deadlineMs: Infinity });
         expect(result).toEqual([]);
         expect(mockSubmit).not.toHaveBeenCalled();
         expect(mockUpsertCards).not.toHaveBeenCalled();
     });
 
-    it('short-circuit: 연속 3건 poll error → 4번째부터는 submit 호출되지 않음', async () => {
+    it('options omitted → defaults to no deadline (Infinity)', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         mockSubmit.mockImplementation(async () => ({ status: 'submitted', jobId: 'j' }));
-        mockPoll.mockImplementation(async () => ({ status: 'error', error: 'worker down' }));
-        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockPoll.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
-        const news = [1, 2, 3, 4, 5].map((n) => makeNews(`n${n}`));
-        const result = await enrichNewsCards(fakeStore, 'NVDA', news);
-        // 3건만 submit 시도하고 4·5번째는 short-circuit으로 스킵
-        expect(mockSubmit).toHaveBeenCalledTimes(3);
-        expect(result).toEqual([]);
-        expect(warnSpy).toHaveBeenCalledWith(
-            '[enrich-news-cards] short-circuit',
-            expect.objectContaining({ consecutiveFailures: 3 }),
-        );
-        warnSpy.mockRestore();
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1')]);
+        expect(result).toHaveLength(1);
+        expect(mockSubmit).toHaveBeenCalledTimes(1);
     });
 });

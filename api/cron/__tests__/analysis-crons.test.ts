@@ -22,6 +22,8 @@ const mockSaveAnalysisResult = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
 const mockFinalizeStaleCronRuns = vi.fn();
+const mockGetNewsCards = vi.fn();
+const mockUpsertNewsCards = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
@@ -30,6 +32,8 @@ vi.mock('../../../lib/db/queries', () => ({
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
+    getNewsCards: (...args: unknown[]) => mockGetNewsCards(...args),
+    upsertNewsCards: (...args: unknown[]) => mockUpsertNewsCards(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
@@ -87,6 +91,8 @@ describe('createAnalysisCronHandler', () => {
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
         mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
+        mockGetNewsCards.mockResolvedValue(new Map());
+        mockUpsertNewsCards.mockResolvedValue(undefined);
         mockVerifyCronSecret.mockReturnValue(true);
         mockIsEtRegularSessionOpen.mockReturnValue(true);
         mockAcquireLock.mockResolvedValue('test-lock-token');
@@ -313,6 +319,51 @@ describe('createAnalysisCronHandler', () => {
         await optionsHandler(makeRequest(true));
 
         expect(mockGetAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'options');
+    });
+
+    it('passes a deadlineMs of start + 690s to the runner', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        const startMs = new Date('2026-05-24T10:00:00.000Z').getTime();
+        expect(mockRunner).toHaveBeenCalledWith(
+            expect.objectContaining({ deadlineMs: startMs + 690_000 }),
+        );
+    });
+
+    it('wires a cardStore backed by getNewsCards/upsertNewsCards into the runner', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+        mockGetNewsCards.mockResolvedValue(new Map([['x', { summaryKo: 'k' }]]));
+
+        await handler(makeRequest(true));
+
+        const passed = mockRunner.mock.calls[0][0] as {
+            cardStore: {
+                getCards: (ids: string[]) => Promise<Map<string, unknown>>;
+                upsertCards: (rows: unknown[]) => Promise<void>;
+            };
+        };
+        expect(passed.cardStore).toBeDefined();
+
+        // getCards delegates to getNewsCards(db, ids)
+        const got = await passed.cardStore.getCards(['x']);
+        expect(mockGetNewsCards).toHaveBeenCalledWith(fakeDb, ['x']);
+        expect(got).toEqual(new Map([['x', { summaryKo: 'k' }]]));
+
+        // upsertCards delegates to upsertNewsCards(db, rows)
+        await passed.cardStore.upsertCards([{ newsId: 'x' }]);
+        expect(mockUpsertNewsCards).toHaveBeenCalledWith(fakeDb, [{ newsId: 'x' }]);
+    });
+
+    it('normalizes the configured timeframe via toCoreTimeframe before passing it to the runner', async () => {
+        mockGetConfigValue.mockResolvedValue('bogus-timeframe');
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        // toCoreTimeframe falls back to the default ('1Hour') for unknown values.
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ timeframe: '1Hour' }));
     });
 
     // ---------------------------------------------------------------------------
