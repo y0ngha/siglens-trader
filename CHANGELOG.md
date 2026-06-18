@@ -1,5 +1,13 @@
 # Changelog
 
+# [0.10.0](https://github.com/y0ngha/siglens-trader/compare/v0.9.0...v0.10.0) (2026-06-18)
+
+
+### Features
+
+* add flash lite analysis option ([f38b16f](https://github.com/y0ngha/siglens-trader/commit/f38b16f5343372ee57ab8a6c6559038d1afd63cd))
+* default analysis config to flash lite ([9701adc](https://github.com/y0ngha/siglens-trader/commit/9701adc47d899a989a8719551794229379a5e819))
+
 # [0.9.0](https://github.com/y0ngha/siglens-trader/compare/v0.8.0...v0.9.0) (2026-06-18)
 
 
