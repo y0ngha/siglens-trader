@@ -21,7 +21,7 @@ const configEntries: ConfigEntry[] = [
     { key: 'take_profit_percent', value: 5, updatedAt: new Date().toISOString() },
     { key: 'buy_threshold', value: 70, updatedAt: new Date().toISOString() },
     { key: 'sell_threshold', value: 30, updatedAt: new Date().toISOString() },
-    { key: 'analysis_timeframe', value: '1Day', updatedAt: new Date().toISOString() },
+    { key: 'analysis_timeframe', value: '1Hour', updatedAt: new Date().toISOString() },
     { key: 'fixed_exit_enabled', value: false, updatedAt: new Date().toISOString() },
     { key: 'trading_enabled', value: true, updatedAt: new Date().toISOString() },
     { key: 'max_trades_per_day', value: 20, updatedAt: new Date().toISOString() },

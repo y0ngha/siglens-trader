@@ -22,6 +22,16 @@ function renderWithQuery(component: React.ReactElement) {
     return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 }
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 const mockConfig = {
     config: [
         { key: 'trading_mode', value: 'dry_run', updatedAt: '2026-01-01T00:00:00Z' },
@@ -31,6 +41,7 @@ const mockConfig = {
         { key: 'take_profit_percent', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'buy_threshold', value: 70, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'sell_threshold', value: 30, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'analysis_timeframe', value: '1Hour', updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'fixed_exit_enabled', value: false, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
@@ -125,6 +136,82 @@ describe('SettingsPage', () => {
         expect(screen.getByText('투자 관리')).toBeInTheDocument();
         expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
         expect(screen.getByText('알림')).toBeInTheDocument();
+    });
+
+    it('renders the configured technical analysis chart timeframe options', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        const select = await screen.findByRole('combobox', {
+            name: '기술 분석 차트 주기',
+        });
+        const options = Array.from((select as HTMLSelectElement).options).map((option) => ({
+            label: option.textContent,
+            value: option.value,
+        }));
+
+        expect(select).toHaveValue('1Hour');
+        expect(options).toEqual([
+            { label: '15분', value: '15Min' },
+            { label: '30분', value: '30Min' },
+            { label: '1시간', value: '1Hour' },
+        ]);
+    });
+
+    it('falls back to a 1-hour technical analysis chart timeframe', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.filter((entry) => entry.key !== 'analysis_timeframe'),
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByRole('combobox', { name: '기술 분석 차트 주기' })).toHaveValue(
+            '1Hour',
+        );
+    });
+
+    it('normalizes a legacy technical analysis chart timeframe to 1 hour', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.map((entry) =>
+                entry.key === 'analysis_timeframe' ? { ...entry, value: '1Day' } : entry,
+            ),
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByRole('combobox', { name: '기술 분석 차트 주기' })).toHaveValue(
+            '1Hour',
+        );
+    });
+
+    it('optimistically updates and rolls back technical analysis chart timeframe changes', async () => {
+        const user = userEvent.setup();
+        const update = createDeferred<undefined>();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockReturnValue(update.promise);
+
+        renderWithQuery(<SettingsPage />);
+
+        const select = await screen.findByRole('combobox', {
+            name: '기술 분석 차트 주기',
+        });
+        await user.selectOptions(select, '30Min');
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'analysis_timeframe',
+            value: '30Min',
+        });
+        expect(select).toHaveValue('30Min');
+
+        update.reject(new Error('Save failed'));
+
+        await waitFor(() => {
+            expect(select).toHaveValue('1Hour');
+        });
     });
 
     it('displays watchlist items', async () => {

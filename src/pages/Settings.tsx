@@ -5,6 +5,7 @@ import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { TickerSearch } from '@/components/TickerSearch';
+import { normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe';
 
 const MODELS = [
     'gemini-2.5-flash',
@@ -189,6 +190,10 @@ export function SettingsPage() {
     const modeChanged = pendingMode !== null && pendingMode !== tradingMode;
 
     const tradingEnabled = getConfigValue(configData.config, 'trading_enabled', true) === true;
+
+    const analysisTimeframe = normalizeAnalysisTimeframe(
+        getConfigValue(configData.config, 'analysis_timeframe', undefined),
+    );
 
     const fixedExitEnabled =
         getConfigValue(configData.config, 'fixed_exit_enabled', false) === true;
@@ -444,6 +449,27 @@ export function SettingsPage() {
             {/* Analysis Config */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
                 <h2 className="text-sm font-semibold">분석 설정</h2>
+                <div className="mt-3">
+                    <label htmlFor="analysis-timeframe" className="text-xs text-neutral-400">
+                        기술 분석 차트 주기
+                    </label>
+                    <select
+                        id="analysis-timeframe"
+                        className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                        value={analysisTimeframe}
+                        onChange={(event) =>
+                            mutate({
+                                type: 'config',
+                                key: 'analysis_timeframe',
+                                value: event.target.value,
+                            })
+                        }
+                    >
+                        <option value="15Min">15분</option>
+                        <option value="30Min">30분</option>
+                        <option value="1Hour">1시간</option>
+                    </select>
+                </div>
                 <ul className="mt-3 space-y-3">
                     {(configData.analysis.length > 0
                         ? configData.analysis
