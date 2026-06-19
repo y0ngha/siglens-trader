@@ -9,6 +9,8 @@ import {
     safeAnalysisResistance,
     safeAnalysisTargetPrice,
     safeActionRecommendation,
+    safeAnalysisIndicators,
+    safeFundamentalCategories,
     safeArray,
     safeNumberArray,
 } from '../safe-extract';
@@ -248,25 +250,36 @@ describe('safeAnalysisTargetPrice', () => {
 });
 
 describe('safeActionRecommendation', () => {
-    it('extracts valid buy recommendation', () => {
+    it('extracts valid enter recommendation', () => {
         const result = safeActionRecommendation({
-            actionRecommendation: { action: 'buy', confidence: 0.85 },
+            actionRecommendation: { entryRecommendation: 'enter' },
         });
-        expect(result).toEqual({ action: 'buy', confidence: 0.85 });
-    });
-
-    it('extracts valid hold recommendation', () => {
-        const result = safeActionRecommendation({
-            actionRecommendation: { action: 'hold', confidence: 0.5 },
-        });
-        expect(result).toEqual({ action: 'hold', confidence: 0.5 });
+        expect(result).toEqual({ entryRecommendation: 'enter' });
     });
 
     it('extracts valid wait recommendation', () => {
         const result = safeActionRecommendation({
-            actionRecommendation: { action: 'wait', confidence: 0.3 },
+            actionRecommendation: { entryRecommendation: 'wait' },
         });
-        expect(result).toEqual({ action: 'wait', confidence: 0.3 });
+        expect(result).toEqual({ entryRecommendation: 'wait' });
+    });
+
+    it('extracts valid avoid recommendation', () => {
+        const result = safeActionRecommendation({
+            actionRecommendation: { entryRecommendation: 'avoid' },
+        });
+        expect(result).toEqual({ entryRecommendation: 'avoid' });
+    });
+
+    it('ignores extra fields and keeps only entryRecommendation', () => {
+        const result = safeActionRecommendation({
+            actionRecommendation: {
+                entryRecommendation: 'enter',
+                entry: 'buy on dip',
+                exit: 'take profit at resistance',
+            },
+        });
+        expect(result).toEqual({ entryRecommendation: 'enter' });
     });
 
     it('returns undefined for null input', () => {
@@ -277,42 +290,110 @@ describe('safeActionRecommendation', () => {
         expect(safeActionRecommendation({})).toBeUndefined();
     });
 
-    it('returns undefined when action is not a valid value', () => {
+    it('returns undefined when entryRecommendation is not a valid value', () => {
         expect(
             safeActionRecommendation({
-                actionRecommendation: { action: 'sell', confidence: 0.9 },
+                actionRecommendation: { entryRecommendation: 'buy' },
             }),
         ).toBeUndefined();
     });
 
-    it('returns undefined when action is not a string', () => {
+    it('returns undefined when entryRecommendation is not a string', () => {
         expect(
             safeActionRecommendation({
-                actionRecommendation: { action: 42, confidence: 0.9 },
+                actionRecommendation: { entryRecommendation: 42 },
             }),
         ).toBeUndefined();
     });
 
-    it('defaults confidence to 0 when it is not a number', () => {
-        const result = safeActionRecommendation({
-            actionRecommendation: { action: 'buy', confidence: 'high' },
-        });
-        expect(result).toEqual({ action: 'buy', confidence: 0 });
-    });
-
-    it('defaults confidence to 0 when it is NaN', () => {
-        const result = safeActionRecommendation({
-            actionRecommendation: { action: 'buy', confidence: NaN },
-        });
-        expect(result).toEqual({ action: 'buy', confidence: 0 });
+    it('returns undefined when entryRecommendation is absent', () => {
+        expect(
+            safeActionRecommendation({
+                actionRecommendation: { entry: 'some prose' },
+            }),
+        ).toBeUndefined();
     });
 
     it('returns undefined when actionRecommendation is an array', () => {
         expect(
             safeActionRecommendation({
-                actionRecommendation: [{ action: 'buy', confidence: 0.8 }],
+                actionRecommendation: [{ entryRecommendation: 'enter' }],
             }),
         ).toBeUndefined();
+    });
+});
+
+describe('safeAnalysisIndicators', () => {
+    it('flattens trend/strength across indicators and their signals', () => {
+        const result = safeAnalysisIndicators({
+            indicatorResults: [
+                { indicatorName: 'RSI', signals: [{ trend: 'bullish', strength: 'weak' }] },
+                {
+                    indicatorName: 'MACD',
+                    signals: [
+                        { trend: 'bearish', strength: 'strong' },
+                        { trend: 'neutral', strength: 'moderate' },
+                    ],
+                },
+            ],
+        });
+        expect(result).toEqual([
+            { trend: 'bullish', strength: 'weak' },
+            { trend: 'bearish', strength: 'strong' },
+            { trend: 'neutral', strength: 'moderate' },
+        ]);
+    });
+
+    it('returns [] when indicatorResults is missing', () => {
+        expect(safeAnalysisIndicators({})).toEqual([]);
+    });
+
+    it('returns [] for null/non-object input', () => {
+        expect(safeAnalysisIndicators(null)).toEqual([]);
+    });
+
+    it('skips indicators without a signals array', () => {
+        const result = safeAnalysisIndicators({
+            indicatorResults: [
+                { indicatorName: 'A' },
+                { indicatorName: 'B', signals: [{ trend: 'bullish', strength: 'strong' }] },
+            ],
+        });
+        expect(result).toEqual([{ trend: 'bullish', strength: 'strong' }]);
+    });
+
+    it('skips non-object signal entries and tolerates missing fields', () => {
+        const result = safeAnalysisIndicators({
+            indicatorResults: [{ signals: [null, 'x', { trend: 'bearish' }] }],
+        });
+        expect(result).toEqual([{ trend: 'bearish', strength: undefined }]);
+    });
+});
+
+describe('safeFundamentalCategories', () => {
+    it('extracts per-category sentiments', () => {
+        const result = safeFundamentalCategories({
+            categoryAssessments: [
+                { category: 'valuation', sentiment: 'bearish' },
+                { category: 'growth', sentiment: 'neutral' },
+            ],
+        });
+        expect(result).toEqual([{ sentiment: 'bearish' }, { sentiment: 'neutral' }]);
+    });
+
+    it('returns [] when categoryAssessments is missing', () => {
+        expect(safeFundamentalCategories({})).toEqual([]);
+    });
+
+    it('returns [] for null/non-object input', () => {
+        expect(safeFundamentalCategories(null)).toEqual([]);
+    });
+
+    it('skips non-object category entries', () => {
+        const result = safeFundamentalCategories({
+            categoryAssessments: [null, 'x', { sentiment: 'bullish' }],
+        });
+        expect(result).toEqual([{ sentiment: 'bullish' }]);
     });
 });
 

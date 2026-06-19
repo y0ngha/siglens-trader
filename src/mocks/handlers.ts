@@ -499,7 +499,7 @@ const analysisResults = [
         id: 4,
         symbol: 'NVDA',
         analysisType: 'options',
-        result: JSON.stringify({ signals: [{ type: 'bullish' }] }),
+        result: JSON.stringify({ signals: [{ kind: 'bullish' }] }),
         createdAt: new Date(Date.now() - 9000000).toISOString(),
     },
     {

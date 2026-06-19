@@ -160,7 +160,7 @@ const fakeTechResult = {
     result: { trend: 'bullish', riskLevel: 'low', keyLevels: { currentPrice: 150 } },
 };
 const fakeNewsResult = { result: { overallSentiment: 'bullish' } };
-const fakeOptionsResult = { result: { signals: [{ type: 'bullish' }] } };
+const fakeOptionsResult = { result: { signals: [{ kind: 'bullish' }] } };
 const fakeFundamentalResult = { result: { overallSentiment: 'neutral' } };
 
 const fakeBuySignalScore = {
@@ -1692,10 +1692,11 @@ describe('execute cron handler', () => {
                         trend: 'bullish',
                         riskLevel: 'low',
                         actionRecommendation: undefined,
+                        indicators: [],
                     },
                     news: { overallSentiment: 'bullish' },
-                    options: { signals: [{ type: 'bullish' }] },
-                    fundamental: { overallSentiment: 'neutral' },
+                    options: { signals: [{ kind: 'bullish' }] },
+                    fundamental: { overallSentiment: 'neutral', categories: [] },
                 },
                 expect.any(Object), // weights
                 expect.any(Number), // buyThreshold

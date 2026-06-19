@@ -78,16 +78,63 @@ export function safeArray(obj: unknown, key: string): unknown[] | undefined {
     return Array.isArray(val) ? val : undefined;
 }
 
+/**
+ * Extracts per-indicator signal directions from a technical analysis result
+ * (`indicatorResults[].signals[]`). Returns a flat list of {trend, strength}.
+ */
+export function safeAnalysisIndicators(
+    result: unknown,
+): Array<{ trend?: string; strength?: string }> {
+    const r = safeRecord(result);
+    if (!r) return [];
+    const indicators = safeArray(r, 'indicatorResults');
+    if (!indicators) return [];
+    const out: Array<{ trend?: string; strength?: string }> = [];
+    for (const ind of indicators) {
+        const signals = safeArray(ind, 'signals');
+        if (!signals) continue;
+        for (const sig of signals) {
+            const s = safeRecord(sig);
+            if (!s) continue;
+            out.push({ trend: safeString(s.trend), strength: safeString(s.strength) });
+        }
+    }
+    return out;
+}
+
+/**
+ * Extracts per-category sentiments from a fundamental analysis result
+ * (`categoryAssessments[]`). Returns a flat list of {sentiment}.
+ */
+export function safeFundamentalCategories(result: unknown): Array<{ sentiment?: string }> {
+    const r = safeRecord(result);
+    if (!r) return [];
+    const cats = safeArray(r, 'categoryAssessments');
+    if (!cats) return [];
+    const out: Array<{ sentiment?: string }> = [];
+    for (const c of cats) {
+        const rec = safeRecord(c);
+        if (!rec) continue;
+        out.push({ sentiment: safeString(rec.sentiment) });
+    }
+    return out;
+}
+
 export function safeActionRecommendation(
     obj: unknown,
-): { action: 'buy' | 'hold' | 'wait'; confidence: number } | undefined {
+): { entryRecommendation: 'enter' | 'wait' | 'avoid' } | undefined {
     const r = safeRecord(obj);
     if (!r) return undefined;
     const rec = safeRecord(r.actionRecommendation);
     if (!rec) return undefined;
-    const action = safeString(rec.action);
-    if (action !== 'buy' && action !== 'hold' && action !== 'wait') return undefined;
-    const confidence =
-        typeof rec.confidence === 'number' && Number.isFinite(rec.confidence) ? rec.confidence : 0;
-    return { action, confidence };
+    // siglens-core's ActionRecommendation carries `entryRecommendation` ('enter' | 'wait' | 'avoid'); no confidence field.
+    const entryRecommendation = safeString(rec.entryRecommendation);
+    if (
+        entryRecommendation !== 'enter' &&
+        entryRecommendation !== 'wait' &&
+        entryRecommendation !== 'avoid'
+    ) {
+        return undefined;
+    }
+    return { entryRecommendation };
 }

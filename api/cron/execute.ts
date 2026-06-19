@@ -66,6 +66,8 @@ import {
     safeAnalysisTargetPrice,
     safeArray,
     safeActionRecommendation,
+    safeAnalysisIndicators,
+    safeFundamentalCategories,
 } from '../../lib/strategy/safe-extract.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
@@ -883,6 +885,7 @@ async function handler(req: Request): Promise<Response> {
                                   trend: safeAnalysisTrend(tech.result),
                                   riskLevel: safeString(safeRecord(tech.result)?.riskLevel),
                                   actionRecommendation: safeActionRecommendation(tech.result),
+                                  indicators: safeAnalysisIndicators(tech.result),
                               }
                             : null,
                         news: news?.result
@@ -893,13 +896,14 @@ async function handler(req: Request): Promise<Response> {
                         options: options?.result
                             ? {
                                   signals: safeArray(options.result, 'signals') as
-                                      | Array<{ type?: string }>
+                                      | Array<{ kind?: string }>
                                       | undefined,
                               }
                             : null,
                         fundamental: fundamental?.result
                             ? {
                                   overallSentiment: safeAnalysisSentiment(fundamental.result),
+                                  categories: safeFundamentalCategories(fundamental.result),
                               }
                             : null,
                     };

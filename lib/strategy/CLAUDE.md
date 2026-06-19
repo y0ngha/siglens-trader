@@ -10,7 +10,7 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
-| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisTargetPrice`, `safeActionRecommendation`. Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. |
+| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. |
 
 ## Rules
 
@@ -22,10 +22,10 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 ## Signal Scoring
 
 Priority-weighted average of 4 analysis axes (weights sum to 23):
-- Technical (8): trend + riskLevel + actionRecommendation.confidence
-- News (6): overallSentiment
-- Options (5): bullish/bearish signal ratio
-- Fundamental (4): overallSentiment
+- Technical (8): strength-weighted aggregate of `indicatorResults` signals (continuous, 50 ± 35) + riskLevel (±10) + actionRecommendation.entryRecommendation (enter +20 / wait −15 / avoid −25). Falls back to the single top-level `trend` when no indicator signals exist.
+- News (6): overallSentiment (bullish 80 / neutral 50 / bearish 20)
+- Options (5): directional (bullish/bearish) signal ratio with shrinkage (pseudo-count k=1) so a lone signal doesn't snap to 0/100; neutral/volatility kinds ignored
+- Fundamental (4): mean of `categoryAssessments` sentiments (continuous, 50 ± 30), falling back to overallSentiment when no categories exist
 
 ## Position Re-evaluation Priority
 

@@ -310,8 +310,7 @@ function generateMockAnalysisResult(type: string, symbol: string): object {
                                   : 179.4,
                 },
                 actionRecommendation: {
-                    action: ['AAPL', 'NVDA'].includes(symbol) ? 'buy' : 'hold',
-                    confidence: 0.72,
+                    entryRecommendation: ['AAPL', 'NVDA'].includes(symbol) ? 'enter' : 'wait',
                 },
             };
         case 'news':
@@ -323,10 +322,10 @@ function generateMockAnalysisResult(type: string, symbol: string): object {
         case 'options':
             return {
                 signals: [
-                    { type: 'bullish', description: 'Call OI 증가' },
+                    { kind: 'bullish', message: 'Call OI 증가' },
                     {
-                        type: symbol === 'TSLA' ? 'bearish' : 'bullish',
-                        description: 'Put/Call ratio 변화',
+                        kind: symbol === 'TSLA' ? 'bearish' : 'bullish',
+                        message: 'Put/Call ratio 변화',
                     },
                 ],
                 summary: `${symbol} 옵션 시장 분석 완료`,

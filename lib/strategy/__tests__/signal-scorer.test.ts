@@ -11,7 +11,7 @@ describe('scoreSignals', () => {
                     technical: { trend: 'bullish', riskLevel: 'low' },
                     news: { overallSentiment: 'bullish' },
                     options: {
-                        signals: [{ type: 'bullish' }, { type: 'bullish' }, { type: 'bullish' }],
+                        signals: [{ kind: 'bullish' }, { kind: 'bullish' }, { kind: 'bullish' }],
                     },
                     fundamental: { overallSentiment: 'bullish' },
                 },
@@ -36,7 +36,7 @@ describe('scoreSignals', () => {
                     technical: { trend: 'bearish', riskLevel: 'high' },
                     news: { overallSentiment: 'bearish' },
                     options: {
-                        signals: [{ type: 'bearish' }, { type: 'bearish' }, { type: 'bearish' }],
+                        signals: [{ kind: 'bearish' }, { kind: 'bearish' }, { kind: 'bearish' }],
                     },
                     fundamental: { overallSentiment: 'bearish' },
                 },
@@ -60,7 +60,7 @@ describe('scoreSignals', () => {
                 {
                     technical: { trend: 'neutral', riskLevel: 'medium' },
                     news: { overallSentiment: 'neutral' },
-                    options: { signals: [{ type: 'bullish' }, { type: 'bearish' }] },
+                    options: { signals: [{ kind: 'bullish' }, { kind: 'bearish' }] },
                     fundamental: { overallSentiment: 'neutral' },
                 },
                 DEFAULT_WEIGHTS,
@@ -150,7 +150,7 @@ describe('scoreSignals', () => {
                     // bullish=85, high=-10 → 75
                     news: { overallSentiment: 'bullish' },
                     // 80
-                    options: { signals: [{ type: 'bullish' }, { type: 'bearish' }] },
+                    options: { signals: [{ kind: 'bullish' }, { kind: 'bearish' }] },
                     // 50 (equal split)
                     fundamental: { overallSentiment: 'neutral' },
                     // 50
@@ -199,8 +199,8 @@ describe('scoreSignals', () => {
                     // bearish=15, medium=0 → 15
                     news: { overallSentiment: 'bearish' },
                     // 20
-                    options: { signals: [{ type: 'bearish' }] },
-                    // 0
+                    options: { signals: [{ kind: 'bearish' }] },
+                    // shrink k=1: -1/(1+1) → 25
                     fundamental: { overallSentiment: 'bearish' },
                     // 20
                 },
@@ -244,7 +244,7 @@ describe('scoreSignals', () => {
             const inputs = {
                 technical: { trend: 'bullish', riskLevel: 'low' },
                 news: { overallSentiment: 'bearish' },
-                options: { signals: [{ type: 'bearish' }] },
+                options: { signals: [{ kind: 'bearish' }] },
                 fundamental: { overallSentiment: 'bearish' },
             };
 
@@ -469,10 +469,10 @@ describe('scoreSignals', () => {
                     news: null,
                     options: {
                         signals: [
-                            { type: 'bullish' },
-                            { type: 'bullish' },
-                            { type: 'bearish' },
-                            { type: 'neutral' },
+                            { kind: 'bullish' },
+                            { kind: 'bullish' },
+                            { kind: 'bearish' },
+                            { kind: 'neutral' },
                         ],
                     },
                     fundamental: null,
@@ -482,10 +482,9 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // 2 bullish, 1 bearish out of 4 total signals
-            // ratio = (2 - 1) / 4 = 0.25, score = 50 + 0.25 * 50 = 62.5 → 63 (rounded)
-            expect(result.components.options).toBeGreaterThan(50);
-            expect(result.components.options).toBeLessThan(80);
+            // 2 bullish, 1 bearish, 1 neutral. Neutral ignored → directional = 3.
+            // shrink k=1: ratio = (2-1)/(3+1) = 0.25, score = 50 + 0.25*50 = 62.5 → 63
+            expect(result.components.options).toBe(63);
         });
 
         it('all bullish signals gives maximum options score', () => {
@@ -494,7 +493,7 @@ describe('scoreSignals', () => {
                     technical: null,
                     news: null,
                     options: {
-                        signals: [{ type: 'bullish' }, { type: 'bullish' }, { type: 'bullish' }],
+                        signals: [{ kind: 'bullish' }, { kind: 'bullish' }, { kind: 'bullish' }],
                     },
                     fundamental: null,
                 },
@@ -503,8 +502,8 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // ratio = 3/3 = 1.0, score = 50 + 1.0 * 50 = 100
-            expect(result.components.options).toBe(100);
+            // shrink k=1: ratio = 3/(3+1) = 0.75, score = 50 + 0.75*50 = 87.5 → 88
+            expect(result.components.options).toBe(88);
         });
 
         it('all bearish signals gives minimum options score', () => {
@@ -513,7 +512,7 @@ describe('scoreSignals', () => {
                     technical: null,
                     news: null,
                     options: {
-                        signals: [{ type: 'bearish' }, { type: 'bearish' }, { type: 'bearish' }],
+                        signals: [{ kind: 'bearish' }, { kind: 'bearish' }, { kind: 'bearish' }],
                     },
                     fundamental: null,
                 },
@@ -522,17 +521,17 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // ratio = -3/3 = -1.0, score = 50 + (-1.0) * 50 = 0
-            expect(result.components.options).toBe(0);
+            // shrink k=1: ratio = -3/(3+1) = -0.75, score = 50 + (-0.75)*50 = 12.5 → 13
+            expect(result.components.options).toBe(13);
         });
 
-        it('handles signals with unknown types as neutral', () => {
+        it('ignores non-directional kinds (neutral/volatility/unknown)', () => {
             const result = scoreSignals(
                 {
                     technical: null,
                     news: null,
                     options: {
-                        signals: [{ type: 'unknown' }, { type: 'bullish' }],
+                        signals: [{ kind: 'neutral' }, { kind: 'volatility' }, { kind: 'bullish' }],
                     },
                     fundamental: null,
                 },
@@ -541,9 +540,28 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // 1 bullish, 0 bearish out of 2 signals
-            // ratio = (1 - 0) / 2 = 0.5, score = 50 + 0.5 * 50 = 75
+            // Only the 1 bullish signal is directional → directional = 1.
+            // shrink k=1: ratio = 1/(1+1) = 0.5, score = 50 + 0.5*50 = 75
             expect(result.components.options).toBe(75);
+        });
+
+        it('returns 50 when only non-directional signals are present', () => {
+            const result = scoreSignals(
+                {
+                    technical: null,
+                    news: null,
+                    options: {
+                        signals: [{ kind: 'neutral' }, { kind: 'volatility' }],
+                    },
+                    fundamental: null,
+                },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+
+            // directional = 0 → neutral 50
+            expect(result.components.options).toBe(50);
         });
     });
 
@@ -553,7 +571,7 @@ describe('scoreSignals', () => {
                 {
                     technical: { trend: 'bullish', riskLevel: 'low' },
                     news: { overallSentiment: 'bullish' },
-                    options: { signals: [{ type: 'bullish' }] },
+                    options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
                 },
                 DEFAULT_WEIGHTS,
@@ -570,7 +588,7 @@ describe('scoreSignals', () => {
                 {
                     technical: { trend: 'bearish', riskLevel: 'high' },
                     news: { overallSentiment: 'bearish' },
-                    options: { signals: [{ type: 'bearish' }] },
+                    options: { signals: [{ kind: 'bearish' }] },
                     fundamental: { overallSentiment: 'bearish' },
                 },
                 DEFAULT_WEIGHTS,
@@ -589,7 +607,7 @@ describe('scoreSignals', () => {
                 {
                     technical: { trend: 'bullish', riskLevel: 'low' },
                     news: { overallSentiment: 'bullish' },
-                    options: { signals: [{ type: 'bullish' }] },
+                    options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
                 },
                 { technical: 0, news: 0, options: 0, fundamental: 0 },
@@ -602,49 +620,14 @@ describe('scoreSignals', () => {
         });
     });
 
-    describe('actionRecommendation scoring', () => {
-        it('buy action with high confidence boosts technical score', () => {
+    describe('actionRecommendation scoring (entryRecommendation)', () => {
+        it('enter recommendation adds +20 to technical score', () => {
             const withRec = scoreSignals(
-                {
-                    technical: {
-                        trend: 'bullish',
-                        riskLevel: 'medium',
-                        actionRecommendation: { action: 'buy', confidence: 0.9 },
-                    },
-                    news: null,
-                    options: null,
-                    fundamental: null,
-                },
-                DEFAULT_WEIGHTS,
-                DEFAULT_BUY_THRESHOLD,
-                DEFAULT_SELL_THRESHOLD,
-            );
-
-            const withoutRec = scoreSignals(
-                {
-                    technical: { trend: 'bullish', riskLevel: 'medium' },
-                    news: null,
-                    options: null,
-                    fundamental: null,
-                },
-                DEFAULT_WEIGHTS,
-                DEFAULT_BUY_THRESHOLD,
-                DEFAULT_SELL_THRESHOLD,
-            );
-
-            // bullish=85, medium=0, buy(0.9)=+18 → 100 (clamped) vs 85
-            expect(withRec.components.technical).toBeGreaterThan(withoutRec.components.technical);
-            // confidence 0.9 → round(0.9*20)=18 bonus
-            expect(withRec.components.technical).toBe(100); // 85+18=103 → clamped to 100
-        });
-
-        it('buy action with low confidence gives small boost', () => {
-            const result = scoreSignals(
                 {
                     technical: {
                         trend: 'neutral',
                         riskLevel: 'medium',
-                        actionRecommendation: { action: 'buy', confidence: 0.3 },
+                        actionRecommendation: { entryRecommendation: 'enter' },
                     },
                     news: null,
                     options: null,
@@ -655,17 +638,38 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // neutral=50, medium=0, buy(0.3)=+6 → 56
-            expect(result.components.technical).toBe(56);
+            // neutral=50, medium=0, enter=+20 → 70
+            expect(withRec.components.technical).toBe(70);
         });
 
-        it('wait action reduces technical score by 15', () => {
+        it('enter bonus is clamped to 100 with strong trend', () => {
+            const result = scoreSignals(
+                {
+                    technical: {
+                        trend: 'bullish',
+                        riskLevel: 'low',
+                        actionRecommendation: { entryRecommendation: 'enter' },
+                    },
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // bullish=85, low=+10, enter=+20 → 115 clamped to 100
+            expect(result.components.technical).toBe(100);
+        });
+
+        it('wait recommendation reduces technical score by 15', () => {
             const result = scoreSignals(
                 {
                     technical: {
                         trend: 'bullish',
                         riskLevel: 'medium',
-                        actionRecommendation: { action: 'wait', confidence: 0.8 },
+                        actionRecommendation: { entryRecommendation: 'wait' },
                     },
                     news: null,
                     options: null,
@@ -680,13 +684,13 @@ describe('scoreSignals', () => {
             expect(result.components.technical).toBe(70);
         });
 
-        it('hold action does not change score', () => {
-            const withHold = scoreSignals(
+        it('avoid recommendation reduces technical score by 25', () => {
+            const result = scoreSignals(
                 {
                     technical: {
                         trend: 'neutral',
                         riskLevel: 'medium',
-                        actionRecommendation: { action: 'hold', confidence: 0.95 },
+                        actionRecommendation: { entryRecommendation: 'avoid' },
                     },
                     news: null,
                     options: null,
@@ -697,9 +701,18 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            const withoutRec = scoreSignals(
+            // neutral=50, medium=0, avoid=-25 → 25
+            expect(result.components.technical).toBe(25);
+        });
+
+        it('avoid modifier is clamped to 0 with bearish trend', () => {
+            const result = scoreSignals(
                 {
-                    technical: { trend: 'neutral', riskLevel: 'medium' },
+                    technical: {
+                        trend: 'bearish',
+                        riskLevel: 'high',
+                        actionRecommendation: { entryRecommendation: 'avoid' },
+                    },
                     news: null,
                     options: null,
                     fundamental: null,
@@ -709,7 +722,8 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            expect(withHold.components.technical).toBe(withoutRec.components.technical);
+            // bearish=15, high=-10, avoid=-25 → -20 clamped to 0
+            expect(result.components.technical).toBe(0);
         });
 
         it('absent actionRecommendation does not change score (backward compat)', () => {
@@ -728,47 +742,157 @@ describe('scoreSignals', () => {
             // bullish=85, low=+10, no rec → 95
             expect(result.components.technical).toBe(95);
         });
+    });
 
-        it('buy action confidence=1.0 gives maximum +20 bonus', () => {
-            const result = scoreSignals(
+    describe('technical indicator aggregation', () => {
+        type TechExtra = {
+            trend?: string;
+            riskLevel?: string;
+            actionRecommendation?: { entryRecommendation: 'enter' | 'wait' | 'avoid' };
+        };
+        const tech = (
+            indicators: Array<{ trend?: string; strength?: string }>,
+            extra: TechExtra = {},
+        ) =>
+            scoreSignals(
                 {
-                    technical: {
-                        trend: 'neutral',
-                        riskLevel: 'medium',
-                        actionRecommendation: { action: 'buy', confidence: 1.0 },
-                    },
+                    technical: { indicators, ...extra },
                     news: null,
                     options: null,
                     fundamental: null,
                 },
                 DEFAULT_WEIGHTS,
-                DEFAULT_BUY_THRESHOLD,
-                DEFAULT_SELL_THRESHOLD,
-            );
+                70,
+                30,
+            ).components.technical;
 
-            // neutral=50, medium=0, buy(1.0)=+20 → 70
-            expect(result.components.technical).toBe(70);
+        it('all bullish-strong indicators → max trend score (85)', () => {
+            expect(
+                tech([
+                    { trend: 'bullish', strength: 'strong' },
+                    { trend: 'bullish', strength: 'strong' },
+                ]),
+            ).toBe(85);
         });
 
-        it('buy action confidence=0 gives no bonus', () => {
-            const result = scoreSignals(
+        it('all bearish-strong indicators → min trend score (15)', () => {
+            expect(
+                tech([
+                    { trend: 'bearish', strength: 'strong' },
+                    { trend: 'bearish', strength: 'strong' },
+                ]),
+            ).toBe(15);
+        });
+
+        it('strength-weighted: strong bull vs weak bear leans bullish', () => {
+            // num = 3 - 1 = 2, den = 4, agg = 0.5 → 50 + 0.5*35 = 67.5 → 68
+            expect(
+                tech([
+                    { trend: 'bullish', strength: 'strong' },
+                    { trend: 'bearish', strength: 'weak' },
+                ]),
+            ).toBe(68);
+        });
+
+        it('neutral indicators dilute the score toward 50', () => {
+            // strong bull (w3) + 2 neutral (w2 each): num=3, den=7, agg=0.4286 → 65
+            expect(
+                tech([
+                    { trend: 'bullish', strength: 'strong' },
+                    { trend: 'neutral', strength: 'moderate' },
+                    { trend: 'neutral', strength: 'moderate' },
+                ]),
+            ).toBe(65);
+        });
+
+        it('missing strength counts as moderate weight', () => {
+            // bull(w2) vs bear(w2) → 0 → 50
+            expect(tech([{ trend: 'bullish' }, { trend: 'bearish' }])).toBe(50);
+        });
+
+        it('unknown trend labels are ignored', () => {
+            // only the bullish-strong signal counts → 85
+            expect(tech([{ trend: 'bullish', strength: 'strong' }, { trend: 'sideways' }])).toBe(
+                85,
+            );
+        });
+
+        it('indicators take precedence over top-level trend', () => {
+            expect(tech([{ trend: 'bearish', strength: 'strong' }], { trend: 'bullish' })).toBe(15);
+        });
+
+        it('falls back to top-level trend when no indicators', () => {
+            expect(tech([], { trend: 'bullish' })).toBe(85);
+        });
+
+        it('combines aggregate with risk and recommendation modifiers (clamped)', () => {
+            // all bullish strong = 85, low risk +10, enter +20 = 115 → clamp 100
+            expect(
+                tech([{ trend: 'bullish', strength: 'strong' }], {
+                    riskLevel: 'low',
+                    actionRecommendation: { entryRecommendation: 'enter' },
+                }),
+            ).toBe(100);
+        });
+    });
+
+    describe('fundamental category aggregation', () => {
+        const fund = (
+            categories: Array<{ sentiment?: string }>,
+            extra: { overallSentiment?: string } = {},
+        ) =>
+            scoreSignals(
                 {
-                    technical: {
-                        trend: 'neutral',
-                        riskLevel: 'medium',
-                        actionRecommendation: { action: 'buy', confidence: 0 },
-                    },
+                    technical: null,
                     news: null,
                     options: null,
-                    fundamental: null,
+                    fundamental: { categories, ...extra },
                 },
                 DEFAULT_WEIGHTS,
-                DEFAULT_BUY_THRESHOLD,
-                DEFAULT_SELL_THRESHOLD,
-            );
+                70,
+                30,
+            ).components.fundamental;
 
-            // neutral=50, medium=0, buy(0)=+0 → 50
-            expect(result.components.technical).toBe(50);
+        it('all bullish categories → 80', () => {
+            expect(fund([{ sentiment: 'bullish' }, { sentiment: 'bullish' }])).toBe(80);
+        });
+
+        it('all bearish categories → 20', () => {
+            expect(fund([{ sentiment: 'bearish' }, { sentiment: 'bearish' }])).toBe(20);
+        });
+
+        it('mixed categories balance toward 50', () => {
+            expect(
+                fund([
+                    { sentiment: 'bullish' },
+                    { sentiment: 'bearish' },
+                    { sentiment: 'neutral' },
+                ]),
+            ).toBe(50);
+        });
+
+        it('majority bearish with one neutral → 30', () => {
+            // num=-2, den=3, agg=-0.667 → 50 - 0.667*30 = 30
+            expect(
+                fund([
+                    { sentiment: 'bearish' },
+                    { sentiment: 'bearish' },
+                    { sentiment: 'neutral' },
+                ]),
+            ).toBe(30);
+        });
+
+        it('categories take precedence over overallSentiment', () => {
+            expect(fund([{ sentiment: 'bearish' }], { overallSentiment: 'bullish' })).toBe(20);
+        });
+
+        it('falls back to overallSentiment when no categories', () => {
+            expect(fund([], { overallSentiment: 'bullish' })).toBe(80);
+        });
+
+        it('falls back when all category sentiments are unknown', () => {
+            // all unknown → agg null → fallback overallSentiment neutral → 50
+            expect(fund([{ sentiment: '???' }], { overallSentiment: 'neutral' })).toBe(50);
         });
     });
 });
