@@ -50,25 +50,25 @@ export async function seed() {
             analysisType: 'technical',
             modelId: 'deepseek-v4-flash',
             enabled: true,
-            useByok: true,
+            useByok: false,
         },
         {
             analysisType: 'news',
             modelId: 'deepseek-v4-flash',
             enabled: true,
-            useByok: true,
+            useByok: false,
         },
         {
             analysisType: 'options',
             modelId: 'deepseek-v4-flash',
             enabled: true,
-            useByok: true,
+            useByok: false,
         },
         {
             analysisType: 'fundamental',
             modelId: 'deepseek-v4-flash',
             enabled: true,
-            useByok: true,
+            useByok: false,
         },
     ];
     for (const m of models) {

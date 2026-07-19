@@ -16,6 +16,12 @@ export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental';
  */
 export const ANALYSIS_TIER: Tier = 'pro';
 
+/**
+ * 상세 분석(reasoning) 기본값. siglens-trader는 "상세 분석 항상 ON" 정책이므로 `true`.
+ * 기본값을 한 곳에 모아, 정책이 바뀌면 이 상수만 고치면 되도록 한다(runner·cron 공통 참조).
+ */
+export const DEFAULT_ANALYSIS_REASONING = true;
+
 // Port: db 의존을 analysis 레이어 밖으로 분리한다. 구현체는 api/cron 레이어가 주입.
 export interface NewsCardStore {
     getCards(newsIds: string[]): Promise<Map<string, NewsCardAnalysis>>;
