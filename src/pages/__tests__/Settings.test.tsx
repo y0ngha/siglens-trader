@@ -649,7 +649,7 @@ describe('SettingsPage', () => {
         ).toBeInTheDocument();
     });
 
-    it('defaults all synthesized analysis configurations to flash lite', async () => {
+    it('defaults all synthesized analysis configurations to deepseek flash', async () => {
         mockedApi.getConfig.mockResolvedValue({
             ...mockConfig,
             analysis: [],
@@ -664,7 +664,7 @@ describe('SettingsPage', () => {
         const modelSelects = within(analysisList!).getAllByRole('combobox');
         expect(modelSelects).toHaveLength(4);
         modelSelects.forEach((select) => {
-            expect(select).toHaveValue('gemini-2.5-flash-lite');
+            expect(select).toHaveValue('deepseek-v4-flash');
         });
     });
 

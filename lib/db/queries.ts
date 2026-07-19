@@ -45,7 +45,7 @@ export async function toggleWatchlistItem(db: Db, id: number, enabled: boolean) 
 // ---------------------------------------------------------------------------
 
 // Default model when no analysis_model_config row exists. Keep in sync with src/pages/Settings.tsx MODELS[0].
-const DEFAULT_ANALYSIS_MODEL = 'gemini-2.5-flash-lite';
+const DEFAULT_ANALYSIS_MODEL = 'deepseek-v4-flash';
 
 export async function getAnalysisConfig(db: Db, type: string) {
     const rows = await db

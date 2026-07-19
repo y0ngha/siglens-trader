@@ -49,7 +49,11 @@ describe('runTechnicalAnalysis', () => {
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'done', result: { signal: 'buy' } });
-        expect(mockedPoll).toHaveBeenCalledWith(pollAnalysis, 'j-1');
+        // poll fn은 caller tier(pro)를 넘기기 위해 pollAnalysis를 감싼 래퍼다.
+        expect(mockedPoll).toHaveBeenCalledWith(expect.any(Function), 'j-1');
+        const pollFn = mockedPoll.mock.calls[0][0] as (jobId: string) => unknown;
+        pollFn('j-1');
+        expect(pollAnalysis).toHaveBeenCalledWith('j-1', { tier: 'pro' });
     });
 
     it('returns skipped when submitAnalysis returns miss_no_trigger', async () => {
@@ -86,6 +90,8 @@ describe('runTechnicalAnalysis', () => {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,
+            tierContext: { userId: null, tier: 'pro' },
+            reasoning: true,
         });
     });
 });

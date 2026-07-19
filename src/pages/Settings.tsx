@@ -17,7 +17,10 @@ function normalizeAnalysisTimeframe(value: unknown): AnalysisTimeframe {
         : DEFAULT_ANALYSIS_TIMEFRAME;
 }
 
+// MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다. lib/db/queries.ts DEFAULT_ANALYSIS_MODEL과 동기화 유지.
 const MODELS = [
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
     'gemini-2.5-pro',

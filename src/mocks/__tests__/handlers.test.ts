@@ -25,14 +25,12 @@ afterAll(() => {
 });
 
 describe('mock config handler', () => {
-    it('returns Flash Lite defaults for all analysis configs', async () => {
+    it('returns deepseek flash defaults for all analysis configs', async () => {
         const response = await fetch(new URL('/api/config', window.location.href));
         const body = (await response.json()) as ConfigResponse;
 
         expect(response.ok).toBe(true);
         expect(body.analysis).toHaveLength(4);
-        expect(body.analysis.every(({ modelId }) => modelId === 'gemini-2.5-flash-lite')).toBe(
-            true,
-        );
+        expect(body.analysis.every(({ modelId }) => modelId === 'deepseek-v4-flash')).toBe(true);
     });
 });

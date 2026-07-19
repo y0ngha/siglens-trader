@@ -1,7 +1,12 @@
 import { submitFundamentalAnalysis, pollFundamentalAnalysis } from '@y0ngha/siglens-core';
 import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
 import { pollUntilDone } from './poll-until-done.js';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
+import {
+    ANALYSIS_TIER,
+    DEFAULT_ANALYSIS_REASONING,
+    type AnalysisRunResult,
+    type RunAnalysisOptions,
+} from './types.js';
 
 const fundamentalClient = new FmpFundamentalClient();
 
@@ -14,6 +19,9 @@ export async function runFundamentalAnalysis(
             modelId: options.modelId,
             dataProvider: fundamentalClient,
             userApiKey: options.userApiKey,
+            tier: ANALYSIS_TIER,
+            // 상세 분석 항상 ON(스위치 없음). 지정 시 그 값을 따른다.
+            reasoning: options.reasoning ?? DEFAULT_ANALYSIS_REASONING,
         });
 
         if (submission.status === 'cached') {
