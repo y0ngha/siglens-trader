@@ -73,7 +73,7 @@ describe('seed', () => {
         expect(modelConfigCalls.length).toBe(4);
         expect(
             modelConfigCalls.every(
-                ([value]) => (value as { modelId?: unknown }).modelId === 'gemini-2.5-flash-lite',
+                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',
             ),
         ).toBe(true);
 
@@ -174,7 +174,7 @@ describe('seed', () => {
         expect(analysisCalls.length).toBe(20);
         expect(
             analysisCalls.every(
-                ([value]) => (value as { modelId?: unknown }).modelId === 'gemini-2.5-flash-lite',
+                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',
             ),
         ).toBe(true);
     });

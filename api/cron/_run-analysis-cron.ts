@@ -123,6 +123,8 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         timeframe,
                         cardStore,
                         deadlineMs: analysisDeadlineMs,
+                        // 상세 분석 항상 ON. 대시보드에 스위치가 생기면 이 값을 config에서 흘려보낸다.
+                        reasoning: true,
                     });
 
                     if (result.status === 'done' || result.status === 'cached') {

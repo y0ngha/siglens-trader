@@ -48,25 +48,25 @@ export async function seed() {
     const models = [
         {
             analysisType: 'technical',
-            modelId: 'gemini-2.5-flash-lite',
+            modelId: 'deepseek-v4-flash',
             enabled: true,
             useByok: true,
         },
         {
             analysisType: 'news',
-            modelId: 'gemini-2.5-flash-lite',
+            modelId: 'deepseek-v4-flash',
             enabled: true,
             useByok: true,
         },
         {
             analysisType: 'options',
-            modelId: 'gemini-2.5-flash-lite',
+            modelId: 'deepseek-v4-flash',
             enabled: true,
             useByok: true,
         },
         {
             analysisType: 'fundamental',
-            modelId: 'gemini-2.5-flash-lite',
+            modelId: 'deepseek-v4-flash',
             enabled: true,
             useByok: true,
         },
@@ -247,7 +247,7 @@ export async function seed() {
                 symbol,
                 analysisType: type,
                 result: generateMockAnalysisResult(type, symbol),
-                modelId: 'gemini-2.5-flash-lite',
+                modelId: 'deepseek-v4-flash',
                 analyzedAt: hoursAgo(1),
                 cronRunId: `${type}-mock`,
             });

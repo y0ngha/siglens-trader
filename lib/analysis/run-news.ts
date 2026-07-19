@@ -4,7 +4,7 @@ import { FmpNewsClient } from '../data/fmp-news.js';
 import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
 import { pollUntilDone } from './poll-until-done.js';
 import { enrichNewsCards } from './enrich-news-cards.js';
-import type { AnalysisRunResult, RunAnalysisOptions } from './types.js';
+import { ANALYSIS_TIER, type AnalysisRunResult, type RunAnalysisOptions } from './types.js';
 
 const newsClient = new FmpNewsClient();
 const fundamentalClient = new FmpFundamentalClient();
@@ -42,6 +42,9 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
             news: enriched,
             upcomingCalendar,
             userApiKey: options.userApiKey,
+            tier: ANALYSIS_TIER,
+            // 상세 분석 항상 ON(스위치 없음). 지정 시 그 값을 따른다.
+            reasoning: options.reasoning ?? true,
         });
 
         if (submission.status === 'cached') {
