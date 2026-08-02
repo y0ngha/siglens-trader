@@ -7,11 +7,10 @@ Wraps siglens-core's submit/poll pattern into single-call "run analysis" functio
 | File | Responsibility |
 |------|---------------|
 | `types.ts` | `RunAnalysisOptions`, `AnalysisRunResult`, `AnalysisType` |
-| `poll-until-done.ts` | Generic poll loop (2s interval, 2.5min timeout) |
-| `run-technical.ts` | Calls `submitAnalysis` → `pollAnalysis` from siglens-core |
-| `run-news.ts` | Fetches news from FMP → `submitNewsAnalysis` → poll |
-| `run-options.ts` | Fetches options from Yahoo → `submitOptionsAnalysis` → poll |
-| `run-fundamental.ts` | Injects `FmpFundamentalClient` → `submitFundamentalAnalysis` → poll |
+| `run-technical.ts` | Calls `runAnalysis` from siglens-core (single await, no polling) |
+| `run-news.ts` | Fetches news from FMP → `runNewsAnalysis` |
+| `run-options.ts` | Fetches options from Yahoo → `runOptionsAnalysis` |
+| `run-fundamental.ts` | Injects `FmpFundamentalClient` → `runFundamentalAnalysis` |
 | `enrich-news-cards.ts` | Per-symbol news card enrichment via fixed worker pool (see below) |
 | `timeframe.ts` | `analysis_timeframe` contract + per-timeframe technical staleness limits |
 | `source-time.ts` | `extractSourceAnalyzedAt` / `getAnalysisReferenceTime` — freshness-time helpers |
