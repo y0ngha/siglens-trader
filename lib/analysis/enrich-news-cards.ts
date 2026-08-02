@@ -1,11 +1,9 @@
 import {
-    submitNewsCardAnalysis,
-    pollNewsCardAnalysis,
+    runNewsCardAnalysis,
     type NewsItem,
     type NewsCardAnalysis,
     type EnrichedNewsItem,
 } from '@y0ngha/siglens-core';
-import { pollUntilDone } from './poll-until-done.js';
 import type { NewsCardStore } from './types.js';
 
 // 최신 10건만 enrich(과거 20건에서 축소). cron maxDuration 안에서 처리 가능하도록.
@@ -31,22 +29,12 @@ export async function enrichNewsCards(
     let nextIndex = 0;
     let failures = 0;
 
-    // 한 기사의 enrich 시도. 성공 시 카드, 실패(throw/error/non-submitted) 시 null.
+    // 한 기사의 enrich 시도. 성공 시 카드, LLM 실패(throw) 시 null.
     // symbol을 클로저로 참조하므로 enrichNewsCards 내부에 중첩한다.
     async function generateCard(item: NewsItem): Promise<NewsCardAnalysis | null> {
         try {
-            const submission = await submitNewsCardAnalysis({ item, thinkingBudget: 0 });
-            if (submission.status !== 'submitted' || !('jobId' in submission)) return null;
-            const polled = await pollUntilDone(pollNewsCardAnalysis, submission.jobId);
-            if ('error' in polled) {
-                console.warn('[enrich-news-cards] card failed', {
-                    symbol,
-                    id: item.id,
-                    error: polled.error,
-                });
-                return null;
-            }
-            return polled.result as NewsCardAnalysis;
+            const outcome = await runNewsCardAnalysis({ item, thinkingBudget: 0 });
+            return outcome.result as NewsCardAnalysis;
         } catch (error) {
             console.warn('[enrich-news-cards] card threw', { symbol, id: item.id, error });
             return null;

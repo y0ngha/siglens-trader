@@ -5,8 +5,7 @@ const mockFetchNews = vi.fn();
 const mockGetEarningsReports = vi.fn();
 
 vi.mock('@y0ngha/siglens-core', () => ({
-    submitNewsAnalysis: vi.fn(),
-    pollNewsAnalysis: vi.fn(),
+    runNewsAnalysis: vi.fn(),
 }));
 
 vi.mock('@lib/data/fmp-news', () => ({
@@ -21,21 +20,16 @@ vi.mock('@lib/data/fmp-fundamental', () => ({
     })),
 }));
 
-vi.mock('../poll-until-done', () => ({
-    pollUntilDone: vi.fn(),
-}));
-
 vi.mock('../enrich-news-cards', () => ({
     enrichNewsCards: vi.fn(),
 }));
 
-const { submitNewsAnalysis, pollNewsAnalysis } = await import('@y0ngha/siglens-core');
-const { pollUntilDone } = await import('../poll-until-done');
+// 'runNewsAnalysis' from core — aliased to avoid collision with the local function under test.
+const { runNewsAnalysis: coreRun } = await import('@y0ngha/siglens-core');
 const { enrichNewsCards } = await import('../enrich-news-cards');
 const { runNewsAnalysis } = await import('../run-news');
 
-const mockedSubmit = vi.mocked(submitNewsAnalysis);
-const mockedPoll = vi.mocked(pollUntilDone);
+const mockedCore = vi.mocked(coreRun);
 const mockedEnrich = vi.mocked(enrichNewsCards);
 
 const enrichedFixture = [
@@ -81,14 +75,14 @@ describe('runNewsAnalysis', () => {
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
-        expect(mockedSubmit).not.toHaveBeenCalled();
+        expect(mockedCore).not.toHaveBeenCalled();
     });
 
-    it('returns cached result from submitNewsAnalysis', async () => {
+    it('returns cached result from runNewsAnalysis (core)', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Tesla earnings beat' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
-        mockedSubmit.mockResolvedValue({
+        mockedCore.mockResolvedValue({
             status: 'cached',
             result: { sentiment: 'positive' },
         } as any);
@@ -98,7 +92,7 @@ describe('runNewsAnalysis', () => {
         expect(result).toEqual({ status: 'cached', result: { sentiment: 'positive' } });
     });
 
-    it('completes full flow: fetch news + earnings -> submit -> poll -> done', async () => {
+    it('completes full flow: fetch news + earnings -> run -> done', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Breaking news' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([
@@ -112,14 +106,15 @@ describe('runNewsAnalysis', () => {
                 lastUpdated: '2025-01-15',
             },
         ]);
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'news-j-1' } as any);
-        mockedPoll.mockResolvedValue({ result: { overallSentiment: 'bullish' } });
+        mockedCore.mockResolvedValue({
+            status: 'done',
+            result: { overallSentiment: 'bullish' },
+        } as any);
 
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'done', result: { overallSentiment: 'bullish' } });
-        expect(mockedPoll).toHaveBeenCalledWith(pollNewsAnalysis, 'news-j-1');
-        expect(mockedSubmit).toHaveBeenCalledWith(
+        expect(mockedCore).toHaveBeenCalledWith(
             expect.objectContaining({
                 symbol: 'TSLA',
                 upcomingCalendar: [
@@ -133,38 +128,47 @@ describe('runNewsAnalysis', () => {
         );
     });
 
-    it('returns skipped when submit status is not submitted', async () => {
+    it('returns skipped when core returns miss_no_trigger', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Some news' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
-        mockedSubmit.mockResolvedValue({ status: 'miss_no_trigger' } as any);
+        mockedCore.mockResolvedValue({ status: 'miss_no_trigger' } as any);
 
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
     });
 
-    it('returns error when submit throws', async () => {
+    it('returns error when core throws (LLM failure)', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'Some news' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
-        mockedSubmit.mockRejectedValue(new Error('API timeout'));
+        mockedCore.mockRejectedValue(new Error('API timeout'));
 
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'error', error: 'Error: API timeout' });
     });
 
-    it('returns error when poll returns error', async () => {
+    it('returns error when core returns error status (usage limit)', async () => {
         mockFetchNews.mockResolvedValue([{ title: 'News item' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'news-j-2' } as any);
-        mockedPoll.mockResolvedValue({ error: 'Worker crashed' });
+        mockedCore.mockResolvedValue({
+            status: 'error',
+            code: 'usage_limit_exceeded',
+            error: {
+                message: 'Daily limit exceeded',
+                code: 'analysis_limit_exceeded',
+                feature: 'analysisPerDay',
+                tier: 'pro',
+            },
+        } as any);
 
         const result = await runNewsAnalysis(baseOptions);
 
-        expect(result).toEqual({ status: 'error', error: 'Worker crashed' });
+        expect(result.status).toBe('error');
+        expect(result.error).toBeTruthy();
     });
 
     it('returns error when cardStore not provided', async () => {
@@ -191,7 +195,7 @@ describe('runNewsAnalysis', () => {
         mockedEnrich.mockResolvedValue([]);
         const result = await runNewsAnalysis(baseOptions);
         expect(result.status).toBe('skipped');
-        expect(mockedSubmit).not.toHaveBeenCalled();
+        expect(mockedCore).not.toHaveBeenCalled();
     });
 
     it('forwards deadlineMs to enrichNewsCards', async () => {
@@ -199,8 +203,7 @@ describe('runNewsAnalysis', () => {
         mockFetchNews.mockResolvedValue([{ title: 'news' }]);
         mockedEnrich.mockResolvedValue(enrichedFixture);
         mockGetEarningsReports.mockResolvedValue([]);
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'j' } as any);
-        mockedPoll.mockResolvedValue({ result: { ok: true } });
+        mockedCore.mockResolvedValue({ status: 'done', result: { ok: true } } as any);
 
         await runNewsAnalysis({ ...baseOptions, deadlineMs });
 
@@ -219,6 +222,6 @@ describe('runNewsAnalysis', () => {
 
         expect(result).toEqual({ status: 'skipped' });
         expect(mockGetEarningsReports).not.toHaveBeenCalled();
-        expect(mockedSubmit).not.toHaveBeenCalled();
+        expect(mockedCore).not.toHaveBeenCalled();
     });
 });

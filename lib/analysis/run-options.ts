@@ -1,12 +1,14 @@
-import { submitOptionsAnalysis, pollOptionsAnalysis } from '@y0ngha/siglens-core';
+import { runOptionsAnalysis as coreRunOptionsAnalysis } from '@y0ngha/siglens-core';
 import { fetchOptionsSnapshot } from '../data/yahoo-options.js';
-import { pollUntilDone } from './poll-until-done.js';
 import {
     ANALYSIS_TIER,
     DEFAULT_ANALYSIS_REASONING,
     type AnalysisRunResult,
     type RunAnalysisOptions,
 } from './types.js';
+
+/** Convert any core error value to a plain string for AnalysisRunResult.error. */
+const toErrStr = (e: unknown): string => (typeof e === 'string' ? e : JSON.stringify(e));
 
 export async function runOptionsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
     try {
@@ -15,7 +17,7 @@ export async function runOptionsAnalysis(options: RunAnalysisOptions): Promise<A
 
         const expirationDate = snapshot.chains[0].expirationDate;
 
-        const submission = await submitOptionsAnalysis({
+        const outcome = await coreRunOptionsAnalysis({
             symbol: options.symbol,
             modelId: options.modelId,
             snapshot,
@@ -26,16 +28,16 @@ export async function runOptionsAnalysis(options: RunAnalysisOptions): Promise<A
             reasoning: options.reasoning ?? DEFAULT_ANALYSIS_REASONING,
         });
 
-        if (submission.status === 'cached') {
-            return { status: 'cached', result: submission.result };
+        if (outcome.status === 'cached') return { status: 'cached', result: outcome.result };
+        if (outcome.status === 'done') return { status: 'done', result: outcome.result };
+        if (outcome.status === 'miss_no_trigger') return { status: 'skipped' };
+        // sanitizeOptionsChain found no usable chains — same as pre-call empty-chains check.
+        if (outcome.status === 'no_chains_error') return { status: 'skipped' };
+        // 'limit_error' (usage quota) and 'key_error' (BYOK required) both carry an error field.
+        if ('error' in outcome) {
+            return { status: 'error', error: toErrStr((outcome as { error: unknown }).error) };
         }
-        if (submission.status !== 'submitted' || !('jobId' in submission)) {
-            return { status: 'skipped' };
-        }
-
-        const polled = await pollUntilDone(pollOptionsAnalysis, submission.jobId);
-        if ('error' in polled) return { status: 'error', error: polled.error };
-        return { status: 'done', result: polled.result };
+        return { status: 'skipped' };
     } catch (err) {
         return { status: 'error', error: String(err) };
     }

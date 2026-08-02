@@ -1,8 +1,7 @@
-import { submitNewsAnalysis, pollNewsAnalysis } from '@y0ngha/siglens-core';
+import { runNewsAnalysis as coreRunNewsAnalysis } from '@y0ngha/siglens-core';
 import type { EarningsCalendarItem } from '@y0ngha/siglens-core';
 import { FmpNewsClient } from '../data/fmp-news.js';
 import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
-import { pollUntilDone } from './poll-until-done.js';
 import { enrichNewsCards } from './enrich-news-cards.js';
 import {
     ANALYSIS_TIER,
@@ -13,6 +12,9 @@ import {
 
 const newsClient = new FmpNewsClient();
 const fundamentalClient = new FmpFundamentalClient();
+
+/** Convert any core error value to a plain string for AnalysisRunResult.error. */
+const toErrStr = (e: unknown): string => (typeof e === 'string' ? e : JSON.stringify(e));
 
 export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
     if (!options.cardStore) {
@@ -41,7 +43,7 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
             lastUpdated: r.lastUpdated ?? new Date().toISOString(),
         }));
 
-        const submission = await submitNewsAnalysis({
+        const outcome = await coreRunNewsAnalysis({
             symbol: options.symbol,
             modelId: options.modelId,
             news: enriched,
@@ -52,16 +54,14 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
             reasoning: options.reasoning ?? DEFAULT_ANALYSIS_REASONING,
         });
 
-        if (submission.status === 'cached') {
-            return { status: 'cached', result: submission.result };
+        if (outcome.status === 'cached') return { status: 'cached', result: outcome.result };
+        if (outcome.status === 'done') return { status: 'done', result: outcome.result };
+        if (outcome.status === 'miss_no_trigger') return { status: 'skipped' };
+        // 'error' (no_news, usage_limit) and 'key_error' (BYOK required) both carry an error field.
+        if ('error' in outcome) {
+            return { status: 'error', error: toErrStr((outcome as { error: unknown }).error) };
         }
-        if (submission.status !== 'submitted' || !('jobId' in submission)) {
-            return { status: 'skipped' };
-        }
-
-        const polled = await pollUntilDone(pollNewsAnalysis, submission.jobId);
-        if ('error' in polled) return { status: 'error', error: polled.error };
-        return { status: 'done', result: polled.result };
+        return { status: 'skipped' };
     } catch (err) {
         return { status: 'error', error: String(err) };
     }

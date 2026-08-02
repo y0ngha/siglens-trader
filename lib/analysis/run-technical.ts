@@ -1,6 +1,5 @@
-import { submitAnalysis, pollAnalysis } from '@y0ngha/siglens-core';
+import { runAnalysis } from '@y0ngha/siglens-core';
 import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
-import { pollUntilDone } from './poll-until-done.js';
 import {
     ANALYSIS_TIER,
     DEFAULT_ANALYSIS_REASONING,
@@ -9,13 +8,16 @@ import {
 } from './types.js';
 import { DEFAULT_ANALYSIS_TIMEFRAME } from './timeframe.js';
 
+/** Convert any core error value to a plain string for AnalysisRunResult.error. */
+const toErrStr = (e: unknown): string => (typeof e === 'string' ? e : JSON.stringify(e));
+
 export async function runTechnicalAnalysis(
     options: RunAnalysisOptions,
 ): Promise<AnalysisRunResult> {
     try {
         // 미지정 시 분석 타임프레임 계약의 기본값(1Hour)으로. '1Day'는 계약 밖이라 금지.
         const timeframe = options.timeframe ?? DEFAULT_ANALYSIS_TIMEFRAME;
-        const submission = await submitAnalysis(
+        const outcome = await runAnalysis(
             options.symbol,
             options.companyName,
             timeframe,
@@ -32,20 +34,14 @@ export async function runTechnicalAnalysis(
             },
         );
 
-        if (submission.status === 'cached') {
-            return { status: 'cached', result: submission.result };
+        if (outcome.status === 'cached') return { status: 'cached', result: outcome.result };
+        if (outcome.status === 'done') return { status: 'done', result: outcome.result };
+        if (outcome.status === 'miss_no_trigger') return { status: 'skipped' };
+        // 'error' (tier gate, usage limit) and 'key_error' (BYOK required) both carry an error field.
+        if ('error' in outcome) {
+            return { status: 'error', error: toErrStr((outcome as { error: unknown }).error) };
         }
-        if (submission.status !== 'submitted' || !submission.jobId) {
-            return { status: 'skipped' };
-        }
-
-        // poll 시점에도 caller tier로 재게이팅/필터되므로 submit과 동일한 pro tier를 넘긴다.
-        const polled = await pollUntilDone(
-            (jobId) => pollAnalysis(jobId, { tier: ANALYSIS_TIER }),
-            submission.jobId,
-        );
-        if ('error' in polled) return { status: 'error', error: polled.error };
-        return { status: 'done', result: polled.result };
+        return { status: 'skipped' };
     } catch (err) {
         return { status: 'error', error: String(err) };
     }
