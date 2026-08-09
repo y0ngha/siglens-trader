@@ -580,9 +580,9 @@ export type CronOutcome =
  * row). The reliability finalizer rewrites such rows to error/timeout so the
  * audit log never shows a perpetually-running invocation.
  *
- * Must stay greater than the Vercel function `maxDuration` (800s, see
- * vercel.json) — otherwise a live, still-running invocation could be swept
- * mid-execution.
+ * Must stay greater than the longest a cron tick can run — the analysis crons stop
+ * starting new work at 690s (see `_run-analysis-cron.ts`) and then finish in flight —
+ * otherwise a live, still-running invocation could be swept mid-execution.
  */
 export const CRON_STALE_AFTER_MS = 15 * 60_000;
 

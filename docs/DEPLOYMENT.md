@@ -9,7 +9,7 @@ siglens-trader를 프로덕션에 배포하기 위한 인프라 셋업 순서.
 1. [neon.tech](https://neon.tech) 로그인
 2. 새 프로젝트 생성 (또는 기존 프로젝트에 새 database)
    - Database name: `siglens_trader`
-   - Region: `us-east-2` (Vercel과 같은 리전 권장)
+   - Region: `us-east-2` (앱은 ap-northeast-2에서 돌지만, DB는 기존 리전을 유지한다 — 이관 설계 §10 참고)
 3. Connection string 복사 → `DATABASE_URL`로 사용
 
 ```bash
@@ -20,46 +20,44 @@ yarn db:migrate
 
 ---
 
-## 2. Vercel 프로젝트 연결
+## 2. AWS 인프라 (최초 1회)
 
-1. [vercel.com](https://vercel.com) → New Project → Import Git Repository
-   - Repository: `y0ngha/siglens-trader`
-   - Framework: Vite
-   - Root Directory: `.`
-   - Build Command: `tsc -b && vite build`
-   - Output Directory: `dist`
+배포 대상은 단일 EC2 + Cloudflare Tunnel. 스크립트와 상세 런북은
+[`infra/aws/README.md`](../infra/aws/README.md), 설계 근거는
+[`docs/specs/2026-07-19-vercel-to-aws-migration-design.md`](specs/2026-07-19-vercel-to-aws-migration-design.md).
 
-2. Environment Variables 설정 (Vercel Dashboard → Settings → Environment Variables):
+```bash
+export AWS_REGION=ap-northeast-2
 
-```
-# 필수
-DATABASE_URL=postgresql://...
-CRON_SECRET=<generate random string>
-UPSTASH_REDIS_REST_URL=<Upstash Redis REST URL>
-UPSTASH_REDIS_REST_TOKEN=<Upstash Redis REST token>
-# Redis는 토스 OAuth 토큰 캐시(toss:oauth:token) + accountSeq 캐시(toss:account:seq) +
-# 분산 락(execute cron 동시 실행 방지)에도 사용됨. 미설정 시 trading 레이어 경고 출력 + 프로덕션 unsafe.
-FMP_API_KEY=<from financialmodelingprep.com>
-MARKET_DATA_PROVIDER=fmp
+# 1) IAM: EC2 인스턴스 롤 + GitHub OIDC 배포 롤 (출력된 ARN을 GitHub secret에 등록)
+infra/aws/provision-iam.sh
 
-# LLM 제공사 API 키 — 직접 분석 호출 필수 (worker 제거)
-ANTHROPIC_API_KEY=
-GEMINI_API_KEY=
-OPENAI_API_KEY=
-DEEPSEEK_API_KEY=
+# 2) 시크릿: 로컬 env 파일 → SSM /siglens-trader/* (SecureString)
+infra/aws/params.sh .env.production
 
-# 알림
-RESEND_API_KEY=<from resend.com>
-NOTIFICATION_EMAIL_FROM=noreply@siglens.io
-
-# 토스증권 (trading_mode=auto/semi_auto 사용 시 필수)
-# TOSS_APP_KEY: OAuth2 client_id (Toss Open API 앱 등록 후 발급)
-# TOSS_SECRET_KEY: OAuth2 client_secret (앱 등록 후 발급)
-TOSS_APP_KEY=
-TOSS_SECRET_KEY=
+# 3) 첫 이미지가 ECR에 있어야 인스턴스가 뜬다 (v* 태그를 푸시하거나 수동 build+push)
+# 4) ECR·SG·로그·알람·EC2 기동
+infra/aws/provision.sh 0.11.0
 ```
 
-3. Deploy → 첫 배포 완료
+GitHub → Settings → Secrets and variables → Actions:
+
+| Secret | 값 |
+|---|---|
+| `AWS_DEPLOY_ROLE_ARN` | `provision-iam.sh`가 출력 |
+| `AWS_ACCOUNT_ID` | AWS 계정 번호 |
+| `SIGLENS_GITHUB_TOKEN` | GitHub Packages read 토큰 (`@y0ngha/siglens-core` 설치용) |
+
+SSM에 넣을 환경변수는 `.env.example` 참고. Vercel 대시보드 대신 **SSM이 유일한 시크릿 저장소**이며,
+컨테이너는 재시작마다 다시 읽는다(`/run`은 tmpfs).
+
+이후 배포는 태그 푸시로 자동화된다:
+
+```bash
+yarn release:patch          # v0.11.1 태그 push → .github/workflows/deploy.yml
+```
+
+수동 배포·롤백은 `infra/aws/deploy.sh <tag>` (ECR lifecycle이 최근 3개 태그만 보관).
 
 ---
 
@@ -110,39 +108,47 @@ UPDATE config SET value = '3' WHERE key = 'max_trades_per_day';
 
 ---
 
-## 3. Vercel Cron 확인
+## 3. Cron 확인
 
-`vercel.json`에 정의된 cron은 배포 시 자동 등록됨:
+cron은 앱 프로세스 안에서 `node-cron`으로 돈다(`server/app.ts`의 `CRON_JOBS`). 별도 등록 절차 없음 —
+컨테이너가 떠 있으면 스케줄도 살아 있다.
 
-| Cron | 스케줄 | 역할 |
+| Cron | 스케줄 (UTC) | 역할 |
 |------|--------|------|
-| `/api/cron/technical` | 매시 정각 (US 장중) | 기술적 분석 |
-| `/api/cron/news` | 매시 정각 | 뉴스 분석 |
-| `/api/cron/options` | 매시 정각 | 옵션 분석 |
-| `/api/cron/fundamental` | 하루 1회 (KST 22:00) | 펀더멘털 분석 |
-| `/api/cron/execute` | 매시 7분 (분석 후 offset) | 매매 판단/실행 (분산 락 사용) |
-| `/api/cron/reconcile` | 10분 간격 | 미체결 주문 타임아웃(30분) + DB 정합성 검사 |
+| technical | `0 13-21 * * 1-5` | 기술적 분석 |
+| news | `0 13-21 * * 1-5` | 뉴스 분석 |
+| options | `0 13-21 * * 1-5` | 옵션 분석 |
+| fundamental | `0 15 * * 1-5` | 펀더멘털 분석 |
+| execute | `7 13-21 * * 1-5` | 매매 판단/실행 (분산 락) |
+| reconcile | `*/10 13-21 * * 1-5` | 미체결 주문 타임아웃 + DB 정합성 |
 
-스케줄 상세: `0 22-23,0-5 * * 1-5` (KST 22:00~05:59, 월~금 = US 장중)
-reconcile: `*/10 22-23,0-5 * * 1-5` (10분 간격, 장중 시간대)
+UTC 13~21시 = KST 22:00~06:59. 실제 실행은 런타임 게이트 `isEtRegularSessionOpen`이
+미국 정규장으로 다시 좁힌다(장외 발화는 `market_closed`로 조기 종료).
 
-Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
-
-**CRON_SECRET 설정 확인**: Vercel이 cron 호출 시 `Authorization: Bearer <CRON_SECRET>` 헤더를 보냄. 이 값이 환경변수와 일치해야 cron이 동작함.
+- `CRON_SECRET`은 여전히 필요하다. 스케줄러가 각 잡을 `Authorization: Bearer <CRON_SECRET>`을 실은
+  요청으로 호출하므로, 미설정 시 스케줄러가 경고를 남기고 **비활성**된다.
+- `/api/cron/*` 엔드포인트도 살아 있어 수동 트리거가 가능하다(같은 시크릿으로 인증).
+- 실행 이력: 대시보드 Cron Runs 탭, 또는 `aws logs tail /siglens-trader/app --follow`.
+- cron 실패는 SNS 알람(`siglens-trader-alerts`)으로 통지된다 — 박스가 정상이어도 매매만 멈추는
+  경로라 별도로 감시한다.
 
 ---
 
-## 4. Cloudflare DNS 설정
+## 4. Cloudflare Tunnel + DNS
 
-1. Cloudflare Dashboard → DNS → Add Record
-   - Type: `CNAME`
-   - Name: `auto-trade`
-   - Target: `cname.vercel-dns.com`
-   - Proxy: **ON** (주황색 구름)
+인스턴스는 인바운드 포트를 열지 않는다. `cloudflared`가 아웃바운드로 터널을 맺고
+Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서·Elastic IP 불필요).
 
-2. Vercel Dashboard → Domains → Add Domain
-   - `auto-trade.siglens.io` 추가
-   - Cloudflare 프록시가 켜져있으면 Vercel이 SSL을 자동 처리
+1. Cloudflare Dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel**
+   - 이름: `siglens-trader`
+   - 발급된 **토큰**을 `.env.production`의 `TUNNEL_TOKEN`에 넣고 `infra/aws/params.sh`로 SSM에 저장
+2. 같은 화면 → Public Hostnames → Add
+   - Subdomain `auto-trade`, Domain `siglens.io`
+   - Service: `HTTP` → `localhost:3000`
+   - CNAME은 Cloudflare가 자동 생성한다(수동 DNS 레코드 추가 불필요)
+3. 기존 Cloudflare Access 애플리케이션(`auto-trade.siglens.io`)은 그대로 앞단 인증을 담당한다.
+
+---
 
 ---
 
@@ -176,7 +182,7 @@ Vercel Dashboard → Cron Jobs 탭에서 실행 상태 확인 가능.
 | `DISABLE_AUTH=true` (비프로덕션 환경) | 모든 인증 우회 (로컬 개발 전용) |
 | `DISABLE_AUTH=true` (프로덕션 환경) | **무시됨** — 프로덕션에서는 DISABLE_AUTH가 동작하지 않음 |
 
-**JWT 검증 활성화 환경변수** (Vercel Dashboard → Settings → Environment Variables):
+**JWT 검증 활성화 환경변수** (SSM `/siglens-trader/*` — `infra/aws/params.sh`로 주입):
 
 ```
 # Cloudflare Access JWT 검증 (엄격 모드 — 설정 권장)
@@ -200,7 +206,7 @@ CF_ACCESS_ALLOWED_EMAILS=dev.y0ngha@gmail.com
 1. [resend.com](https://resend.com) → API Keys → Create
 2. Domains → `siglens.io` (이미 등록되어있으면 그대로 사용)
 3. 발신 주소: `noreply@siglens.io`
-4. Vercel에 `RESEND_API_KEY` 환경변수 설정
+4. `RESEND_API_KEY`를 SSM에 주입 (`infra/aws/params.sh`)
 
 ---
 
@@ -229,7 +235,7 @@ yarn db:clear    # 모든 테이블 데이터 삭제 (확인 프롬프트)
 | 항목 | 확인 방법 |
 |------|-----------|
 | 대시보드 접속 | `https://auto-trade.siglens.io` → Cloudflare OTP 인증 후 UI 표시 |
-| Cron 동작 | Vercel Dashboard → Cron Jobs → 다음 실행 시간 확인 |
+| Cron 동작 | `aws logs tail /siglens-trader/app --follow`에서 `[cron:*]` 로그 확인 |
 | DB 연결 | 대시보드 상태 페이지에 데이터 표시 |
 | 분석 연동 | `/api/cron/technical` 수동 호출 (curl + CRON_SECRET) 후 분석 결과 확인 |
 | 이메일 알림 | 설정에서 테스트 이메일 발송 |
@@ -350,11 +356,46 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS realized_pnl numeric;
 
 ---
 
+## 13. Vercel → AWS 컷오버
+
+Vercel에서 AWS로 넘길 때의 순서. 실매매 도구라 **`trading_mode=dry_run` 상태에서 검증한 뒤**
+모드를 되돌린다.
+
+1. **사전 준비** — 섹션 2를 끝내고(`provision-iam.sh` → `params.sh` → 첫 이미지 → `provision.sh`),
+   섹션 4의 Tunnel을 만들되 **public hostname은 아직 붙이지 않는다**.
+2. **인스턴스 검증** — 아직 도메인이 Vercel을 가리키는 동안:
+   ```bash
+   aws logs tail /siglens-trader/app --follow          # "[server] listening on :3000"
+   aws ssm start-session --target <instance-id>        # 필요 시 박스 안에서
+   curl -fsS localhost:3000/api/health                 # 박스 안에서만 접근 가능
+   ```
+3. **매매 정지 상태로 전환** — 대시보드에서 `trading_mode=dry_run` (또는 kill switch).
+4. **DNS 전환** — Tunnel의 public hostname `auto-trade.siglens.io` → `http://localhost:3000` 연결.
+   Cloudflare가 CNAME을 자동 교체하므로 기존 Vercel 레코드는 대체된다.
+5. **실사용 검증** — 브라우저로 접속(Access 인증 통과), 대시보드 로딩, `/api/status`,
+   cron 1건 수동 트리거:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" https://auto-trade.siglens.io/api/cron/technical
+   ```
+   Cron Runs 탭과 CloudWatch 로그에서 결과 확인.
+6. **매매 재개** — 원래 `trading_mode`로 복귀.
+7. **정리** — 며칠 안정화 후 Vercel 프로젝트 삭제.
+
+**롤백**: Tunnel의 public hostname을 제거하고 `auto-trade` CNAME을 `cname.vercel-dns.com`으로
+되돌리면 즉시 Vercel로 복귀한다(Vercel 프로젝트를 지우기 전까지). 앱 레벨 롤백은
+이전 태그로 `infra/aws/deploy.sh <tag>`.
+
+> `vercel.json`은 제거됐다. cron 스케줄·SPA rewrite·noindex 헤더는 이제 `server/app.ts`가
+> 담당한다(두 곳에 같은 설정이 남으면 드리프트가 생긴다). Vercel로 되돌려야 한다면
+> 해당 커밋을 revert하면 파일이 복구된다.
+
+---
+
 ## 트러블슈팅
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| Cron 401 | CRON_SECRET 불일치 | Vercel env vars 확인 |
+| Cron 401 | CRON_SECRET 불일치/미설정 | SSM `/siglens-trader/CRON_SECRET` 확인 (미설정 시 스케줄러 자체가 비활성) |
 | Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true (프로덕션에서는 무시됨) |
 | Dashboard 403 (JWT) | CF_ACCESS_TEAM_DOMAIN/AUD 설정 후 JWT 검증 실패 | Cf-Access-Jwt-Assertion 헤더 존재 여부 확인, AUD Tag 오타 점검 |
 | 분석 안 됨 | LLM API 키 미설정 | ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY 확인 |

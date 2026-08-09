@@ -67,7 +67,7 @@ Rules:
 | `lib/data/` | 인프라 (FMP, Yahoo Finance) |
 | `lib/notification/` | 인프라 (이메일 알림) |
 | `lib/db/` | 인프라 (Neon PostgreSQL) |
-| `api/` | Vercel Serverless Functions |
+| `api/` | Web-standard HTTP handlers (mounted by `server/`) |
 | `src/` | React SPA (Dashboard UI) |
 
 ### 4. Determine Title and Labels
