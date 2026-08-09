@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Vercel](https://img.shields.io/badge/Vercel-000000?style=flat&logo=vercel&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-232F3E?style=flat&logo=amazonaws&logoColor=white)
 ![Upstash](https://img.shields.io/badge/Upstash-00E9A3?style=flat&logo=upstash&logoColor=white)
 ![Neon](https://img.shields.io/badge/Neon-00E599?style=flat&logo=neon&logoColor=black)
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?style=flat&logo=cloudflare&logoColor=white)
@@ -111,9 +111,9 @@ priority-weighted average (합 26):
 ## 기술 스택
 
 - **Frontend**: React 19 + Vite (PWA), TanStack Query, Tailwind CSS v4
-- **Backend**: Vercel Serverless Functions (Cron, maxDuration 800s)
+- **Backend**: Hono (Node) on AWS EC2 — 정적 SPA + `/api` 라우트 + 인프로세스 node-cron, Docker/ECR 배포
 - **DB**: Neon PostgreSQL + Drizzle ORM
-- **분석**: [@y0ngha/siglens-core](https://github.com/y0ngha/siglens-core) + siglens-worker (LLM proxy)
+- **분석**: [@y0ngha/siglens-core](https://github.com/y0ngha/siglens-core) (LLM 호출은 앱 프로세스 내부)
 - **데이터**: FMP API, Yahoo Finance (yahoo-finance2)
 - **인증**: Cloudflare Access (Zero Trust)
 - **알림**: Resend (Email)
@@ -127,12 +127,11 @@ priority-weighted average (합 26):
 |--------|------|------|
 | FMP API | 가격, 뉴스, 펀더멘털 데이터 | [financialmodelingprep.com](https://financialmodelingprep.com) |
 | Yahoo Finance | 옵션 체인 데이터 | yahoo-finance2 npm 패키지 |
-| LLM Worker | AI 분석 실행 | siglens-worker (자체 호스팅, 비공개) |
 | Upstash Redis | 분석 작업 큐 + 분산 락 | siglens-core 내부 큐 + 매매 cron 동시 실행 방지 |
 | Neon DB | 상태/이력 저장 | PostgreSQL |
 | Toss Securities | 주문 실행 | Open API (개인용, 미출시) |
 | Resend | 이메일 알림 | |
-| Cloudflare | DNS + Access 인증 | |
+| Cloudflare | DNS + Access 인증 + Tunnel(유일한 인그레스) | |
 
 ## 실행
 
@@ -191,7 +190,7 @@ OPENAI_API_KEY=
 DEEPSEEK_API_KEY=
 TOSS_APP_KEY=          # 토스증권 OAuth2 client_id (auto/semi_auto 필수)
 TOSS_SECRET_KEY=       # 토스증권 OAuth2 client_secret
-CRON_SECRET=           # Vercel Cron 인증
+CRON_SECRET=           # cron 인증 (미설정 시 스케줄러 비활성)
 RESEND_API_KEY=        # 이메일 알림
 NOTIFICATION_EMAIL_FROM=noreply@siglens.io
 ```

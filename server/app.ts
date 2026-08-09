@@ -31,7 +31,7 @@ type WebHandler = (req: Request) => Promise<Response>;
 const fwd = (h: WebHandler) => (c: { req: { raw: Request } }) => h(c.req.raw);
 
 /**
- * The 6 scheduled jobs, replacing `vercel.json` crons. Schedules are UTC (as on Vercel);
+ * The 6 scheduled jobs, carried over from the former `vercel.json` crons. Schedules are UTC;
  * the app's own `isEtRegularSessionOpen` gate narrows execution to the US session. Double
  * execution across instances is prevented by the existing Redis SETNX lock (lib/lock.ts).
  */
@@ -46,7 +46,7 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
 
 export const app = new Hono();
 
-// Whole-site noindex (trader is a private, CF-Access-gated tool) — replaces vercel.json headers.
+// Whole-site noindex (trader is a private, CF-Access-gated tool) — was a vercel.json header rule.
 app.use('*', async (c, next) => {
     await next();
     c.header('X-Robots-Tag', 'noindex, nofollow');
@@ -70,8 +70,8 @@ app.post('/api/trades', fwd(tradesPOST));
 // node-cron calls the same handlers in-process on schedule (see startCron).
 for (const { name, handler } of CRON_JOBS) app.get(`/api/cron/${name}`, fwd(handler));
 
-// Unknown /api/* must 404, never fall through to the SPA — mirrors vercel.json's
-// rewrite source `/((?!api/).*)`, which excluded api paths from the index.html fallback.
+// Unknown /api/* must 404, never fall through to the SPA — the old vercel.json rewrite
+// source `/((?!api/).*)` likewise excluded api paths from the index.html fallback.
 app.all('/api/*', (c) => c.notFound());
 
 // Static SPA: serve built assets, else fall back to index.html (client-side routing).

@@ -10,7 +10,8 @@ Personal use only (Toss Securities Terms — trading data for personal use only)
 ## Layer Structure
 
 ```
-api/              → Vercel Serverless Functions (HTTP handlers + cron + reconcile)
+api/              → Web-standard (Request) => Response handlers (HTTP + cron + reconcile)
+server/           → Hono app: serves the built SPA, mounts api/ handlers, runs node-cron
 src/              → React SPA (Dashboard UI)
 lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense.
 lib/analysis/     → Application: siglens-core integration
@@ -99,7 +100,7 @@ Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 
 ## Cron Schedule
 
-**Vercel runs cron schedules in UTC.** Hours below are UTC, chosen to cover the US regular
+**Cron runs in-process via node-cron, on UTC schedules** (`server/app.ts` `CRON_JOBS`). Hours below are UTC, chosen to cover the US regular
 session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
 DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
 `market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
@@ -117,7 +118,8 @@ UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) an
 ```bash
 yarn dev              # Vite dev server (port 6270)
 yarn dev:mock         # Vite dev with MSW mocking (no backend needed)
-yarn build            # tsc -b && vite build
+yarn build            # tsc -b && vite build (SPA only)
+yarn start            # tsx server/index.ts (Hono server + cron; what the container runs)
 yarn typecheck        # tsc --noEmit
 yarn lint             # ESLint
 yarn lint:fix         # ESLint --fix
@@ -133,3 +135,15 @@ yarn db:migrate       # Run migrations
 yarn db:seed          # Insert mock data
 yarn db:clear         # Delete all data (with confirmation prompt)
 ```
+
+---
+
+## Deployment
+
+Runs on a single EC2 instance behind a Cloudflare Tunnel (no ALB, no inbound ports).
+Pushing a `v*` tag triggers `.github/workflows/deploy.yml`: test-gate → arm64 image → ECR →
+`infra/aws/deploy.sh` (SSM pull + restart + on-box health check).
+
+- Secrets live only in SSM `/siglens-trader/*`; the container re-reads them on every start.
+- Runbook: [`infra/aws/README.md`](infra/aws/README.md). Setup + cutover: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+- Design rationale: [`docs/specs/2026-07-19-vercel-to-aws-migration-design.md`](docs/specs/2026-07-19-vercel-to-aws-migration-design.md).

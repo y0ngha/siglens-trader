@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { app, CRON_JOBS } from '../app.js';
 
 describe('CRON_JOBS', () => {
-    it('mirrors the 6 vercel.json cron schedules (UTC)', () => {
+    it('keeps the 6 cron schedules carried over from vercel.json (UTC)', () => {
         expect(CRON_JOBS.map((j) => [j.name, j.schedule])).toEqual([
             ['technical', '0 13-21 * * 1-5'],
             ['news', '0 13-21 * * 1-5'],
