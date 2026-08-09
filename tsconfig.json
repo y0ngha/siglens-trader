@@ -17,6 +17,6 @@
             "@lib/*": ["./lib/*"]
         }
     },
-    "include": ["src", "lib", "api", "vite-env.d.ts"],
+    "include": ["src", "lib", "api", "server", "vite-env.d.ts"],
     "exclude": ["node_modules"]
 }
