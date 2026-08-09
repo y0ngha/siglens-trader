@@ -1,0 +1,95 @@
+name: Deploy
+
+on:
+    push:
+        tags:
+            - 'v*'
+    # No workflow_dispatch: the OIDC trust policy only allows refs/tags/v*, so a manual
+    # dispatch from a branch would fail the role assumption. Redeploy by pushing a tag
+    # or re-running a tag's workflow run.
+
+# A partial rollout is worse than a queued one — never cancel a deploy in flight.
+concurrency:
+    group: deploy
+    cancel-in-progress: false
+
+permissions:
+    id-token: write # OIDC token exchange
+    contents: read
+
+jobs:
+    # A tagged commit that fails typecheck or unit tests must never reach the build or
+    # the instance. `deploy` needs this job, so a red gate blocks the rollout.
+    test-gate:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        env:
+            SIGLENS_GITHUB_TOKEN: ${{ secrets.SIGLENS_GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+            - run: corepack enable
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: yarn
+            - run: yarn install --immutable
+            - run: yarn typecheck
+            - run: yarn test
+
+    deploy:
+        needs: test-gate
+        timeout-minutes: 30
+        # Native arm64 runner: the host is Graviton, and building arm64 under QEMU is slow.
+        runs-on: ubuntu-24.04-arm
+        steps:
+            - uses: actions/checkout@v4
+
+            # v0.11.0 -> 0.11.0
+            - name: Derive IMAGE_TAG
+              run: echo "IMAGE_TAG=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+                  aws-region: ap-northeast-2
+
+            - name: Login to Amazon ECR
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - uses: docker/setup-buildx-action@v3
+
+            # Only the immutable version tag is pushed — never :latest. The instance pins an
+            # explicit tag and the ECR lifecycle keeps the last 3, which :latest would skew.
+            # The registry token is a BuildKit secret so it stays out of layers and logs.
+            - name: Build image (linux/arm64)
+              env:
+                  SIGLENS_GITHUB_TOKEN: ${{ secrets.SIGLENS_GITHUB_TOKEN }}
+              run: |
+                  docker buildx build \
+                      --platform linux/arm64 \
+                      --provenance=false \
+                      --secret id=SIGLENS_GITHUB_TOKEN,env=SIGLENS_GITHUB_TOKEN \
+                      --load \
+                      -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com/siglens-trader:"${IMAGE_TAG}" \
+                      .
+
+            # Boot the image natively before it can reach the host: catches exec-format
+            # errors (an amd64 image on a Graviton box) and a broken entrypoint.
+            - name: Smoke test image (arm64 boots)
+              run: |
+                  docker run --rm --platform linux/arm64 \
+                      --entrypoint /sbin/tini \
+                      ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com/siglens-trader:"${IMAGE_TAG}" \
+                      -- node -e "console.log('arm64 boot ok')"
+
+            - name: Push image to ECR
+              run: docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com/siglens-trader:"${IMAGE_TAG}"
+
+            # deploy.sh pulls + restarts over SSM and then health-checks on the box; it exits
+            # non-zero if the new container starts but cannot serve, so a bad release fails here.
+            - name: Deploy to instance
+              run: bash infra/aws/deploy.sh "$IMAGE_TAG"
+
+            - name: Log deployed tag
+              run: echo "Deployed siglens-trader:${IMAGE_TAG}"
