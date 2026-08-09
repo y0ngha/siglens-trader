@@ -37,17 +37,16 @@ DATABASE_URL=postgresql://...
 CRON_SECRET=<generate random string>
 UPSTASH_REDIS_REST_URL=<Upstash Redis REST URL>
 UPSTASH_REDIS_REST_TOKEN=<Upstash Redis REST token>
-# Redis는 siglens-core 분석 큐 외에, 토스 OAuth 토큰 캐시(toss:oauth:token) + accountSeq 캐시(toss:account:seq) +
+# Redis는 토스 OAuth 토큰 캐시(toss:oauth:token) + accountSeq 캐시(toss:account:seq) +
 # 분산 락(execute cron 동시 실행 방지)에도 사용됨. 미설정 시 trading 레이어 경고 출력 + 프로덕션 unsafe.
-WORKER_URL=<siglens-worker URL>
-WORKER_SECRET=<from siglens-worker>
 FMP_API_KEY=<from financialmodelingprep.com>
 MARKET_DATA_PROVIDER=fmp
 
-# BYOK (선택 — 대시보드에서 활성화 시 필요)
+# LLM 제공사 API 키 — 직접 분석 호출 필수 (worker 제거)
 ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
 GEMINI_API_KEY=
+OPENAI_API_KEY=
+DEEPSEEK_API_KEY=
 
 # 알림
 RESEND_API_KEY=<from resend.com>
@@ -358,7 +357,7 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS realized_pnl numeric;
 | Cron 401 | CRON_SECRET 불일치 | Vercel env vars 확인 |
 | Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true (프로덕션에서는 무시됨) |
 | Dashboard 403 (JWT) | CF_ACCESS_TEAM_DOMAIN/AUD 설정 후 JWT 검증 실패 | Cf-Access-Jwt-Assertion 헤더 존재 여부 확인, AUD Tag 오타 점검 |
-| 분석 안 됨 | WORKER_URL/SECRET 미설정 | siglens-worker 정보 확인 |
+| 분석 안 됨 | LLM API 키 미설정 | ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY 확인 |
 | 빈 대시보드 | watchlist 비어있음 | 설정에서 종목 추가 |
 | 이메일 안 옴 | RESEND_API_KEY 미설정 | Resend 대시보드 확인 |
 | Access 거부 | Cloudflare policy 미적용 | Zero Trust 설정 재확인 |

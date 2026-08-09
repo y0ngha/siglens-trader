@@ -2,24 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RunAnalysisOptions } from '../types';
 
 vi.mock('@y0ngha/siglens-core', () => ({
-    submitFundamentalAnalysis: vi.fn(),
-    pollFundamentalAnalysis: vi.fn(),
+    runFundamentalAnalysis: vi.fn(),
 }));
 
 vi.mock('@lib/data/fmp-fundamental', () => ({
     FmpFundamentalClient: vi.fn().mockImplementation(() => ({})),
 }));
 
-vi.mock('../poll-until-done', () => ({
-    pollUntilDone: vi.fn(),
-}));
-
-const { submitFundamentalAnalysis, pollFundamentalAnalysis } = await import('@y0ngha/siglens-core');
-const { pollUntilDone } = await import('../poll-until-done');
+// 'runFundamentalAnalysis' from core — aliased to avoid collision with the local function under test.
+const { runFundamentalAnalysis: coreRun } = await import('@y0ngha/siglens-core');
 const { runFundamentalAnalysis } = await import('../run-fundamental');
 
-const mockedSubmit = vi.mocked(submitFundamentalAnalysis);
-const mockedPoll = vi.mocked(pollUntilDone);
+const mockedCore = vi.mocked(coreRun);
 
 const baseOptions: RunAnalysisOptions = {
     symbol: 'MSFT',
@@ -32,8 +26,8 @@ describe('runFundamentalAnalysis', () => {
         vi.clearAllMocks();
     });
 
-    it('returns cached result from submit', async () => {
-        mockedSubmit.mockResolvedValue({
+    it('returns cached result from core', async () => {
+        mockedCore.mockResolvedValue({
             status: 'cached',
             result: { peRatio: 35.2 },
         } as any);
@@ -41,50 +35,64 @@ describe('runFundamentalAnalysis', () => {
         const result = await runFundamentalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'cached', result: { peRatio: 35.2 } });
-        expect(mockedPoll).not.toHaveBeenCalled();
     });
 
-    it('polls and returns done result when submitted', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'fund-j-1' } as any);
-        mockedPoll.mockResolvedValue({ result: { healthScore: 8.5 } });
+    it('returns done result when core returns done', async () => {
+        mockedCore.mockResolvedValue({ status: 'done', result: { healthScore: 8.5 } } as any);
 
         const result = await runFundamentalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'done', result: { healthScore: 8.5 } });
-        expect(mockedPoll).toHaveBeenCalledWith(pollFundamentalAnalysis, 'fund-j-1');
     });
 
-    it('returns skipped when submit status is not submitted', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'miss_no_trigger' } as any);
+    it('returns skipped when core returns miss_no_trigger', async () => {
+        mockedCore.mockResolvedValue({ status: 'miss_no_trigger' } as any);
 
         const result = await runFundamentalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
     });
 
-    it('returns error when submit throws', async () => {
-        mockedSubmit.mockRejectedValue(new Error('FMP data unavailable'));
+    it('returns error when core throws (LLM or network failure)', async () => {
+        mockedCore.mockRejectedValue(new Error('FMP data unavailable'));
 
         const result = await runFundamentalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'error', error: 'Error: FMP data unavailable' });
     });
 
-    it('returns error when poll returns error', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'fund-j-2' } as any);
-        mockedPoll.mockResolvedValue({ error: 'Fundamental analysis timeout' });
+    it('returns error when core returns fetch_failed', async () => {
+        mockedCore.mockResolvedValue({
+            status: 'error',
+            code: 'fetch_failed',
+            error: 'Profile not found for symbol: MSFT',
+        } as any);
 
         const result = await runFundamentalAnalysis(baseOptions);
 
-        expect(result).toEqual({ status: 'error', error: 'Fundamental analysis timeout' });
+        expect(result).toEqual({ status: 'error', error: 'Profile not found for symbol: MSFT' });
     });
 
-    it('passes dataProvider to submitFundamentalAnalysis', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'cached', result: {} } as any);
+    it('returns error when core returns key_error (BYOK required)', async () => {
+        mockedCore.mockResolvedValue({
+            status: 'key_error',
+            code: 'user_api_key_required',
+            error: 'BYOK API key required for this model',
+            modelId: 'claude-sonnet-4-20250514',
+            tier: 'pro',
+        } as any);
+
+        const result = await runFundamentalAnalysis(baseOptions);
+
+        expect(result).toEqual({ status: 'error', error: 'BYOK API key required for this model' });
+    });
+
+    it('passes dataProvider to runFundamentalAnalysis (core)', async () => {
+        mockedCore.mockResolvedValue({ status: 'cached', result: {} } as any);
 
         await runFundamentalAnalysis(baseOptions);
 
-        expect(mockedSubmit).toHaveBeenCalledWith(
+        expect(mockedCore).toHaveBeenCalledWith(
             expect.objectContaining({
                 symbol: 'MSFT',
                 modelId: baseOptions.modelId,

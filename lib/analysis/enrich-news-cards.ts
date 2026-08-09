@@ -1,11 +1,9 @@
 import {
-    submitNewsCardAnalysis,
-    pollNewsCardAnalysis,
+    runNewsCardAnalysis,
     type NewsItem,
     type NewsCardAnalysis,
     type EnrichedNewsItem,
 } from '@y0ngha/siglens-core';
-import { pollUntilDone } from './poll-until-done.js';
 import type { NewsCardStore } from './types.js';
 
 // 최신 10건만 enrich(과거 20건에서 축소). cron maxDuration 안에서 처리 가능하도록.
@@ -31,22 +29,38 @@ export async function enrichNewsCards(
     let nextIndex = 0;
     let failures = 0;
 
-    // 한 기사의 enrich 시도. 성공 시 카드, 실패(throw/error/non-submitted) 시 null.
-    // symbol을 클로저로 참조하므로 enrichNewsCards 내부에 중첩한다.
+    /**
+     * 한 기사의 enrich 시도.
+     *
+     * `runNewsCardAnalysis`는 현재 항상 `{ status: 'done', result }` 또는 throw다
+     * (tier/usage 게이트가 없으므로 non-done resolve-failure는 정의상 없음).
+     * status를 명시적으로 검사하는 이유: 향후 core union이 확장될 경우
+     * 조용히 undefined를 persist하는 대신 이 함수가 null을 반환해 failures를
+     * 올바르게 카운트하도록 방어한다.
+     *
+     * symbol을 클로저로 참조하므로 enrichNewsCards 내부에 중첩한다.
+     */
     async function generateCard(item: NewsItem): Promise<NewsCardAnalysis | null> {
+        // 남은 시간 기반 AbortSignal. Infinity deadline 시 undefined(시그널 없음).
+        const cardSignal = Number.isFinite(deadlineMs)
+            ? AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()))
+            : undefined;
         try {
-            const submission = await submitNewsCardAnalysis({ item, thinkingBudget: 0 });
-            if (submission.status !== 'submitted' || !('jobId' in submission)) return null;
-            const polled = await pollUntilDone(pollNewsCardAnalysis, submission.jobId);
-            if ('error' in polled) {
-                console.warn('[enrich-news-cards] card failed', {
+            const outcome = await runNewsCardAnalysis({
+                item,
+                thinkingBudget: 0,
+                signal: cardSignal,
+            });
+            if (outcome.status !== 'done') {
+                // 현재 정의상 도달 불가이지만, core가 새로운 상태를 추가할 경우를 대비한 방어 처리.
+                console.warn('[enrich-news-cards] unexpected non-done status', {
                     symbol,
                     id: item.id,
-                    error: polled.error,
+                    status: outcome.status,
                 });
                 return null;
             }
-            return polled.result as NewsCardAnalysis;
+            return outcome.result;
         } catch (error) {
             console.warn('[enrich-news-cards] card threw', { symbol, id: item.id, error });
             return null;

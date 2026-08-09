@@ -1,17 +1,16 @@
 # lib/analysis/ — Application Layer
 
-Wraps siglens-core's submit/poll pattern into single-call "run analysis" functions.
+Calls siglens-core's direct `run*` functions (no polling loop) with per-symbol AbortSignal timeouts.
 
 ## Files
 
 | File | Responsibility |
 |------|---------------|
 | `types.ts` | `RunAnalysisOptions`, `AnalysisRunResult`, `AnalysisType` |
-| `poll-until-done.ts` | Generic poll loop (2s interval, 2.5min timeout) |
-| `run-technical.ts` | Calls `submitAnalysis` → `pollAnalysis` from siglens-core |
-| `run-news.ts` | Fetches news from FMP → `submitNewsAnalysis` → poll |
-| `run-options.ts` | Fetches options from Yahoo → `submitOptionsAnalysis` → poll |
-| `run-fundamental.ts` | Injects `FmpFundamentalClient` → `submitFundamentalAnalysis` → poll |
+| `run-technical.ts` | Calls `runAnalysis` from siglens-core (single await, no polling) |
+| `run-news.ts` | Fetches news from FMP → `runNewsAnalysis` |
+| `run-options.ts` | Fetches options from Yahoo → `runOptionsAnalysis` |
+| `run-fundamental.ts` | Injects `FmpFundamentalClient` → `runFundamentalAnalysis` |
 | `enrich-news-cards.ts` | Per-symbol news card enrichment via fixed worker pool (see below) |
 | `timeframe.ts` | `analysis_timeframe` contract + per-timeframe technical staleness limits |
 | `source-time.ts` | `extractSourceAnalyzedAt` / `getAnalysisReferenceTime` — freshness-time helpers |
@@ -51,11 +50,18 @@ staleness limit the execute cron uses: 15Min→45min, 30Min→90min, 1Hour→2h.
 
 Enriches the latest `NEWS_ENRICH_LIMIT` (10) articles per symbol through a fixed worker pool
 of `NEWS_ENRICH_CONCURRENCY` (3). Workers pull from a shared index, so one article's failure
-doesn't invalidate the others. Workers stop pulling new work once the cron-supplied `deadlineMs`
-(cron start + 690s) passes or cumulative failures hit `ENRICH_TOTAL_FAILURE_LIMIT` (6); cached
-cards are still returned. The deadline keeps a single symbol from blocking the cron's audit
-finalization inside `maxDuration` (800s); if time runs out the aggregate per-symbol news analysis
-is skipped.
+doesn't invalidate the others.
+
+`generateCard` checks `outcome.status === 'done'` explicitly before accessing `outcome.result`;
+any unexpected non-done resolve (future core expansion) logs a warning and returns `null` so the
+`failures` counter is correctly incremented rather than persisting `undefined` into the news-card
+table. Each card call also receives an `AbortSignal` capped at the remaining deadline.
+
+Workers stop pulling new work once the cron-supplied `deadlineMs` (cron start + 690s) passes or
+cumulative failures (throw **or** unexpected non-done resolve) hit `ENRICH_TOTAL_FAILURE_LIMIT`
+(6); cached cards are still returned. The deadline keeps a single symbol from blocking the cron's
+audit finalization inside `maxDuration` (800s); if time runs out the aggregate per-symbol news
+analysis is skipped.
 
 ## Testing
 
