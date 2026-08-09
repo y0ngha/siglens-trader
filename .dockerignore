@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.github
+coverage
+test-results
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+.env*
+docs
+images
+public/mockServiceWorker.js
