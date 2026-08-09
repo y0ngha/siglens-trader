@@ -168,7 +168,8 @@ describe('runNewsAnalysis', () => {
         const result = await runNewsAnalysis(baseOptions);
 
         expect(result.status).toBe('error');
-        expect(result.error).toBeTruthy();
+        // toErrStr은 AnalysisLimitError의 .message를 추출한다(B3).
+        expect(result.error).toContain('Daily limit exceeded');
     });
 
     it('returns error when cardStore not provided', async () => {

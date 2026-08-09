@@ -138,7 +138,8 @@ describe('runOptionsAnalysis', () => {
         const result = await runOptionsAnalysis(baseOptions);
 
         expect(result.status).toBe('error');
-        expect(result.error).toBeTruthy();
+        // toErrStr은 AnalysisLimitError의 .message를 추출한다(B3).
+        expect(result.error).toContain('Daily limit exceeded');
     });
 
     it('returns error when core returns key_error (BYOK required)', async () => {

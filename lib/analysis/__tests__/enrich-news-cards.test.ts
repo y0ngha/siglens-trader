@@ -259,4 +259,44 @@ describe('enrichNewsCards', () => {
         expect(result).toHaveLength(1);
         expect(mockRun).toHaveBeenCalledTimes(1);
     });
+
+    // S8 / B1 회귀 방지: resolve-with-failure-status 경로
+    it('S8: resolve가 non-done 상태이면 해당 건 드롭 + failures 카운트 + upsertCards 미호출', async () => {
+        // runNewsCardAnalysis가 done이 아닌 상태로 resolve하는 경우(현재 정의상 없지만 방어적 검증).
+        mockGetCards.mockResolvedValueOnce(new Map());
+        mockRun.mockResolvedValue({ status: 'key_error', error: 'no key' });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { enrichNewsCards } = await import('../enrich-news-cards');
+        const result = await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1')], {
+            deadlineMs: Infinity,
+        });
+        // 드롭되어야 함: 결과 빈 배열, upsert 미호출
+        expect(result).toEqual([]);
+        expect(mockUpsertCards).not.toHaveBeenCalled();
+        // 경고 로그 발생 확인
+        expect(warnSpy).toHaveBeenCalledWith(
+            '[enrich-news-cards] unexpected non-done status',
+            expect.objectContaining({ status: 'key_error' }),
+        );
+        warnSpy.mockRestore();
+    });
+
+    it('S8: resolve-failure 6회 누적 시 ENRICH_TOTAL_FAILURE_LIMIT 도달, 추가 작업 없음', async () => {
+        // 10건 중 6건이 non-done resolve → FAILURE_LIMIT 도달로 남은 4건 미처리
+        mockGetCards.mockResolvedValueOnce(new Map());
+        mockRun.mockResolvedValue({ status: 'error', error: 'provider down' });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { enrichNewsCards, ENRICH_TOTAL_FAILURE_LIMIT, NEWS_ENRICH_CONCURRENCY } =
+            await import('../enrich-news-cards');
+        const tenNews = Array.from({ length: 10 }, (_, i) => makeNews(`n${i}`));
+        const result = await enrichNewsCards(fakeStore, 'NVDA', tenNews, { deadlineMs: Infinity });
+        // 실패 상한(6)에 의해 멈춰야 함. concurrency 3의 in-flight 슬랙으로 최대 8까지 허용.
+        expect(mockRun.mock.calls.length).toBeGreaterThanOrEqual(ENRICH_TOTAL_FAILURE_LIMIT);
+        expect(mockRun.mock.calls.length).toBeLessThanOrEqual(
+            ENRICH_TOTAL_FAILURE_LIMIT + NEWS_ENRICH_CONCURRENCY - 1,
+        );
+        expect(result).toEqual([]);
+        expect(mockUpsertCards).not.toHaveBeenCalled();
+        warnSpy.mockRestore();
+    });
 });

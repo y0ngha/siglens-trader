@@ -539,12 +539,14 @@ describe('resolveApiKey', () => {
         process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
         process.env.OPENAI_API_KEY = 'sk-openai-test';
         process.env.GEMINI_API_KEY = 'gemini-test';
+        process.env.DEEPSEEK_API_KEY = 'deepseek-test';
     });
 
     afterEach(() => {
         delete process.env.ANTHROPIC_API_KEY;
         delete process.env.OPENAI_API_KEY;
         delete process.env.GEMINI_API_KEY;
+        delete process.env.DEEPSEEK_API_KEY;
     });
 
     it('returns ANTHROPIC_API_KEY for claude model', () => {
@@ -562,8 +564,22 @@ describe('resolveApiKey', () => {
         expect(resolveApiKey('gemini-pro')).toBe('gemini-test');
     });
 
+    it('returns DEEPSEEK_API_KEY for deepseek model', () => {
+        expect(resolveApiKey('deepseek-v4-flash')).toBe('deepseek-test');
+        expect(resolveApiKey('deepseek-v4-pro')).toBe('deepseek-test');
+    });
+
     it('returns undefined for unknown model prefix', () => {
         expect(resolveApiKey('llama-3')).toBeUndefined();
         expect(resolveApiKey('mistral-large')).toBeUndefined();
+    });
+
+    it('경고 로그: BYOK 키 미설정 시 어떤 환경변수가 누락인지 명시', () => {
+        delete process.env.GEMINI_API_KEY;
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const result = resolveApiKey('gemini-2.5-pro');
+        expect(result).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('GEMINI_API_KEY'));
+        warnSpy.mockRestore();
     });
 });

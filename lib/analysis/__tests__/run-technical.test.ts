@@ -75,7 +75,8 @@ describe('runTechnicalAnalysis', () => {
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result.status).toBe('error');
-        expect(result.error).toBeTruthy();
+        // toErrStr은 object-with-message에서 .message를 추출한다(B3).
+        expect(result.error).toContain('Timeframe not allowed');
     });
 
     it('returns error when runAnalysis returns key_error (BYOK required)', async () => {
@@ -103,6 +104,8 @@ describe('runTechnicalAnalysis', () => {
             marketDataProvider: mockProvider,
             tierContext: { userId: null, tier: 'pro' },
             reasoning: true,
+            // B2: 심볼 단위 AbortSignal이 전달되어야 한다.
+            signal: expect.any(AbortSignal),
         });
     });
 });
