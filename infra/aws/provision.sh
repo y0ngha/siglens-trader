@@ -6,6 +6,10 @@ source "$(dirname "$0")/lib.sh"
 require aws
 
 IMAGE_TAG="${1:?usage: provision.sh <image-tag>}"
+# t4g.small (2GiB) is the smallest size the cron workload reliably fits: since the worker
+# was removed, LLM analysis runs in this process, and on a 1GiB t4g.micro the ~400MB of
+# host overhead (AL2023 + dockerd + CloudWatch agent + cloudflared) leaves too little for a
+# large prompt, which would show up as failed cron runs rather than a slow one.
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.small}"
 EC2_ROLE="$APP-ec2-role"
 SG_NAME="$APP-sg"
@@ -81,7 +85,7 @@ IID=$(aws ec2 run-instances \
     --iam-instance-profile "Name=$EC2_ROLE" \
     --security-group-ids "$SG_ID" \
     --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=2" \
-    --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":30,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+    --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":20,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$APP}]" \
     --user-data "file://$USER_DATA" \
     --query 'Instances[0].InstanceId' --output text)
