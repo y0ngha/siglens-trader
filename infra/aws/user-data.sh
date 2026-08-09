@@ -10,6 +10,16 @@ IMAGE_TAG=__IMAGE_TAG__
 dnf install -y docker jq amazon-cloudwatch-agent
 systemctl enable --now docker
 
+# 2GB swap: insurance for analysis spikes on a 2GiB box. Swapping makes a heavy cron run
+# slow; running out of memory makes it fail. For a scheduled trading tool, slow wins.
+if [ ! -f /swapfile ]; then
+    dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+
 # cloudflared is the only ingress: it dials out to Cloudflare, so the instance needs no
 # inbound ports, no Elastic IP and no origin certificate.
 rpm --import https://pkg.cloudflare.com/cloudflare-main.gpg || true
@@ -71,6 +81,8 @@ INSTANCE_ID=$(cloud-init query instance_id 2>/dev/null || echo unknown)
 # was removed, on a 2GiB t4g.small. The Node heap cap sits BELOW the container limit on
 # purpose — hitting the heap cap logs "JavaScript heap out of memory", whereas hitting the
 # container limit gets the process killed silently by the kernel OOM killer.
+# `--memory-swap=3g` (> --memory) lets the container spill into the host swapfile: a cron
+# run that overshoots gets slow instead of killed, which is the right trade for batch work.
 cat >/etc/systemd/system/${APP}.service <<UNIT
 [Unit]
 Description=$APP
@@ -83,7 +95,7 @@ TimeoutStopSec=40
 ExecStartPre=/usr/local/bin/${APP}-fetch-env.sh
 ExecStartPre=-/usr/bin/docker rm -f $APP
 ExecStart=/bin/sh -c '/usr/bin/docker run --rm --name $APP -p 3000:3000 \
-  --memory=1.5g --memory-swap=1.5g -e NODE_OPTIONS=--max-old-space-size=1024 \
+  --memory=1.5g --memory-swap=3g -e NODE_OPTIONS=--max-old-space-size=1024 \
   --env-file /run/$APP/env --security-opt no-new-privileges:true \
   --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=$LOG_GROUP \
   --log-opt awslogs-stream=$INSTANCE_ID --log-opt awslogs-create-group=true \
