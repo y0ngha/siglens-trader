@@ -2207,6 +2207,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@hono/node-server@npm:^2.1.0":
+  version: 2.1.0
+  resolution: "@hono/node-server@npm:2.1.0"
+  peerDependencies:
+    hono: ^4
+  checksum: 10c0/907aa2cabb804cf6f9c6bc329a898803b0794992d1c2d1bea7e4ae803f5d205fd2733d684c9c87b28338964dc437341e3bee1544b4d504a6b19f9e65ba28b198
+  languageName: node
+  linkType: hard
+
 "@humanfs/core@npm:^0.19.2":
   version: 0.19.2
   resolution: "@humanfs/core@npm:0.19.2"
@@ -3866,27 +3875,6 @@ __metadata:
   dependencies:
     uncrypto: "npm:^0.1.3"
   checksum: 10c0/02ebad2f2cfe089b6ede9ab818e679840a2006e56ad440c36fdf11f04ce23b024e14cc11dd812816de9ad6dea83c5cfabe3a9f2d81f7aa8e8f464746baf586f3
-  languageName: node
-  linkType: hard
-
-"@vercel/functions@npm:^3.4.3":
-  version: 3.6.0
-  resolution: "@vercel/functions@npm:3.6.0"
-  dependencies:
-    "@vercel/oidc": "npm:3.4.1"
-  peerDependencies:
-    "@aws-sdk/credential-provider-web-identity": "*"
-  peerDependenciesMeta:
-    "@aws-sdk/credential-provider-web-identity":
-      optional: true
-  checksum: 10c0/a2383cd0498b1f65303a97932eb01344efd6f0f67bec6e47d4afd3f7284fd0541272676d6f28056d4d751723da552dbedce80583c4e3117101892f7b89ae2073
-  languageName: node
-  linkType: hard
-
-"@vercel/oidc@npm:3.4.1":
-  version: 3.4.1
-  resolution: "@vercel/oidc@npm:3.4.1"
-  checksum: 10c0/088a24ef846a2f2194e733ae47df451e3e4f97f4d930dda5bc3da3066f38cd4fe7ad335ba7f5268d4123f71a4e585fca0ce6dce90c34e85239f70346d100395c
   languageName: node
   linkType: hard
 
@@ -6879,6 +6867,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"hono@npm:^4.13.1":
+  version: 4.13.1
+  resolution: "hono@npm:4.13.1"
+  checksum: 10c0/83524961f806293464e6c3b31a7fd2ab8cd8e9cb66e65dea1fbbefb70744844c13b7409ed9b49b43e8543e5c0f1b851f2586fa759eea9da0b69503b58cd0d985
+  languageName: node
+  linkType: hard
+
 "hookified@npm:^1.15.0, hookified@npm:^1.15.1":
   version: 1.15.1
   resolution: "hookified@npm:1.15.1"
@@ -8803,6 +8798,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"node-cron@npm:^4.6.0":
+  version: 4.6.0
+  resolution: "node-cron@npm:4.6.0"
+  checksum: 10c0/6523219aedd60441b43acb65670d98751a875185d88666d32ee62b044f15ffdd6a5d5422f0a060a324df918990f218fe9e400bf1db54d308a72642e396a1fbd2
+  languageName: node
+  linkType: hard
+
 "node-fetch-native@npm:^1.6.6":
   version: 1.6.7
   resolution: "node-fetch-native@npm:1.6.7"
@@ -10214,6 +10216,7 @@ __metadata:
   resolution: "siglens-trader@workspace:."
   dependencies:
     "@eslint/js": "npm:^9.28.0"
+    "@hono/node-server": "npm:^2.1.0"
     "@neondatabase/serverless": "npm:^1.1.0"
     "@release-it/conventional-changelog": "npm:^10.0.6"
     "@tailwindcss/vite": "npm:^4"
@@ -10227,7 +10230,6 @@ __metadata:
     "@types/react-dom": "npm:^19"
     "@types/ws": "npm:^8.18.1"
     "@upstash/redis": "npm:^1.37.0"
-    "@vercel/functions": "npm:^3.4.3"
     "@vitejs/plugin-react": "npm:^4.5.2"
     "@vitest/coverage-v8": "npm:3.2.4"
     "@y0ngha/siglens-core": "npm:0.39.0"
@@ -10239,11 +10241,13 @@ __metadata:
     eslint-plugin-react-hooks: "npm:^5.2.0"
     eslint-plugin-react-refresh: "npm:^0.4.20"
     globals: "npm:^16.2.0"
+    hono: "npm:^4.13.1"
     husky: "npm:^9.1.7"
     jose: "npm:^6.2.3"
     jsdom: "npm:^26.1.0"
     lint-staged: "npm:^17.0.5"
     msw: "npm:^2.14.6"
+    node-cron: "npm:^4.6.0"
     prettier: "npm:^3.7.4"
     prettier-plugin-tailwindcss: "npm:^0.7.2"
     react: "npm:^19.2.4"
@@ -10259,7 +10263,7 @@ __metadata:
     stylelint-order: "npm:^7.0.0"
     tailwind-merge: "npm:^3.5.0"
     tailwindcss: "npm:^4"
-    tsx: "npm:^4.19.4"
+    tsx: "npm:^4.23.11"
     typescript: "npm:^5"
     typescript-eslint: "npm:^8.33.1"
     vite: "npm:^6.3.5"
@@ -11146,7 +11150,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tsx@npm:^4.19.4, tsx@npm:^4.21.0":
+"tsx@npm:^4.21.0":
   version: 4.22.3
   resolution: "tsx@npm:4.22.3"
   dependencies:
@@ -11158,6 +11162,21 @@ __metadata:
   bin:
     tsx: dist/cli.mjs
   checksum: 10c0/09a5a7d354ff75e5af6285217d709ec80a46c2ee19e0d9b5c5d00eab81047c3ea6b2a5498a2c5255f3960d6e7acd1a1eee34b9433dc56fb32907ca3b38271f41
+  languageName: node
+  linkType: hard
+
+"tsx@npm:^4.23.11":
+  version: 4.23.11
+  resolution: "tsx@npm:4.23.11"
+  dependencies:
+    esbuild: "npm:~0.28.0"
+    fsevents: "npm:~2.3.3"
+  dependenciesMeta:
+    fsevents:
+      optional: true
+  bin:
+    tsx: dist/cli.mjs
+  checksum: 10c0/6f72cfea4aec04ab17450b0b6764f85839f2f8b207255a86b3c704e91df5b68d550a93b2975d3916b996f0b651999e7bdbc71ef60abd83563b60f53bcd3bf95a
   languageName: node
   linkType: hard
 
