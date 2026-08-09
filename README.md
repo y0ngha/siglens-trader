@@ -181,15 +181,14 @@ yarn db:clear       # 전체 데이터 삭제 (확인 프롬프트 있음)
 ```
 DISABLE_AUTH=          # true로 설정하면 로컬에서 Cloudflare Access 없이 개발 가능
 DATABASE_URL=          # Neon PostgreSQL
-UPSTASH_REDIS_REST_URL= # 분석 작업 큐 + 토스 OAuth 토큰 캐시 + accountSeq 캐시 + 분산 락 (trading 필수)
+UPSTASH_REDIS_REST_URL= # 토스 OAuth 토큰 캐시 + accountSeq 캐시 + 분산 락 (trading 필수)
 UPSTASH_REDIS_REST_TOKEN=
-WORKER_URL=            # LLM worker 서버 URL
-WORKER_SECRET=         # Worker 인증 시크릿
 FMP_API_KEY=           # 시장 데이터
 MARKET_DATA_PROVIDER=fmp
-ANTHROPIC_API_KEY=     # BYOK (대시보드에서 모델별 활성화)
-OPENAI_API_KEY=
+ANTHROPIC_API_KEY=     # LLM 직접 호출 (worker 제거)
 GEMINI_API_KEY=
+OPENAI_API_KEY=
+DEEPSEEK_API_KEY=
 TOSS_APP_KEY=          # 토스증권 OAuth2 client_id (auto/semi_auto 필수)
 TOSS_SECRET_KEY=       # 토스증권 OAuth2 client_secret
 CRON_SECRET=           # Vercel Cron 인증

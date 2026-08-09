@@ -4,24 +4,18 @@ import type { RunAnalysisOptions } from '../types';
 const mockFetchOptionsSnapshot = vi.fn();
 
 vi.mock('@y0ngha/siglens-core', () => ({
-    submitOptionsAnalysis: vi.fn(),
-    pollOptionsAnalysis: vi.fn(),
+    runOptionsAnalysis: vi.fn(),
 }));
 
 vi.mock('@lib/data/yahoo-options', () => ({
     fetchOptionsSnapshot: mockFetchOptionsSnapshot,
 }));
 
-vi.mock('../poll-until-done', () => ({
-    pollUntilDone: vi.fn(),
-}));
-
-const { submitOptionsAnalysis, pollOptionsAnalysis } = await import('@y0ngha/siglens-core');
-const { pollUntilDone } = await import('../poll-until-done');
+// 'runOptionsAnalysis' from core — aliased to avoid collision with the local function under test.
+const { runOptionsAnalysis: coreRun } = await import('@y0ngha/siglens-core');
 const { runOptionsAnalysis } = await import('../run-options');
 
-const mockedSubmit = vi.mocked(submitOptionsAnalysis);
-const mockedPoll = vi.mocked(pollUntilDone);
+const mockedCore = vi.mocked(coreRun);
 
 const baseOptions: RunAnalysisOptions = {
     symbol: 'NVDA',
@@ -40,7 +34,7 @@ describe('runOptionsAnalysis', () => {
         const result = await runOptionsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
-        expect(mockedSubmit).not.toHaveBeenCalled();
+        expect(mockedCore).not.toHaveBeenCalled();
     });
 
     it('returns skipped when snapshot has empty chains', async () => {
@@ -49,7 +43,7 @@ describe('runOptionsAnalysis', () => {
         const result = await runOptionsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
-        expect(mockedSubmit).not.toHaveBeenCalled();
+        expect(mockedCore).not.toHaveBeenCalled();
     });
 
     it('completes full flow with valid snapshot', async () => {
@@ -57,14 +51,15 @@ describe('runOptionsAnalysis', () => {
             chains: [{ expirationDate: '2025-02-21', calls: [], puts: [] }],
         };
         mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'opt-j-1' } as any);
-        mockedPoll.mockResolvedValue({ result: { impliedVolatility: 0.35 } });
+        mockedCore.mockResolvedValue({
+            status: 'done',
+            result: { impliedVolatility: 0.35 },
+        } as any);
 
         const result = await runOptionsAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'done', result: { impliedVolatility: 0.35 } });
-        expect(mockedPoll).toHaveBeenCalledWith(pollOptionsAnalysis, 'opt-j-1');
-        expect(mockedSubmit).toHaveBeenCalledWith(
+        expect(mockedCore).toHaveBeenCalledWith(
             expect.objectContaining({
                 symbol: 'NVDA',
                 expirationDate: '2025-02-21',
@@ -73,12 +68,12 @@ describe('runOptionsAnalysis', () => {
         );
     });
 
-    it('returns cached result from submit', async () => {
+    it('returns cached result from core', async () => {
         const snapshot = {
             chains: [{ expirationDate: '2025-03-21', calls: [], puts: [] }],
         };
         mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
-        mockedSubmit.mockResolvedValue({
+        mockedCore.mockResolvedValue({
             status: 'cached',
             result: { putCallRatio: 1.2 },
         } as any);
@@ -88,12 +83,28 @@ describe('runOptionsAnalysis', () => {
         expect(result).toEqual({ status: 'cached', result: { putCallRatio: 1.2 } });
     });
 
-    it('returns skipped when submit status is not submitted', async () => {
+    it('returns skipped when core returns miss_no_trigger', async () => {
         const snapshot = {
             chains: [{ expirationDate: '2025-03-21', calls: [], puts: [] }],
         };
         mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
-        mockedSubmit.mockResolvedValue({ status: 'miss_no_trigger' } as any);
+        mockedCore.mockResolvedValue({ status: 'miss_no_trigger' } as any);
+
+        const result = await runOptionsAnalysis(baseOptions);
+
+        expect(result).toEqual({ status: 'skipped' });
+    });
+
+    it('returns skipped when core returns no_chains_error (sanitization found no usable chains)', async () => {
+        const snapshot = {
+            chains: [{ expirationDate: '2025-03-21', calls: [], puts: [] }],
+        };
+        mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
+        mockedCore.mockResolvedValue({
+            status: 'no_chains_error',
+            code: 'no_options_chains',
+            error: 'snapshot has no usable options chains',
+        } as any);
 
         const result = await runOptionsAnalysis(baseOptions);
 
@@ -108,16 +119,44 @@ describe('runOptionsAnalysis', () => {
         expect(result).toEqual({ status: 'error', error: 'Error: Yahoo API down' });
     });
 
-    it('returns error when poll returns error', async () => {
+    it('returns error when core returns limit_error (usage quota exceeded)', async () => {
         const snapshot = {
             chains: [{ expirationDate: '2025-03-21', calls: [], puts: [] }],
         };
         mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'opt-j-2' } as any);
-        mockedPoll.mockResolvedValue({ error: 'Options analysis failed' });
+        mockedCore.mockResolvedValue({
+            status: 'limit_error',
+            code: 'usage_limit_exceeded',
+            error: {
+                message: 'Daily limit exceeded',
+                code: 'analysis_limit_exceeded',
+                feature: 'analysisPerDay',
+                tier: 'pro',
+            },
+        } as any);
 
         const result = await runOptionsAnalysis(baseOptions);
 
-        expect(result).toEqual({ status: 'error', error: 'Options analysis failed' });
+        expect(result.status).toBe('error');
+        // toErrStr은 AnalysisLimitError의 .message를 추출한다(B3).
+        expect(result.error).toContain('Daily limit exceeded');
+    });
+
+    it('returns error when core returns key_error (BYOK required)', async () => {
+        const snapshot = {
+            chains: [{ expirationDate: '2025-03-21', calls: [], puts: [] }],
+        };
+        mockFetchOptionsSnapshot.mockResolvedValue(snapshot);
+        mockedCore.mockResolvedValue({
+            status: 'key_error',
+            code: 'user_api_key_required',
+            error: 'BYOK API key required for this model',
+            modelId: 'claude-sonnet-4-20250514',
+            tier: 'pro',
+        } as any);
+
+        const result = await runOptionsAnalysis(baseOptions);
+
+        expect(result).toEqual({ status: 'error', error: 'BYOK API key required for this model' });
     });
 });

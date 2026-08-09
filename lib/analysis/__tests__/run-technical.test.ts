@@ -2,12 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RunAnalysisOptions } from '../types';
 
 vi.mock('@y0ngha/siglens-core', () => ({
-    submitAnalysis: vi.fn(),
-    pollAnalysis: vi.fn(),
-}));
-
-vi.mock('../poll-until-done', () => ({
-    pollUntilDone: vi.fn(),
+    runAnalysis: vi.fn(),
 }));
 
 const mockProvider = { getBars: vi.fn(), getQuote: vi.fn() };
@@ -15,12 +10,10 @@ vi.mock('@lib/data/fmp-market-data-provider', () => ({
     getMarketDataProvider: () => mockProvider,
 }));
 
-const { submitAnalysis, pollAnalysis } = await import('@y0ngha/siglens-core');
-const { pollUntilDone } = await import('../poll-until-done');
+const { runAnalysis } = await import('@y0ngha/siglens-core');
 const { runTechnicalAnalysis } = await import('../run-technical');
 
-const mockedSubmit = vi.mocked(submitAnalysis);
-const mockedPoll = vi.mocked(pollUntilDone);
+const mockedRun = vi.mocked(runAnalysis);
 
 const baseOptions: RunAnalysisOptions = {
     symbol: 'AAPL',
@@ -33,65 +26,86 @@ describe('runTechnicalAnalysis', () => {
         vi.clearAllMocks();
     });
 
-    it('returns cached result when submitAnalysis returns cached', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'cached', result: { score: 80 } } as any);
+    it('returns cached result when runAnalysis returns cached', async () => {
+        mockedRun.mockResolvedValue({
+            status: 'cached',
+            result: { score: 80 },
+            lockedInfoDepth: [],
+        } as any);
 
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'cached', result: { score: 80 } });
-        expect(mockedPoll).not.toHaveBeenCalled();
     });
 
-    it('polls and returns done result when submitted', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'j-1' } as any);
-        mockedPoll.mockResolvedValue({ result: { signal: 'buy' } });
+    it('returns done result when runAnalysis returns done', async () => {
+        mockedRun.mockResolvedValue({
+            status: 'done',
+            result: { signal: 'buy' },
+            lockedInfoDepth: [],
+        } as any);
 
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'done', result: { signal: 'buy' } });
-        // poll fn은 caller tier(pro)를 넘기기 위해 pollAnalysis를 감싼 래퍼다.
-        expect(mockedPoll).toHaveBeenCalledWith(expect.any(Function), 'j-1');
-        const pollFn = mockedPoll.mock.calls[0][0] as (jobId: string) => unknown;
-        pollFn('j-1');
-        expect(pollAnalysis).toHaveBeenCalledWith('j-1', { tier: 'pro' });
     });
 
-    it('returns skipped when submitAnalysis returns miss_no_trigger', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'miss_no_trigger' } as any);
+    it('returns skipped when runAnalysis returns miss_no_trigger', async () => {
+        mockedRun.mockResolvedValue({ status: 'miss_no_trigger' } as any);
 
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'skipped' });
     });
 
-    it('returns error when submitAnalysis throws', async () => {
-        mockedSubmit.mockRejectedValue(new Error('Network failure'));
+    it('returns error when runAnalysis throws (LLM failure)', async () => {
+        mockedRun.mockRejectedValue(new Error('Network failure'));
 
         const result = await runTechnicalAnalysis(baseOptions);
 
         expect(result).toEqual({ status: 'error', error: 'Error: Network failure' });
     });
 
-    it('returns error when poll returns error', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'submitted', jobId: 'j-2' } as any);
-        mockedPoll.mockResolvedValue({ error: 'Analysis failed on server' });
+    it('returns error when runAnalysis returns error status (tier gate)', async () => {
+        mockedRun.mockResolvedValue({
+            status: 'error',
+            error: { message: 'Timeframe not allowed', code: 'timeframe_not_allowed' },
+        } as any);
 
         const result = await runTechnicalAnalysis(baseOptions);
 
-        expect(result).toEqual({ status: 'error', error: 'Analysis failed on server' });
+        expect(result.status).toBe('error');
+        // toErrStr은 object-with-message에서 .message를 추출한다(B3).
+        expect(result.error).toContain('Timeframe not allowed');
     });
 
-    it('passes correct arguments to submitAnalysis', async () => {
-        mockedSubmit.mockResolvedValue({ status: 'cached', result: {} } as any);
+    it('returns error when runAnalysis returns key_error (BYOK required)', async () => {
+        mockedRun.mockResolvedValue({
+            status: 'key_error',
+            code: 'user_api_key_required',
+            error: 'BYOK API key required for this model',
+            modelId: 'claude-sonnet-4-20250514',
+            tier: 'pro',
+        } as any);
+
+        const result = await runTechnicalAnalysis(baseOptions);
+
+        expect(result).toEqual({ status: 'error', error: 'BYOK API key required for this model' });
+    });
+
+    it('passes correct arguments to runAnalysis', async () => {
+        mockedRun.mockResolvedValue({ status: 'cached', result: {}, lockedInfoDepth: [] } as any);
 
         await runTechnicalAnalysis({ ...baseOptions, userApiKey: 'sk-123' });
 
-        expect(mockedSubmit).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', false, undefined, {
+        expect(mockedRun).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', false, undefined, {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,
             tierContext: { userId: null, tier: 'pro' },
             reasoning: true,
+            // B2: 심볼 단위 AbortSignal이 전달되어야 한다.
+            signal: expect.any(AbortSignal),
         });
     });
 });

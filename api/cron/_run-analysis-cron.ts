@@ -195,9 +195,38 @@ function countResultsByStatus(results: Array<{ status: AnalysisRunResult['status
     );
 }
 
+/**
+ * BYOK 모드에서 modelId에 맞는 서버 API 키를 반환한다.
+ *
+ * 지원 프리픽스: claude → ANTHROPIC_API_KEY, gpt → OPENAI_API_KEY,
+ * gemini → GEMINI_API_KEY, deepseek → DEEPSEEK_API_KEY.
+ *
+ * 키가 필요한데 환경변수가 비어있으면 경고를 남겨 운영자가 진단할 수 있게 한다.
+ * (조용히 undefined를 흘려보내면 매 cron 실행마다 불투명한 BYOK 오류가 발생한다.)
+ */
 export function resolveApiKey(modelId: string): string | undefined {
-    if (modelId.startsWith('claude')) return process.env.ANTHROPIC_API_KEY;
-    if (modelId.startsWith('gpt')) return process.env.OPENAI_API_KEY;
-    if (modelId.startsWith('gemini')) return process.env.GEMINI_API_KEY;
-    return undefined;
+    let envKey: string;
+    let value: string | undefined;
+
+    if (modelId.startsWith('claude')) {
+        envKey = 'ANTHROPIC_API_KEY';
+        value = process.env.ANTHROPIC_API_KEY;
+    } else if (modelId.startsWith('gpt')) {
+        envKey = 'OPENAI_API_KEY';
+        value = process.env.OPENAI_API_KEY;
+    } else if (modelId.startsWith('gemini')) {
+        envKey = 'GEMINI_API_KEY';
+        value = process.env.GEMINI_API_KEY;
+    } else if (modelId.startsWith('deepseek')) {
+        envKey = 'DEEPSEEK_API_KEY';
+        value = process.env.DEEPSEEK_API_KEY;
+    } else {
+        // 알 수 없는 프리픽스 — BYOK 키 없음. core가 key_error를 반환한다.
+        return undefined;
+    }
+
+    if (!value) {
+        console.warn(`[resolveApiKey] ${envKey} is not set — BYOK calls for ${modelId} will fail`);
+    }
+    return value;
 }
