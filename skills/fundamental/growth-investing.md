@@ -4,6 +4,10 @@ description: 높은 매출·이익 성장률과 확장 가능한 비즈니스 �
 category: fundamental
 confidence_weight: 0.85
 indicators: []
+gating:
+  tier: always_on
+token_cost: 169
+digest_hash: "3f821d53"
 ---
 
 # 성장 투자 분석 프레임
@@ -41,3 +45,21 @@ indicators: []
 ## AI 프롬프트 활용
 
 이 프레임이 활성화되면 분석 결과에서 `revenue_growth`, `eps_growth`, `gross_margin` 지표를 우선 언급하고, 성장 가속/감속 추세를 명확히 서술한다. TAM 잔여 기회와 R&D 효율성도 포함한다.
+
+<!-- PROMPT_DIGEST:START -->
+성장 투자 프레임
+핵심 성장 지표:
+- 매출 YoY > 20%: 고성장주 기준선, 3개 분기 연속 유지 여부 확인
+- EPS 성장률: 매출만 성장·EPS 정체/감소 = 수익화 문제
+- Gross Margin: 소프트웨어 ≥60%, SaaS ≥70% = 고품질 성장 신호
+- Revenue Retention(NRR): SaaS·구독 ≥110%면 기존 고객만으로 성장 가능
+TAM 평가:
+- 시장 점유율 낮고(<10%) TAM 수십억$ 이상이면 장기 성장 여력. 경영진 TAM 숫자는 과대추정 경향. 인접 TAM 진출은 가점
+R&D 투자:
+- R&D/매출: 소프트웨어·바이오 15~25%는 정상. 매출 성장 없이 R&D만 급증 = 효율성 검토. 단기 EPS 희생이 장기 경쟁우위로 전환되는지 모니터링
+PEG:
+- PEG = PER ÷ EPS 성장률(%). <1.0 = 성장 대비 저평가. 고성장주는 1.5~2.0도 프리미엄 용인(시장 지배력·모트 존재 시)
+성장 감속 조기 포착(핵심):
+- 전분기 대비 성장률 감속, 대형 고객 이탈·해지율 상승, 영업 레버리지 약화(매출↑에도 영업이익률 정체). 가이던스 미스 시 급락 위험 큼
+AI 프롬프트: `revenue_growth`·`eps_growth`·`gross_margin` 우선 언급, 성장 가속/감속 추세 명확 서술, TAM 잔여 기회·R&D 효율성 포함.
+<!-- PROMPT_DIGEST:END -->
