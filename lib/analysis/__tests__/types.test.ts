@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toErrStr } from '../types';
+import { DEFAULT_ANALYSIS_REASONING, getAnalysisReasoning, toErrStr } from '../types';
 
 describe('toErrStr', () => {
     it('plain string → 그대로 반환', () => {
@@ -36,5 +36,26 @@ describe('toErrStr', () => {
 
     it('number → JSON.stringify 폴백', () => {
         expect(toErrStr(42)).toBe('42');
+    });
+});
+
+describe('getAnalysisReasoning', () => {
+    it('turns reasoning off for the short-cadence axes', () => {
+        // These run every 30 minutes at most. Measured in production: with reasoning on,
+        // one technical symbol cost ~7 minutes (a 148s call truncated to zero output, then
+        // a 269s retry), so a 4-symbol pass blew past the 690s cron cutoff and symbols
+        // silently went without a signal.
+        expect(getAnalysisReasoning('technical')).toBe(false);
+        expect(getAnalysisReasoning('options')).toBe(false);
+    });
+
+    it('keeps reasoning on where latency is affordable', () => {
+        expect(getAnalysisReasoning('news')).toBe(true);
+        expect(getAnalysisReasoning('fundamental')).toBe(true);
+        expect(getAnalysisReasoning('congress')).toBe(true);
+    });
+
+    it('falls back to the default for an unpolicied type', () => {
+        expect(getAnalysisReasoning('brand-new-analysis')).toBe(DEFAULT_ANALYSIS_REASONING);
     });
 });
