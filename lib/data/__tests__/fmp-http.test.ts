@@ -7,12 +7,32 @@ vi.mock('@y0ngha/siglens-core', () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+/** Creates a minimal Response-shaped mock for a successful or error status. */
 function mockResponse(body: unknown, status = 200): Response {
     return {
         ok: status >= 200 && status < 300,
         status,
+        headers: { get: () => null },
         json: () => Promise.resolve(body),
-    } as Response;
+    } as unknown as Response;
+}
+
+/**
+ * Creates a 429 response mock.
+ * @param retryAfterSeconds — when provided, the Retry-After header returns that value as a string.
+ */
+function mock429(retryAfterSeconds?: number): Response {
+    return {
+        ok: false,
+        status: 429,
+        headers: {
+            get: (name: string) =>
+                name === 'Retry-After' && retryAfterSeconds !== undefined
+                    ? String(retryAfterSeconds)
+                    : null,
+        },
+        json: () => Promise.resolve({}),
+    } as unknown as Response;
 }
 
 describe('fmpGet', () => {
@@ -22,7 +42,10 @@ describe('fmpGet', () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+        vi.useRealTimers();
     });
+
+    // --- existing behaviour ---
 
     it('returns parsed JSON on successful fetch', async () => {
         const { fmpGet } = await import('../fmp-http');
@@ -113,5 +136,108 @@ describe('fmpGet', () => {
 
         const result = await fmpGet('profile', { symbol: 'AAPL' });
         expect(result).toEqual(payload);
+    });
+
+    // --- 429 retry ---
+
+    it('retries once on 429 and resolves with the payload from the subsequent 200', async () => {
+        vi.useFakeTimers();
+        const { fmpGet } = await import('../fmp-http');
+        const payload = { ok: true };
+        mockFetch.mockResolvedValueOnce(mock429()).mockResolvedValueOnce(mockResponse(payload));
+
+        const promise = fmpGet<typeof payload>('stock-peers');
+        await vi.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result).toEqual(payload);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws FMP <path> 429 after three consecutive 429 responses', async () => {
+        vi.useFakeTimers();
+        const { fmpGet } = await import('../fmp-http');
+        mockFetch.mockResolvedValue(mock429());
+
+        const promise = fmpGet('grades-consensus');
+        // Attach the rejection handler before running timers so the rejection
+        // is not considered unhandled while timers are being processed.
+        const expectation = expect(promise).rejects.toThrow('FMP grades-consensus 429');
+        await vi.runAllTimersAsync();
+        await expectation;
+
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects immediately on 500 without retrying', async () => {
+        const { fmpGet } = await import('../fmp-http');
+        mockFetch.mockResolvedValueOnce(mockResponse({}, 500));
+
+        await expect(fmpGet('profile')).rejects.toThrow('FMP profile 500');
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // --- concurrency ---
+
+    it('concurrency never exceeds 4 with 12 simultaneous calls', async () => {
+        let inFlight = 0;
+        let maxInFlight = 0;
+
+        // Track the number of fetch calls currently in progress.
+        // inFlight++ happens synchronously when the mock is entered;
+        // inFlight-- happens when the mock promise resolves (one microtask later).
+        // maxInFlight is therefore captured at the true concurrent peak.
+        mockFetch.mockImplementation(() => {
+            inFlight++;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            return Promise.resolve(mockResponse([])).then((res) => {
+                inFlight--;
+                return res;
+            });
+        });
+
+        const { fmpGet } = await import('../fmp-http');
+        const calls = Array.from({ length: 12 }, () => fmpGet('test'));
+        await Promise.all(calls);
+
+        expect(maxInFlight).toBeLessThanOrEqual(4);
+        expect(maxInFlight).toBeGreaterThan(0); // sanity: calls actually ran
+    });
+
+    // --- Retry-After header ---
+
+    it('honors Retry-After header (1s) and retries after that delay', async () => {
+        vi.useFakeTimers();
+        const { fmpGet } = await import('../fmp-http');
+        const payload = { honored: true };
+        mockFetch
+            .mockResolvedValueOnce(mock429(1)) // Retry-After: 1s
+            .mockResolvedValueOnce(mockResponse(payload));
+
+        const promise = fmpGet<typeof payload>('profile');
+        // Advance past the 1s Retry-After delay; without honoring the header
+        // the exponential backoff (~500ms + jitter) would also fire by 1001ms,
+        // so this test focuses on the "header present → resolution happens" path.
+        await vi.advanceTimersByTimeAsync(1_001);
+        const result = await promise;
+
+        expect(result).toEqual(payload);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('clamps Retry-After values above 10s to the 10s ceiling', async () => {
+        vi.useFakeTimers();
+        const { fmpGet } = await import('../fmp-http');
+        const payload = { clamped: true };
+        // Retry-After: 100s — unclamped this would sleep for 100 000ms, meaning
+        // advancing only 10 001ms would leave the promise pending forever.
+        mockFetch.mockResolvedValueOnce(mock429(100)).mockResolvedValueOnce(mockResponse(payload));
+
+        const promise = fmpGet<typeof payload>('profile');
+        await vi.advanceTimersByTimeAsync(10_001);
+        const result = await promise;
+
+        expect(result).toEqual(payload);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 });
