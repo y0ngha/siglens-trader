@@ -38,16 +38,35 @@ export const ANALYSIS_MIN_INTERVAL: Readonly<Record<string, number | 'timeframe'
 };
 
 /**
+ * Fraction of the nominal interval the guard actually enforces.
+ *
+ * An analysis is stamped when it is *saved*, which is always later than the tick that
+ * started it — the LLM call takes tens of seconds. So the gap between one tick and the
+ * next same-cadence tick measures slightly *less* than the nominal interval, and enforcing
+ * the full interval would reject the very tick the schedule exists to run:
+ *
+ *   cron fires 15:00:00 → analysis saved 15:00:50
+ *   next day 15:00:00   → elapsed 23h59m10s < 24h → skipped
+ *
+ * That turns a daily analysis into an every-other-day one, and the hourly news analysis
+ * into an every-other-hour one. Shaving 10% off absorbs processing latency (and a little
+ * scheduler drift) while still collapsing the surplus ticks the tighter schedules produce:
+ * a 60-minute policy admits the hourly tick but still rejects one 15 minutes later.
+ */
+const SCHEDULE_JITTER_TOLERANCE = 0.9;
+
+/**
  * Returns the minimum interval (ms) that must elapse before re-running a given
  * analysis type for the same symbol.
  *
- * For horizon-sensitive types (technical, options) the interval equals the
- * configured timeframe bar duration. Unknown types return 0 so they are never
- * skipped by the freshness guard.
+ * For horizon-sensitive types (technical, options) the interval is the configured
+ * timeframe bar duration. The returned value is the nominal interval reduced by
+ * {@link SCHEDULE_JITTER_TOLERANCE} so a tick on the intended schedule is never rejected
+ * by its own processing latency. Unknown types return 0 so they are never skipped.
  */
 export function getMinIntervalMs(analysisType: string, timeframe: AnalysisTimeframe): number {
     const policy = ANALYSIS_MIN_INTERVAL[analysisType];
     if (policy === undefined) return 0;
-    if (policy === 'timeframe') return TIMEFRAME_DURATION_MS[timeframe];
-    return policy;
+    const nominal = policy === 'timeframe' ? TIMEFRAME_DURATION_MS[timeframe] : policy;
+    return Math.round(nominal * SCHEDULE_JITTER_TOLERANCE);
 }
