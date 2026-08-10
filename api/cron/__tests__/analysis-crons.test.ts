@@ -38,9 +38,12 @@ vi.mock('../../../lib/db/queries', () => ({
     upsertNewsCards: (...args: unknown[]) => mockUpsertNewsCards(...args),
 }));
 
-const mockGetMinIntervalMs = vi.fn<(analysisType: string, timeframe: string) => number>();
-vi.mock('../../../lib/analysis/cadence', () => ({
-    getMinIntervalMs: (...args: [string, string]) => mockGetMinIntervalMs(...args),
+const mockGetCadenceWindowMs = vi.fn<(analysisType: string, timeframe: string) => number>();
+// Only the window size is stubbed; the window comparison itself stays real so these tests
+// exercise the actual cadence semantics rather than a mock of them.
+vi.mock('../../../lib/analysis/cadence', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../lib/analysis/cadence')>()),
+    getCadenceWindowMs: (...args: [string, string]) => mockGetCadenceWindowMs(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
@@ -96,7 +99,7 @@ describe('createAnalysisCronHandler', () => {
         mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
         // Default: cadence guard disabled (interval = 0) so existing tests are unaffected.
         // getLatestAnalysisResult is only called when minIntervalMs > 0.
-        mockGetMinIntervalMs.mockReturnValue(0);
+        mockGetCadenceWindowMs.mockReturnValue(0);
         mockGetLatestAnalysisResult.mockResolvedValue(null);
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockStartCronRun.mockResolvedValue(undefined);
@@ -545,15 +548,15 @@ describe('createAnalysisCronHandler', () => {
     });
 
     // ---------------------------------------------------------------------------
-    // Cadence guard (freshness check)
+    // Cadence guard (one analysis per clock window)
     // ---------------------------------------------------------------------------
 
-    it('skips a symbol whose latest stored analysis is newer than the cadence interval', async () => {
-        // Fake time is 2026-05-24T10:00:00Z; analysedAt = 5 min ago, interval = 60 min
-        const recentDate = new Date('2026-05-24T09:55:00.000Z');
-        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
+    it('skips a symbol already analyzed in the current cadence window', async () => {
+        // Fake time is 2026-05-24T10:00:00Z; an hourly window covers 10:00–10:59.
+        const sameWindow = new Date('2026-05-24T10:00:00.000Z');
+        mockGetCadenceWindowMs.mockReturnValue(60 * 60_000);
         // Both watchlist symbols have a fresh result
-        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: recentDate });
+        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: sameWindow });
 
         const res = await handler(makeRequest(true));
         const body = await res.json();
@@ -566,11 +569,11 @@ describe('createAnalysisCronHandler', () => {
         expect(mockRunner).not.toHaveBeenCalled();
     });
 
-    it('analyzes a symbol whose latest stored analysis is older than the cadence interval', async () => {
-        // analysedAt = 90 min ago, interval = 60 min → stale → should run
-        const staleDate = new Date('2026-05-24T08:30:00.000Z');
-        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
-        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: staleDate });
+    it('analyzes a symbol whose last analysis fell in an earlier window', async () => {
+        // Previous clock hour → the current window is uncovered → should run.
+        const previousWindow = new Date('2026-05-24T09:30:00.000Z');
+        mockGetCadenceWindowMs.mockReturnValue(60 * 60_000);
+        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: previousWindow });
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
         await handler(makeRequest(true));
@@ -580,7 +583,7 @@ describe('createAnalysisCronHandler', () => {
     });
 
     it('analyzes a symbol with no stored analysis', async () => {
-        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
+        mockGetCadenceWindowMs.mockReturnValue(60 * 60_000);
         mockGetLatestAnalysisResult.mockResolvedValue(null);
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
