@@ -41,7 +41,10 @@ COPY --chown=node:node --from=builder /app/skills ./skills
 COPY --chown=node:node --from=builder /app/package.json /app/tsconfig.json ./
 # Fail the build (not the deploy) if the entrypoint's module graph can't load — a missing
 # COPY or an unresolvable import would otherwise surface as a container crash-loop.
-RUN node --import tsx -e "import('./server/app.ts').then(m => { if (m.CRON_JOBS.length !== 6) { throw new Error('cron jobs: ' + m.CRON_JOBS.length); } console.log('server graph ok'); })"
+# The checks are shape-based on purpose: an earlier version asserted an exact job count,
+# which broke the build the moment a legitimate job was added. What actually needs proving
+# here is that the table loaded and is wired, not how long it is.
+RUN node --import tsx -e "import('./server/app.ts').then(m => { const jobs = m.CRON_JOBS; if (!Array.isArray(jobs) || jobs.length === 0) { throw new Error('CRON_JOBS missing or empty'); } if (new Set(jobs.map(j => j.name)).size !== jobs.length) { throw new Error('duplicate cron job name'); } for (const j of jobs) { if (typeof j.handler !== 'function' || !j.schedule) { throw new Error('cron job not wired: ' + j.name); } } console.log('server graph ok — ' + jobs.length + ' cron jobs'); })"
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
