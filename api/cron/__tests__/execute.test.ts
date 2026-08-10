@@ -1697,6 +1697,9 @@ describe('execute cron handler', () => {
                     news: { overallSentiment: 'bullish' },
                     options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'neutral', categories: [] },
+                    // No congress disclosures for this symbol — the scorer drops its weight
+                    // rather than letting a neutral placeholder dilute the others.
+                    congress: null,
                 },
                 expect.any(Object), // weights
                 expect.any(Number), // buyThreshold

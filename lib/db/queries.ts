@@ -559,7 +559,14 @@ export async function getPendingSubmittedOrders(db: Db) {
 // Cron audit log
 // ---------------------------------------------------------------------------
 
-export type CronType = 'technical' | 'news' | 'options' | 'fundamental' | 'execute' | 'reconcile';
+export type CronType =
+    | 'technical'
+    | 'news'
+    | 'options'
+    | 'fundamental'
+    | 'congress'
+    | 'execute'
+    | 'reconcile';
 
 export type CronOutcome =
     | 'completed'

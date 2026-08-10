@@ -30,7 +30,7 @@ const MODELS = [
     'gpt-5.4',
 ] as const;
 
-const ANALYSIS_TYPES = ['technical', 'news', 'options', 'fundamental'] as const;
+const ANALYSIS_TYPES = ['technical', 'news', 'options', 'fundamental', 'congress'] as const;
 
 const NOTIFICATION_EVENTS = [
     { key: 'trade_executed', label: '거래 체결' },
@@ -87,6 +87,8 @@ function typeLabel(type: string): string {
             return '옵션 분석';
         case 'fundamental':
             return '펀더멘털 분석';
+        case 'congress':
+            return '의회 거래';
         default:
             return type;
     }

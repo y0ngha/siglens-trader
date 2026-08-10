@@ -145,7 +145,7 @@ export const cronRuns = pgTable(
     {
         id: serial('id').primaryKey(),
         runId: text('run_id').notNull().unique(),
-        cronType: text('cron_type').notNull(), // technical|news|options|fundamental|execute|reconcile
+        cronType: text('cron_type').notNull(), // technical|news|options|fundamental|congress|execute|reconcile
         status: text('status').notNull(), // running|completed|skipped|error
         outcome: text('outcome'),
         startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
@@ -163,7 +163,7 @@ export const cronDecisions = pgTable(
     {
         id: serial('id').primaryKey(),
         runId: text('run_id').notNull(),
-        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries
+        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries (technical|news|options|fundamental|congress|execute|reconcile)
         symbol: text('symbol'),
         action: text('action').notNull(),
         executed: boolean('executed').default(false).notNull(),

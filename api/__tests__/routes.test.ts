@@ -579,6 +579,42 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(400);
     });
 
+    it('accepts score_weights including the congress weight', async () => {
+        // Regression guard: congress was added after this endpoint shipped. If it is not in
+        // the known-key set, the unknown-key check rejects every object that carries it and
+        // the weight becomes impossible to configure.
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 8, news: 6, options: 5, fundamental: 4, congress: 3 },
+            }),
+        );
+        expect(res.status).toBe(200);
+    });
+
+    it('accepts score_weights without congress (legacy four-key payload)', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 8, news: 6, options: 5, fundamental: 4 },
+            }),
+        );
+        expect(res.status).toBe(200);
+    });
+
+    it('rejects a negative congress weight', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'score_weights',
+                value: { technical: 8, news: 6, options: 5, fundamental: 4, congress: -1 },
+            }),
+        );
+        expect(res.status).toBe(400);
+    });
+
     it('rejects score_weights that is not an object', async () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {

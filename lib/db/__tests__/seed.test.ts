@@ -57,7 +57,7 @@ describe('seed', () => {
         expect(configValueCalls.length).toBe(13);
     });
 
-    it('inserts analysis model configs (4 types)', async () => {
+    it('inserts analysis model configs (5 types)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -70,7 +70,7 @@ describe('seed', () => {
                 'modelId' in call[0] &&
                 'useByok' in call[0],
         );
-        expect(modelConfigCalls.length).toBe(4);
+        expect(modelConfigCalls.length).toBe(5);
         expect(
             modelConfigCalls.every(
                 ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',
@@ -86,7 +86,7 @@ describe('seed', () => {
                 'modelId' in value &&
                 'useByok' in value,
         );
-        expect(modelConfigOperations).toHaveLength(4);
+        expect(modelConfigOperations).toHaveLength(5);
         for (const { onConflictDoNothing } of modelConfigOperations) {
             expect(onConflictDoNothing).toHaveBeenCalledOnce();
         }
@@ -170,8 +170,8 @@ describe('seed', () => {
                 'result' in call[0] &&
                 'cronRunId' in call[0],
         );
-        // 5 symbols x 4 types = 20
-        expect(analysisCalls.length).toBe(20);
+        // 5 symbols x 5 types = 25
+        expect(analysisCalls.length).toBe(25);
         expect(
             analysisCalls.every(
                 ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',

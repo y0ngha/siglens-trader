@@ -45,7 +45,7 @@ import {
 } from '../../lib/notification/email.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import {
-    DEFAULT_WEIGHTS,
+    weightsForTimeframe,
     DEFAULT_BUY_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
 } from '../../lib/strategy/types.js';
@@ -276,8 +276,6 @@ async function handler(req: Request): Promise<Response> {
             const maxPositionSize = (await getConfigValue<number>(db, 'max_position_size')) ?? 1000;
             const maxTotalExposure =
                 (await getConfigValue<number>(db, 'max_total_exposure')) ?? 5000;
-            const weights =
-                (await getConfigValue<ScoreWeights>(db, 'score_weights')) ?? DEFAULT_WEIGHTS;
             const buyThreshold =
                 (await getConfigValue<number>(db, 'buy_threshold')) ?? DEFAULT_BUY_THRESHOLD;
             const sellThreshold =
@@ -292,6 +290,21 @@ async function handler(req: Request): Promise<Response> {
                 await getConfigValue<unknown>(db, 'analysis_timeframe'),
             );
             const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
+
+            // Weights start from the profile for the timeframe being traded (slow signals
+            // count for less the shorter the horizon), then any dashboard-configured value
+            // overrides per key — an explicit setting must always win.
+            //
+            // Merging rather than `?? DEFAULT_WEIGHTS` also matters for correctness: the
+            // stored row predates `congress`, so a whole-object fallback would leave that
+            // weight `undefined` and make the weighted average NaN. NaN fails both the buy
+            // and the sell comparison, so every symbol would silently sit at 'hold' and
+            // trading would stop with nothing in the logs.
+            const storedWeights = await getConfigValue<Partial<ScoreWeights>>(db, 'score_weights');
+            const weights: ScoreWeights = {
+                ...weightsForTimeframe(analysisTimeframe),
+                ...(storedWeights ?? {}),
+            };
 
             // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
             // gated by wall-clock at entry; this catches holidays the static schedule misses.
@@ -852,11 +865,12 @@ async function handler(req: Request): Promise<Response> {
             for (const item of watchlistItems) {
                 try {
                     // Gather latest analysis results
-                    const [tech, news, options, fundamental] = await Promise.all([
+                    const [tech, news, options, fundamental, congress] = await Promise.all([
                         getLatestAnalysisResult(db, item.symbol, 'technical'),
                         getLatestAnalysisResult(db, item.symbol, 'news'),
                         getLatestAnalysisResult(db, item.symbol, 'options'),
                         getLatestAnalysisResult(db, item.symbol, 'fundamental'),
+                        getLatestAnalysisResult(db, item.symbol, 'congress'),
                     ]);
 
                     // Staleness check: skip symbol if technical analysis is too old
@@ -905,6 +919,9 @@ async function handler(req: Request): Promise<Response> {
                                   overallSentiment: safeAnalysisSentiment(fundamental.result),
                                   categories: safeFundamentalCategories(fundamental.result),
                               }
+                            : null,
+                        congress: congress?.result
+                            ? { overallSentiment: safeAnalysisSentiment(congress.result) }
                             : null,
                     };
                     const signalScore = scoreSignals(

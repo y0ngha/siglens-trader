@@ -30,7 +30,7 @@ export async function seed() {
         { key: 'analysis_timeframe', value: '1Hour' },
         {
             key: 'score_weights',
-            value: { technical: 8, news: 6, options: 5, fundamental: 4 },
+            value: { technical: 8, news: 6, options: 5, fundamental: 4, congress: 3 },
         },
         { key: 'fixed_exit_enabled', value: false },
         { key: 'trading_enabled', value: true },
@@ -66,6 +66,12 @@ export async function seed() {
         },
         {
             analysisType: 'fundamental',
+            modelId: 'deepseek-v4-flash',
+            enabled: true,
+            useByok: false,
+        },
+        {
+            analysisType: 'congress',
             modelId: 'deepseek-v4-flash',
             enabled: true,
             useByok: false,
@@ -240,7 +246,7 @@ export async function seed() {
     }
 
     console.log('Seeding mock analysis results...');
-    const analysisTypes = ['technical', 'news', 'options', 'fundamental'] as const;
+    const analysisTypes = ['technical', 'news', 'options', 'fundamental', 'congress'] as const;
     for (const symbol of ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOGL']) {
         for (const type of analysisTypes) {
             await db.insert(analysisResults).values({
@@ -337,6 +343,13 @@ function generateMockAnalysisResult(type: string, symbol: string): object {
                     { category: 'valuation', rating: 'fair' },
                     { category: 'growth', rating: 'strong' },
                 ],
+            };
+        case 'congress':
+            return {
+                overallSentiment: 'neutral',
+                summaryKo: `${symbol} 의회 거래 공시 분석 (목 데이터)`,
+                notableMembersKo: [],
+                riskNoteKo: '공시 건수가 적어 판단 유보',
             };
         default:
             return {};
