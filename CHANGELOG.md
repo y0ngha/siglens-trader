@@ -1,5 +1,23 @@
 # Changelog
 
+# [0.11.0](https://github.com/y0ngha/siglens-trader/compare/v0.10.1...v0.11.0) (2026-08-10)
+
+
+### Bug Fixes
+
+* PR 리뷰 반영 — 비-throw 실패 감지·심볼당 타임아웃 복원·toErrStr 계약 ([61b0807](https://github.com/y0ngha/siglens-trader/commit/61b080769e5eff4855440e09f6450df88c761154))
+* sync skills/ from siglens (restores PROMPT_DIGEST blocks) ([f9e3429](https://github.com/y0ngha/siglens-trader/commit/f9e3429e06f8ad21550672917f032747f55bbdfb))
+* trim instance footprint, add swap headroom for cron ([a8a428b](https://github.com/y0ngha/siglens-trader/commit/a8a428bf9e584ae3392d2ea68a6b93b1214fac91))
+
+
+### Features
+
+* add Node app server replacing Vercel Functions + Cron (AWS migration Phase 1) ([98ec61f](https://github.com/y0ngha/siglens-trader/commit/98ec61fb148c3d9580d0bb3746998f513a44994d))
+* AWS provisioning + deploy scripts (migration Phase 3) ([44d683b](https://github.com/y0ngha/siglens-trader/commit/44d683b45ea6dd7971767c8dabab4df519a4907a))
+* containerize for AWS (migration Phase 2) ([50af435](https://github.com/y0ngha/siglens-trader/commit/50af435bff4b477915969783cc9014adef172d38))
+* default to DeepSeek flash + always-on detailed analysis ([8958c6e](https://github.com/y0ngha/siglens-trader/commit/8958c6e9bd8dc30fa687163b6cad04b1d3d1dabc))
+* worker 의존 제거 — run* 직접 호출로 전환 ([6ca0a52](https://github.com/y0ngha/siglens-trader/commit/6ca0a52fbec5237155ebf57128b8c24368a09576))
+
 ## [0.10.1](https://github.com/y0ngha/siglens-trader/compare/v0.10.0...v0.10.1) (2026-06-19)
 
 
