@@ -49,10 +49,39 @@ export function toErrStr(e: unknown): string {
 export const ANALYSIS_TIER: Tier = 'pro';
 
 /**
- * 상세 분석(reasoning) 기본값. siglens-trader는 "상세 분석 항상 ON" 정책이므로 `true`.
- * 기본값을 한 곳에 모아, 정책이 바뀌면 이 상수만 고치면 되도록 한다(runner·cron 공통 참조).
+ * 상세 분석(reasoning) 기본값. 정책이 없는 분석 타입은 이 값을 따른다 — 새 분석이 추가되면
+ * 품질 우선(ON)으로 시작하고, 지연이 문제가 될 때 아래 표에 명시적으로 내린다.
  */
 export const DEFAULT_ANALYSIS_REASONING = true;
+
+/**
+ * 분석 타입별 상세 분석(reasoning) 정책.
+ *
+ * 분석이 얼마나 자주 돌아야 하는지가 추론을 감당할 수 있는지를 결정한다. 실측(2026-08-10,
+ * deepseek-v4-flash, 30Min):
+ *
+ *   추론 ON인 technical은 심볼당 출력이 22k~37k 토큰까지 늘어나 첫 호출이
+ *   `finish_reason: undefined`로 잘리고(148초 낭비), 재시도가 269초를 더 써서
+ *   심볼당 약 7분이 걸렸다. 4종목이면 한 패스에 ~28분 — cron의 690초 컷오프를 넘고
+ *   30분 구간 안에 끝나지 못해 일부 종목이 매 구간 신호를 받지 못했다.
+ *
+ * 그래서 짧은 주기로 도는 축(technical/options)은 추론을 끈다. 지표 판독과 옵션 체인
+ * 요약은 장문 추론이 없어도 결론이 달라지지 않는 반면, 주기를 지키지 못하면 신호 자체가
+ * 사라진다. 반대로 시간~일 단위로 도는 축(news/fundamental/congress)은 지연 여유가 있고
+ * 서술 품질이 실제 판단에 기여하므로 ON을 유지한다.
+ */
+export const ANALYSIS_REASONING: Readonly<Record<string, boolean>> = {
+    technical: false,
+    options: false,
+    news: true,
+    fundamental: true,
+    congress: true,
+};
+
+/** 해당 분석 타입의 reasoning 설정. 정책이 없으면 {@link DEFAULT_ANALYSIS_REASONING}. */
+export function getAnalysisReasoning(analysisType: string): boolean {
+    return ANALYSIS_REASONING[analysisType] ?? DEFAULT_ANALYSIS_REASONING;
+}
 
 // Port: db 의존을 analysis 레이어 밖으로 분리한다. 구현체는 api/cron 레이어가 주입.
 export interface NewsCardStore {

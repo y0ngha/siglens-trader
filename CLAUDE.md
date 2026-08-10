@@ -122,6 +122,13 @@ long a run takes.
 | execute       | `7 13-21 * * 1-5`       | hourly            | Offset 7 min after the top of the hour so analysis results are ready before signal scoring. |
 | reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
 
+**Reasoning (상세 분석) is also per-type** — `ANALYSIS_REASONING` in `lib/analysis/types.ts`.
+technical/options run with reasoning **off**: measured on deepseek-v4-flash, reasoning pushed a
+single technical symbol to ~7 minutes (a 148s call truncated to zero output, then a 269s retry),
+so a 4-symbol pass exceeded the 690s cron cutoff and symbols went without a signal. news,
+fundamental and congress keep it on — they run hourly or daily, so the latency is affordable and
+the narrative quality feeds the decision.
+
 UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) and EST (14:30–21:00 UTC); the `isEtRegularSessionOpen` runtime gate skips out-of-session fires.
 
 ---

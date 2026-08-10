@@ -335,6 +335,20 @@ describe('createAnalysisCronHandler', () => {
         expect(mockGetAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'options');
     });
 
+    it('passes the per-type reasoning policy to the runner', async () => {
+        // Short-cadence axes run with reasoning off: measured in production, reasoning on
+        // cost ~7 minutes per technical symbol and blew past the 690s cron cutoff.
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
+
+        mockRunner.mockClear();
+        const newsHandler = createAnalysisCronHandler('news', mockRunner);
+        await newsHandler(makeRequest(true));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
+    });
+
     it('passes a deadlineMs of start + 690s to the runner', async () => {
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
