@@ -11,6 +11,7 @@ function createSignalScore(overrides: Partial<SignalScore> = {}): SignalScore {
             news: 70,
             options: 65,
             fundamental: 60,
+            congress: 50,
         },
         signal: 'buy',
         ...overrides,
@@ -185,6 +186,7 @@ describe('makeTradeDecision', () => {
                     news: 75,
                     options: 80,
                     fundamental: 70,
+                    congress: 50,
                 },
             });
             const ctx = createContext({ signalScore, hasOpenPosition: false, calculatedSize: 5 });
@@ -192,7 +194,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 82/100 — 매수 (기술:90, 뉴스:75, 옵션:80, 펀더멘털:70)',
+                '신호 82/100 — 매수 (기술:90, 뉴스:75, 옵션:80, 펀더멘털:70, 의회:50)',
             );
         });
 
@@ -205,6 +207,7 @@ describe('makeTradeDecision', () => {
                     news: 20,
                     options: 15,
                     fundamental: 25,
+                    congress: 50,
                 },
             });
             const ctx = createContext({
@@ -216,7 +219,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 18/100 — 매도 (기술:10, 뉴스:20, 옵션:15, 펀더멘털:25)',
+                '신호 18/100 — 매도 (기술:10, 뉴스:20, 옵션:15, 펀더멘털:25, 의회:50)',
             );
         });
 
@@ -229,6 +232,7 @@ describe('makeTradeDecision', () => {
                     news: 50,
                     options: 50,
                     fundamental: 50,
+                    congress: 50,
                 },
             });
             const ctx = createContext({ signalScore });
@@ -236,7 +240,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 50/100 — 대기 (기술:50, 뉴스:50, 옵션:50, 펀더멘털:50)',
+                '신호 50/100 — 대기 (기술:50, 뉴스:50, 옵션:50, 펀더멘털:50, 의회:50)',
             );
         });
     });

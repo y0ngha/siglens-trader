@@ -661,8 +661,9 @@ describe('SettingsPage', () => {
         const analysisList = analysisHeading.closest('section')?.querySelector('ul');
         expect(analysisList).not.toBeNull();
 
+        // technical, news, options, fundamental, congress
         const modelSelects = within(analysisList!).getAllByRole('combobox');
-        expect(modelSelects).toHaveLength(4);
+        expect(modelSelects).toHaveLength(5);
         modelSelects.forEach((select) => {
             expect(select).toHaveValue('deepseek-v4-flash');
         });

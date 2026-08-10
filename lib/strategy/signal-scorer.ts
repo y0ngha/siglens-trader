@@ -27,6 +27,10 @@ export interface AnalysisInputs {
     options: { signals?: Array<{ kind?: string }> } | null;
     // `categories` from siglens-core `categoryAssessments`; aggregated for a continuous score.
     fundamental: { overallSentiment?: string; categories?: Array<{ sentiment?: string }> } | null;
+    // CongressTrendResponse.overallSentiment: 'bullish' | 'neutral' | 'bearish'.
+    // Reuses scoreSentiment — congress response carries the same three-valued field as news.
+    // Optional for backward compatibility: callers that pre-date congress can omit the field.
+    congress?: { overallSentiment?: string } | null;
 }
 
 /**
@@ -46,9 +50,22 @@ export function scoreSignals(
         news: scoreSentiment(inputs.news),
         options: scoreOptions(inputs.options),
         fundamental: scoreFundamental(inputs.fundamental),
+        // congress shares scoreSentiment — CongressTrendResponse.overallSentiment is the same
+        // 'bullish'|'neutral'|'bearish' shape as news, so no separate scorer is needed.
+        congress: scoreSentiment(inputs.congress ?? null),
     };
 
-    const totalWeight = weights.technical + weights.news + weights.options + weights.fundamental;
+    // Congress only votes when disclosures actually exist. Most symbols have none, so a
+    // constant neutral 50 carrying weight would dilute every other signal: with the other
+    // four at their extremes and congress absent, the aggregate is pulled ~2 points toward
+    // 50, which raises the bar for BOTH entries and exits — a signal that makes the system
+    // less decisive by being added is worse than no signal. The other four always produce a
+    // verdict once their cron has run, so they keep voting unconditionally (excluding them
+    // when null would instead let a single component clear the threshold on its own).
+    const congressWeight = inputs.congress ? weights.congress : 0;
+
+    const totalWeight =
+        weights.technical + weights.news + weights.options + weights.fundamental + congressWeight;
 
     if (totalWeight === 0) {
         return { total: 50, components, signal: 'hold' as const };
@@ -58,7 +75,8 @@ export function scoreSignals(
         components.technical * weights.technical +
         components.news * weights.news +
         components.options * weights.options +
-        components.fundamental * weights.fundamental;
+        components.fundamental * weights.fundamental +
+        components.congress * congressWeight;
 
     const total = clamp(Math.round(weightedSum / totalWeight), 0, 100);
 

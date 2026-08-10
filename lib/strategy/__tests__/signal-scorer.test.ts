@@ -111,7 +111,8 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // technical = 95, news = 50, options = 50, fundamental = 80
+            // technical = 95, news = 50, options = 50, fundamental = 80; congress is absent,
+            // so its weight drops out entirely rather than voting a neutral 50.
             // weighted: (95*8 + 50*6 + 50*5 + 80*4) / 23 = 1630/23 = 70.9 → 71 → buy
             expect(result.components.technical).toBe(95);
             expect(result.components.news).toBe(50);
@@ -239,6 +240,7 @@ describe('scoreSignals', () => {
                 news: 5,
                 options: 5,
                 fundamental: 5,
+                congress: 0,
             };
 
             const inputs = {
@@ -262,6 +264,7 @@ describe('scoreSignals', () => {
                 news: 20,
                 options: 20,
                 fundamental: 20,
+                congress: 20,
             };
 
             const result = scoreSignals(
@@ -274,13 +277,15 @@ describe('scoreSignals', () => {
                     // 50
                     fundamental: { overallSentiment: 'neutral' },
                     // 50
+                    congress: null,
+                    // 50
                 },
                 equalWeights,
                 70,
                 30,
             );
 
-            // (85 + 20 + 50 + 50) / 4 = 51.25 → 51
+            // (85 + 20 + 50 + 50 + 50) / 5 = 51
             expect(result.total).toBe(51);
         });
     });
@@ -610,7 +615,7 @@ describe('scoreSignals', () => {
                     options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0 },
+                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 0 },
                 70,
                 30,
             );
@@ -833,6 +838,124 @@ describe('scoreSignals', () => {
                     actionRecommendation: { entryRecommendation: 'enter' },
                 }),
             ).toBe(100);
+        });
+    });
+
+    describe('congress scoring', () => {
+        it('absent congress does not dilute the other components', () => {
+            // Regression guard: congress data is missing for most symbols, so if its weight
+            // still counted, a constant neutral 50 would drag the aggregate toward 50 and
+            // make both entries and exits harder purely by enabling the feature.
+            const inputs = {
+                technical: { trend: 'bullish' as const, riskLevel: 'low' },
+                news: { overallSentiment: 'bullish' },
+                options: null,
+                fundamental: { overallSentiment: 'bullish' },
+                congress: null,
+            };
+            const withCongressWeight = scoreSignals(
+                inputs,
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+            const withoutCongressWeight = scoreSignals(
+                inputs,
+                { ...DEFAULT_WEIGHTS, congress: 0 },
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            expect(withCongressWeight.total).toBe(withoutCongressWeight.total);
+        });
+
+        it('null congress scores neutral (50) and does not change hold signal', () => {
+            const result = scoreSignals(
+                {
+                    technical: { trend: 'neutral', riskLevel: 'medium' },
+                    news: { overallSentiment: 'neutral' },
+                    options: null,
+                    fundamental: { overallSentiment: 'neutral' },
+                    congress: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            expect(result.components.congress).toBe(50);
+            expect(result.signal).toBe('hold');
+        });
+
+        it('bullish congress raises the weighted total above neutral-only baseline', () => {
+            const withoutCongress = scoreSignals(
+                {
+                    technical: { trend: 'neutral', riskLevel: 'medium' },
+                    news: { overallSentiment: 'neutral' },
+                    options: null,
+                    fundamental: { overallSentiment: 'neutral' },
+                    congress: null,
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            const withBullishCongress = scoreSignals(
+                {
+                    technical: { trend: 'neutral', riskLevel: 'medium' },
+                    news: { overallSentiment: 'neutral' },
+                    options: null,
+                    fundamental: { overallSentiment: 'neutral' },
+                    congress: { overallSentiment: 'bullish' },
+                },
+                DEFAULT_WEIGHTS,
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            // null congress scores 50 (neutral). bullish scores 80. The weighted sum must increase.
+            expect(withBullishCongress.total).toBeGreaterThan(withoutCongress.total);
+            expect(withBullishCongress.components.congress).toBe(80);
+        });
+
+        it('congress weight is included in totalWeight (zero-weight sanity check)', () => {
+            // All weights zero except congress → total should be 80 (bullish congress score)
+            const result = scoreSignals(
+                {
+                    technical: null,
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    congress: { overallSentiment: 'bullish' },
+                },
+                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            expect(result.components.congress).toBe(80);
+            expect(result.total).toBe(80);
+            expect(result.signal).toBe('buy');
+        });
+
+        it('bearish congress lowers the weighted total', () => {
+            const result = scoreSignals(
+                {
+                    technical: null,
+                    news: null,
+                    options: null,
+                    fundamental: null,
+                    congress: { overallSentiment: 'bearish' },
+                },
+                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                DEFAULT_BUY_THRESHOLD,
+                DEFAULT_SELL_THRESHOLD,
+            );
+
+            expect(result.components.congress).toBe(20);
+            expect(result.total).toBe(20);
+            expect(result.signal).toBe('sell');
         });
     });
 

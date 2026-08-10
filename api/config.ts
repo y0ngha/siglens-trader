@@ -122,8 +122,14 @@ async function handler(req: Request): Promise<Response> {
                     }
                     const w = value as Record<string, unknown>;
                     const requiredKeys = ['technical', 'news', 'options', 'fundamental'];
-                    const requiredKeySet = new Set(requiredKeys);
-                    const extraKeys = Object.keys(w).filter((k) => !requiredKeySet.has(k));
+                    // `congress` is accepted but not required: it was added after this endpoint
+                    // shipped, so a caller still posting the original four keys must keep
+                    // working (the runtime fills the missing weight from the timeframe profile).
+                    // Without listing it here the unknown-key check below rejects any object
+                    // that does include it — which would make the weight unsettable.
+                    const optionalKeys = ['congress'];
+                    const knownKeySet = new Set([...requiredKeys, ...optionalKeys]);
+                    const extraKeys = Object.keys(w).filter((k) => !knownKeySet.has(k));
                     if (extraKeys.length > 0) {
                         return Response.json(
                             {
@@ -132,7 +138,11 @@ async function handler(req: Request): Promise<Response> {
                             { status: 400 },
                         );
                     }
-                    for (const k of requiredKeys) {
+                    const presentKeys = [
+                        ...requiredKeys,
+                        ...optionalKeys.filter((k) => w[k] !== undefined),
+                    ];
+                    for (const k of presentKeys) {
                         if (
                             typeof w[k] !== 'number' ||
                             !Number.isFinite(w[k] as number) ||
@@ -146,7 +156,7 @@ async function handler(req: Request): Promise<Response> {
                             );
                         }
                     }
-                    const weightSum = requiredKeys.reduce((sum, k) => sum + (w[k] as number), 0);
+                    const weightSum = presentKeys.reduce((sum, k) => sum + (w[k] as number), 0);
                     if (weightSum <= 0) {
                         return Response.json(
                             { error: 'score_weights sum must be greater than 0' },

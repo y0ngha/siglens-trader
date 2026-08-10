@@ -3,12 +3,13 @@ import { describe, it, expect } from 'vitest';
 import { app, CRON_JOBS } from '../app.js';
 
 describe('CRON_JOBS', () => {
-    it('keeps the 6 cron schedules carried over from vercel.json (UTC)', () => {
+    it('keeps the 7 cron schedules (6 original + congress) (UTC)', () => {
         expect(CRON_JOBS.map((j) => [j.name, j.schedule])).toEqual([
             ['technical', '0 13-21 * * 1-5'],
             ['news', '0 13-21 * * 1-5'],
             ['options', '0 13-21 * * 1-5'],
             ['fundamental', '0 15 * * 1-5'],
+            ['congress', '0 16 * * 1-5'],
             ['execute', '7 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
         ]);

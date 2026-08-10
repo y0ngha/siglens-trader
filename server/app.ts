@@ -22,6 +22,7 @@ import { GET as cronTechnical } from '../api/cron/technical.js';
 import { GET as cronNews } from '../api/cron/news.js';
 import { GET as cronOptions } from '../api/cron/options.js';
 import { GET as cronFundamental } from '../api/cron/fundamental.js';
+import { GET as cronCongress } from '../api/cron/congress.js';
 import { GET as cronExecute } from '../api/cron/execute.js';
 import { GET as cronReconcile } from '../api/cron/reconcile.js';
 
@@ -40,6 +41,9 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
     { name: 'news', schedule: '0 13-21 * * 1-5', handler: cronNews },
     { name: 'options', schedule: '0 13-21 * * 1-5', handler: cronOptions },
     { name: 'fundamental', schedule: '0 15 * * 1-5', handler: cronFundamental },
+    // Congressional disclosures lag the actual trade by weeks, so once per weekday is plenty —
+    // hourly would just burn LLM calls on data that won't have changed since the last run.
+    { name: 'congress', schedule: '0 16 * * 1-5', handler: cronCongress },
     { name: 'execute', schedule: '7 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
 ];
