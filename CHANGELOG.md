@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/y0ngha/siglens-trader/compare/v0.12.0...v0.12.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* Dockerfile cron assertion counted jobs instead of checking wiring ([3781890](https://github.com/y0ngha/siglens-trader/commit/378189058cba29f4b7a958b392456445360b6bbf))
+
 # [0.12.0](https://github.com/y0ngha/siglens-trader/compare/v0.11.0...v0.12.0) (2026-08-10)
 
 
