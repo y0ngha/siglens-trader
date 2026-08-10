@@ -32,14 +32,17 @@ type WebHandler = (req: Request) => Promise<Response>;
 const fwd = (h: WebHandler) => (c: { req: { raw: Request } }) => h(c.req.raw);
 
 /**
- * The 6 scheduled jobs, carried over from the former `vercel.json` crons. Schedules are UTC;
- * the app's own `isEtRegularSessionOpen` gate narrows execution to the US session. Double
- * execution across instances is prevented by the existing Redis SETNX lock (lib/lock.ts).
+ * Scheduled jobs (UTC schedules; `isEtRegularSessionOpen` narrows to the actual US session).
+ * Double execution across instances is prevented by the Redis SETNX lock (lib/lock.ts).
+ *
+ * technical and options tick every 15 minutes so a short configured horizon (15Min/30Min) is
+ * actually honored. The cadence guard in `_run-analysis-cron.ts` collapses surplus ticks when
+ * the configured horizon is longer — a 1Hour config still produces only one LLM call per hour.
  */
 export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler: WebHandler }> = [
-    { name: 'technical', schedule: '0 13-21 * * 1-5', handler: cronTechnical },
+    { name: 'technical', schedule: '*/15 13-21 * * 1-5', handler: cronTechnical },
     { name: 'news', schedule: '0 13-21 * * 1-5', handler: cronNews },
-    { name: 'options', schedule: '0 13-21 * * 1-5', handler: cronOptions },
+    { name: 'options', schedule: '*/15 13-21 * * 1-5', handler: cronOptions },
     { name: 'fundamental', schedule: '0 15 * * 1-5', handler: cronFundamental },
     // Congressional disclosures lag the actual trade by weeks, so once per weekday is plenty —
     // hourly would just burn LLM calls on data that won't have changed since the last run.

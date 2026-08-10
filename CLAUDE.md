@@ -104,10 +104,16 @@ Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
 DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
 `market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
-- Analysis crons (technical, news, options): `0 13-21 * * 1-5` (hourly)
-- Fundamental: `0 13 * * 1-5` (daily near US open)
-- Execute: `7 13-21 * * 1-5` (7-minute offset after analysis, hourly)
-- Reconcile: `*/10 13-21 * * 1-5` (every 10 minutes — order timeout + DB consistency)
+
+| Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
+|---------------|-------------------------|-------------------|-----------|
+| technical     | `*/15 13-21 * * 1-5`    | follows timeframe | Horizon-sensitive: a new bar only closes once per timeframe tick. The cadence guard in `_run-analysis-cron.ts` collapses surplus ticks (e.g. 1Hour config → 1 LLM call/hour despite 15-min schedule). |
+| options       | `*/15 13-21 * * 1-5`    | follows timeframe | Same as technical — option-chain snapshots are keyed by hash, so re-analysis before the next bar is pointless. |
+| news          | `0 13-21 * * 1-5`       | 60 minutes        | Event-driven; major catalysts surface within ~60 min of publication. FMP news endpoint is heavily rate-limited. |
+| fundamental   | `0 15 * * 1-5`          | 24 hours          | Quarterly filings and earnings do not move intraday; daily is more than sufficient. |
+| congress      | `0 16 * * 1-5`          | 24 hours          | Congressional disclosures lag the actual trade by weeks; once per weekday is plenty. |
+| execute       | `7 13-21 * * 1-5`       | hourly            | Offset 7 min after the top of the hour so analysis results are ready before signal scoring. |
+| reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
 
 UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) and EST (14:30–21:00 UTC); the `isEtRegularSessionOpen` runtime gate skips out-of-session fires.
 

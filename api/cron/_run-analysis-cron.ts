@@ -5,6 +5,7 @@ import {
     getEnabledWatchlist,
     getAnalysisConfig,
     getConfigValue,
+    getLatestAnalysisResult,
     saveAnalysisResult,
     startCronRun,
     finishCronRun,
@@ -21,6 +22,8 @@ import type {
 import { DEFAULT_ANALYSIS_REASONING } from '../../lib/analysis/types.js';
 import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
 import { toCoreTimeframe } from '../../lib/analysis/timeframe.js';
+import type { AnalysisTimeframe } from '../../lib/analysis/timeframe.js';
+import { getMinIntervalMs } from '../../lib/analysis/cadence.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
@@ -114,8 +117,31 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     upsertCards: (rows) => upsertNewsCards(db, [...rows]),
                 };
 
+                // Cadence guard: the minimum re-analysis interval for this type.
+                // toCoreTimeframe always returns one of the three AnalysisTimeframe literals;
+                // the wider Timeframe type is a TS artifact of the return annotation.
+                const minIntervalMs = getMinIntervalMs(
+                    analysisType,
+                    timeframe as AnalysisTimeframe,
+                );
+
                 // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
                 for (const item of watchlistItems) {
+                    // Freshness guard: skip this symbol if the last stored analysis for
+                    // (symbol, analysisType) is still within the cadence window.
+                    // This is what makes a faster cron tick safe: technical and options
+                    // fire every 15 minutes, but if the configured horizon is 1Hour the
+                    // guard collapses the extra ticks so only one LLM call runs per hour
+                    // per symbol — the schedule can be set tighter than the policy without
+                    // burning provider quota.
+                    if (minIntervalMs > 0) {
+                        const latest = await getLatestAnalysisResult(db, item.symbol, analysisType);
+                        if (latest && startedMs - latest.analyzedAt.getTime() < minIntervalMs) {
+                            results.push({ symbol: item.symbol, status: 'skipped' });
+                            continue;
+                        }
+                    }
+
                     const result = await runner({
                         symbol: item.symbol,
                         companyName: item.companyName,

@@ -1,0 +1,53 @@
+import type { AnalysisTimeframe } from './timeframe.js';
+
+/**
+ * Per-analysis-type cadence policy.
+ *
+ * A signal is only worth re-computing as often as its underlying data can change.
+ * Re-running it faster than that burns LLM calls and provider quota without
+ * improving the decision.
+ *
+ * - technical / options: horizon-sensitive — a new bar only closes once per
+ *   timeframe tick, so re-analysis earlier than that produces the same signal
+ *   from stale inputs. Cadence = bar duration.
+ * - news: event-driven — major catalysts surface within ~60 min of publication,
+ *   and FMP's news endpoint is heavily rate-limited, so hourly is the right cadence.
+ * - fundamental / congress: the underlying data moves quarterly / weekly.
+ *   Daily re-analysis is more than enough; more frequent runs burn LLM calls on
+ *   data that hasn't changed since the last cron.
+ */
+
+/** Duration in ms per timeframe bar — used by horizon-sensitive analysis types. */
+const TIMEFRAME_DURATION_MS: Record<AnalysisTimeframe, number> = {
+    '15Min': 15 * 60_000,
+    '30Min': 30 * 60_000,
+    '1Hour': 60 * 60_000,
+};
+
+/**
+ * Describes the minimum spacing between two analyses of the same type for the
+ * same symbol. Horizon-sensitive types use `'timeframe'` as a sentinel — the
+ * actual interval is resolved to the configured bar duration at call time.
+ */
+export const ANALYSIS_MIN_INTERVAL: Readonly<Record<string, number | 'timeframe'>> = {
+    technical: 'timeframe',
+    options: 'timeframe',
+    news: 60 * 60_000, // 60 minutes
+    fundamental: 24 * 60 * 60_000, // 24 hours
+    congress: 24 * 60 * 60_000, // 24 hours
+};
+
+/**
+ * Returns the minimum interval (ms) that must elapse before re-running a given
+ * analysis type for the same symbol.
+ *
+ * For horizon-sensitive types (technical, options) the interval equals the
+ * configured timeframe bar duration. Unknown types return 0 so they are never
+ * skipped by the freshness guard.
+ */
+export function getMinIntervalMs(analysisType: string, timeframe: AnalysisTimeframe): number {
+    const policy = ANALYSIS_MIN_INTERVAL[analysisType];
+    if (policy === undefined) return 0;
+    if (policy === 'timeframe') return TIMEFRAME_DURATION_MS[timeframe];
+    return policy;
+}

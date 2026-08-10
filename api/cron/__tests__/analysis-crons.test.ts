@@ -18,6 +18,7 @@ vi.mock('../../_lib/db', () => ({
 const mockGetEnabledWatchlist = vi.fn();
 const mockGetAnalysisConfig = vi.fn();
 const mockGetConfigValue = vi.fn();
+const mockGetLatestAnalysisResult = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
@@ -28,12 +29,18 @@ vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
+    getLatestAnalysisResult: (...args: unknown[]) => mockGetLatestAnalysisResult(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
     getNewsCards: (...args: unknown[]) => mockGetNewsCards(...args),
     upsertNewsCards: (...args: unknown[]) => mockUpsertNewsCards(...args),
+}));
+
+const mockGetMinIntervalMs = vi.fn<(analysisType: string, timeframe: string) => number>();
+vi.mock('../../../lib/analysis/cadence', () => ({
+    getMinIntervalMs: (...args: [string, string]) => mockGetMinIntervalMs(...args),
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
@@ -87,6 +94,10 @@ describe('createAnalysisCronHandler', () => {
         mockGetAnalysisConfig.mockResolvedValue(fakeConfig);
         mockGetConfigValue.mockResolvedValue(null);
         mockGetEnabledWatchlist.mockResolvedValue(fakeWatchlist);
+        // Default: cadence guard disabled (interval = 0) so existing tests are unaffected.
+        // getLatestAnalysisResult is only called when minIntervalMs > 0.
+        mockGetMinIntervalMs.mockReturnValue(0);
+        mockGetLatestAnalysisResult.mockResolvedValue(null);
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
@@ -531,6 +542,52 @@ describe('createAnalysisCronHandler', () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.cronRunId).toMatch(/^technical-/);
+    });
+
+    // ---------------------------------------------------------------------------
+    // Cadence guard (freshness check)
+    // ---------------------------------------------------------------------------
+
+    it('skips a symbol whose latest stored analysis is newer than the cadence interval', async () => {
+        // Fake time is 2026-05-24T10:00:00Z; analysedAt = 5 min ago, interval = 60 min
+        const recentDate = new Date('2026-05-24T09:55:00.000Z');
+        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
+        // Both watchlist symbols have a fresh result
+        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: recentDate });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(body.results).toEqual([
+            { symbol: 'AAPL', status: 'skipped' },
+            { symbol: 'TSLA', status: 'skipped' },
+        ]);
+        // Runner must NOT have been invoked for either symbol
+        expect(mockRunner).not.toHaveBeenCalled();
+    });
+
+    it('analyzes a symbol whose latest stored analysis is older than the cadence interval', async () => {
+        // analysedAt = 90 min ago, interval = 60 min → stale → should run
+        const staleDate = new Date('2026-05-24T08:30:00.000Z');
+        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
+        mockGetLatestAnalysisResult.mockResolvedValue({ analyzedAt: staleDate });
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'AAPL' }));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'TSLA' }));
+    });
+
+    it('analyzes a symbol with no stored analysis', async () => {
+        mockGetMinIntervalMs.mockReturnValue(60 * 60_000);
+        mockGetLatestAnalysisResult.mockResolvedValue(null);
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'AAPL' }));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'TSLA' }));
     });
 });
 
