@@ -1,75 +1,87 @@
 import { describe, expect, it } from 'vitest';
-import { getMinIntervalMs } from '../cadence';
+import { getCadenceWindowMs, isWithinCadenceWindow } from '../cadence';
 
-// The guard enforces slightly less than the nominal interval so a tick on the intended
-// schedule is not rejected by the processing latency of the tick before it (see
-// SCHEDULE_JITTER_TOLERANCE). Assertions below use the enforced value.
 const MIN = 60_000;
-const enforced = (nominalMs: number) => Math.round(nominalMs * 0.9);
+const HOUR = 60 * MIN;
 
-describe('getMinIntervalMs', () => {
-    // Horizon-sensitive types: cadence tracks bar duration
+describe('getCadenceWindowMs', () => {
+    // Horizon-sensitive types track the configured bar duration
     it.each([
         ['technical', '15Min', 15 * MIN],
         ['technical', '30Min', 30 * MIN],
-        ['technical', '1Hour', 60 * MIN],
+        ['technical', '1Hour', HOUR],
         ['options', '15Min', 15 * MIN],
         ['options', '30Min', 30 * MIN],
-        ['options', '1Hour', 60 * MIN],
-    ] as const)('%s @ %s tracks the %d ms bar duration', (analysisType, timeframe, nominal) => {
-        expect(getMinIntervalMs(analysisType, timeframe)).toBe(enforced(nominal));
+        ['options', '1Hour', HOUR],
+    ] as const)('%s @ %s → %d ms', (analysisType, timeframe, expected) => {
+        expect(getCadenceWindowMs(analysisType, timeframe)).toBe(expected);
     });
 
-    // Fixed-spacing types: timeframe does not affect the result
-    it.each(['15Min', '30Min', '1Hour'] as const)(
-        'news is hourly regardless of timeframe %s',
-        (tf) => {
-            expect(getMinIntervalMs('news', tf)).toBe(enforced(60 * MIN));
-        },
-    );
+    // Fixed-spacing types ignore the timeframe
+    it.each(['15Min', '30Min', '1Hour'] as const)('news is hourly @ %s', (tf) => {
+        expect(getCadenceWindowMs('news', tf)).toBe(HOUR);
+    });
 
-    it.each(['15Min', '30Min', '1Hour'] as const)(
-        'fundamental is daily regardless of timeframe %s',
-        (tf) => {
-            expect(getMinIntervalMs('fundamental', tf)).toBe(enforced(24 * 60 * MIN));
-        },
-    );
+    it.each(['15Min', '30Min', '1Hour'] as const)('fundamental is daily @ %s', (tf) => {
+        expect(getCadenceWindowMs('fundamental', tf)).toBe(24 * HOUR);
+    });
 
-    it.each(['15Min', '30Min', '1Hour'] as const)(
-        'congress is daily regardless of timeframe %s',
-        (tf) => {
-            expect(getMinIntervalMs('congress', tf)).toBe(enforced(24 * 60 * MIN));
-        },
-    );
+    it.each(['15Min', '30Min', '1Hour'] as const)('congress is daily @ %s', (tf) => {
+        expect(getCadenceWindowMs('congress', tf)).toBe(24 * HOUR);
+    });
 
     it('unknown type returns 0 (never skipped)', () => {
-        expect(getMinIntervalMs('unknown-type', '1Hour')).toBe(0);
-        expect(getMinIntervalMs('', '15Min')).toBe(0);
+        expect(getCadenceWindowMs('unknown-type', '1Hour')).toBe(0);
+        expect(getCadenceWindowMs('', '15Min')).toBe(0);
+    });
+});
+
+describe('isWithinCadenceWindow', () => {
+    const at = (iso: string) => new Date(iso).getTime();
+
+    it('treats the same clock window as covered', () => {
+        expect(
+            isWithinCadenceWindow(at('2026-08-10T15:02:00Z'), at('2026-08-10T15:15:00Z'), 30 * MIN),
+        ).toBe(true);
     });
 
-    describe('a tick on the intended schedule is never rejected by its own latency', () => {
-        // Regression guard. An analysis is stamped when saved, which is later than the tick
-        // that started it, so the gap to the next same-cadence tick measures a little under
-        // the nominal interval. Enforcing the full interval turned the daily analyses into
-        // every-other-day ones and the hourly news analysis into an every-other-hour one.
-        const LLM_LATENCY = 90_000; // observed: deepseek-v4-pro runs 20-45s per symbol
+    it('treats the next clock window as due', () => {
+        expect(
+            isWithinCadenceWindow(at('2026-08-10T15:02:00Z'), at('2026-08-10T15:30:00Z'), 30 * MIN),
+        ).toBe(false);
+    });
 
-        it.each([
-            ['news', '1Hour', 60 * MIN],
-            ['fundamental', '1Hour', 24 * 60 * MIN],
-            ['congress', '1Hour', 24 * 60 * MIN],
-            ['technical', '15Min', 15 * MIN],
-            ['technical', '1Hour', 60 * MIN],
-            ['options', '30Min', 30 * MIN],
-        ] as const)('%s @ %s admits the next scheduled tick', (type, tf, nominal) => {
-            const elapsedAtNextTick = nominal - LLM_LATENCY;
-            expect(getMinIntervalMs(type, tf)).toBeLessThanOrEqual(elapsedAtNextTick);
-        });
+    it('is immune to how long the previous analysis took', () => {
+        // Regression guard. The old elapsed-time rule measured from the SAVE stamp, so a
+        // 5-minute analysis starting at :00 was stamped :05 and the :30 tick saw only 25
+        // minutes elapsed — it skipped, and the real cadence silently became 45 minutes.
+        const savedAfterSlowRun = at('2026-08-10T15:05:00Z');
+        const nextScheduledTick = at('2026-08-10T15:30:00Z');
+        expect(isWithinCadenceWindow(savedAfterSlowRun, nextScheduledTick, 30 * MIN)).toBe(false);
+    });
 
-        it('still rejects a surplus tick from the tighter schedule', () => {
-            // technical fires every 15 min; on a 1Hour horizon the in-between ticks must skip.
-            expect(getMinIntervalMs('technical', '1Hour')).toBeGreaterThan(15 * MIN);
-            expect(getMinIntervalMs('technical', '1Hour')).toBeGreaterThan(45 * MIN);
-        });
+    it('still collapses a surplus tick from a tighter schedule', () => {
+        // 15-minute cron tick against a 30-minute window: same window → skipped.
+        expect(
+            isWithinCadenceWindow(at('2026-08-10T15:31:00Z'), at('2026-08-10T15:45:00Z'), 30 * MIN),
+        ).toBe(true);
+    });
+
+    it('gives a daily analysis one run per UTC day regardless of latency', () => {
+        const yesterday = at('2026-08-10T15:00:50Z');
+        expect(isWithinCadenceWindow(yesterday, at('2026-08-10T16:00:00Z'), 24 * HOUR)).toBe(true);
+        expect(isWithinCadenceWindow(yesterday, at('2026-08-11T15:00:00Z'), 24 * HOUR)).toBe(false);
+    });
+
+    it('gives an hourly analysis one run per clock hour regardless of latency', () => {
+        const saved = at('2026-08-10T15:01:35Z');
+        expect(isWithinCadenceWindow(saved, at('2026-08-10T15:59:00Z'), HOUR)).toBe(true);
+        expect(isWithinCadenceWindow(saved, at('2026-08-10T16:00:00Z'), HOUR)).toBe(false);
+    });
+
+    it('never skips when there is no policy (window 0)', () => {
+        expect(
+            isWithinCadenceWindow(at('2026-08-10T15:00:00Z'), at('2026-08-10T15:00:01Z'), 0),
+        ).toBe(false);
     });
 });

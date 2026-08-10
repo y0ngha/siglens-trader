@@ -38,35 +38,44 @@ export const ANALYSIS_MIN_INTERVAL: Readonly<Record<string, number | 'timeframe'
 };
 
 /**
- * Fraction of the nominal interval the guard actually enforces.
+ * Returns the cadence window (ms) for an analysis type, or 0 when the type has no policy
+ * (in which case it is never skipped).
  *
- * An analysis is stamped when it is *saved*, which is always later than the tick that
- * started it — the LLM call takes tens of seconds. So the gap between one tick and the
- * next same-cadence tick measures slightly *less* than the nominal interval, and enforcing
- * the full interval would reject the very tick the schedule exists to run:
- *
- *   cron fires 15:00:00 → analysis saved 15:00:50
- *   next day 15:00:00   → elapsed 23h59m10s < 24h → skipped
- *
- * That turns a daily analysis into an every-other-day one, and the hourly news analysis
- * into an every-other-hour one. Shaving 10% off absorbs processing latency (and a little
- * scheduler drift) while still collapsing the surplus ticks the tighter schedules produce:
- * a 60-minute policy admits the hourly tick but still rejects one 15 minutes later.
+ * For horizon-sensitive types (technical, options) the window is the configured timeframe
+ * bar duration.
  */
-const SCHEDULE_JITTER_TOLERANCE = 0.9;
-
-/**
- * Returns the minimum interval (ms) that must elapse before re-running a given
- * analysis type for the same symbol.
- *
- * For horizon-sensitive types (technical, options) the interval is the configured
- * timeframe bar duration. The returned value is the nominal interval reduced by
- * {@link SCHEDULE_JITTER_TOLERANCE} so a tick on the intended schedule is never rejected
- * by its own processing latency. Unknown types return 0 so they are never skipped.
- */
-export function getMinIntervalMs(analysisType: string, timeframe: AnalysisTimeframe): number {
+export function getCadenceWindowMs(analysisType: string, timeframe: AnalysisTimeframe): number {
     const policy = ANALYSIS_MIN_INTERVAL[analysisType];
     if (policy === undefined) return 0;
-    const nominal = policy === 'timeframe' ? TIMEFRAME_DURATION_MS[timeframe] : policy;
-    return Math.round(nominal * SCHEDULE_JITTER_TOLERANCE);
+    return policy === 'timeframe' ? TIMEFRAME_DURATION_MS[timeframe] : policy;
+}
+
+/**
+ * Whether an analysis is already covered for the wall-clock window `now` falls in.
+ *
+ * Windows are fixed slices of the clock (a 30-minute policy gives :00–:29 and :30–:59), and
+ * a window is satisfied once any analysis has been stamped inside it. That is deliberately
+ * NOT "enough time has passed since the last run", which is what this guard used to do and
+ * which drifts:
+ *
+ *   an analysis is stamped when it is *saved*, i.e. after the LLM call. Measuring elapsed
+ *   time from that stamp means the gap to the next scheduled tick is short by exactly the
+ *   processing time, so that tick gets rejected and the work slides to the one after it.
+ *   With a 30-minute policy and a 5-minute analysis, the tick at :30 sees only 25 minutes
+ *   elapsed and skips — the real cadence silently becomes 45 minutes. Percentage tolerances
+ *   only move where that cliff sits; they do not remove it, because the latency is a
+ *   property of the model, not a constant.
+ *
+ * Comparing window indices instead makes the guard immune to latency: each clock window
+ * admits exactly one run, no matter how long that run takes, while the surplus ticks from a
+ * tighter schedule still collapse (on a 30-minute window the extra 15-minute tick lands in
+ * the same window and is skipped).
+ */
+export function isWithinCadenceWindow(
+    lastAnalyzedAtMs: number,
+    nowMs: number,
+    windowMs: number,
+): boolean {
+    if (windowMs <= 0) return false;
+    return Math.floor(lastAnalyzedAtMs / windowMs) === Math.floor(nowMs / windowMs);
 }

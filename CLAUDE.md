@@ -105,9 +105,16 @@ session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSession
 DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
 `market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
 
+Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cadence.ts` gives each
+type a window size, and `_run-analysis-cron.ts` skips a symbol whose newest analysis already falls
+in the current window. Elapsed-time checks drift, because an analysis is stamped when it is *saved*
+— a 5-minute run starting at :00 is stamped :05, so the :30 tick would see only 25 minutes and skip,
+silently turning a 30-minute cadence into a 45-minute one. Windows make the guard indifferent to how
+long a run takes.
+
 | Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
 |---------------|-------------------------|-------------------|-----------|
-| technical     | `*/15 13-21 * * 1-5`    | follows timeframe | Horizon-sensitive: a new bar only closes once per timeframe tick. The cadence guard in `_run-analysis-cron.ts` collapses surplus ticks (e.g. 1Hour config → 1 LLM call/hour despite 15-min schedule). |
+| technical     | `*/15 13-21 * * 1-5`    | follows timeframe | Horizon-sensitive: a new bar only closes once per timeframe tick. Surplus ticks land in a window that is already covered and collapse (1Hour config → 1 LLM call/hour despite the 15-min schedule). |
 | options       | `*/15 13-21 * * 1-5`    | follows timeframe | Same as technical — option-chain snapshots are keyed by hash, so re-analysis before the next bar is pointless. |
 | news          | `0 13-21 * * 1-5`       | 60 minutes        | Event-driven; major catalysts surface within ~60 min of publication. FMP news endpoint is heavily rate-limited. |
 | fundamental   | `0 15 * * 1-5`          | 24 hours          | Quarterly filings and earnings do not move intraday; daily is more than sufficient. |
