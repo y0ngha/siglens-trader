@@ -16,8 +16,11 @@ coverage/
 .DS_Store
 Thumbs.db
 
-# Claude/Agent skills (installed locally)
+# Claude/Agent skills + local agent tool configs (not repo content)
 .agents/
+.codex/
+.gemini/
+AGENTS.md
 .claude/skills/
 .claude/worktrees/
 
@@ -30,5 +33,8 @@ Thumbs.db
 !.yarn/versions
 .pnp.*
 .vercel
+
+# Pinned AMI id recorded by infra/aws/provision.sh (environment state, not source)
+infra/aws/.ami
 
 .env.deployment

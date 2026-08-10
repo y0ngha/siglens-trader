@@ -15,6 +15,8 @@ export default tseslint.config(
             '.vercel',
             '*.config.*',
             '.claude/**',
+            '.codex/**',
+            '.gemini/**',
             'public/mockServiceWorker.js',
         ],
     },
