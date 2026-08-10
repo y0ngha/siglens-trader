@@ -138,6 +138,19 @@ yarn db:clear         # Delete all data (with confirmation prompt)
 
 ---
 
+## skills/
+
+A **synced copy** of `siglens/skills/` — do not author or edit skill files here. They are
+written and digest-maintained in the siglens repo (`yarn skills:digest-update` /
+`validate:skills` live there); this repo only ships them so the analysis prompt can load
+them at runtime. To pull updates: `rsync -a --delete ../siglens/skills/ ./skills/`.
+
+Skills whose `PROMPT_DIGEST` block is missing fail to load (siglens-core ≥0.42), and the
+analysis silently falls back to a degraded prompt — so a stale copy here is a quality
+regression, not a crash.
+
+---
+
 ## Deployment
 
 Runs on a single EC2 instance behind a Cloudflare Tunnel (no ALB, no inbound ports).

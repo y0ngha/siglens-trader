@@ -10,11 +10,34 @@ all ~70 of them every time. Tagging a skill with `gating` tells the selector *wh
 to include it (e.g. only when RSI is oversold, or Bollinger %B is extreme). This
 removes irrelevant distraction for floor models and cuts tokens.
 
-**Fail-open is the default.** A skill with **no `gating` block** is always included.
-A malformed/unreachable `gating` block is treated as untagged (also always included) —
-it never silently disappears. The CI validator (`yarn validate:skills`) rejects the
-malformed block before it ships, so fail-open is a safety net, not an excuse to skip
-validation.
+**Every skill must declare `gating`.** A skill with **no `gating` block**, or a
+malformed/unreachable one, is a **load error** under the selection engine
+(siglens-core ≥0.30) — there is no untagged fallback that keeps it always injected.
+This retires the old fail-open behavior (untagged → always included), which existed
+before the engine applied a per-analysis-type category whitelist; once that
+whitelist exists, an untagged skill has no correct default (chart skills and
+fundamental/news skills need opposite treatment), so the loader refuses to guess.
+The CI validator (`yarn validate:skills`, `scripts/validate-skills.ts`) rejects a
+missing/malformed `gating` block before it ships — every skill file, chart or
+fundamental/news, must carry an explicit `tier`.
+
+**Scope of "load error" — CI vs. runtime.** The two enforcement points land on
+different timelines and must not be conflated:
+
+- **CI (this repo, today):** `yarn validate:skills` rejects a missing or
+  malformed `gating` block for every skill file. This is authoring-time
+  enforcement — it stops a new untagged skill from ever being committed.
+- **Runtime (siglens-core ≥0.30, not yet shipped):** the selection engine's
+  fail-closed behavior described above — treating an untagged/unreachable
+  skill as a load error at prompt-build time — arrives with that engine.
+  Until it ships, this repo's app-side parser
+  (`src/entities/skill/api.ts`'s `parseGating`) still **fail-opens** at
+  runtime: it mirrors the pre-≥0.30 core loader and returns `undefined`
+  (treated as untagged) for a malformed/unreachable block rather than
+  throwing. That parser is deliberately left unchanged in this PR: 100% of
+  skill files are CI-tagged today, so the fail-open path is currently
+  unreachable in practice, but the runtime code itself does not yet enforce
+  the policy — only CI does.
 
 ## Frontmatter `gating` schema
 
@@ -26,7 +49,7 @@ All keys are **snake_case**; the loader maps them to camelCase `Skill` fields.
 | `gating.signal_kind` | `gated` only | `event` \| `state` | picks the gating path |
 | `gating.triggers` | `event` only | `[signal_name, ...]` | each must be a valid catalog name or a detected candle pattern; non-empty |
 | `gating.state` | `state` only | `{ feature, predicate }` | must be one of the valid pairs below; optional `hi`/`lo` numeric thresholds |
-| `token_cost` | top-level | number | **currently unused placeholder — set `0`** (reserved for build-time tokenizer baking) |
+| `token_cost` | top-level | number | **measured token estimate of the skill's `PROMPT_DIGEST` section** (`Math.ceil(digestText.length / 4)`) — maintained by `yarn skills:digest-update`, checked by `yarn skills:digest-verify`. See [PROMPT_DIGEST markers](#prompt_digest-markers) below. Do not hand-set it. |
 | `smc_full_guide` | top-level | `true` | **SMC full-guide skill only** — identifies it so a compressed note can replace it |
 
 ## confidence_weight
@@ -81,23 +104,49 @@ gating:
   triggers: [rsi_oversold, rsi_overbought]
 ```
 
-## tier: always_on vs untagged
+## tier: always_on — chart skills vs fundamental/news skills
 
-Both end up always-injected, but they mean different things:
+Every skill declares `gating.tier`; there is no untagged state. `always_on` means
+different things depending on which analysis type the skill belongs to:
 
-- **`always_on`** — chart-relevant, deliberately ungated (no detector or used as an
-  analysis lens): chart-patterns, theory strategies
-  (elliott-wave / fibonacci / multi-timeframe), S/R, Ichimoku, SMC.
-- **untagged (no `gating`)** — fail-open inclusion: non-chart fundamental/news skills,
-  or indicators with no meaningful trigger.
+- **Chart skills** — chart-relevant, deliberately ungated (no detector, or used as
+  an analysis lens): theory strategies (elliott-wave / fibonacci / multi-timeframe),
+  S/R, Ichimoku, SMC. Chart-pattern skills are **not** in this list — each is
+  event-gated on its own chart-pattern pre-screener candidate (see below); the
+  always-on `_core/pattern-index.md` covers baseline pattern awareness for every
+  chart prompt regardless of which individual pattern skills gate in.
+- **Fundamental/news skills** — `always_on` **within their own analysis type**:
+  fundamental prompts always include the fundamental skills, news prompts always
+  include the news skills. This is *not* "always injected everywhere." The
+  selection engine applies a category whitelist per analysis type before `tier` is
+  even evaluated (TECHNICAL only draws from `_core`/indicators/patterns/strategies/
+  candlesticks/support-resistance; FUNDAMENTAL/FINANCIALS only from `fundamental`;
+  NEWS only from `news`), so a fundamental/news skill's `always_on` can never leak
+  into a chart prompt — the whitelist, not the tier, is what keeps prompts scoped.
 
-Prefer an explicit `tier: always_on` for chart skills; leave fundamental/news untagged.
+Every skill file — chart, fundamental, or news — sets an explicit `tier`.
 
 ## event triggers — the valid catalog
 
-A `triggers` entry must be **either** a valid `detectSignals` catalog name (below)
-**or** a detected candle-pattern name. The validator cross-checks against the core's
-exported catalog: a typo'd trigger **fails CI** — it does not silently disappear.
+A `triggers` entry falls into one of **three** categories, and a skill's own
+`type` determines which one its triggers must draw from — the validator rejects
+a trigger from the wrong category even if the name is valid in another:
+
+1. A valid `detectSignals` catalog name (below) — for `indicator_guide`,
+   `strategy`, and `support_resistance` skills.
+2. A detected candle-pattern name — for `candlestick` skills only.
+3. A chart-pattern pre-screener candidate id — for `pattern` skills only. These
+   are the 17 `ChartPatternId` values the core's `screenChartPatterns()` can flag
+   (`head_and_shoulders`, `inverse_head_and_shoulders`, `double_top`,
+   `double_bottom`, `triple_top`, `triple_bottom`, `ascending_triangle`,
+   `descending_triangle`, `symmetrical_triangle`, `ascending_wedge`,
+   `descending_wedge`, `bull_flag`, `bear_flag`, `pennant`, `rectangle`,
+   `cup_and_handle`, `rounding_bottom` — see `PATTERN_TRIGGER_CATALOG` in
+   `scripts/validate-skills.ts`).
+
+The validator cross-checks each skill's triggers against only the category
+valid for its own `type`: a typo'd trigger, or a trigger borrowed from the
+wrong category, **fails CI** — it does not silently disappear.
 
 Full signal catalog (bidirectional set):
 
@@ -140,19 +189,74 @@ For a **candle** skill, the trigger is the candle pattern name (e.g. `hammer`,
 | `vwap` | `bandDistAtr` |
 | `buySellVolume` | `ratio` |
 
+## PROMPT_DIGEST markers
+
+A skill file may carry a compressed, prompt-facing rewrite of its body — the
+**digest** — delimited by a marker pair that every digested skill **must** have
+exactly one of, appended once at the very end of the file, after the body:
+
+```
+<!-- PROMPT_DIGEST:START -->
+...digest text...
+<!-- PROMPT_DIGEST:END -->
+```
+
+- **What gets injected into the AI prompt is the digest, not the full body.**
+  The full body stays the human-facing authoring source (what you read/edit in
+  this repo); the digest is the token-cheap rewrite the selector actually sends
+  when the skill fires.
+- The digest text itself is always **hand-authored** — no script writes it.
+- Exactly one `START`/`END` pair, in that order, with nothing but whitespace
+  after `END`. Duplicate markers, a `START` with no matching `END`, an
+  `END` with no `START`, or trailing content after `END` are all rejected as
+  malformed by `yarn skills:digest-verify`.
+- `digest_hash` is the first 8 hex chars of `SHA-256(original body)`, computed
+  **at digest-authoring time** — it fingerprints the body the digest was
+  written against, not the digest text itself. If the original body changes
+  later and `digest_hash` isn't refreshed to match, `verify` reports a
+  **hash-mismatch**: that means **the digest is stale** (it no longer reflects
+  the current body) and must be **re-authored by hand** against the new body,
+  then refreshed with `yarn skills:digest-update`.
+- `token_cost` is `Math.ceil(digestText.length / 4)` — recomputed the same way,
+  from the digest text alone.
+
+**Tooling** (`scripts/skills-digest.ts`):
+
+- `yarn skills:digest-verify` — read-only. Flags any file with a missing
+  digest, malformed markers, a stale `digest_hash`, or a stale `token_cost`.
+  Run before pushing once a skill has a digest section.
+- `yarn skills:digest-update` — recomputes and rewrites `digest_hash` +
+  `token_cost` in place for every file that already has an `ok` digest
+  section; files with no digest, or a malformed one, are left untouched (that's
+  `verify`'s job to flag, not this command's to fix). Idempotent — running it
+  twice in a row makes zero changes the second time.
+
 ## How to add a new skill / strategy
 
-1. **Pick the tier.** Chart-relevant lens or pattern with no detector → `tier: always_on`.
-   Fundamental/news → leave untagged (no `gating` block).
+1. **Pick the tier.** Chart-relevant lens with no detector (theory strategy, S/R,
+   Ichimoku, SMC) → `tier: always_on`. A **chart-pattern** skill (`type: pattern`)
+   always has a detector — the pre-screener — so it is `tier: gated` with its own
+   `ChartPatternId` as the `event` trigger (see the event-triggers section above);
+   it is never `always_on`. Fundamental/news with no meaningful trigger → also
+   `tier: always_on` (the category whitelist, not the tier, keeps it out of chart
+   prompts) — never leave `gating` off.
 2. **If gated, pick the kind:**
-   - **event** — there is a catalog signal (or candle pattern) that should turn it on.
-     Add `signal_kind: event` + a non-empty `triggers` list of known names.
+   - **event** — there is a catalog signal, candle pattern, or chart-pattern
+     pre-screener candidate that should turn it on. Add `signal_kind: event` + a
+     non-empty `triggers` list drawn from the category that matches this skill's
+     `type` (indicator/strategy/S-R → `detectSignals` names, `candlestick` →
+     candle names, `pattern` → `ChartPatternId` values).
    - **state** — it's a persistent condition (overbought, band-proximity, etc.).
      Add `signal_kind: state` + a `state: { feature, predicate }` from the valid pairs.
-3. Set `token_cost: 0` (placeholder). Add `smc_full_guide: true` only on the SMC guide.
-4. **Run `yarn validate:skills`.** It cross-checks every trigger against the core
-   catalog and every state pair against `isStateNotable`, rejecting typos and
-   unreachable combos. This is a **CI gate** — a bad tag fails the build.
+3. Leave `token_cost` and `digest_hash` to the digest tooling — never hand-set them.
+   If/when the skill gets a `PROMPT_DIGEST` section (see below), run
+   `yarn skills:digest-update` to compute both. Add `smc_full_guide: true` only on
+   the SMC guide.
+4. **Run `yarn validate:skills`.** It cross-checks every trigger against the
+   category valid for the skill's own `type` (catalog signal, candle pattern, or
+   chart-pattern id) and every state pair against `isStateNotable`, rejecting
+   typos, wrong-category triggers, and unreachable combos. This is a **CI gate**
+   — a bad tag fails the build.
 
 > Adding a strategy that fires on an *existing* signal = frontmatter-only change (zero
 > core code). Only a genuinely new signal kind needs a core `detectSignals` change.
