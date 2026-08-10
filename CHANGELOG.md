@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.13.0](https://github.com/y0ngha/siglens-trader/compare/v0.12.2...v0.13.0) (2026-08-10)
+
+
+### Features
+
+* per-analysis reasoning policy — off for the short-cadence axes ([0cbef2b](https://github.com/y0ngha/siglens-trader/commit/0cbef2b9bb1a8ef6f1c8b3651b9d1533de7078fe))
+
 ## [0.12.2](https://github.com/y0ngha/siglens-trader/compare/v0.12.1...v0.12.2) (2026-08-10)
 
 
