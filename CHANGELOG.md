@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/y0ngha/siglens-trader/compare/v0.12.1...v0.12.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* enforce cadence by clock window instead of elapsed time ([7408222](https://github.com/y0ngha/siglens-trader/commit/7408222d51b3fc77b650c65f521c7f93f9d54e9d))
+
 ## [0.12.1](https://github.com/y0ngha/siglens-trader/compare/v0.12.0...v0.12.1) (2026-08-10)
 
 
