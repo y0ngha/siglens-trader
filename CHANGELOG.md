@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.12.0](https://github.com/y0ngha/siglens-trader/compare/v0.11.0...v0.12.0) (2026-08-10)
+
+
+### Bug Fixes
+
+* cadence guard rejected the very ticks it was meant to allow ([86125f9](https://github.com/y0ngha/siglens-trader/commit/86125f95972d0198f9bf6d32013a6c8e32cc4213))
+* throttle and retry FMP requests to stop 429 failures ([b42159f](https://github.com/y0ngha/siglens-trader/commit/b42159f83aeb35a1ac6d5311f75022f10a153945))
+
+
+### Features
+
+* congress-disclosure analysis + timeframe-aware signal weights ([4a5fa39](https://github.com/y0ngha/siglens-trader/commit/4a5fa390a6dae1fc7e891d0cd8e391fbd29d96f0))
+* per-analysis cadence policy so each signal refreshes at its own rate ([98e7d84](https://github.com/y0ngha/siglens-trader/commit/98e7d8428be63160273e05a9e13640314378107c))
+
 # [0.11.0](https://github.com/y0ngha/siglens-trader/compare/v0.10.1...v0.11.0) (2026-08-10)
 
 
