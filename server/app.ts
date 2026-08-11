@@ -25,6 +25,7 @@ import { GET as cronFundamental } from '../api/cron/fundamental.js';
 import { GET as cronCongress } from '../api/cron/congress.js';
 import { GET as cronExecute } from '../api/cron/execute.js';
 import { GET as cronReconcile } from '../api/cron/reconcile.js';
+import { GET as cronDigest } from '../api/cron/digest.js';
 
 type WebHandler = (req: Request) => Promise<Response>;
 
@@ -49,6 +50,9 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
     { name: 'congress', schedule: '0 16 * * 1-5', handler: cronCongress },
     { name: 'execute', schedule: '7 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
+    // 01:00 UTC = 10:00 KST. Runs daily (including weekends) — there are no day-of-week
+    // restrictions because quiet-hours notifications can be queued any day US market trades.
+    { name: 'digest', schedule: '0 1 * * *', handler: cronDigest },
 ];
 
 export const app = new Hono();

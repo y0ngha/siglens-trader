@@ -42,6 +42,8 @@ vi.mock('../../../lib/db/queries', () => ({
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
+    getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
 }));
 
 const mockExecuteBuyOrder = vi.fn();
@@ -52,8 +54,16 @@ vi.mock('../../../lib/trading/orders', () => ({
 }));
 
 const mockSendErrorEmail = vi.fn();
+const mockSendTradeExecutedEmail = vi.fn();
+const mockBuildTradeExecutedEmail = vi.fn(() => ({ subject: 's', html: '<p>h</p>' }));
+const mockBuildErrorEmail = vi.fn(() => ({ subject: 's', html: '<p>h</p>' }));
+const mockGetNotificationConfig = vi.fn();
+const mockEnqueueNotification = vi.fn();
 vi.mock('../../../lib/notification/email', () => ({
     sendErrorEmail: (...args: unknown[]) => mockSendErrorEmail(...args),
+    sendTradeExecutedEmail: (...args: unknown[]) => mockSendTradeExecutedEmail(...args),
+    buildTradeExecutedEmail: () => mockBuildTradeExecutedEmail(),
+    buildErrorEmail: () => mockBuildErrorEmail(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -98,6 +108,18 @@ function makeApproveRequest(id: number, action: string): Request {
 
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
+    // Email is enabled with every event checked, so notification gating never masks a
+    // missing send in these tests — a silent fill is exactly the defect being guarded.
+    mockGetNotificationConfig.mockResolvedValue([
+        {
+            channel: 'email',
+            enabled: true,
+            target: 'ops@example.com',
+            events: ['trade_executed', 'order_pending', 'stop_loss', 'error'],
+        },
+    ]);
+    mockEnqueueNotification.mockResolvedValue(undefined);
+    mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockIsAuthenticated.mockResolvedValue(true);
     mockApprovePendingOrder.mockResolvedValue(true);
     mockRevertPendingOrder.mockResolvedValue(true);
@@ -450,6 +472,8 @@ describe('approve handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결 수동확인 필요'),
                 expect.any(String),
+                // The dispatcher now forwards the dashboard-configured recipient.
+                'ops@example.com',
             );
             // NO trade must be booked
             expect(mockInsertTrade).not.toHaveBeenCalled();
@@ -480,6 +504,7 @@ describe('approve handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결 수동확인 필요'),
                 expect.stringContaining('9.5'),
+                'ops@example.com',
             );
         });
 
@@ -723,6 +748,7 @@ describe('approve handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '포지션 미확인 매도: AAPL',
                 expect.stringContaining('DB에 해당 포지션이 없습니다'),
+                'ops@example.com',
             );
         });
     });

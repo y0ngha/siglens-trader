@@ -22,6 +22,7 @@ import {
     getPendingSubmittedOrders,
     averageIntoPosition,
     getNotificationConfig,
+    enqueueNotification,
     startCronRun,
     finishCronRun,
     finalizeStaleCronRuns,
@@ -38,12 +39,8 @@ import {
 import { makeTradeDecision } from '../../lib/strategy/decision.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
-import {
-    sendTradeExecutedEmail,
-    sendApprovalRequestEmail,
-    sendErrorEmail,
-} from '../../lib/notification/email.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
+import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import {
     weightsForTimeframe,
     DEFAULT_BUY_THRESHOLD,
@@ -168,17 +165,21 @@ async function handler(req: Request): Promise<Response> {
         }
 
         try {
-            // Email notification gate — respect the dashboard ON/OFF toggle + per-event
-            // selection. Legacy 'approval_required' is honored as an alias for 'order_pending'.
-            // Defined early so circuit-breaker alerts below also go through the gate.
+            // Email notification gate + dispatcher — respect the dashboard ON/OFF toggle,
+            // per-event selection, configured recipient (A2), and quiet-hours deferral.
+            // Legacy 'approval_required' is honored as an alias for 'order_pending'.
+            // Defined early so circuit-breaker alerts below also go through the dispatcher.
             const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
             const shouldEmail = makeEmailGate(emailNotif);
+            const dispatcher = createEmailDispatcher({
+                gate: shouldEmail,
+                to: emailNotif?.target,
+                enqueue: (row) => enqueueNotification(db, row),
+            });
             // Error/safety alerts are gated on the 'error' (시스템 오류) event — same contract
             // as reconcile's notifyError, so "email OFF" suppresses every email uniformly.
             const notifyError = (subject: string, body: string) =>
-                shouldEmail('error')
-                    ? sendErrorEmail(subject, body).catch((e) => console.error('[email]', e))
-                    : Promise.resolve();
+                dispatcher.notifyError(subject, body).catch((e) => console.error('[email]', e));
 
             // Circuit breaker: kill switch
             const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
@@ -560,6 +561,28 @@ async function handler(req: Request): Promise<Response> {
                                         ),
                                     });
                                 });
+                                // A1: notify on dry_run fills, mirroring the auto exit path.
+                                // Stop-loss exits honor the 'stop_loss' checkbox; all others
+                                // use 'trade_executed' — same routing as the auto branch below.
+                                {
+                                    const dryExitEvent =
+                                        evaluation.action === 'stop_loss'
+                                            ? ('stop_loss' as const)
+                                            : ('trade_executed' as const);
+                                    await dispatcher
+                                        .notifyTradeExecuted(
+                                            {
+                                                symbol: position.symbol,
+                                                side: 'sell',
+                                                quantity: position.quantity,
+                                                price: currentPrice,
+                                                reason: evaluation.reason,
+                                                mode: 'dry_run',
+                                            },
+                                            dryExitEvent,
+                                        )
+                                        .catch((err) => console.error('[email] send failed:', err));
+                                }
                                 currentExposure -= currentPrice * position.quantity;
                                 if (currentExposure < 0) currentExposure = 0;
                             } catch (txErr) {
@@ -589,16 +612,16 @@ async function handler(req: Request): Promise<Response> {
                                 signalScore: 0,
                                 expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                             });
-                            if (shouldEmail('order_pending', 'approval_required')) {
-                                await sendApprovalRequestEmail({
+                            await dispatcher
+                                .notifyApprovalRequest({
                                     symbol: position.symbol,
                                     side: 'sell',
                                     quantity: position.quantity,
                                     score: 0,
                                     reason: evaluation.reason,
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
-                                }).catch((err) => console.error('[email] send failed:', err));
-                            }
+                                })
+                                .catch((err) => console.error('[email] send failed:', err));
                             // Pending order awaits human approval — NOT a fill.
                             decisions.push({
                                 symbol: position.symbol,
@@ -807,17 +830,24 @@ async function handler(req: Request): Promise<Response> {
                             // Route the exit to the matching event: stop-loss closures honor the
                             // 'stop_loss' checkbox, all other exits (take-profit / AI sell) honor
                             // 'trade_executed' — so each checkbox is meaningful on the exit path.
-                            const exitEvent =
-                                evaluation.action === 'stop_loss' ? 'stop_loss' : 'trade_executed';
-                            if (shouldEmail(exitEvent)) {
-                                await sendTradeExecutedEmail({
-                                    symbol: position.symbol,
-                                    side: 'sell',
-                                    quantity: actualExitQty,
-                                    price: filledSellPrice,
-                                    reason: evaluation.reason,
-                                    mode: 'auto',
-                                }).catch((err) => console.error('[email] send failed:', err));
+                            {
+                                const exitEvent =
+                                    evaluation.action === 'stop_loss'
+                                        ? ('stop_loss' as const)
+                                        : ('trade_executed' as const);
+                                await dispatcher
+                                    .notifyTradeExecuted(
+                                        {
+                                            symbol: position.symbol,
+                                            side: 'sell',
+                                            quantity: actualExitQty,
+                                            price: filledSellPrice,
+                                            reason: evaluation.reason,
+                                            mode: 'auto',
+                                        },
+                                        exitEvent,
+                                    )
+                                    .catch((err) => console.error('[email] send failed:', err));
                             }
                             break;
                         }
@@ -1170,6 +1200,17 @@ async function handler(req: Request): Promise<Response> {
                                         });
                                     }
                                 });
+                                // A1: notify on dry_run buy fills, mirroring the auto path.
+                                await dispatcher
+                                    .notifyTradeExecuted({
+                                        symbol: item.symbol,
+                                        side: 'buy',
+                                        quantity: decision.quantity,
+                                        price: currentPrice,
+                                        reason: decision.reason,
+                                        mode: 'dry_run',
+                                    })
+                                    .catch((err) => console.error('[email] send failed:', err));
                                 currentExposure += currentPrice * decision.quantity;
                             } else if (decision.action === 'sell') {
                                 const existingSellPos = await getOpenPositionBySymbol(
@@ -1202,6 +1243,19 @@ async function handler(req: Request): Promise<Response> {
                                                 ),
                                             });
                                         });
+                                        // A1: notify on dry_run sell fills.
+                                        await dispatcher
+                                            .notifyTradeExecuted({
+                                                symbol: item.symbol,
+                                                side: 'sell',
+                                                quantity: decision.quantity,
+                                                price: currentPrice,
+                                                reason: decision.reason,
+                                                mode: 'dry_run',
+                                            })
+                                            .catch((err) =>
+                                                console.error('[email] send failed:', err),
+                                            );
                                         currentExposure -= currentPrice * decision.quantity;
                                         if (currentExposure < 0) currentExposure = 0;
                                     } catch (txErr) {
@@ -1272,16 +1326,16 @@ async function handler(req: Request): Promise<Response> {
                             if (decision.action === 'buy' || decision.action === 'average_in') {
                                 currentExposure += currentPrice * decision.quantity;
                             }
-                            if (shouldEmail('order_pending', 'approval_required')) {
-                                await sendApprovalRequestEmail({
+                            await dispatcher
+                                .notifyApprovalRequest({
                                     symbol: item.symbol,
                                     side: pendingSide,
                                     quantity: decision.quantity,
                                     score: decision.score,
                                     reason: decision.reason,
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
-                                }).catch((err) => console.error('[email] send failed:', err));
-                            }
+                                })
+                                .catch((err) => console.error('[email] send failed:', err));
                             // Pending order awaits human approval — NOT a fill.
                             decisions.push({
                                 symbol: item.symbol,
@@ -1652,16 +1706,16 @@ async function handler(req: Request): Promise<Response> {
                                     });
                                 });
                             }
-                            if (shouldEmail('trade_executed')) {
-                                await sendTradeExecutedEmail({
+                            await dispatcher
+                                .notifyTradeExecuted({
                                     symbol: item.symbol,
                                     side: autoSide,
                                     quantity: actualQuantity,
                                     price: filledPrice,
                                     reason: tradeReason,
                                     mode: 'auto',
-                                }).catch((err) => console.error('[email] send failed:', err));
-                            }
+                                })
+                                .catch((err) => console.error('[email] send failed:', err));
                             break;
                         }
                     }

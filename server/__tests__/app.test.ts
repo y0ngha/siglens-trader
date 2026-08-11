@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { app, CRON_JOBS } from '../app.js';
 
 describe('CRON_JOBS', () => {
-    it('keeps the 7 cron schedules with technical/options on 15-min ticks (UTC)', () => {
+    it('keeps the 8 cron schedules with technical/options on 15-min ticks (UTC)', () => {
         expect(CRON_JOBS.map((j) => [j.name, j.schedule])).toEqual([
             ['technical', '*/15 13-21 * * 1-5'],
             ['news', '0 13-21 * * 1-5'],
@@ -12,6 +12,9 @@ describe('CRON_JOBS', () => {
             ['congress', '0 16 * * 1-5'],
             ['execute', '7 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
+            // Daily, not weekday-only: Friday-night events must reach the operator on
+            // Saturday morning. 01:00 UTC = 10:00 KST, just after quiet hours end.
+            ['digest', '0 1 * * *'],
         ]);
     });
 
