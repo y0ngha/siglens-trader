@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.14.0](https://github.com/y0ngha/siglens-trader/compare/v0.13.0...v0.14.0) (2026-08-11)
+
+
+### Features
+
+* fix silent fill notifications, add quiet hours + morning digest ([dfb5d83](https://github.com/y0ngha/siglens-trader/commit/dfb5d83d4c716c43ad66820ba4132e5b50409653))
+
 # [0.13.0](https://github.com/y0ngha/siglens-trader/compare/v0.12.2...v0.13.0) (2026-08-10)
 
 
