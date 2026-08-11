@@ -27,6 +27,7 @@ const mockUpdateOrderTracking = vi.fn();
 const mockGetOpenPositions = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockGetNotificationConfig = vi.fn();
+const mockEnqueueNotification = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
 const mockFinalizeStaleCronRuns = vi.fn();
@@ -37,6 +38,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
@@ -55,9 +57,16 @@ vi.mock('../../../lib/trading/account', () => ({
     getHoldings: (...args: unknown[]) => mockGetHoldings(...args),
 }));
 
+const mockSendTradeExecutedEmail = vi.fn();
 const mockSendErrorEmail = vi.fn();
 vi.mock('../../../lib/notification/email', () => ({
+    sendTradeExecutedEmail: (...args: unknown[]) => mockSendTradeExecutedEmail(...args),
     sendErrorEmail: (...args: unknown[]) => mockSendErrorEmail(...args),
+}));
+
+// Quiet-hours is always off in tests so dispatcher uses the immediate-send path.
+vi.mock('../../../lib/notification/quiet-hours', () => ({
+    isQuietHours: () => false,
 }));
 
 const mockCheckConsistency = vi.fn();
@@ -88,7 +97,9 @@ function setupDefaults() {
     mockReleaseLock.mockResolvedValue(undefined);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
+    mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    mockEnqueueNotification.mockResolvedValue([]);
     mockAutoRecoverFilledOrders.mockResolvedValue({
         recovered: 0,
         failed: 0,
@@ -269,6 +280,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '미체결 주문 타임아웃: AAPL',
                 expect.stringContaining('수동 확인이 필요합니다'),
+                'test@example.com',
             );
         });
 
@@ -288,6 +300,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '[긴급] 매도 주문 타임아웃: TSLA',
                 expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
+                'test@example.com',
             );
         });
 
@@ -405,6 +418,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 'DB 정합성 경고 (1건)',
                 'Filled order exec-abc (AAPL buy) has no matching trade',
+                'test@example.com',
             );
             expect(body.consistency).toEqual({
                 filledOrdersWithoutTrades: 1,
@@ -536,6 +550,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '체결 수동확인 필요: AAPL',
                 expect.stringContaining('체결수량(8)이 의도수량(10)'),
+                'test@example.com',
             );
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
         });
@@ -661,6 +676,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '부분체결 후 취소 — 수동 확인: AAPL',
                 expect.stringContaining('4주 부분체결 후 취소됨'),
+                'test@example.com',
             );
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
         });
@@ -704,6 +720,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '부분체결 타임아웃 — 수동 확인: AAPL',
                 expect.stringContaining('부분체결(6주 @ 191'),
+                'test@example.com',
             );
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
         });
@@ -729,6 +746,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '[긴급] 매도 주문 타임아웃: AAPL',
                 expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
+                'test@example.com',
             );
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
         });
@@ -821,6 +839,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '[긴급] 매도 주문 타임아웃: AAPL',
                 expect.stringContaining('브로커에 포지션이 남아 있을 수 있습니다'),
+                'test@example.com',
             );
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
         });
@@ -889,6 +908,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '보유 정합성 불일치 (1건)',
                 expect.stringContaining('AAPL'),
+                'test@example.com',
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
         });
@@ -913,6 +933,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '보유 정합성 불일치 (1건)',
                 expect.stringContaining('TSLA'),
+                'test@example.com',
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
         });
@@ -1001,6 +1022,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '보유 정합성 불일치 (1건)',
                 expect.stringContaining('NVDA'),
+                'test@example.com',
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
         });
@@ -1052,6 +1074,7 @@ describe('reconcile cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '보유 정합성 불일치 (1건)',
                 expect.stringContaining('AAPL'),
+                'test@example.com',
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
         });
@@ -1218,6 +1241,88 @@ describe('reconcile cron handler', () => {
                     }),
                 }),
             );
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // A5: trade-executed notification after reconcile books a late fill
+    // -----------------------------------------------------------------------
+
+    describe('A5: trade-executed notification on late-confirmed fill', () => {
+        it('clean full fill + trade_executed event → sends sendTradeExecutedEmail', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                {
+                    channel: 'email',
+                    enabled: true,
+                    target: 'test@example.com',
+                    events: ['error', 'trade_executed'],
+                },
+            ]);
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 10,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockSendTradeExecutedEmail).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 10,
+                    price: 187.5,
+                }),
+                'test@example.com',
+            );
+        });
+
+        it('clean full fill but trade_executed NOT in events → no sendTradeExecutedEmail', async () => {
+            // default config has only 'error' event; trade_executed gate blocks it
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 10,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+        });
+
+        it('non-clean fill (quantity mismatch) → needs_review + error email, no trade notification', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                {
+                    channel: 'email',
+                    enabled: true,
+                    target: 'test@example.com',
+                    events: ['error', 'trade_executed'],
+                },
+            ]);
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith({ quantity: 10 })]);
+            mockGetOrder.mockResolvedValue({
+                orderId: 'toss-1',
+                status: 'FILLED',
+                filledQuantity: 8,
+                avgFilledPrice: 187.5,
+                canceledAt: null,
+            });
+
+            await handler(makeRequest(true));
+
+            // Mismatch → error email fires, trade notification does NOT fire.
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                expect.stringContaining('수동확인 필요'),
+                expect.any(String),
+                'test@example.com',
+            );
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
         });
     });
 });

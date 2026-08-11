@@ -8,14 +8,15 @@ import {
     getOpenPositions,
     getConfigValue,
     getNotificationConfig,
+    enqueueNotification,
     startCronRun,
     finishCronRun,
     finalizeStaleCronRuns,
     insertCronDecisions,
 } from '../../lib/db/queries.js';
 import type { CronRunFinish } from '../../lib/db/queries.js';
-import { sendErrorEmail } from '../../lib/notification/email.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
+import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
 import { getOrder } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
@@ -69,10 +70,13 @@ async function handler(req: Request): Promise<Response> {
         // email toggle + the 'error' (시스템 오류) event. Off means off.
         const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
         const shouldEmail = makeEmailGate(emailNotif);
+        const dispatcher = createEmailDispatcher({
+            gate: shouldEmail,
+            to: emailNotif?.target,
+            enqueue: (row) => enqueueNotification(db, row),
+        });
         const notifyError = (subject: string, body: string) =>
-            shouldEmail('error')
-                ? sendErrorEmail(subject, body).catch((e) => console.error('[email]', e))
-                : Promise.resolve();
+            dispatcher.notifyError(subject, body).catch((e) => console.error('[email]', e));
 
         const submitted = await getPendingSubmittedOrders(db);
 
@@ -146,6 +150,18 @@ async function handler(req: Request): Promise<Response> {
                                 filledPrice: detail.avgFilledPrice ?? undefined,
                                 resolvedAt: new Date(),
                             });
+                            // A5: notify the operator of the late-confirmed fill.
+                            // Gated on 'trade_executed' so the dashboard checkbox is respected.
+                            await dispatcher
+                                .notifyTradeExecuted({
+                                    symbol: order.symbol,
+                                    side: order.side,
+                                    quantity: order.quantity,
+                                    price: detail.avgFilledPrice!,
+                                    reason: `Reconcile 확인 (${order.idempotencyKey})`,
+                                    mode: tradingMode,
+                                })
+                                .catch((e) => console.error('[email]', e));
                             results.push({
                                 id: order.id,
                                 symbol: order.symbol,

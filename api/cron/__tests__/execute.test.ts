@@ -39,6 +39,7 @@ const mockFinishCronRun = vi.fn();
 const mockFinalizeStaleCronRuns = vi.fn();
 const mockInsertCronDecisions = vi.fn();
 const mockGetTodayInflightOrderCount = vi.fn();
+const mockEnqueueNotification = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
     getEnabledWatchlist: (...args: unknown[]) => mockGetEnabledWatchlist(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
@@ -60,6 +61,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
+    enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
@@ -106,6 +108,11 @@ vi.mock('../../../lib/notification/email', () => ({
     sendTradeExecutedEmail: (...args: unknown[]) => mockSendTradeExecutedEmail(...args),
     sendApprovalRequestEmail: (...args: unknown[]) => mockSendApprovalRequestEmail(...args),
     sendErrorEmail: (...args: unknown[]) => mockSendErrorEmail(...args),
+}));
+
+// Quiet-hours is always off in tests so dispatcher uses the immediate-send path.
+vi.mock('../../../lib/notification/quiet-hours', () => ({
+    isQuietHours: () => false,
 }));
 
 vi.mock('../_run-analysis-cron', () => ({
@@ -226,6 +233,7 @@ function setupDefaults() {
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    mockEnqueueNotification.mockResolvedValue([]);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
         clientOrderId: 'coid-1',
@@ -525,6 +533,8 @@ describe('execute cron handler', () => {
                 expect(mockSendErrorEmail).toHaveBeenCalledWith(
                     '일일 손실 한도 초과',
                     expect.stringContaining('$350.00'),
+
+                    'test@example.com',
                 );
             });
 
@@ -916,7 +926,32 @@ describe('execute cron handler', () => {
             expect(mockExecuteSellOrder).not.toHaveBeenCalled();
         });
 
-        it('does NOT send email notifications in dry_run mode', async () => {
+        // A1: dry_run now fires trade-executed notifications just like auto mode.
+        it('A1: sends trade-executed email in dry_run mode when gate passes', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+
+            await handler(makeRequest(true));
+
+            // A1: dry_run fills now notify via the same dispatcher gate as auto fills.
+            expect(mockSendTradeExecutedEmail).toHaveBeenCalledWith(
+                expect.objectContaining({ symbol: 'AAPL', side: 'buy', mode: 'dry_run' }),
+                'test@example.com',
+            );
+            // Approval emails are NOT sent in dry_run (no pending order).
+            expect(mockSendApprovalRequestEmail).not.toHaveBeenCalled();
+        });
+
+        it('A1: does NOT send email in dry_run when email channel is disabled', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: false, target: 't@e.com', events: ['trade_executed'] },
+            ]);
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -929,7 +964,6 @@ describe('execute cron handler', () => {
             await handler(makeRequest(true));
 
             expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
-            expect(mockSendApprovalRequestEmail).not.toHaveBeenCalled();
         });
     });
 
@@ -976,14 +1010,17 @@ describe('execute cron handler', () => {
                 }),
             );
 
-            expect(mockSendApprovalRequestEmail).toHaveBeenCalledWith({
-                symbol: 'AAPL',
-                side: 'buy',
-                quantity: 5,
-                score: 80,
-                reason: 'Score 80/100 — BUY',
-                approveUrl: 'https://auto-trade.siglens.io/pending',
-            });
+            expect(mockSendApprovalRequestEmail).toHaveBeenCalledWith(
+                {
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 5,
+                    score: 80,
+                    reason: 'Score 80/100 — BUY',
+                    approveUrl: 'https://auto-trade.siglens.io/pending',
+                },
+                'test@example.com',
+            );
         });
 
         it('still inserts the pending order but skips the approval email when email is disabled', async () => {
@@ -1303,14 +1340,17 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(mockSendTradeExecutedEmail).toHaveBeenCalledWith({
-                symbol: 'AAPL',
-                side: 'buy',
-                quantity: 5,
-                price: 151.5,
-                reason: 'Score 80/100 — BUY',
-                mode: 'auto',
-            });
+            expect(mockSendTradeExecutedEmail).toHaveBeenCalledWith(
+                {
+                    symbol: 'AAPL',
+                    side: 'buy',
+                    quantity: 5,
+                    price: 151.5,
+                    reason: 'Score 80/100 — BUY',
+                    mode: 'auto',
+                },
+                'test@example.com',
+            );
         });
 
         it('treats missing filledQuantity as a clean full fill at intended quantity', async () => {
@@ -1392,6 +1432,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결 수동확인 필요'),
                 expect.stringContaining('체결가 없음'),
+
+                'test@example.com',
             );
 
             // Decision recorded as needs_review.
@@ -1428,6 +1470,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '미체결 주문: AAPL',
                 expect.stringContaining('체결되지 않았습니다'),
+
+                'test@example.com',
             );
 
             // Should record as order_submitted in decisions
@@ -1471,6 +1515,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '미체결 주문: AAPL',
                 expect.stringContaining('체결되지 않았습니다'),
+
+                'test@example.com',
             );
 
             expect(body.decisions).toContainEqual({
@@ -1762,6 +1808,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 'AAPL',
                 expect.stringContaining('DB timeout'),
+
+                'test@example.com',
             );
         });
 
@@ -1914,6 +1962,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '잔고 부족: AAPL',
                 expect.stringContaining('잔고 부족으로 미실행'),
+
+                'test@example.com',
             );
 
             // Should report as skipped in decisions (MSFT position hold precedes AAPL watchlist entry)
@@ -2460,6 +2510,7 @@ describe('execute cron handler', () => {
                     symbol: 'AAPL',
                     side: 'sell',
                 }),
+                'test@example.com',
             );
             // No direct close in semi_auto
             expect(mockClosePosition).not.toHaveBeenCalled();
@@ -2557,6 +2608,7 @@ describe('execute cron handler', () => {
                     side: 'sell',
                     mode: 'auto',
                 }),
+                'test@example.com',
             );
         });
 
@@ -2595,6 +2647,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '미체결 주문: AAPL',
                 expect.stringContaining('체결되지 않았습니다'),
+
+                'test@example.com',
             );
 
             expect(body.decisions).toContainEqual({
@@ -2629,6 +2683,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 'AAPL',
                 expect.stringContaining('DB error'),
+
+                'test@example.com',
             );
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
@@ -3055,6 +3111,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '가격 데이터 없음: AAPL',
                 expect.stringContaining('수동 확인이 필요합니다'),
+
+                'test@example.com',
             );
         });
     });
@@ -3403,6 +3461,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 expect.stringContaining('체결 수동확인 필요'),
                 expect.stringContaining('체결가 없음'),
+
+                'test@example.com',
             );
 
             expect(body.decisions).toContainEqual({
@@ -3465,10 +3525,14 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '일일 손실 한도 초과 (미실현 포함)',
                 expect.stringContaining('$100.00'),
+
+                'test@example.com',
             );
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '일일 손실 한도 초과 (미실현 포함)',
                 expect.stringContaining('$250.00'),
+
+                'test@example.com',
             );
         });
 
@@ -3544,6 +3608,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '체결 수동확인 필요: AAPL',
                 expect.stringContaining('의도 10주, 체결 7'),
+
+                'test@example.com',
             );
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
@@ -3694,6 +3760,7 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
                 expect.stringContaining('체결 수동확인 필요'),
                 expect.any(String),
+                expect.any(String),
             );
         });
     });
@@ -3782,6 +3849,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '가격 데이터 없음: AAPL',
                 expect.stringContaining('수동 확인이 필요합니다'),
+
+                'test@example.com',
             );
         });
 
@@ -4021,6 +4090,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '체결 수동확인 필요: AAPL',
                 expect.stringContaining('의도 10주, 체결 7'),
+
+                'test@example.com',
             );
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
@@ -4367,6 +4438,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '포지션 미확인 매도 체결: AAPL',
                 expect.stringContaining('DB에 포지션이 없습니다'),
+
+                'test@example.com',
             );
             // Should NOT try to close/reduce a non-existent position
             expect(mockClosePosition).not.toHaveBeenCalled();
@@ -4767,6 +4840,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '미국장 상태 조회 실패',
                 expect.stringContaining('calendar down'),
+
+                'test@example.com',
             );
         });
     });
@@ -4992,6 +5067,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '부분 체결: AAPL',
                 expect.stringContaining('reconcile'),
+
+                'test@example.com',
             );
             expect(body.decisions).toContainEqual({
                 symbol: 'AAPL',
@@ -5039,6 +5116,8 @@ describe('execute cron handler', () => {
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
                 '주문 거부: AAPL',
                 'insufficient-funds',
+
+                'test@example.com',
             );
             // empty orderId must not be written to tracking
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(

@@ -121,6 +121,7 @@ long a run takes.
 | congress      | `0 16 * * 1-5`          | 24 hours          | Congressional disclosures lag the actual trade by weeks; once per weekday is plenty. |
 | execute       | `7 13-21 * * 1-5`       | hourly            | Offset 7 min after the top of the hour so analysis results are ready before signal scoring. |
 | reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
+| digest        | `0 1 * * *`             | daily             | Flushes the quiet-hours notification queue at 10:00 KST. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. Deliberately not wrapped in the analysis-cron helper, whose US-session gate would suppress it entirely (01:00 UTC is outside the session). |
 
 **Reasoning (상세 분석) is also per-type** — `ANALYSIS_REASONING` in `lib/analysis/types.ts`.
 technical/options run with reasoning **off**: measured on deepseek-v4-flash, reasoning pushed a
@@ -128,6 +129,19 @@ single technical symbol to ~7 minutes (a 148s call truncated to zero output, the
 so a 4-symbol pass exceeded the 690s cron cutoff and symbols went without a signal. news,
 fundamental and congress keep it on — they run hourly or daily, so the latency is affordable and
 the narrative quality feeds the decision.
+
+### Quiet hours
+
+No email is sent between **00:00–09:59 KST**; anything raised in that window is queued
+(`notification_queue`) and delivered as one summary at 10:00 KST by the `digest` cron. The
+window is expressed in the operator's local time on purpose — the point is that they are
+asleep, and the US session runs through the middle of it.
+
+The per-event gate still wins over queueing: if the channel or the event is off, nothing is
+sent *or* queued, so turning email off really turns it off. If email is off when the digest
+runs, queued rows are marked consumed without sending, so a disabled channel cannot grow the
+queue without bound. A failed send leaves rows unsent so the next run retries — duplicate
+delivery is preferable to a silently lost fill notification.
 
 UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) and EST (14:30–21:00 UTC); the `isEtRegularSessionOpen` runtime gate skips out-of-session fires.
 

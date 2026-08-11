@@ -145,7 +145,7 @@ export const cronRuns = pgTable(
     {
         id: serial('id').primaryKey(),
         runId: text('run_id').notNull().unique(),
-        cronType: text('cron_type').notNull(), // technical|news|options|fundamental|congress|execute|reconcile
+        cronType: text('cron_type').notNull(), // technical|news|options|fundamental|congress|execute|reconcile|digest
         status: text('status').notNull(), // running|completed|skipped|error
         outcome: text('outcome'),
         startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
@@ -163,7 +163,7 @@ export const cronDecisions = pgTable(
     {
         id: serial('id').primaryKey(),
         runId: text('run_id').notNull(),
-        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries (technical|news|options|fundamental|congress|execute|reconcile)
+        cronType: text('cron_type').notNull(), // denormalized from cron_runs for type-filtered decision queries (technical|news|options|fundamental|congress|execute|reconcile|digest)
         symbol: text('symbol'),
         action: text('action').notNull(),
         executed: boolean('executed').default(false).notNull(),
@@ -188,4 +188,27 @@ export const newsCards = pgTable(
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     },
     (table) => [index('idx_news_cards_symbol_created').on(table.symbol, table.createdAt)],
+);
+
+/**
+ * Notifications deferred during quiet hours (00:00–09:59 Asia/Seoul).
+ * The morning digest cron (01:00 UTC = 10:00 KST) drains this table and
+ * sends one consolidated email. Rows whose sentAt is NULL are "pending".
+ */
+export const notificationQueue = pgTable(
+    'notification_queue',
+    {
+        id: serial('id').primaryKey(),
+        /** Mirrors the dashboard event keys: 'trade_executed' | 'order_pending' | 'stop_loss' | 'error' */
+        kind: text('kind').notNull(),
+        subject: text('subject').notNull(),
+        html: text('html').notNull(),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+        /** NULL until the digest cron marks the row consumed. */
+        sentAt: timestamp('sent_at', { withTimezone: true }),
+    },
+    (table) => [
+        // Pending-lookup index: most queries filter on sentAt IS NULL.
+        index('idx_notification_queue_sent_at').on(table.sentAt),
+    ],
 );

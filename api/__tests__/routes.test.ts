@@ -22,8 +22,12 @@ vi.mock('../../lib/trading/orders', () => ({
 }));
 
 const mockSendErrorEmail = vi.fn().mockResolvedValue(undefined);
+const mockSendTradeExecutedEmail = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../lib/notification/email', () => ({
     sendErrorEmail: (...args: unknown[]) => mockSendErrorEmail(...args),
+    sendTradeExecutedEmail: (...args: unknown[]) => mockSendTradeExecutedEmail(...args),
+    buildTradeExecutedEmail: () => ({ subject: 's', html: '<p>h</p>' }),
+    buildErrorEmail: () => ({ subject: 's', html: '<p>h</p>' }),
 }));
 
 const mockGetOpenPositions = vi.fn();
@@ -36,6 +40,7 @@ const mockGetAllConfig = vi.fn();
 const mockGetAllWatchlist = vi.fn();
 const mockGetAllAnalysisConfigs = vi.fn();
 const mockGetNotificationConfig = vi.fn();
+const mockEnqueueNotification = vi.fn().mockResolvedValue(undefined);
 const mockSetConfigValue = vi.fn();
 const mockAddToWatchlist = vi.fn();
 const mockRemoveFromWatchlist = vi.fn();
@@ -89,6 +94,7 @@ vi.mock('../../lib/db/queries', () => ({
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
+    enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
     reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
     getCronRuns: (...args: unknown[]) => mockGetCronRuns(...args),
     getCronDecisions: (...args: unknown[]) => mockGetCronDecisions(...args),
@@ -121,6 +127,17 @@ beforeEach(() => {
     mockIsAuthenticated.mockResolvedValue(true);
     mockGetDb.mockReturnValue(fakeDb);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    mockSendTradeExecutedEmail.mockResolvedValue(undefined);
+    // resetAllMocks clears this; the approve route reads it before doing anything.
+    mockGetNotificationConfig.mockResolvedValue([
+        {
+            channel: 'email',
+            enabled: true,
+            target: 'ops@example.com',
+            events: ['trade_executed', 'order_pending', 'stop_loss', 'error'],
+        },
+    ]);
+    mockEnqueueNotification.mockResolvedValue(undefined);
     mockCreateOrderTracking.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
     mockRevertPendingOrder.mockResolvedValue(true);
@@ -1173,6 +1190,11 @@ describe('POST /api/approve/[id]', () => {
     });
 
     it('returns 500 and sends error email when insertTrade fails after approve', async () => {
+        // Pin the clock outside quiet hours (06:00Z = 15:00 KST): inside 00:00-09:59 KST the
+        // dispatcher queues for the morning digest instead of sending, which would make this
+        // assertion pass or fail depending on what time the suite happens to run.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-25T06:00:00.000Z'));
         mockGetPendingOrderById.mockResolvedValue({
             id: 70,
             symbol: 'GOOG',
@@ -1199,7 +1221,10 @@ describe('POST /api/approve/[id]', () => {
         expect(mockSendErrorEmail).toHaveBeenCalledWith(
             expect.stringContaining('GOOG'),
             expect.stringContaining('DB write failed'),
+            // The dispatcher forwards the dashboard-configured recipient.
+            'ops@example.com',
         );
+        vi.useRealTimers();
     });
 
     it('returns 404 when order not found', async () => {

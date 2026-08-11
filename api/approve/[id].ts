@@ -11,12 +11,15 @@ import {
     closePosition,
     reducePositionQuantity,
     getConfigValue,
+    getNotificationConfig,
+    enqueueNotification,
     createOrderTracking,
     updateOrderTracking,
     averageIntoPosition,
 } from '../../lib/db/queries.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
-import { sendErrorEmail } from '../../lib/notification/email.js';
+import { makeEmailGate } from '../../lib/notification/gate.js';
+import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
 async function handler(req: Request): Promise<Response> {
@@ -49,6 +52,15 @@ async function handler(req: Request): Promise<Response> {
     }
 
     const db = getDb();
+
+    // A3: gate all notifications (error + trade-executed) on the master toggle.
+    // A2: thread the configured recipient so the dashboard target is honoured.
+    const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
+    const dispatcher = createEmailDispatcher({
+        gate: makeEmailGate(emailNotif),
+        to: emailNotif?.target,
+        enqueue: (row) => enqueueNotification(db, row),
+    });
 
     if (action === 'approve') {
         const order = await getPendingOrderById(db, id);
@@ -167,10 +179,12 @@ async function handler(req: Request): Promise<Response> {
                         filledPrice: result.avgFilledPrice ?? undefined,
                         resolvedAt: new Date(),
                     });
-                    await sendErrorEmail(
-                        `체결 수동확인 필요: ${order.symbol}`,
-                        `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${order.quantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
-                    ).catch((e) => console.error('[email]', e));
+                    await dispatcher
+                        .notifyError(
+                            `체결 수동확인 필요: ${order.symbol}`,
+                            `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${order.quantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
+                        )
+                        .catch((e) => console.error('[email]', e));
                     return Response.json(
                         {
                             accepted: true,
@@ -191,10 +205,12 @@ async function handler(req: Request): Promise<Response> {
                 }).catch(() => {});
                 await revertPendingOrder(db, id).catch(() => {});
 
-                await sendErrorEmail(
-                    `주문 실행 실패: ${order.symbol}`,
-                    `승인된 주문의 실제 실행에 실패했습니다. 재시도하거나 수동으로 처리해주세요.\n오류: ${String(err)}`,
-                ).catch((e) => console.error('[email] send failed:', e));
+                await dispatcher
+                    .notifyError(
+                        `주문 실행 실패: ${order.symbol}`,
+                        `승인된 주문의 실제 실행에 실패했습니다. 재시도하거나 수동으로 처리해주세요.\n오류: ${String(err)}`,
+                    )
+                    .catch((e) => console.error('[email] send failed:', e));
                 return Response.json(
                     {
                         error: 'Toss API 주문 실행 실패. 거래가 기록되지 않았습니다.',
@@ -254,10 +270,12 @@ async function handler(req: Request): Promise<Response> {
                         });
                         await markFilledInTracking(tx);
                     });
-                    await sendErrorEmail(
-                        `포지션 미확인 매도: ${order.symbol}`,
-                        `${order.symbol} 매도가 승인되었으나 DB에 해당 포지션이 없습니다. 수동 확인이 필요합니다.`,
-                    ).catch((e) => console.error('[email]', e));
+                    await dispatcher
+                        .notifyError(
+                            `포지션 미확인 매도: ${order.symbol}`,
+                            `${order.symbol} 매도가 승인되었으나 DB에 해당 포지션이 없습니다. 수동 확인이 필요합니다.`,
+                        )
+                        .catch((e) => console.error('[email]', e));
                 } else if (actualQuantity >= pos.quantity) {
                     // Full close
                     await db.transaction(async (tx) => {
@@ -331,15 +349,28 @@ async function handler(req: Request): Promise<Response> {
             }
             // Transaction rolled back — revert order status so user can retry
             await revertPendingOrder(db, id).catch(() => {});
-            // Email alert about failure
-            await sendErrorEmail(`승인 후 거래 기록 실패: ${order.symbol}`, String(err)).catch(
-                (emailErr) => console.error('[email] send failed:', emailErr),
-            );
+            // Email alert about failure — A3: gated on master toggle + 'error' event.
+            await dispatcher
+                .notifyError(`승인 후 거래 기록 실패: ${order.symbol}`, String(err))
+                .catch((emailErr) => console.error('[email] send failed:', emailErr));
             return Response.json(
                 { error: 'Trade recording failed after approval' },
                 { status: 500 },
             );
         }
+
+        // A4: notify operator of every successfully booked fill, gated on 'trade_executed'.
+        // Runs after all branches of the trade-recording try/catch so it always fires on success.
+        await dispatcher
+            .notifyTradeExecuted({
+                symbol: order.symbol,
+                side: order.side,
+                quantity: actualQuantity,
+                price: filledPrice,
+                reason: order.analysisSummary ?? '수동 승인',
+                mode: bookedMode,
+            })
+            .catch((e) => console.error('[email]', e));
     } else {
         const rejected = await rejectPendingOrder(db, id);
         if (!rejected) {

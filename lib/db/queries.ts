@@ -1,4 +1,4 @@
-import { eq, desc, and, gte, lte, sql, inArray } from 'drizzle-orm';
+import { eq, desc, and, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
 import {
@@ -14,6 +14,7 @@ import {
     cronRuns,
     cronDecisions,
     newsCards,
+    notificationQueue,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -566,7 +567,8 @@ export type CronType =
     | 'fundamental'
     | 'congress'
     | 'execute'
-    | 'reconcile';
+    | 'reconcile'
+    | 'digest';
 
 export type CronOutcome =
     | 'completed'
@@ -579,7 +581,8 @@ export type CronOutcome =
     | 'market_status_unavailable'
     | 'daily_trade_limit'
     | 'daily_loss_limit'
-    | 'timeout';
+    | 'timeout'
+    | 'queue_empty';
 
 /**
  * A cron audit row left in `running` for longer than this is considered stale
@@ -752,4 +755,33 @@ export async function upsertNewsCards(
 ): Promise<void> {
     if (rows.length === 0) return;
     await db.insert(newsCards).values(rows).onConflictDoNothing();
+}
+
+// ---------------------------------------------------------------------------
+// Notification queue (quiet-hours deferrals → morning digest)
+// ---------------------------------------------------------------------------
+
+export async function enqueueNotification(
+    db: Db,
+    params: { kind: string; subject: string; html: string },
+) {
+    return db.insert(notificationQueue).values(params).returning();
+}
+
+/** Returns all rows with sentAt IS NULL (unsent), ordered by createdAt ascending. */
+export async function getPendingNotifications(db: Db) {
+    return db
+        .select()
+        .from(notificationQueue)
+        .where(isNull(notificationQueue.sentAt))
+        .orderBy(notificationQueue.createdAt);
+}
+
+/** Stamps sentAt on the given row ids so the digest cron won't re-send them. */
+export async function markNotificationsSent(db: Db, ids: number[]) {
+    if (ids.length === 0) return;
+    return db
+        .update(notificationQueue)
+        .set({ sentAt: new Date() })
+        .where(inArray(notificationQueue.id, ids));
 }
