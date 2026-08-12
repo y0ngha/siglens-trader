@@ -258,8 +258,12 @@ const ET_PARTS = new Intl.DateTimeFormat('en-US', {
  * 상위 게이트에 기댈 수도 없다. 브로커 API를 여기서 부르는 것은 레이어 위반이므로
  * (그리고 25s 예산에 네트워크를 더하므로) **정직한 라벨이 해법이다.**
  *
- * 키 타입이 `string`인 것도 의도적이다 — core는 `MarketSessionStatus` 별칭을 두어 이 유니온을
- * 넓힐 뜻을 이미 비쳤다. 새 값이 생기면 `undefined`가 아니라 `미상`이 나가야 한다.
+ * **이 맵만 키가 `string`이다.** `PRICE_SOURCE_LABEL`/`TRIGGER_LABEL`은 유니온 키를 쓴다 —
+ * `ExitTrigger`와 `priceSource`는 이 저장소 소유라, 값을 추가하면 `tsc`가 여기를 가리켜 주는
+ * 것이 옳다(exit 지침 1번이 최우선으로 읽는 값이 `미상`으로 나가면 안 된다). 반면 이 유니온은
+ * **core 소유**다. 유니온 키로 잠그면 core가 `'holiday'` 같은 값을 추가하는 순간 의존성
+ * 업그레이드가 `yarn typecheck`를 깨뜨린다. 우리가 고칠 수 없는 남의 타입 확장에는 빌드 실패보다
+ * 우아한 폴백(`?? '미상'`)이 낫다. 어느 쪽이든 폴백은 유지된다.
  */
 const SESSION_LABEL: Record<string, string> = {
     open: '정규장 시간대 (open)',
@@ -399,23 +403,34 @@ function actionLevels(result: unknown): {
     // 원본은 괄호로 남겨 어떤 값이 왜 바뀌었는지 볼 수 있게 한다.
     const reason = sanitize(reconciledRec?.reason, BULLET_MAX_LENGTH);
     const note = reason ? `, 사유: ${reason}` : '';
-
-    const rawStop = priceOrNull(rec?.stopLoss);
-    const recStop = priceOrNull(reconciledRec?.stopLoss);
-    const rawTp = safePriceLevelArray(rec?.takeProfitPrices) ?? [];
-    const recTp = safePriceLevelArray(reconciledRec?.takeProfitPrices) ?? [];
     const list = (prices: number[]) => (prices.length ? prices.map(fmtUsd).join(', ') : '미상');
+
+    /**
+     * 보정값이 **실제로 다를 때만** 라벨을 붙인다. core의 `takeProfitPrices`는 "전체 배열 중
+     * 유효하지 않은 항목만 교체"라서 손절만 보정된 흔한 케이스에도 익절 배열이 그대로 딸려
+     * 온다. 그때 `(도메인 보정값 — AI 원본 $205.00, 사유: AI 손절가가 현재가 위였다)`를 붙이면
+     * 바뀐 적 없는 값에 남의 사유가 달린다. core 자신도 `getReconciledActionLineData`에서
+     * 같은 diff를 한다. 비교는 **렌더된 문자열**로 한다 — 화면상 같은 값에 "보정됨"을 붙이는
+     * 것은 어차피 잡음이다.
+     */
+    const withReconciled = (raw: string, reconciled: string | null) =>
+        reconciled === null || reconciled === raw
+            ? raw
+            : `${reconciled} (도메인 보정값 — AI 원본 ${raw}${note})`;
+
+    const recStop = priceOrNull(reconciledRec?.stopLoss);
+    const recTp = safePriceLevelArray(reconciledRec?.takeProfitPrices);
 
     return {
         entryPrices: safePriceLevelArray(rec?.entryPrices) ?? [],
-        stopLoss:
-            recStop === null
-                ? fmtUsd(rawStop)
-                : `${fmtUsd(recStop)} (도메인 보정값 — AI 원본 ${fmtUsd(rawStop)}${note})`,
-        takeProfit:
-            recTp.length === 0
-                ? list(rawTp)
-                : `${list(recTp)} (도메인 보정값 — AI 원본 ${list(rawTp)}${note})`,
+        stopLoss: withReconciled(
+            fmtUsd(priceOrNull(rec?.stopLoss)),
+            recStop === null ? null : fmtUsd(recStop),
+        ),
+        takeProfit: withReconciled(
+            list(safePriceLevelArray(rec?.takeProfitPrices) ?? []),
+            recTp === undefined ? null : list(recTp),
+        ),
     };
 }
 
@@ -494,10 +509,11 @@ function buildSystemPrompt(kind: TradeGateKind): string {
 // 사용자 프롬프트
 // ---------------------------------------------------------------------------
 
-// 라벨 맵은 전부 `Record<string, string>` + `?? '미상'`이다. 유니온 타입으로 좁히면 컴파일러가
-// 폴백을 죽은 코드로 만드는데, 실제로 유니온이 넓어지는 날(core의 세션 상태처럼) 프롬프트에
-// 실리는 것은 `undefined`다. 숫자에 포맷터를 강제한 것과 같은 규율을 문자열 라벨에도 적용한다.
-const PRICE_SOURCE_LABEL: Record<string, string> = {
+// 라벨 맵은 **유니온 키 + `?? '미상'`** 둘 다 쓴다. 이 저장소는 `noUncheckedIndexedAccess`를
+// 켜지 않았고 `no-unnecessary-condition` 룰도 없으므로 유니온 키가 폴백을 지우지 않는다 —
+// 망라성과 런타임 폴백은 애초에 양자택일이 아니었다. 유니온 키가 있어야 `ExitTrigger`에 값을
+// 추가하는 순간 `tsc`가 여기를 가리킨다. (`SESSION_LABEL`만 예외 — 그쪽 주석 참조.)
+const PRICE_SOURCE_LABEL: Record<TradeGateInput['priceSource'], string> = {
     live: 'FMP 실시간 호가',
     analysis_fallback: '기술분석 스냅샷 폴백 (실시간 호가를 가져오지 못해 분석 시점 가격을 사용)',
 };
@@ -509,7 +525,7 @@ const LIMITED_BY_LABEL: Record<string, string> = {
     none: '제약 없음 (요청 금액 전액 가용)',
 };
 
-const TRIGGER_LABEL: Record<string, string> = {
+const TRIGGER_LABEL: Record<ExitTrigger, string> = {
     stop_loss: '손절',
     take_profit: '익절',
     signal_sell: '신호 매도',

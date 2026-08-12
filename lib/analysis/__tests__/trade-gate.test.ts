@@ -675,6 +675,39 @@ describe('buildTradeGatePrompt — 분석 데이터', () => {
         );
     });
 
+    it('보정값이 원본과 같으면 보정 라벨을 붙이지 않는다', () => {
+        // core는 takeProfitPrices를 "유효하지 않은 항목만 교체한 전체 배열"로 돌려주므로,
+        // 손절만 보정된 흔한 케이스에도 익절 배열이 원본 그대로 딸려 온다. 바뀐 적 없는 값에
+        // "도메인 보정값 — 사유: AI 손절가가 …"를 붙이면 남의 사유를 다는 셈이다.
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                analyses: [
+                    {
+                        type: 'technical',
+                        analyzedAt: DECIDED_AT,
+                        modelId: 'm',
+                        result: {
+                            actionRecommendation: {
+                                ...technicalResult.actionRecommendation,
+                                reconciledLevels: {
+                                    stopLoss: 170,
+                                    takeProfitPrices: [198, 205], // AI 원본과 동일
+                                    exit: 'x',
+                                    riskReward: 'x',
+                                    reason: 'AI 손절가가 현재가 위였다',
+                                },
+                            },
+                        },
+                    },
+                ],
+            }),
+        );
+
+        expect(user).toContain('권고 손절가: $170.00 (도메인 보정값 — AI 원본 $172.50');
+        expect(user).toContain('권고 익절가: $198.00, $205.00\n');
+        expect(user).not.toContain('권고 익절가: $198.00, $205.00 (도메인 보정값');
+    });
+
     it('reconciledLevels가 일부만 있으면 그 축만 대체한다', () => {
         const { user } = buildTradeGatePrompt(
             baseInput({

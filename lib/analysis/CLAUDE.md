@@ -120,11 +120,17 @@ separately so tests (and prompt audits) can assert on the exact strings.
   `fmtCount`). Raw interpolation leaked literal `NaN건` into a rendered prompt, and a model reads
   that as a figure. `fmtElapsed` guards *both* ends — a broken `decidedAt` produced `NaN일 NaN시간 전`.
   Korean particles are avoided after a formatted value, since `미상` + `가` reads as `미상가`.
-- **Label lookups get the same discipline**: `PRICE_SOURCE_LABEL` / `TRIGGER_LABEL` /
-  `SESSION_LABEL` are keyed `Record<string, string>` with `?? '미상'`. Narrowing the key to a
-  union makes the compiler treat the fallback as dead code, and then the day the union widens
-  (core already aliases `EtSessionStatus` as `MarketSessionStatus`) the prompt ships
-  `미국 장 상태: undefined`.
+- **Label lookups get the same discipline** — `PRICE_SOURCE_LABEL` / `TRIGGER_LABEL` /
+  `SESSION_LABEL` all end in `?? '미상'`, because an unmapped key otherwise ships
+  `트리거 종류: undefined`. The **key type** is a separate decision from the fallback, and the two
+  are not a trade-off: this repo sets neither `noUncheckedIndexedAccess` nor
+  `no-unnecessary-condition`, so a union key compiles fine *and* keeps the runtime fallback.
+  - `ExitTrigger` and `priceSource` are **ours**, so those maps use union keys: adding a trigger
+    should fail `yarn typecheck` here rather than silently ship `트리거 종류: 미상` for the value
+    exit guideline 1 reads first.
+  - `SESSION_LABEL` alone is keyed `string`, because its union belongs to **core**. Locking it
+    would mean a dependency upgrade breaks our build; for a type we cannot edit, a graceful
+    `미상` beats a red CI.
 - Only sizing-relevant fields are extracted (via `lib/strategy/safe-extract.ts` plus local
   summarizers for the indicator/category/option-signal roll-ups that safe-extract doesn't cover):
   trend, risk level, entry recommendation, `entryPrices` / `stopLoss` / `takeProfitPrices`,
@@ -138,6 +144,11 @@ separately so tests (and prompt audits) can assert on the exact strings.
   replacements when they were invalid. A separate `보정 레벨` line was one more row no guideline
   referenced, while the model kept reading the (invalid, hence corrected) original above it. So
   the corrected number takes the slot and the original follows in parentheses with core's reason.
+  The label appears **only when the rendered values actually differ** — `takeProfitPrices` is
+  documented as "the full array, with only the invalid entries replaced", so a stop-loss-only
+  reconciliation echoes the take-profits unchanged, and labelling those as corrected would attach
+  the stop-loss reason to a value nothing touched. Core's own
+  `getReconciledActionLineData` diffs the same way.
 - **`## 결정 요청` carries ET wall-clock time, session state and minutes to the close**, derived
   from core's `getEtSessionStatus`. UTC alone leaves the model unable to tell the open from 30
   minutes before the close, and making it convert UTC→ET is exactly what rule 2 ("invent no new

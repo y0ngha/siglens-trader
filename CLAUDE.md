@@ -13,8 +13,9 @@ Personal use only (Toss Securities Terms — trading data for personal use only)
 api/              → Web-standard (Request) => Response handlers (HTTP + cron + reconcile)
 server/           → Hono app: serves the built SPA, mounts api/ handlers, runs node-cron
 src/              → React SPA (Dashboard UI)
-lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense.
-lib/analysis/     → Application: siglens-core integration
+lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense
+                    and trade-plan (sizing fraction → share count).
+lib/analysis/     → Application: siglens-core integration, incl. the AI sizing gate (trade-gate.ts)
 lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
@@ -29,8 +30,8 @@ lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 ```
 api/ → lib/strategy, lib/analysis, lib/trading, lib/notification, lib/db
 src/ → API calls only (NEVER import lib/ directly)
-lib/strategy/ → No external deps (pure functions only)
-lib/analysis/ → @y0ngha/siglens-core, lib/data
+lib/strategy/ → No external deps (pure functions only). Exception: safe-extract.ts and trade-plan.ts import lib/validation.
+lib/analysis/ → @y0ngha/siglens-core, lib/data, lib/strategy (types + pure helpers only — the arrow never points back)
 lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
 lib/notification/ → External HTTP (Resend)
@@ -104,7 +105,7 @@ useQuery({
 4. **Configurable** — Models, weights, thresholds, watchlist all editable from dashboard
 5. **Security** — Config POST uses allowlist (`ALLOWED_CONFIG_KEYS`); position close uses atomic DB update (race condition guard)
 6. **MSW for dev** — `yarn dev:mock` enables Mock Service Worker for UI development without backend
-7. **Circuit breakers** — Kill switch, daily trade limit, daily loss limit (realized + unrealized), per-symbol exposure cap
+7. **Circuit breakers** — Kill switch, daily trade limit, daily loss limit (realized + unrealized), per-symbol exposure cap. Only the kill switch stops everything; the two limits block **new entries** and leave liquidation running, because a risk breaker that blocks the only risk-reducing path is itself a defect.
 8. **Order lifecycle** — Idempotency keys per order, order_tracking table, reconciliation cron for timeout detection
 9. **DB atomicity** — Trade + position changes wrapped in DB transactions to prevent inconsistent state
 10. **NaN defense** — `lib/validation.ts` guards + `lib/strategy/safe-extract.ts` for untyped AI JSON
@@ -120,6 +121,34 @@ Priority-weighted average (weights sum to 23):
 - Fundamental: 4
 
 Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
+
+---
+
+## AI Sizing Gate
+
+The score above decides **whether** to buy or sell. It does not decide **how much** — that is a
+separate LLM call (`lib/analysis/trade-gate.ts`) made only on a path that is already going to
+place an order. It returns a `fraction` (0~1) that `lib/strategy/trade-plan.ts` turns into a
+share count: for an entry, a share of the executable budget (per-symbol cap ∩ total-exposure cap
+∩ cash); for an exit, a share of the held quantity.
+
+That split is the point. A 0-100 scalar throws away everything siglens-core produced —
+support/resistance, target prices, risk level, entry recommendation, per-axis sentiment — and the
+account state (cash, existing exposure, day's P&L headroom) never entered the number at all. The
+gate reads all of it and answers one question.
+
+- **Model**: `analysis_model_config['trade_gate']`, selected in 설정 > 분석 설정 like any analysis
+  axis. No schema migration — it is just another `analysis_type` row, defaulting to enabled.
+- **Entry fails closed, exit fails open.** A missed buy is a lost opportunity; a missed sell is a
+  realized loss. LLM error on entry → no order + email. LLM error on exit → full liquidation.
+- **`PositionEvaluation.hard`** (fixed stop-loss, corrupt price data) bypasses the gate entirely.
+  Risk controls are absolute; profit targets are not.
+- **Turning the gate OFF** restores `fraction = 1` — AI sizing off, no redeploy. It does *not*
+  restore the pre-gate code path: `planEntry`'s cash clamp applies unconditionally.
+- **Split entries multiply fill count** (one 20-share target can take ~9 fills). Review
+  `max_trades_per_day` before switching to `auto`.
+
+Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/specs/2026-08-12-ai-trade-gate-design.md).
 
 ---
 
