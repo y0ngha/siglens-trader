@@ -1,5 +1,21 @@
 # Changelog
 
+# [0.17.0](https://github.com/y0ngha/siglens-trader/compare/v0.16.0...v0.17.0) (2026-08-12)
+
+
+### Bug Fixes
+
+* 2차 감사 지적 반영 — 강제 청산 우회 경로와 신호 매도 봉쇄 ([9f02bb5](https://github.com/y0ngha/siglens-trader/commit/9f02bb51222f273a0de4bfa0f9df1d41d28cee38))
+* 3차 감사 — 신호 매도 경로의 강제 청산 누락과 시세 검증 과장 ([f4601e6](https://github.com/y0ngha/siglens-trader/commit/f4601e6f543581802d08bd0aee8fb4840dc0be2b))
+* 라벨 맵 유니온 키 복구 + 미보정 값의 잘못된 보정 라벨 제거 ([2cfa241](https://github.com/y0ngha/siglens-trader/commit/2cfa2413d687c2c0a09508f50dc9a44a4ed58741))
+* 미실현 손실 시세 검증을 독립 출처 대조로 바꾼다 ([9602ecb](https://github.com/y0ngha/siglens-trader/commit/9602ecb22bcc8af84e2df65f1bd76841fa977220))
+* 프롬프트·파이프라인 감사 지적 반영 ([0058560](https://github.com/y0ngha/siglens-trader/commit/0058560b36713167a69cc943333cd85f0fd11041))
+
+
+### Features
+
+* AI 매매 게이트 — 분할 진입 / 분할 청산 ([d3d626c](https://github.com/y0ngha/siglens-trader/commit/d3d626cd8d92a4d9b8ac729cb44a03df7eab9d85))
+
 # [0.16.0](https://github.com/y0ngha/siglens-trader/compare/v0.15.1...v0.16.0) (2026-08-12)
 
 
