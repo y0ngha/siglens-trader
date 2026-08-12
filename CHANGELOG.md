@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.15.0](https://github.com/y0ngha/siglens-trader/compare/v0.14.0...v0.15.0) (2026-08-12)
+
+
+### Bug Fixes
+
+* 리뷰 Blocker 4건 + 후속 개선 반영 ([95ec65e](https://github.com/y0ngha/siglens-trader/commit/95ec65ea49d0b56974dc1f886494d969c5c3b227))
+
+
+### Features
+
+* 자체 로그인 도입 (Zero Trust 의존 제거) ([bcfa325](https://github.com/y0ngha/siglens-trader/commit/bcfa3256066d249593d8df90d8c93b95c3d1bb83))
+
 # [0.14.0](https://github.com/y0ngha/siglens-trader/compare/v0.13.0...v0.14.0) (2026-08-11)
 
 
