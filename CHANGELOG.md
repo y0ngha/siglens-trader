@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.16.0](https://github.com/y0ngha/siglens-trader/compare/v0.15.1...v0.16.0) (2026-08-12)
+
+
+### Features
+
+* 크론 이상 감지 알림 + 수면 모드 정책 UI 노출 ([d042a5d](https://github.com/y0ngha/siglens-trader/commit/d042a5df995a3b5a094ecb76e1d3adf424debebe))
+
 ## [0.15.1](https://github.com/y0ngha/siglens-trader/compare/v0.15.0...v0.15.1) (2026-08-12)
 
 
