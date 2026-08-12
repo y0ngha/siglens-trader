@@ -7133,7 +7133,7 @@ describe('execute cron handler', () => {
 
             expect(body.entriesBlockedBy).toBe('daily_loss_limit');
             expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
-                '시세 출처 불일치: AAPL',
+                expect.stringContaining('시세 출처 불일치'),
                 expect.anything(),
                 expect.anything(),
             );
@@ -7151,8 +7151,8 @@ describe('execute cron handler', () => {
             // -$50 on the snapshot price: counted (not excluded), and under the $75 limit.
             expect(body.entriesBlockedBy).toBeUndefined();
             expect(mockSendErrorEmail).toHaveBeenCalledWith(
-                '시세 출처 불일치: AAPL',
-                expect.stringContaining('스냅샷 가격을 사용'),
+                '시세 출처 불일치 (1건, dry_run)',
+                expect.stringContaining('AAPL'),
 
                 'test@example.com',
             );
@@ -7170,7 +7170,7 @@ describe('execute cron handler', () => {
 
             expect(body.entriesBlockedBy).toBe('daily_loss_limit');
             expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
-                '시세 출처 불일치: AAPL',
+                expect.stringContaining('시세 출처 불일치'),
                 expect.anything(),
                 expect.anything(),
             );
@@ -7198,7 +7198,7 @@ describe('execute cron handler', () => {
             // (30 - 100) * 10 = -$700 → over the $500 limit.
             expect(body.entriesBlockedBy).toBe('daily_loss_limit');
             expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
-                '시세 출처 불일치: AAPL',
+                expect.stringContaining('시세 출처 불일치'),
                 expect.anything(),
                 expect.anything(),
             );
@@ -7231,6 +7231,100 @@ describe('execute cron handler', () => {
             expect(body.decisions).toContainEqual(
                 expect.objectContaining({ symbol: 'AAPL', action: 'trading_disabled_mid_loop' }),
             );
+        });
+        // -------------------------------------------------------------------
+        // Round-3 HIGH — forceFullExit reaches the watchlist signal sell too
+        // -------------------------------------------------------------------
+
+        it('R3-HIGH: rule engine holds, composite score sells → breaker sells it all, gate not called', async () => {
+            // The exact combination NEW-HIGH-2 re-opened the watchlist loop for: the rule
+            // engine says hold, only the composite score wants out. Leaving the size to the
+            // gate let a `fraction: 0` defer the last remaining risk-reduction path forever.
+            breakerSetup({ trading_mode: 'auto', max_daily_loss_usd: 500 });
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockGetOpenPositions
+                .mockResolvedValueOnce([heldPosition]) // unrealized pre-check
+                .mockResolvedValue([heldPosition]);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 95,
+                filledQuantity: quantity,
+            }));
+            gateOk(0); // would defer the exit entirely — must never be asked
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'sell', executed: true }),
+            );
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'sell',
+                    detail: expect.objectContaining({
+                        gate: expect.objectContaining({ source: 'risk_halt', quantity: 10 }),
+                    }),
+                }),
+            );
+        });
+
+        it('R3-L2: a symbol in stop-loss cooldown does not get a 잔고 부족 alert', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_total_exposure: 0 });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '지지선 이탈',
+            });
+            gateOk(1); // full stop-loss exit → AAPL enters the cooldown set
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                '잔고 부족: AAPL',
+                expect.anything(),
+                expect.anything(),
+            );
+            expect(mockInsertTrade).not.toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ mode: 'skipped' }),
+            );
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'cooldown_after_stop_loss' }),
+            );
+        });
+
+        it('R3-L3: diverging quotes are reported in one mail, not one per position', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 5000 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([
+                heldPosition,
+                { ...heldPosition, id: 2, symbol: 'TSLA' },
+            ]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            mockFetchLivePrice.mockResolvedValue(20); // 79% off the $95 snapshot, both symbols
+
+            await handler(makeRequest(true));
+
+            const divergenceMails = mockSendErrorEmail.mock.calls.filter((c) =>
+                String(c[0]).startsWith('시세 출처 불일치'),
+            );
+            expect(divergenceMails).toHaveLength(1);
+            expect(divergenceMails[0][0]).toBe('시세 출처 불일치 (2건, dry_run)');
+            expect(divergenceMails[0][1]).toContain('AAPL');
+            expect(divergenceMails[0][1]).toContain('TSLA');
         });
     });
 });

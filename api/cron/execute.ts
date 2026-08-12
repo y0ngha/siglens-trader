@@ -296,7 +296,7 @@ async function handler(req: Request): Promise<Response> {
                     ? '보유 포지션의 청산 신호는 계속 처리되어 전량 시장가로 청산됩니다 (킬 스위치를 켜면 청산도 즉시 중단됩니다).'
                     : tradingMode === 'semi_auto'
                       ? '보유 포지션의 청산은 자동 실행되지 않고 승인 대기열에만 등록됩니다 — 대시보드에서 승인해야 체결됩니다.'
-                      : '보유 포지션의 청산은 dry_run 시뮬레이션으로만 기록됩니다 (실제 주문 없음).';
+                      : '※ dry_run 시뮬레이션 — 위 손익은 모의 포지션 기준이며, 청산도 시뮬레이션으로만 기록됩니다 (실제 주문 없음). 실계좌 사고가 아닙니다.';
 
             // Risk breakers below stop NEW RISK, not risk reduction. A breaker that also
             // blocks liquidation is a bug: with split exits the gate can defer a sell
@@ -360,6 +360,10 @@ async function handler(req: Request): Promise<Response> {
             const preCheckPositions = await getOpenPositions(db);
             if (!forceFullExit && preCheckPositions.length > 0) {
                 let unrealizedPnl = 0;
+                // Collected, not mailed per position: a real gap diverges every run until the
+                // snapshot catches up, and one line per symbol per run is how an inbox stops
+                // being read.
+                const priceDivergences: string[] = [];
                 for (const pos of preCheckPositions) {
                     try {
                         const livePreCheck = await fetchLivePrice(pos.symbol).catch(() => null);
@@ -368,10 +372,20 @@ async function handler(req: Request): Promise<Response> {
                             pos.symbol,
                             'technical',
                         );
-                        // Two independent prices for the same moment: the FMP quote and the
-                        // technical snapshot. `fetchLivePrice` only checks "finite positive",
-                        // so a corrupt quote would otherwise trip the loss limit — which now
-                        // forces a full liquidation of every position.
+                        // Cross-check the FMP quote against the technical snapshot.
+                        // `fetchLivePrice` only checks "finite positive", so a corrupt quote
+                        // would otherwise trip the loss limit — which now forces a full
+                        // liquidation of every position.
+                        //
+                        // These are NOT independent sources. Both originate at FMP (quote
+                        // endpoint vs OHLC via `getMarketDataProvider`), and the snapshot value
+                        // is `keyLevels.currentPrice` — a number the LLM copied into its own
+                        // JSON, not a raw feed reading. So this catches the dominant failure
+                        // (one bad quote tick) and catches nothing vendor-wide: a symbol
+                        // mapping error, an unadjusted split or a currency mixup corrupts both
+                        // values together and passes the check.
+                        // TODO: a genuinely independent cross-check needs the Yahoo provider
+                        // already in `lib/data/` — out of scope here.
                         const snapshotPrice = safeAnalysisPrice(techForPos?.result);
                         const avgP = safeNumber(Number(pos.avgPrice), 0);
                         const liveOk = livePreCheck != null && livePreCheck > 0;
@@ -386,6 +400,14 @@ async function handler(req: Request): Promise<Response> {
                         // protects — and the entry price is the wrong yardstick anyway: it can
                         // be weeks old, so a position legitimately down 70% looked like a bad
                         // tick and was dropped on every single run.
+                        //
+                        // NOTE: this is the *breaker's* price only. The per-position exit
+                        // decision below uses `priceCache` (the live quote) — so one run can
+                        // legitimately value the same position at two different prices. On a
+                        // real gap the aggregate breaker reads the snapshot and is blunt for up
+                        // to one analysis cycle, while the stop-loss path sees the live drop
+                        // and fires normally. Deliberate: the blunt side fails toward doing
+                        // nothing destructive.
                         let curPrice: number;
                         if (diverged) {
                             curPrice = snapshotPrice;
@@ -402,9 +424,8 @@ async function handler(req: Request): Promise<Response> {
                         }
 
                         if (diverged) {
-                            await notifyError(
-                                `시세 출처 불일치: ${pos.symbol}`,
-                                `${pos.symbol} 실시간 호가 $${livePreCheck}가 기술분석 스냅샷 $${snapshotPrice}와 ${Math.round(MAX_PRICE_SOURCE_DIVERGENCE * 100)}% 넘게 어긋나, 일일 손실 한도 계산에는 스냅샷 가격을 사용했습니다. 시세 피드 확인이 필요합니다.`,
+                            priceDivergences.push(
+                                `${pos.symbol}: 실시간 호가 $${livePreCheck} vs 기술분석 스냅샷 $${snapshotPrice} → 스냅샷 가격으로 합산`,
                             );
                         }
                         if (curPrice > 0) {
@@ -414,6 +435,12 @@ async function handler(req: Request): Promise<Response> {
                     } catch {
                         // Skip this position's unrealized PnL — analysis data unavailable
                     }
+                }
+                if (priceDivergences.length > 0) {
+                    await notifyError(
+                        `시세 출처 불일치 (${priceDivergences.length}건, ${tradingMode})`,
+                        `실시간 호가가 기술분석 스냅샷과 ${Math.round(MAX_PRICE_SOURCE_DIVERGENCE * 100)}% 넘게 어긋나 일일 손실 한도 계산에 스냅샷 가격을 사용했습니다. 시세 피드 확인이 필요합니다.\n\n${priceDivergences.join('\n')}`,
+                    );
                 }
                 const totalPnl = todayPnl + unrealizedPnl;
                 if (totalPnl < -maxDailyLoss) {
@@ -715,7 +742,7 @@ async function handler(req: Request): Promise<Response> {
                         await notifyError(
                             `가격 데이터 없음: ${position.symbol}`,
                             forceFullExit
-                                ? `${position.symbol}는 일일 손실 한도 초과로 강제 청산 대상이지만, 현재 가격을 확인할 수 없어 ${tradingMode} 모드에서는 청산하지 못했습니다. 즉시 수동 확인이 필요합니다.`
+                                ? `${position.symbol}는 일일 손실 한도 초과로 강제 청산 대상이지만, 현재 가격을 확인할 수 없어 ${tradingMode} 모드에서는 청산하지 못했습니다.${tradingMode === 'dry_run' ? ' (dry_run 시뮬레이션 — 실계좌 포지션이 아닙니다.)' : ' 즉시 수동 확인이 필요합니다.'}`
                                 : `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
                         );
                         continue;
@@ -1554,9 +1581,14 @@ async function handler(req: Request): Promise<Response> {
                         calculatedSize: maxPlan.quantity,
                     });
 
-                    // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in this run
+                    // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in
+                    // this run. `unfundedBuy` is included because a zero budget makes the
+                    // decision 'hold', which would otherwise slip past this guard and mail a
+                    // 잔고 부족 alert about a symbol we refuse to buy anyway.
                     if (
-                        (decision.action === 'buy' || decision.action === 'average_in') &&
+                        (decision.action === 'buy' ||
+                            decision.action === 'average_in' ||
+                            unfundedBuy) &&
                         recentStopLossSymbols.has(item.symbol)
                     ) {
                         decisions.push({
@@ -1872,7 +1904,16 @@ async function handler(req: Request): Promise<Response> {
                         let sellFraction = 1;
                         let sellSource: GateSource = 'disabled';
                         let sellOutcome: TradeGateOutcome | null = null;
-                        if (gateConfig.enabled && Date.now() > gateDeadlineMs) {
+                        if (forceFullExit) {
+                            // Same contract as the re-evaluation loop: a tripped loss breaker
+                            // sells the whole position and never asks the model. This path is
+                            // the *only* exit route for a position the rule engine holds and
+                            // the composite score wants sold, so leaving the size to the gate
+                            // meant a `fraction: 0` could defer it forever with the loss limit
+                            // already breached. The call is skipped outright — 25s per symbol
+                            // for an answer that is discarded is pure cost.
+                            sellSource = 'risk_halt';
+                        } else if (gateConfig.enabled && Date.now() > gateDeadlineMs) {
                             sellSource = 'deadline';
                             await notifyError(
                                 `게이트 컷오프: ${item.symbol}`,
@@ -1901,6 +1942,7 @@ async function handler(req: Request): Promise<Response> {
                             positionQuantity: existingPosition.quantity,
                             fraction: sellFraction,
                             trigger: 'signal_sell',
+                            hard: forceFullExit,
                         });
                         gateAudit = gateDetail({
                             kind: 'exit',

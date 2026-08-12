@@ -88,6 +88,18 @@ const mockDecisions = [
         detail: {},
         createdAt: new Date().toISOString(),
     },
+    {
+        id: 103,
+        runId: 'run-abc-1',
+        cronType: 'execute',
+        symbol: 'MSFT',
+        action: 'entry_blocked',
+        executed: false,
+        score: '75.0',
+        reason: '일일 손실 한도로 신규 진입 차단',
+        detail: {},
+        createdAt: new Date().toISOString(),
+    },
 ];
 
 describe('CronRunsPage', () => {
@@ -400,6 +412,11 @@ describe('CronRunsPage', () => {
         expect(screen.getByText('EXEC')).toBeInTheDocument();
         // reason shown
         expect(screen.getByText(/RSI oversold/)).toBeInTheDocument();
+        // entry_blocked (breaker-blocked entry) gets the orange breaker chip, not gray default
+        expect(screen.getByText('entry_blocked')).toHaveClass(
+            'bg-orange-500/10',
+            'text-orange-400',
+        );
     });
 
     it('renders reason and structured score components when decision detail is present', async () => {

@@ -226,6 +226,7 @@ function actionChipClass(action: string): string {
         case 'gate_error':
             return 'bg-red-500/10 text-red-400';
         case 'gate_skipped_deadline':
+        case 'entry_blocked':
             return 'bg-orange-500/10 text-orange-400';
         case 'entry_deferred':
         case 'exit_deferred':

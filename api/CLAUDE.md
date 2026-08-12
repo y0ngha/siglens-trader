@@ -114,7 +114,9 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
      about an unfunded buy on a run that could not have placed an order anyway
    - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
      with an unanswered approval burned a 25s LLM call whose answer was discarded
-   - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
+   - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols — and the
+     zero-budget buy case with it, which decides as 'hold' and used to slip past the guard and
+     mail a 잔고 부족 alert for a symbol we refuse to buy anyway
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade
    - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
@@ -223,9 +225,16 @@ Three consequences that are easy to get wrong, and were:
   `skipped_no_price` + `detail.forcedLiquidationBlocked` **and an email** saying the forced
   liquidation could not be carried out.
 
+"Every exit" is literal and includes the **watchlist signal sell**: under `forceFullExit` that
+path skips `runTradeGate` entirely and passes `hard: true` to `planExit`, exactly like the
+re-evaluation loop (`source: 'risk_halt'`). It has to — for a position the rule engine holds and
+only the composite score wants sold, it is the *sole* remaining exit route, so letting the model
+size it meant a `fraction: 0` could defer the last risk-reduction path indefinitely while the
+loss limit was already breached.
+
 A tripped loss breaker therefore liquidates a stale/priceless position whole, while a position
-with fresh analysis evaluating to `hold` is left alone. That is one rule, not an asymmetry:
-**평가 가능하면 평가를 따르고, 불가능하면 나간다.**
+with fresh analysis evaluating to `hold` **and** scoring above the sell threshold is left alone.
+That is one rule, not an asymmetry: **평가 가능하면 평가를 따르고, 불가능하면 나간다.**
 
 - The daily loss limit means "take no more risk today", not "flatten the book" — liquidating
   healthy positions on a trip would realize losses for nothing.
@@ -236,10 +245,19 @@ with fresh analysis evaluating to `hold` is left alone. That is one rule, not an
   two, so it is closed out.
 
 The price feeding the unrealized-PnL breaker is **cross-checked against the technical
-snapshot** (`safeAnalysisPrice`), an independent source for the same moment: if the live FMP
-quote diverges from it by more than **25%**, the snapshot price is summed instead and the run
-mails `시세 출처 불일치`. `fetchLivePrice` only checks "finite positive", and a wrong tick now
-liquidates the whole book rather than merely halting trading.
+snapshot** (`safeAnalysisPrice`): if the live FMP quote diverges from it by more than **25%**,
+the snapshot price is summed instead, and one batched `시세 출처 불일치` mail per run lists every
+affected symbol (per-symbol mails would arrive ~8×/day for the whole duration of a real gap).
+`fetchLivePrice` only checks "finite positive", and a wrong tick now liquidates the whole book
+rather than merely halting trading.
+
+**What this guard does and does not buy — the two sources are not independent.** Both come from
+FMP (quote endpoint vs OHLC through `getMarketDataProvider`), and the snapshot value is
+`keyLevels.currentPrice` — a number the LLM copied into its own JSON, not a raw feed reading. It
+therefore catches the dominant failure, a single bad quote tick, and catches **nothing**
+vendor-wide: a symbol-mapping error, an unadjusted split or a currency mixup corrupts both values
+together and sails through. A genuinely independent check would use the Yahoo provider already in
+`lib/data/`; that is a follow-up, not something this guard delivers.
 
 Two properties matter more than the threshold:
 
@@ -249,8 +267,19 @@ Two properties matter more than the threshold:
   neutral "unknown", not a claim of "no loss").
 - **The yardstick is the snapshot, not `avgPrice`.** The entry price can be weeks old, so an
   entry-relative band flags a position genuinely down 70% on *every* run and silently
-  under-counts it. Two same-session sources normally differ by a fraction of a percent, which
+  under-counts it. Two same-vendor sources normally differ by a fraction of a percent, which
   is why 25% is both safe and far tighter than an entry-relative band could ever be.
+
+**One run can value the same position at two different prices, on purpose.** The aggregate
+breaker uses the price chosen above (possibly the snapshot); the per-position exit decision uses
+`priceCache`, i.e. the live quote. On a real -30% gap the breaker is therefore blunt for up to one
+analysis cycle while the stop-loss path fires normally on the live drop. The blunt side fails
+toward doing nothing destructive, which is the right direction — but it will confuse someone
+reading two different unrealized numbers in one run, so it is stated here.
+
+The unrealized breaker runs in **`dry_run` too** — a simulation that behaves differently from live
+is worthless as a rehearsal — so its alerts name the mode and say the figures are simulated,
+keeping a rehearsal from reading as a live incident.
 
 The kill switch is the one exception and still stops everything: it is not a risk breaker
 but the operator's explicit "touch nothing" (e.g. they are about to trade the account by
