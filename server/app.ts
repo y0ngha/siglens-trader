@@ -9,6 +9,9 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { GET as analysisGET } from '../api/analysis.js';
 import { POST as analysisTriggerPOST } from '../api/analysis/trigger.js';
 import { POST as approvePOST } from '../api/approve/[id].js';
+import { POST as authLoginPOST } from '../api/auth/login.js';
+import { POST as authLogoutPOST } from '../api/auth/logout.js';
+import { GET as authMeGET } from '../api/auth/me.js';
 import { GET as configGET, POST as configPOST } from '../api/config.js';
 import { GET as cronRunsGET } from '../api/cron-runs.js';
 import { GET as healthGET } from '../api/health.js';
@@ -64,6 +67,9 @@ app.use('*', async (c, next) => {
 });
 
 app.get('/api/health', fwd(healthGET));
+app.post('/api/auth/login', fwd(authLoginPOST));
+app.post('/api/auth/logout', fwd(authLogoutPOST));
+app.get('/api/auth/me', fwd(authMeGET));
 app.get('/api/analysis', fwd(analysisGET));
 app.post('/api/analysis/trigger', fwd(analysisTriggerPOST));
 app.post('/api/approve/:id', fwd(approvePOST));

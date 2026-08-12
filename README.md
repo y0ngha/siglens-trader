@@ -115,10 +115,10 @@ priority-weighted average (합 26):
 - **DB**: Neon PostgreSQL + Drizzle ORM
 - **분석**: [@y0ngha/siglens-core](https://github.com/y0ngha/siglens-core) (LLM 호출은 앱 프로세스 내부)
 - **데이터**: FMP API, Yahoo Finance (yahoo-finance2)
-- **인증**: Cloudflare Access (Zero Trust)
+- **인증**: 자체 로그인 (bcrypt + 세션 쿠키, 회원가입 없음) — Cloudflare Access JWT도 병행 지원
 - **알림**: Resend (Email)
 - **락**: Upstash Redis (distributed lock, SETNX + Lua release)
-- **테스트**: Vitest + MSW (Mock Service Worker), 902개 테스트
+- **테스트**: Vitest + MSW (Mock Service Worker), 1528개 테스트
 - **패키지 매니저**: Yarn 4
 
 ## 필요한 외부 서비스
@@ -178,7 +178,7 @@ yarn db:clear       # 전체 데이터 삭제 (확인 프롬프트 있음)
 `.env.example` 참고. 주요 항목:
 
 ```
-DISABLE_AUTH=          # true로 설정하면 로컬에서 Cloudflare Access 없이 개발 가능
+DISABLE_AUTH=          # true로 설정하면 로컬에서 로그인 없이 개발 가능 (프로덕션에서는 무시)
 DATABASE_URL=          # Neon PostgreSQL
 UPSTASH_REDIS_REST_URL= # 토스 OAuth 토큰 캐시 + accountSeq 캐시 + 분산 락 (trading 필수)
 UPSTASH_REDIS_REST_TOKEN=

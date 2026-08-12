@@ -8,15 +8,65 @@ import {
     numeric,
     jsonb,
     timestamp,
+    uuid,
+    varchar,
     uniqueIndex,
     index,
 } from 'drizzle-orm/pg-core';
+
+/**
+ * Operator accounts.
+ *
+ * Column shapes deliberately mirror siglens' `users` table (uuid pk, bcrypt
+ * `password_hash`, `email_verified`) so a future merge into the siglens account
+ * system is a data copy rather than a redesign. Trader has no signup flow —
+ * rows are provisioned by `lib/db/seed-operator.ts`.
+ */
+export const users = pgTable('users', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: varchar('email', { length: 255 }).notNull().unique(),
+    passwordHash: text('password_hash'),
+    name: text('name'),
+    emailVerified: boolean('email_verified').default(false).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** Login sessions. The cookie value is the session id; expiry is enforced on read. */
+export const sessions = pgTable(
+    'sessions',
+    {
+        id: uuid('id').primaryKey().defaultRandom(),
+        userId: uuid('user_id')
+            .notNull()
+            .references(() => users.id, { onDelete: 'cascade' }),
+        expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [
+        index('idx_sessions_user_id').on(table.userId),
+        index('idx_sessions_expires_at').on(table.expiresAt),
+    ],
+);
+
+/**
+ * Owner of operator-scoped rows.
+ *
+ * The migration backfills existing rows to the seeded operator and sets a column
+ * DEFAULT to that same uuid, so trading/cron insert paths need no code change.
+ * Deliberate ceiling: reads are NOT filtered by user_id — correct while signup is absent and
+ * exactly one account exists. The moment a second account can be created, all three
+ * of these are required: scope every read by user_id, drop the column DEFAULT so an
+ * owner must be passed explicitly, and add a user_id index to each table below.
+ */
+const ownerUserId = () => uuid('user_id').references(() => users.id, { onDelete: 'restrict' });
 
 export const watchlist = pgTable('watchlist', {
     id: serial('id').primaryKey(),
     symbol: text('symbol').notNull().unique(),
     companyName: text('company_name').notNull(),
     enabled: boolean('enabled').default(true).notNull(),
+    userId: ownerUserId(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -26,6 +76,7 @@ export const analysisModelConfig = pgTable('analysis_model_config', {
     enabled: boolean('enabled').default(true).notNull(),
     modelId: text('model_id').notNull(),
     useByok: boolean('use_byok').default(false).notNull(),
+    userId: ownerUserId(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -63,6 +114,7 @@ export const positions = pgTable(
         closedAt: timestamp('closed_at', { withTimezone: true }),
         closePrice: numeric('close_price'),
         status: text('status').default('open').notNull(),
+        userId: ownerUserId(),
     },
     (table) => [
         uniqueIndex('idx_positions_symbol_open')
@@ -88,6 +140,7 @@ export const trades = pgTable(
         clientOrderId: text('client_order_id'),
         realizedPnl: numeric('realized_pnl'),
         dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+        userId: ownerUserId(),
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     },
     (table) => [index('idx_trades_executed_at').on(table.executedAt)],
@@ -106,6 +159,7 @@ export const pendingOrders = pgTable(
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
         expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
         status: text('status').default('pending').notNull(),
+        userId: ownerUserId(),
     },
     (table) => [index('idx_pending_orders_status').on(table.status, table.expiresAt)],
 );
@@ -113,6 +167,7 @@ export const pendingOrders = pgTable(
 export const config = pgTable('config', {
     key: text('key').primaryKey(),
     value: jsonb('value').notNull(),
+    userId: ownerUserId(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -129,6 +184,7 @@ export const orderTracking = pgTable('order_tracking', {
     submittedAt: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     cronRunId: text('cron_run_id'),
+    userId: ownerUserId(),
 });
 
 export const notificationConfig = pgTable('notification_config', {
@@ -137,6 +193,7 @@ export const notificationConfig = pgTable('notification_config', {
     enabled: boolean('enabled').default(true).notNull(),
     target: text('target').notNull(),
     events: text('events').array().default([]).notNull(),
+    userId: ownerUserId(),
 });
 
 // status = lifecycle (running→completed/skipped/error); outcome = machine-readable reason (market_closed, locked, …); summary = structured counts

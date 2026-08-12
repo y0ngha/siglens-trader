@@ -12,6 +12,18 @@ vi.mock('jose', () => ({
     createRemoteJWKSet: (...args: unknown[]) => mockCreateRemoteJWKSet(...args),
 }));
 
+const mockResolveSessionUser = vi.fn();
+const FAKE_DB = Symbol('fake-db');
+const SESSION_USER = { id: 'user-1', email: 'operator@example.com', name: null };
+
+vi.mock('../../../lib/auth/session.js', () => ({
+    resolveSessionUser: (...args: unknown[]) => mockResolveSessionUser(...args),
+}));
+
+vi.mock('../db.js', () => ({
+    getDb: () => FAKE_DB,
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -233,61 +245,198 @@ describe('isAuthenticated', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Fallback path (env NOT configured)
+    // Session cookie path
     // -----------------------------------------------------------------------
 
-    describe('fallback: header trust when CF Access env vars not configured', () => {
+    describe('session cookie', () => {
         beforeEach(() => {
             vi.stubEnv('DISABLE_AUTH', '');
             vi.stubEnv('VERCEL_ENV', '');
             vi.stubEnv('CF_ACCESS_TEAM_DOMAIN', '');
             vi.stubEnv('CF_ACCESS_AUD', '');
+            mockResolveSessionUser.mockReset();
         });
 
-        it('returns true when cf-access-authenticated-user-email header is present', async () => {
+        it('returns true for a cookie that resolves to a user', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+
+            const { isAuthenticated: auth } = await import('../auth');
+            const result = await auth(makeRequest({ cookie: 'trader_session=abc-123' }));
+
+            expect(result).toBe(true);
+            expect(mockResolveSessionUser).toHaveBeenCalledWith(FAKE_DB, 'abc-123');
+        });
+
+        it('returns false when the cookie is absent', async () => {
+            const { isAuthenticated: auth } = await import('../auth');
+
+            expect(await auth(makeRequest())).toBe(false);
+            expect(mockResolveSessionUser).not.toHaveBeenCalled();
+        });
+
+        it('returns false when the session is unknown or expired', async () => {
+            mockResolveSessionUser.mockResolvedValue(null);
+
+            const { isAuthenticated: auth } = await import('../auth');
+            expect(await auth(makeRequest({ cookie: 'trader_session=stale' }))).toBe(false);
+        });
+
+        it('fails closed (and logs) when the session lookup throws', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            mockResolveSessionUser.mockRejectedValue(new Error('connection refused'));
+
+            const { isAuthenticated: auth } = await import('../auth');
+            expect(await auth(makeRequest({ cookie: 'trader_session=abc-123' }))).toBe(false);
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('[auth] session lookup failed:'),
+                expect.any(Error),
+            );
+            errorSpy.mockRestore();
+        });
+
+        it('never trusts a bare cf-access-authenticated-user-email header', async () => {
+            // The origin is reachable without Access once it is switched off, so a
+            // forged header must not be an authentication bypass.
             const { isAuthenticated: auth } = await import('../auth');
             const result = await auth(
-                makeRequest({ 'cf-access-authenticated-user-email': 'user@example.com' }),
+                makeRequest({ 'cf-access-authenticated-user-email': 'intruder@evil.com' }),
             );
-            expect(result).toBe(true);
-        });
-
-        it('returns false when cf-access-authenticated-user-email header is absent', async () => {
-            const { isAuthenticated: auth } = await import('../auth');
-            const result = await auth(makeRequest());
             expect(result).toBe(false);
         });
+    });
 
-        it('emits a console.warn in fallback mode', async () => {
-            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // -----------------------------------------------------------------------
+    // Session cache
+    // -----------------------------------------------------------------------
 
-            const { isAuthenticated: auth } = await import('../auth');
-            await auth(makeRequest());
-
-            expect(warnSpy).toHaveBeenCalledWith(
-                expect.stringContaining('CF Access JWT verification not configured'),
-            );
-            warnSpy.mockRestore();
+    describe('session cache', () => {
+        beforeEach(async () => {
+            vi.stubEnv('DISABLE_AUTH', '');
+            vi.stubEnv('CF_ACCESS_TEAM_DOMAIN', '');
+            vi.stubEnv('CF_ACCESS_AUD', '');
+            mockResolveSessionUser.mockReset();
+            const { resetSessionCache } = await import('../auth');
+            resetSessionCache();
         });
 
-        it('emits the fallback console.warn only once across multiple requests (Fix 6)', async () => {
-            // vi.resetModules() in afterEach resets module scope so fallbackWarned starts false.
-            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        it('resolves the database once for repeated requests on the same cookie', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser } = await import('../auth');
 
-            const { isAuthenticated: auth } = await import('../auth');
-            await auth(makeRequest());
-            await auth(makeRequest());
-            await auth(makeRequest());
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
 
-            // warn should be emitted exactly once no matter how many requests arrive
-            expect(warnSpy).toHaveBeenCalledTimes(1);
-            warnSpy.mockRestore();
+            // The dashboard polls several endpoints every 10s; without this each one
+            // would be a cross-region round trip.
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
         });
 
-        it('does NOT call jwtVerify in fallback mode', async () => {
-            const { isAuthenticated: auth } = await import('../auth');
-            await auth(makeRequest({ 'cf-access-authenticated-user-email': 'user@example.com' }));
-            expect(mockJwtVerify).not.toHaveBeenCalled();
+        it('caches misses too, so junk cookies cannot hammer the database', async () => {
+            mockResolveSessionUser.mockResolvedValue(null);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps separate entries per cookie', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=a' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=b' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+        });
+
+        it('forgetSession drops the entry so a logout takes effect at once', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser, forgetSession } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            forgetSession('abc-123');
+
+            mockResolveSessionUser.mockResolvedValue(null);
+            await expect(
+                getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' })),
+            ).resolves.toBeNull();
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+        });
+
+        it('expires an entry after the TTL', async () => {
+            vi.useFakeTimers();
+            try {
+                vi.setSystemTime(new Date('2026-08-12T00:00:00.000Z'));
+                mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+                const { getSessionUser } = await import('../auth');
+
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                vi.setSystemTime(new Date('2026-08-12T00:00:04.999Z'));
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
+
+                vi.setSystemTime(new Date('2026-08-12T00:00:05.001Z'));
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('does not cache a lookup failure — the next request retries', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            mockResolveSessionUser.mockRejectedValue(new Error('connection refused'));
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+            errorSpy.mockRestore();
+        });
+
+        it('evicts rather than growing without bound under a flood of distinct cookies', async () => {
+            mockResolveSessionUser.mockResolvedValue(null);
+            const { getSessionUser } = await import('../auth');
+
+            for (let i = 0; i < 1_100; i += 1) {
+                await getSessionUser(makeRequest({ cookie: `trader_session=junk-${i}` }));
+            }
+            const afterFlood = mockResolveSessionUser.mock.calls.length;
+
+            // The earliest keys must have been evicted, so re-asking hits the database again.
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk-0' }));
+            expect(mockResolveSessionUser.mock.calls.length).toBe(afterFlood + 1);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // getSessionUser
+    // -----------------------------------------------------------------------
+
+    describe('getSessionUser', () => {
+        beforeEach(() => {
+            mockResolveSessionUser.mockReset();
+        });
+
+        it('returns the resolved user', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+
+            const { getSessionUser } = await import('../auth');
+            await expect(
+                getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' })),
+            ).resolves.toEqual(SESSION_USER);
+        });
+
+        it('ignores DISABLE_AUTH — an identity cannot be faked into existence', async () => {
+            vi.stubEnv('DISABLE_AUTH', 'true');
+            vi.stubEnv('NODE_ENV', 'development');
+
+            const { getSessionUser } = await import('../auth');
+            await expect(getSessionUser(makeRequest())).resolves.toBeNull();
         });
     });
 });

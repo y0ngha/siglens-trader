@@ -6,18 +6,21 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 
 | File | Responsibility |
 |------|---------------|
-| `schema.ts` | Drizzle table definitions (11 tables) |
+| `schema.ts` | Drizzle table definitions (15 tables) |
 | `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
 | `migrate.ts` | Migration runner script (CLI) |
 | `seed.ts` | Mock data seeder for dashboard preview |
+| `seed-operator.ts` | Operator account provisioning + data-ownership backfill (CLI, `yarn db:seed-operator`) |
 | `clear.ts` | Deletes all data from all tables (with confirmation prompt) |
 
 ## Tables
 
 | Table | Purpose |
 |-------|---------|
+| `users` | Operator accounts (uuid pk, bcrypt `password_hash`) — column shapes mirror siglens so the systems can be merged later |
+| `sessions` | Login sessions (cookie value = row id, expiry enforced on read) |
 | `watchlist` | Symbols to monitor |
 | `analysis_model_config` | Per-analysis-type model + BYOK settings |
 | `analysis_results` | Latest analysis snapshots (JSONB) |
@@ -29,6 +32,19 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `notification_config` | Email channel settings |
 | `cron_runs` | One row per cron invocation (health: status, outcome, duration, summary) |
 | `cron_decisions` | Per-symbol/per-order decision audit (action + reason, linked to cron_runs by run_id) |
+| `news_cards` | Per-news LLM summary cards (keyed by news id) |
+| `notification_queue` | Notifications deferred during quiet hours, drained by the morning digest cron |
+
+## Data Ownership
+
+`watchlist`, `analysis_model_config`, `positions`, `trades`, `pending_orders`, `config`,
+`order_tracking` and `notification_config` carry a `user_id` FK to `users`.
+`db:seed-operator` backfills existing rows and sets the column DEFAULT to the operator,
+so the query helpers here **do not pass an owner** — Postgres fills it in.
+
+Reads are not scoped by `user_id`. That is correct only while there is no signup and
+exactly one account exists; adding signup requires scoping every read, dropping the
+DEFAULT, and indexing `user_id`. See the comment on `ownerUserId` in `schema.ts`.
 
 ## Key Query Functions (added in audit)
 
@@ -73,6 +89,8 @@ await db.transaction(async (tx) => {
 yarn db:generate    # Generate migration from schema changes
 yarn db:migrate     # Run pending migrations
 yarn db:seed        # Insert mock data (positions, trades, analysis results)
+yarn db:seed-operator  # Create/rotate the operator account (OPERATOR_EMAIL + OPERATOR_PASSWORD),
+                       # backfill user_id on owned tables and set the column DEFAULT
 yarn db:clear       # Delete all data (with Y/n confirmation prompt)
 ```
 

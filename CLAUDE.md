@@ -18,7 +18,8 @@ lib/analysis/     → Application: siglens-core integration
 lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
-lib/db/           → Infrastructure: Neon PostgreSQL I/O (9 tables, DB transactions, consistency checker)
+lib/auth/         → Application: login/session lifecycle (bcrypt, session cookie, login throttle)
+lib/db/           → Infrastructure: Neon PostgreSQL I/O (15 tables, DB transactions, consistency checker)
 lib/lock.ts       → Distributed lock (Redis SETNX + UUID owner + Lua script release)
 lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 ```
@@ -33,7 +34,8 @@ lib/analysis/ → @y0ngha/siglens-core, lib/data
 lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
 lib/notification/ → External HTTP (Resend)
-lib/db/ → @neondatabase/serverless, drizzle-orm. recovery.ts → DB consistency checks.
+lib/auth/ → lib/db (Db type + schema) only. cookie.ts and throttle.ts are pure.
+lib/db/ → @neondatabase/serverless, drizzle-orm. recovery.ts → DB consistency checks. seed-operator.ts (CLI only) → lib/auth.
 lib/lock.ts → @upstash/redis (SETNX distributed lock)
 lib/validation.ts → No external deps (pure guards)
 ```
@@ -48,11 +50,34 @@ lib/validation.ts → No external deps (pure guards)
 
 ## Authentication
 
-In production, Cloudflare Access sets `cf-access-authenticated-user-email` header.
-For local development, set `DISABLE_AUTH=true` in `.env.local` to bypass authentication.
+Primary path is the app's own login: `POST /api/auth/login` verifies the password
+(bcrypt cost 12) against `users`, opens a `sessions` row, and returns it as the
+`trader_session` HttpOnly cookie. There is **no signup endpoint** — accounts are
+provisioned with `yarn db:seed-operator` (`OPERATOR_EMAIL` / `OPERATOR_PASSWORD`).
+
+`users` / `sessions` deliberately mirror siglens' column shapes so the two account
+systems can be merged later without a schema redesign.
+
+A Cloudflare Access JWT is still accepted (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`)
+so the site keeps working while Access sits in front of the origin. There is **no
+`cf-access-authenticated-user-email` header-trust fallback**: with Access off the
+origin is reachable directly and a forged header would be an auth bypass.
+
+For local development, set `DISABLE_AUTH=true` in `.env.local`. It is ignored in
+production, and it never fabricates an identity — `getSessionUser()` still returns
+null, only `isAuthenticated()` short-circuits.
 
 All dashboard API endpoints (non-cron) check `isAuthenticated(req)` from `api/_lib/auth.ts`.
 Cron endpoints use `CRON_SECRET` header verification via `api/_lib/cron-auth.ts`.
+
+### Data ownership
+
+Operator-owned tables (`watchlist`, `analysis_model_config`, `positions`, `trades`,
+`pending_orders`, `config`, `order_tracking`, `notification_config`) carry a `user_id`
+column. `db:seed-operator` backfills existing rows and sets the column DEFAULT to the
+operator, so trading and cron insert paths need no user plumbing. Reads are **not**
+scoped by `user_id` — that is correct only while signup is absent and exactly one
+account exists. Adding signup means dropping the DEFAULT and scoping every read.
 
 ---
 

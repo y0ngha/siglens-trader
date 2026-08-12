@@ -85,6 +85,13 @@
       "when": 1786467107047,
       "tag": "0011_blue_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786493459550,
+      "tag": "0012_rapid_shadowcat",
+      "breakpoints": true
     }
   ]
 }
