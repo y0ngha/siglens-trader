@@ -42,12 +42,39 @@ export function safeNumberArray(value: unknown): number[] | undefined {
     return nums.length > 0 ? nums : undefined;
 }
 
+/**
+ * Extracts price levels from a support/resistance array. siglens-core's actual
+ * `KeyLevels.support`/`.resistance` shape is `{ price: number; reason: string }[]`,
+ * not bare numbers — `safeNumberArray` (which only keeps `typeof v === 'number'`
+ * elements) silently drops every element of that shape and returns `undefined`,
+ * which is how `safeAnalysisSupport`/`safeAnalysisResistance` ended up always
+ * returning `undefined` in production even though the data was there. Accept both
+ * shapes — bare numbers (older/manually-constructed test fixtures) and `{ price }`
+ * objects (the real core shape) — so a future shape shift degrades instead of
+ * silently zeroing out two of the six exit-evaluation branches again.
+ */
+export function safePriceLevelArray(value: unknown): number[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const levels: number[] = [];
+    for (const v of value) {
+        if (isFinitePositive(v)) {
+            levels.push(v);
+            continue;
+        }
+        const r = safeRecord(v);
+        if (r && isFinitePositive(r.price)) {
+            levels.push(r.price);
+        }
+    }
+    return levels.length > 0 ? levels : undefined;
+}
+
 export function safeAnalysisSupport(result: unknown): number | undefined {
     const r = safeRecord(result);
     if (!r) return undefined;
     const keyLevels = safeRecord(r.keyLevels);
     if (!keyLevels) return undefined;
-    const levels = safeNumberArray(keyLevels.support);
+    const levels = safePriceLevelArray(keyLevels.support);
     return levels?.[0];
 }
 
@@ -56,7 +83,7 @@ export function safeAnalysisResistance(result: unknown): number | undefined {
     if (!r) return undefined;
     const keyLevels = safeRecord(r.keyLevels);
     if (!keyLevels) return undefined;
-    const levels = safeNumberArray(keyLevels.resistance);
+    const levels = safePriceLevelArray(keyLevels.resistance);
     return levels?.[0];
 }
 

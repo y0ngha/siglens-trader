@@ -99,6 +99,14 @@ const analysisConfigs = [
         useByok: true,
         updatedAt: new Date().toISOString(),
     },
+    {
+        id: 5,
+        analysisType: 'trade_gate',
+        enabled: true,
+        modelId: 'deepseek-v4-flash',
+        useByok: true,
+        updatedAt: new Date().toISOString(),
+    },
 ];
 
 const notificationConfigs = [

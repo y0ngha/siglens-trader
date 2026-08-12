@@ -90,23 +90,64 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 3. Expire old pending orders
 4. Fetch live prices for all symbols (FMP quote API, cached per run)
 5. Fetch pending submitted orders (for sell-guard checks)
+5.5. Load the AI sizing gate config (`analysis_model_config['trade_gate']`, once per run) and
+   set the gate cutoff at cron start + 600s
 6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
    - Skip positions with pending sell in-flight
-   - Track stop-loss closures for cooldown
+   - Non-`hold` exits go through the **exit sizing gate** (see below) → `exitQty`; a partial
+     exit calls `reducePositionQuantity`, a full one `closePosition`, in all three modes
+   - Track stop-loss closures for cooldown — registered on the *trigger*, so a partial
+     stop-loss blocks a same-run re-buy just like a full one
 7. Recalculate exposure after any closures (using market prices)
 8. Score signals for watchlist symbols
    - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
 9. Make trade decisions (buy/sell/hold/average_in)
+   - `planEntry` (not `calculatePositionSize`) computes the budget ceiling from the per-symbol
+     cap, the total-exposure cap and — in `auto` only — real buying power. It is the
+     `calculatedSize` handed to `makeTradeDecision`. Because it already subtracts
+     `existingSymbolExposure`, the old average_in-specific cap block is gone; the
+     `symbol_limit_reached` decision now fires **before** `makeTradeDecision` (buy signals
+     only) so the '잔고 부족' path can't mail the wrong cause
    - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
    - Pending sell guard: skip sell if submitted sell order exists
-   - Per-symbol exposure cap for average_in
    - Re-check kill switch before each trade
    - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
-10. Execute per mode:
+10. **Sizing gate** — last, after every guard above, so an LLM call only happens on a path that
+    is actually going to place an order (see below)
+11. Execute per mode:
     - `dry_run` → DB transaction (trade + position atomically)
     - `semi_auto` → pending order + email notification
     - `auto` → order tracking + Toss API + DB transaction + email
-11. Release lock in `finally` block
+12. Release lock in `finally` block
+
+## AI Sizing Gate
+
+`lib/analysis/trade-gate.ts` answers one question per order — *how large* — and returns a
+`fraction` that `lib/strategy/trade-plan.ts` turns into a share count. Design:
+[`docs/specs/2026-08-12-ai-trade-gate-design.md`](../docs/specs/2026-08-12-ai-trade-gate-design.md) §8–9.
+
+`runTradeGate` **never throws**; branch on the returned `status`, never wrap it in try/catch.
+Config comes from `analysis_model_config['trade_gate']`, which defaults to enabled — the gate
+is live on deploy, and switching it off in 설정 > 분석 설정 restores the old behavior with no
+redeploy.
+
+| Situation | Entry (fail-**closed**) | Exit (fail-**open**) |
+|---|---|---|
+| Gate OFF | `fraction = 1`, no email | `fraction = 1`, no email |
+| LLM error / timeout / bad JSON | no order, `gate_error` + email | full exit + email |
+| Past cron start + 600s | no order, `gate_skipped_deadline` + email | full exit + email |
+| `fraction = 0` | `entry_deferred`, no email | `exit_deferred`, no email |
+| `PositionEvaluation.hard` | — | gate not called at all, full exit |
+
+The asymmetry is deliberate: a missed buy is a lost opportunity, a missed sell is a realized
+loss. Missing analysis axes are passed to the gate as `result: null` rather than dropped — the
+prompt prints "데이터 없음" on purpose. In the re-evaluation loop the three extra axes
+(options/fundamental/congress) are read **only** when the gate is actually going to be called.
+
+New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`.
+Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
+`ai`/`disabled`/`hard`/`error`/`deadline`, `model`, `fraction`, `confidence`, `reason`,
+`fullBudget`, `trancheBudget`, `limitedBy`, `quantity`) merged alongside `scoreDecisionDetail`.
 
 ## Reconcile Cron Flow
 

@@ -27,15 +27,22 @@ import {
     finishCronRun,
     finalizeStaleCronRuns,
     insertCronDecisions,
+    getAnalysisConfig,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { getAnalysisReferenceTime } from '../../lib/analysis/source-time.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
-import {
-    calculatePositionSize,
-    evaluateExistingPosition,
-} from '../../lib/strategy/risk-manager.js';
+import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
+import { planEntry, planExit } from '../../lib/strategy/trade-plan.js';
+import type { EntryPlan, ExitTrigger } from '../../lib/strategy/trade-plan.js';
+import { runTradeGate } from '../../lib/analysis/trade-gate.js';
+import type {
+    TradeGateAnalysisEntry,
+    TradeGateKind,
+    TradeGateOutcome,
+} from '../../lib/analysis/trade-gate.js';
+import { resolveApiKey } from './_run-analysis-cron.js';
 import { makeTradeDecision } from '../../lib/strategy/decision.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
@@ -116,6 +123,82 @@ function scoreDecisionDetail(
         signal: signalScore.signal,
         thresholds: { buy: buyThreshold, sell: sellThreshold },
         sourceAnalyzedAt: sourceIso,
+    };
+}
+
+/**
+ * Where a sizing `fraction` came from. Recorded on every decision the gate took part in so
+ * an audit can tell "the model chose half" from "the model was never asked".
+ */
+type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline';
+
+/** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
+const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
+    'technical',
+    'news',
+    'options',
+    'fundamental',
+    'congress',
+];
+
+type AnalysisRow = {
+    result: unknown;
+    modelId?: string | null;
+    analyzedAt: Date | string;
+    sourceAnalyzedAt?: Date | string | null;
+} | null;
+
+/**
+ * Builds the gate's five-axis analysis block.
+ *
+ * A missing axis is passed through as `result: null` rather than dropped: `trade-gate.ts`
+ * prints "데이터 없음" for it on purpose, and a silently absent section reads to the model as
+ * "not applicable", which invites it to invent one.
+ */
+function toGateAnalyses(rows: Partial<Record<TradeGateAnalysisEntry['type'], AnalysisRow>>) {
+    return GATE_AXES.map((type) => {
+        const row = rows[type] ?? null;
+        return {
+            type,
+            result: row?.result ?? null,
+            // source_analyzed_at (the LLM's own stamp) wins over the row's write time —
+            // same freshness clock the staleness guard above uses.
+            analyzedAt: row ? getAnalysisReferenceTime(row) : null,
+            modelId: row?.modelId ?? null,
+        };
+    });
+}
+
+/**
+ * Audit block merged into `cron_decisions.detail` (design doc §9.3). Entry decisions carry the
+ * budget that bounded them; exits have no buy budget, so those fields stay null.
+ */
+function gateDetail(params: {
+    kind: TradeGateKind;
+    source: GateSource;
+    model: string;
+    fraction: number;
+    outcome: TradeGateOutcome | null;
+    plan?: EntryPlan | null;
+    quantity: number;
+}) {
+    const ok = params.outcome?.status === 'ok' ? params.outcome : null;
+    return {
+        gate: {
+            kind: params.kind,
+            source: params.source,
+            model: params.model,
+            fraction: params.fraction,
+            confidence: ok?.confidence ?? null,
+            reason:
+                ok?.reason ??
+                (params.outcome?.status === 'error' ? params.outcome.error : null) ??
+                null,
+            fullBudget: params.plan?.fullBudget ?? null,
+            trancheBudget: params.plan?.trancheBudget ?? null,
+            limitedBy: params.plan?.limitedBy ?? null,
+            quantity: params.quantity,
+        },
     };
 }
 
@@ -340,6 +423,17 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
+            // AI sizing gate config — read once per run. No row means never configured, and
+            // getAnalysisConfig defaults that to enabled, so the gate is live the moment this
+            // deploys (design doc §4). Turning it off in 설정 > 분석 설정 restores the old
+            // all-or-nothing behavior with no redeploy.
+            const gateConfig = await getAnalysisConfig(db, 'trade_gate');
+            const gateApiKey = gateConfig.useByok ? resolveApiKey(gateConfig.modelId) : undefined;
+            // Hard cutoff at start+600s. The lock TTL is 780s and the audit rows are written
+            // after the loops, so a few slow gate calls late in a run must not eat the budget
+            // that finalizing the audit needs — past this point we decide without the model.
+            const gateDeadlineMs = startedMs + 600_000;
+
             const watchlistItems = await getEnabledWatchlist(db);
 
             // Calculate current exposure using current market prices when available,
@@ -527,9 +621,122 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Track stop-loss closures to prevent same-run re-buy
+                    // Track stop-loss closures to prevent same-run re-buy. Registered on the
+                    // *trigger*, not on how much actually gets sold: a partial stop-loss is
+                    // not a safer reason to re-buy the same symbol minutes later — the thesis
+                    // that tripped the stop is unchanged either way.
                     if (evaluation.action === 'stop_loss') {
                         recentStopLossSymbols.add(position.symbol);
+                    }
+
+                    // --- Exit sizing gate ---
+                    // Exits are fail-OPEN: any gate problem sells the full position. Failing to
+                    // buy costs an opportunity, failing to sell costs realized money, so a
+                    // provider outage must never leave a stop-loss signal holding the bag.
+                    const exitTrigger: ExitTrigger =
+                        evaluation.action === 'stop_loss' ? 'stop_loss' : 'take_profit';
+                    let exitFraction = 1;
+                    let exitGateSource: GateSource = 'disabled';
+                    let exitOutcome: TradeGateOutcome | null = null;
+                    if (evaluation.hard === true) {
+                        // Corrupt price data or the operator's fixed stop line — absolute risk
+                        // controls, not a call for the model to soften (design doc §6).
+                        exitGateSource = 'hard';
+                    } else if (!gateConfig.enabled) {
+                        exitGateSource = 'disabled';
+                    } else if (Date.now() > gateDeadlineMs) {
+                        exitGateSource = 'deadline';
+                        await notifyError(
+                            `게이트 컷오프: ${position.symbol}`,
+                            `실행 시작 후 600초를 넘겨 청산 사이징 게이트를 건너뛰고 전량 청산합니다.`,
+                        );
+                    } else {
+                        // The remaining three axes are read only here: on hold / hard-exit /
+                        // gate-off paths nothing consumes them, so fetching them up front
+                        // would be three wasted queries per position on every tick.
+                        const [options, fundamental, congress] = await Promise.all([
+                            getLatestAnalysisResult(db, position.symbol, 'options'),
+                            getLatestAnalysisResult(db, position.symbol, 'fundamental'),
+                            getLatestAnalysisResult(db, position.symbol, 'congress'),
+                        ]);
+                        exitOutcome = await runTradeGate({
+                            kind: 'exit',
+                            symbol: position.symbol,
+                            price: currentPrice,
+                            priceSource: priceCache.has(position.symbol)
+                                ? 'live'
+                                : 'analysis_fallback',
+                            decidedAt: new Date(),
+                            account: {
+                                availableCashUsd: remainingBuyingPower,
+                                maxPositionSize,
+                                symbolExposure: currentPrice * position.quantity,
+                                currentExposure,
+                                maxTotalExposure,
+                                todayRealizedPnl: todayPnl,
+                                maxDailyLossUsd: maxDailyLoss,
+                                todayTradeCount: todayTradeCount + todayInflightCount,
+                                maxTradesPerDay,
+                                tradingMode,
+                            },
+                            // This path never scores signals — it re-evaluates a held position.
+                            signal: null,
+                            position: {
+                                quantity: position.quantity,
+                                avgPrice: safeNumber(Number(position.avgPrice), 0),
+                            },
+                            budget: null,
+                            exit: { trigger: exitTrigger, ruleReason: evaluation.reason },
+                            analyses: toGateAnalyses({
+                                technical: tech,
+                                news,
+                                options,
+                                fundamental,
+                                congress,
+                            }),
+                            modelId: gateConfig.modelId,
+                            userApiKey: gateApiKey,
+                            correlationId: `${cronRunId}-${position.symbol}-exit`,
+                        });
+                        if (exitOutcome.status === 'ok') {
+                            exitFraction = exitOutcome.fraction;
+                            exitGateSource = 'ai';
+                        } else {
+                            exitGateSource = 'error';
+                            await notifyError(
+                                `청산 게이트 실패: ${position.symbol}`,
+                                `사이징 게이트 오류로 전량 청산합니다 (fail-open).\n오류: ${exitOutcome.error}`,
+                            );
+                        }
+                    }
+
+                    const exitQty = planExit({
+                        positionQuantity: position.quantity,
+                        fraction: exitFraction,
+                        trigger: exitTrigger,
+                        hard: evaluation.hard,
+                    });
+                    const exitDetail = gateDetail({
+                        kind: 'exit',
+                        source: exitGateSource,
+                        model: gateConfig.modelId,
+                        fraction: exitFraction,
+                        outcome: exitOutcome,
+                        quantity: exitQty,
+                    });
+
+                    if (exitQty === 0) {
+                        // fraction 0 is a deliberate "not this tick" call, not a failure — the
+                        // position stays open and the next tick re-evaluates. No email.
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'exit_deferred',
+                            score: 0,
+                            executed: false,
+                            reason: evaluation.reason,
+                            detail: exitDetail,
+                        });
+                        continue;
                     }
 
                     // Execute the exit
@@ -538,17 +745,23 @@ async function handler(req: Request): Promise<Response> {
                         case 'dry_run':
                             try {
                                 await db.transaction(async (tx) => {
-                                    const closed = await closePosition(
-                                        tx,
-                                        position.id,
-                                        currentPrice,
-                                    );
-                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                    // Partial exits leave the position open — only a full-size
+                                    // exit closes it.
+                                    if (exitQty >= position.quantity) {
+                                        const closed = await closePosition(
+                                            tx,
+                                            position.id,
+                                            currentPrice,
+                                        );
+                                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                    } else {
+                                        await reducePositionQuantity(tx, position.id, exitQty);
+                                    }
                                     await insertTrade(tx, {
                                         symbol: position.symbol,
                                         side: 'sell',
                                         orderType: 'market',
-                                        quantity: position.quantity,
+                                        quantity: exitQty,
                                         price: currentPrice,
                                         executedAt: new Date(),
                                         reason: evaluation.reason,
@@ -557,7 +770,7 @@ async function handler(req: Request): Promise<Response> {
                                         realizedPnl: realizedPnlForSell(
                                             currentPrice,
                                             Number(position.avgPrice),
-                                            position.quantity,
+                                            exitQty,
                                         ),
                                     });
                                 });
@@ -574,7 +787,7 @@ async function handler(req: Request): Promise<Response> {
                                             {
                                                 symbol: position.symbol,
                                                 side: 'sell',
-                                                quantity: position.quantity,
+                                                quantity: exitQty,
                                                 price: currentPrice,
                                                 reason: evaluation.reason,
                                                 mode: 'dry_run',
@@ -583,7 +796,7 @@ async function handler(req: Request): Promise<Response> {
                                         )
                                         .catch((err) => console.error('[email] send failed:', err));
                                 }
-                                currentExposure -= currentPrice * position.quantity;
+                                currentExposure -= currentPrice * exitQty;
                                 if (currentExposure < 0) currentExposure = 0;
                             } catch (txErr) {
                                 if (
@@ -606,7 +819,7 @@ async function handler(req: Request): Promise<Response> {
                             await insertPendingOrder(db, {
                                 symbol: position.symbol,
                                 side: 'sell',
-                                quantity: position.quantity,
+                                quantity: exitQty,
                                 priceLimit: currentPrice,
                                 analysisSummary: evaluation.reason,
                                 signalScore: 0,
@@ -616,7 +829,7 @@ async function handler(req: Request): Promise<Response> {
                                 .notifyApprovalRequest({
                                     symbol: position.symbol,
                                     side: 'sell',
-                                    quantity: position.quantity,
+                                    quantity: exitQty,
                                     score: 0,
                                     reason: evaluation.reason,
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
@@ -628,13 +841,16 @@ async function handler(req: Request): Promise<Response> {
                                 action: evaluation.action,
                                 score: 0,
                                 executed: false,
+                                detail: exitDetail,
                             });
                             decisionPushed = true;
                             break;
 
                         case 'auto': {
                             // Sellable-quantity guard: confirm broker holds enough shares.
-                            let sellQty = position.quantity;
+                            // Starts from the gate-sized quantity; the broker clamp below can
+                            // only shrink it further.
+                            let sellQty = exitQty;
                             const sellable = await getSellableQuantity(position.symbol).catch(
                                 () => null,
                             );
@@ -859,6 +1075,7 @@ async function handler(req: Request): Promise<Response> {
                             action: evaluation.action,
                             score: 0,
                             executed: true,
+                            detail: exitDetail,
                         });
                     }
                 } catch (err) {
@@ -980,12 +1197,43 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const calculatedSize = calculatePositionSize({
+                    // Budget ceiling for this symbol, before the gate applies any fraction.
+                    // planEntry folds in the per-symbol cap, the total-exposure cap and (auto
+                    // only) real cash, which is why the old average_in-specific cap block that
+                    // used to live further down is gone — it was the same arithmetic twice.
+                    const existingSymbolExposure = existingPosition
+                        ? currentPrice * existingPosition.quantity
+                        : 0;
+                    const entryPlanInputs = {
                         price: currentPrice,
                         maxPositionSize,
                         maxTotalExposure,
                         currentExposure,
-                    });
+                        existingSymbolExposure,
+                        // dry_run/semi_auto never query the broker, so cash is unknown there
+                        // (null) and must not constrain the plan.
+                        availableCash: remainingBuyingPower,
+                    };
+                    const maxPlan = planEntry({ ...entryPlanInputs, fraction: 1 });
+
+                    // Per-symbol cap exhausted on a symbol we already hold. This has to run
+                    // *before* makeTradeDecision: afterwards the decision is 'hold' with
+                    // calculatedSize 0, which falls into the '잔고 부족' branch below and mails
+                    // the operator about the total-exposure limit when the real cause is the
+                    // per-symbol one. Restricted to buy signals so a sell/hold on a fully
+                    // funded symbol still takes its normal path.
+                    if (
+                        existingPosition &&
+                        signalScore.signal === 'buy' &&
+                        maxPlan.quantity === 0
+                    ) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'symbol_limit_reached',
+                            score: signalScore.total,
+                        });
+                        continue;
+                    }
 
                     // Circuit breaker: re-check daily trade limit before each trade
                     // Include in-flight orders to prevent limit overshoot across concurrent runs.
@@ -1008,7 +1256,7 @@ async function handler(req: Request): Promise<Response> {
                         signalScore,
                         hasOpenPosition: !!existingPosition,
                         positionQuantity: existingPosition?.quantity ?? 0,
-                        calculatedSize,
+                        calculatedSize: maxPlan.quantity,
                     });
 
                     // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in this run
@@ -1072,39 +1320,11 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Per-symbol exposure cap for average_in: respect BOTH the per-symbol
-                    // limit and the total-exposure budget (whichever is tighter).
-                    if (decision.action === 'average_in' && existingPosition) {
-                        const existingExposure = currentPrice * existingPosition.quantity;
-                        const remainingSymbolBudget = Math.max(
-                            0,
-                            maxPositionSize - existingExposure,
-                        );
-                        const remainingTotalBudget = Math.max(
-                            0,
-                            maxTotalExposure - currentExposure,
-                        );
-                        const effectiveBudget = Math.min(
-                            remainingSymbolBudget,
-                            remainingTotalBudget,
-                        );
-                        const cappedSize = Math.floor(effectiveBudget / currentPrice);
-                        if (cappedSize <= 0) {
-                            decisions.push({
-                                symbol: item.symbol,
-                                action: 'symbol_limit_reached',
-                                score: decision.score,
-                            });
-                            continue;
-                        }
-                        decision = { ...decision, quantity: cappedSize };
-                    }
-
                     // Insufficient balance — signal is buy but position size is 0
                     if (
                         decision.action === 'hold' &&
                         signalScore.signal === 'buy' &&
-                        calculatedSize === 0
+                        maxPlan.quantity === 0
                     ) {
                         await insertTrade(db, {
                             symbol: item.symbol,
@@ -1160,6 +1380,223 @@ async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                         });
                         continue;
+                    }
+
+                    // --- Sizing gate ---
+                    // Deliberately last: every rule-engine guard above (stop-loss cooldown,
+                    // in-flight orders, phantom sell, kill switch, daily limits) has already
+                    // run, so an LLM call only happens on a path that is actually going to
+                    // place an order.
+                    const scoreDetail = scoreDecisionDetail(
+                        signalScore,
+                        buyThreshold,
+                        sellThreshold,
+                        techReferenceTime,
+                    );
+                    const gateAnalyses = toGateAnalyses({
+                        technical: tech,
+                        news,
+                        options,
+                        fundamental,
+                        congress,
+                    });
+                    const gateAccount = {
+                        availableCashUsd: remainingBuyingPower,
+                        maxPositionSize,
+                        symbolExposure: existingSymbolExposure,
+                        currentExposure,
+                        maxTotalExposure,
+                        todayRealizedPnl: todayPnl,
+                        maxDailyLossUsd: maxDailyLoss,
+                        todayTradeCount: currentDayCount + currentInflightCount,
+                        maxTradesPerDay,
+                        tradingMode,
+                    };
+                    const gateSignal = {
+                        total: signalScore.total,
+                        signal: signalScore.signal,
+                        components: signalScore.components,
+                        weights,
+                        buyThreshold,
+                        sellThreshold,
+                        sourceAnalyzedAt: techReferenceTime,
+                    };
+                    const gatePosition = existingPosition
+                        ? {
+                              quantity: existingPosition.quantity,
+                              avgPrice: safeNumber(Number(existingPosition.avgPrice), 0),
+                          }
+                        : null;
+                    const gateCommon = {
+                        symbol: item.symbol,
+                        companyName: item.companyName ?? undefined,
+                        price: currentPrice,
+                        priceSource: priceCache.has(item.symbol)
+                            ? ('live' as const)
+                            : ('analysis_fallback' as const),
+                        decidedAt: new Date(),
+                        account: gateAccount,
+                        signal: gateSignal,
+                        position: gatePosition,
+                        analyses: gateAnalyses,
+                        modelId: gateConfig.modelId,
+                        userApiKey: gateApiKey,
+                    };
+
+                    let entryDetail: ReturnType<typeof gateDetail> | undefined;
+
+                    if (decision.action === 'buy' || decision.action === 'average_in') {
+                        // Entries are fail-CLOSED: no fraction, no order. A missed buy is a
+                        // missed opportunity, but committing the full budget on an unverified
+                        // signal is real money at risk — the asymmetry is deliberate (§8).
+                        let entryFraction = 1;
+                        let entrySource: GateSource = 'disabled';
+                        let entryOutcome: TradeGateOutcome | null = null;
+                        if (gateConfig.enabled) {
+                            if (Date.now() > gateDeadlineMs) {
+                                await notifyError(
+                                    `게이트 컷오프: ${item.symbol}`,
+                                    `실행 시작 후 600초를 넘겨 진입 사이징 게이트를 호출하지 못해 매수를 건너뜁니다.`,
+                                );
+                                decisions.push({
+                                    symbol: item.symbol,
+                                    action: 'gate_skipped_deadline',
+                                    score: decision.score,
+                                    executed: false,
+                                    reason: decision.reason,
+                                    detail: {
+                                        ...scoreDetail,
+                                        ...gateDetail({
+                                            kind: 'entry',
+                                            source: 'deadline',
+                                            model: gateConfig.modelId,
+                                            fraction: 0,
+                                            outcome: null,
+                                            plan: maxPlan,
+                                            quantity: 0,
+                                        }),
+                                    },
+                                });
+                                continue;
+                            }
+                            entryOutcome = await runTradeGate({
+                                ...gateCommon,
+                                kind: 'entry',
+                                budget: {
+                                    fullBudget: maxPlan.fullBudget,
+                                    limitedBy: maxPlan.limitedBy,
+                                    maxQuantity: maxPlan.quantity,
+                                },
+                                exit: null,
+                                correlationId: `${cronRunId}-${item.symbol}-entry`,
+                            });
+                            if (entryOutcome.status === 'ok') {
+                                entryFraction = entryOutcome.fraction;
+                                entrySource = 'ai';
+                            } else {
+                                await notifyError(
+                                    `진입 게이트 실패: ${item.symbol}`,
+                                    `사이징 게이트 오류로 매수를 실행하지 않습니다 (fail-closed).\n오류: ${entryOutcome.error}`,
+                                );
+                                decisions.push({
+                                    symbol: item.symbol,
+                                    action: 'gate_error',
+                                    score: decision.score,
+                                    executed: false,
+                                    reason: decision.reason,
+                                    detail: {
+                                        ...scoreDetail,
+                                        ...gateDetail({
+                                            kind: 'entry',
+                                            source: 'error',
+                                            model: gateConfig.modelId,
+                                            fraction: 0,
+                                            outcome: entryOutcome,
+                                            plan: maxPlan,
+                                            quantity: 0,
+                                        }),
+                                    },
+                                });
+                                continue;
+                            }
+                        }
+                        const finalPlan =
+                            entryFraction === 1
+                                ? maxPlan
+                                : planEntry({ ...entryPlanInputs, fraction: entryFraction });
+                        entryDetail = gateDetail({
+                            kind: 'entry',
+                            source: entrySource,
+                            model: gateConfig.modelId,
+                            fraction: entryFraction,
+                            outcome: entryOutcome,
+                            plan: finalPlan,
+                            quantity: finalPlan.quantity,
+                        });
+                        if (finalPlan.quantity === 0) {
+                            // A deliberate "sit this tick out", not an error — no email.
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'entry_deferred',
+                                score: decision.score,
+                                executed: false,
+                                reason: decision.reason,
+                                detail: { ...scoreDetail, ...entryDetail },
+                            });
+                            continue;
+                        }
+                        decision = { ...decision, quantity: finalPlan.quantity };
+                    } else if (decision.action === 'sell' && existingPosition) {
+                        // Signal-driven sell — same fail-OPEN policy as the re-evaluation loop.
+                        let sellFraction = 1;
+                        let sellSource: GateSource = 'disabled';
+                        let sellOutcome: TradeGateOutcome | null = null;
+                        if (gateConfig.enabled && Date.now() > gateDeadlineMs) {
+                            sellSource = 'deadline';
+                        } else if (gateConfig.enabled) {
+                            sellOutcome = await runTradeGate({
+                                ...gateCommon,
+                                kind: 'exit',
+                                budget: null,
+                                exit: { trigger: 'signal_sell', ruleReason: decision.reason },
+                                correlationId: `${cronRunId}-${item.symbol}-exit`,
+                            });
+                            if (sellOutcome.status === 'ok') {
+                                sellFraction = sellOutcome.fraction;
+                                sellSource = 'ai';
+                            } else {
+                                sellSource = 'error';
+                                await notifyError(
+                                    `청산 게이트 실패: ${item.symbol}`,
+                                    `사이징 게이트 오류로 전량 매도합니다 (fail-open).\n오류: ${sellOutcome.error}`,
+                                );
+                            }
+                        }
+                        const sellQty = planExit({
+                            positionQuantity: existingPosition.quantity,
+                            fraction: sellFraction,
+                            trigger: 'signal_sell',
+                        });
+                        entryDetail = gateDetail({
+                            kind: 'exit',
+                            source: sellSource,
+                            model: gateConfig.modelId,
+                            fraction: sellFraction,
+                            outcome: sellOutcome,
+                            quantity: sellQty,
+                        });
+                        if (sellQty === 0) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'exit_deferred',
+                                score: decision.score,
+                                executed: false,
+                                reason: decision.reason,
+                                detail: { ...scoreDetail, ...entryDetail },
+                            });
+                            continue;
+                        }
+                        decision = { ...decision, quantity: sellQty };
                     }
 
                     // Execute based on mode (snapshot from run start)
@@ -1220,12 +1657,24 @@ async function handler(req: Request): Promise<Response> {
                                 if (existingSellPos) {
                                     try {
                                         await db.transaction(async (tx) => {
-                                            const closed = await closePosition(
-                                                tx,
-                                                existingSellPos.id,
-                                                currentPrice,
-                                            );
-                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                            // A gate-sized signal sell can be partial — only a
+                                            // full-size sell closes the position (mirrors the
+                                            // auto path and the re-evaluation loop).
+                                            if (decision.quantity >= existingSellPos.quantity) {
+                                                const closed = await closePosition(
+                                                    tx,
+                                                    existingSellPos.id,
+                                                    currentPrice,
+                                                );
+                                                if (!closed)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
+                                            } else {
+                                                await reducePositionQuantity(
+                                                    tx,
+                                                    existingSellPos.id,
+                                                    decision.quantity,
+                                                );
+                                            }
                                             await insertTrade(tx, {
                                                 symbol: item.symbol,
                                                 side: decision.action,
@@ -1727,12 +2176,7 @@ async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                             executed: true,
                             reason: decision.reason,
-                            detail: scoreDecisionDetail(
-                                signalScore,
-                                buyThreshold,
-                                sellThreshold,
-                                techReferenceTime,
-                            ),
+                            detail: { ...scoreDetail, ...(entryDetail ?? {}) },
                         });
                     }
                 } catch (err) {

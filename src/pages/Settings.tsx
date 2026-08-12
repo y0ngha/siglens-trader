@@ -30,7 +30,14 @@ const MODELS = [
     'gpt-5.4',
 ] as const;
 
-const ANALYSIS_TYPES = ['technical', 'news', 'options', 'fundamental', 'congress'] as const;
+const ANALYSIS_TYPES = [
+    'technical',
+    'news',
+    'options',
+    'fundamental',
+    'congress',
+    'trade_gate',
+] as const;
 
 const NOTIFICATION_EVENTS = [
     { key: 'trade_executed', label: '거래 체결' },
@@ -90,6 +97,8 @@ function typeLabel(type: string): string {
             return '펀더멘털 분석';
         case 'congress':
             return '의회 거래';
+        case 'trade_gate':
+            return '매매 게이트';
         default:
             return type;
     }
@@ -522,6 +531,12 @@ export function SettingsPage() {
                                     {ac.enabled ? 'ON' : 'OFF'}
                                 </button>
                             </div>
+                            {ac.analysisType === 'trade_gate' && (
+                                <p className="mt-0.5 text-[10px] text-neutral-600">
+                                    분석이 아닌 매매 크기 판단에 사용됩니다 (분할 진입/청산 비율
+                                    결정)
+                                </p>
+                            )}
                             <div className="mt-2 flex items-center gap-2">
                                 <select
                                     className="flex-1 rounded-lg border border-[#262626] bg-[#141414] px-3 py-2 text-sm outline-none focus:border-neutral-500"
