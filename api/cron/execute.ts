@@ -130,7 +130,7 @@ function scoreDecisionDetail(
  * Where a sizing `fraction` came from. Recorded on every decision the gate took part in so
  * an audit can tell "the model chose half" from "the model was never asked".
  */
-type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline';
+type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline' | 'risk_halt';
 
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
@@ -274,6 +274,20 @@ async function handler(req: Request): Promise<Response> {
             // Clean up expired pending orders
             await expireOldPendingOrders(db);
 
+            // Risk breakers below stop NEW RISK, not risk reduction. A breaker that also
+            // blocks liquidation is a bug: with split exits the gate can defer a sell
+            // indefinitely, so an early `return` here would mean the position is never
+            // stopped out at all — the breaker would cap nothing while the loss grew.
+            // So they set `entryBlock` (skip the watchlist loop) instead of returning, and
+            // the loss breakers additionally set `forceFullExit` (every exit is treated as
+            // `hard` → full size, gate bypassed). The kill switch is the sole exception and
+            // still stops everything: it is the operator's explicit "stop trading".
+            let entryBlock: {
+                outcome: 'daily_trade_limit' | 'daily_loss_limit';
+                body: unknown;
+            } | null = null;
+            let forceFullExit = false;
+
             // Circuit breaker: daily trade limit
             // Count both settled trades AND in-flight orders (submitted/pending/partial) so
             // concurrent/rapid runs cannot exceed the limit by racing before any order settles.
@@ -283,13 +297,15 @@ async function handler(req: Request): Promise<Response> {
                 getTodayInflightOrderCount(db),
             ]);
             if (todayTradeCount + todayInflightCount >= maxTradesPerDay) {
-                finishState = { status: 'skipped', outcome: 'daily_trade_limit', ...elapsed() };
-                return Response.json({
-                    skipped: true,
-                    reason: 'daily_trade_limit_reached',
-                    todayCount: todayTradeCount + todayInflightCount,
-                    limit: maxTradesPerDay,
-                });
+                entryBlock = {
+                    outcome: 'daily_trade_limit',
+                    body: {
+                        skipped: true,
+                        reason: 'daily_trade_limit_reached',
+                        todayCount: todayTradeCount + todayInflightCount,
+                        limit: maxTradesPerDay,
+                    },
+                };
             }
 
             // Circuit breaker: daily loss limit
@@ -298,22 +314,27 @@ async function handler(req: Request): Promise<Response> {
             if (todayPnl < -maxDailyLoss) {
                 await notifyError(
                     '일일 손실 한도 초과',
-                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다. 보유 포지션의 청산 신호는 계속 처리됩니다.`,
                 );
-                finishState = { status: 'skipped', outcome: 'daily_loss_limit', ...elapsed() };
-                return Response.json({
-                    skipped: true,
-                    reason: 'daily_loss_limit_reached',
-                    todayPnl,
-                    limit: maxDailyLoss,
-                });
+                entryBlock = {
+                    outcome: 'daily_loss_limit',
+                    body: {
+                        skipped: true,
+                        reason: 'daily_loss_limit_reached',
+                        todayPnl,
+                        limit: maxDailyLoss,
+                    },
+                };
+                forceFullExit = true;
             }
 
             // Circuit breaker: unrealized loss limit
             // Fetch current prices for all open positions to calculate unrealized PnL.
             // Failures to fetch individual position prices are silently skipped (best-effort).
+            // Skipped once the realized breaker already tripped — the state is identical
+            // (entries blocked, exits forced full) and re-computing would only double-mail.
             const preCheckPositions = await getOpenPositions(db);
-            if (preCheckPositions.length > 0) {
+            if (!forceFullExit && preCheckPositions.length > 0) {
                 let unrealizedPnl = 0;
                 for (const pos of preCheckPositions) {
                     try {
@@ -337,22 +358,28 @@ async function handler(req: Request): Promise<Response> {
                 if (totalPnl < -maxDailyLoss) {
                     await notifyError(
                         '일일 손실 한도 초과 (미실현 포함)',
-                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다. 보유 포지션의 청산 신호는 계속 처리됩니다.`,
                     );
-                    finishState = {
-                        status: 'skipped',
+                    entryBlock = {
                         outcome: 'daily_loss_limit',
-                        ...elapsed(),
+                        body: {
+                            skipped: true,
+                            reason: 'daily_loss_limit_reached',
+                            todayPnl,
+                            unrealizedPnl,
+                            totalPnl,
+                            limit: maxDailyLoss,
+                        },
                     };
-                    return Response.json({
-                        skipped: true,
-                        reason: 'daily_loss_limit_reached',
-                        todayPnl,
-                        unrealizedPnl,
-                        totalPnl,
-                        limit: maxDailyLoss,
-                    });
+                    forceFullExit = true;
                 }
+            }
+
+            // Nothing held → nothing to liquidate, so a tripped breaker is just a skip
+            // (identical response to the pre-split behavior).
+            if (entryBlock && preCheckPositions.length === 0) {
+                finishState = { status: 'skipped', outcome: entryBlock.outcome, ...elapsed() };
+                return Response.json(entryBlock.body);
             }
 
             // Load config
@@ -470,6 +497,11 @@ async function handler(req: Request): Promise<Response> {
 
             // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
             const recentStopLossSymbols = new Set<string>();
+            // Symbols the re-evaluation loop already sold (fully or partially) this run. The
+            // watchlist loop must not sell them again on the same tick: a partial exit leaves
+            // a position behind, so a low overall score would otherwise open a *second* sell
+            // for the same symbol — same bearish data, two orders, colliding idempotency keys.
+            const exitedSymbols = new Set<string>();
 
             // --- Price cache: batch fetch all needed symbols once ---
             const priceCache = new Map<string, number>();
@@ -543,7 +575,20 @@ async function handler(req: Request): Promise<Response> {
                             o.side === 'sell' &&
                             ['submitted', 'pending', 'partial'].includes(o.status),
                     );
-                    if (hasPendingSell) {
+                    // semi_auto queues sells in `pending_orders`, not `order_tracking`, so the
+                    // in-flight check above cannot see them. Without this a queued approval
+                    // that the operator has not acted on yet gets a duplicate queued every
+                    // tick. Re-queried per position (not snapshotted) because this same loop
+                    // inserts pending sells as it goes.
+                    const hasPendingApprovalSell =
+                        tradingMode === 'semi_auto' &&
+                        (await getPendingOrders(db)).some(
+                            (o) =>
+                                o.symbol === position.symbol &&
+                                o.side === 'sell' &&
+                                o.status === 'pending',
+                        );
+                    if (hasPendingSell || hasPendingApprovalSell) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'pending_sell_in_progress',
@@ -638,7 +683,13 @@ async function handler(req: Request): Promise<Response> {
                     let exitFraction = 1;
                     let exitGateSource: GateSource = 'disabled';
                     let exitOutcome: TradeGateOutcome | null = null;
-                    if (evaluation.hard === true) {
+                    // A tripped loss breaker forces every exit to full size: the whole point
+                    // of the breaker is to stop the bleeding, and letting the gate shave the
+                    // exit down (or defer it entirely) would defeat it.
+                    const hardExit = evaluation.hard === true || forceFullExit;
+                    if (forceFullExit && evaluation.hard !== true) {
+                        exitGateSource = 'risk_halt';
+                    } else if (hardExit) {
                         // Corrupt price data or the operator's fixed stop line — absolute risk
                         // controls, not a call for the model to soften (design doc §6).
                         exitGateSource = 'hard';
@@ -659,6 +710,13 @@ async function handler(req: Request): Promise<Response> {
                             getLatestAnalysisResult(db, position.symbol, 'fundamental'),
                             getLatestAnalysisResult(db, position.symbol, 'congress'),
                         ]);
+                        // Re-read the day's fill count instead of using the run-start
+                        // snapshot: the watchlist loop re-reads it per symbol, and the model
+                        // must not see two different "오늘 체결 건수" in one run.
+                        const [exitDayCount, exitInflightCount] = await Promise.all([
+                            getTodayTradeCount(db),
+                            getTodayInflightOrderCount(db),
+                        ]);
                         exitOutcome = await runTradeGate({
                             kind: 'exit',
                             symbol: position.symbol,
@@ -675,7 +733,7 @@ async function handler(req: Request): Promise<Response> {
                                 maxTotalExposure,
                                 todayRealizedPnl: todayPnl,
                                 maxDailyLossUsd: maxDailyLoss,
-                                todayTradeCount: todayTradeCount + todayInflightCount,
+                                todayTradeCount: exitDayCount + exitInflightCount,
                                 maxTradesPerDay,
                                 tradingMode,
                             },
@@ -684,6 +742,8 @@ async function handler(req: Request): Promise<Response> {
                             position: {
                                 quantity: position.quantity,
                                 avgPrice: safeNumber(Number(position.avgPrice), 0),
+                                // How long it has been held — material to a scale-out call.
+                                openedAt: position.openedAt ?? null,
                             },
                             budget: null,
                             exit: { trigger: exitTrigger, ruleReason: evaluation.reason },
@@ -714,7 +774,7 @@ async function handler(req: Request): Promise<Response> {
                         positionQuantity: position.quantity,
                         fraction: exitFraction,
                         trigger: exitTrigger,
-                        hard: evaluation.hard,
+                        hard: hardExit,
                     });
                     const exitDetail = gateDetail({
                         kind: 'exit',
@@ -724,6 +784,16 @@ async function handler(req: Request): Promise<Response> {
                         outcome: exitOutcome,
                         quantity: exitQty,
                     });
+                    /**
+                     * Audit payload for every exit outcome, including the ones that end
+                     * without a trade. Without the gate block on those, "broker rejected it"
+                     * is unreconstructable after the fact: how many shares the gate sized and
+                     * why are gone.
+                     */
+                    const exitAudit = (order?: Record<string, unknown>) =>
+                        order
+                            ? { ...exitDetail, order: { intendedQty: exitQty, ...order } }
+                            : exitDetail;
 
                     if (exitQty === 0) {
                         // fraction 0 is a deliberate "not this tick" call, not a failure — the
@@ -739,7 +809,27 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // Kill-switch re-check, deliberately AFTER the gate and immediately before
+                    // the order: the gate call can block for up to 25s per symbol, and a run
+                    // with several positions would otherwise keep firing orders for minutes
+                    // after the operator flipped the switch.
+                    //
+                    // Yes, this blocks liquidation too — unlike the loss breakers above. The
+                    // kill switch is not a risk breaker, it is the operator saying "touch
+                    // nothing" (e.g. they are about to trade the account by hand), and the
+                    // pre-existing contract already halts every order on it.
+                    if (!((await getConfigValue<boolean>(db, 'trading_enabled')) ?? true)) {
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'trading_disabled_mid_loop',
+                            score: 0,
+                            detail: exitDetail,
+                        });
+                        continue;
+                    }
+
                     // Execute the exit
+                    exitedSymbols.add(position.symbol);
                     let decisionPushed = false;
                     switch (tradingMode) {
                         case 'dry_run':
@@ -755,7 +845,17 @@ async function handler(req: Request): Promise<Response> {
                                         );
                                         if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
                                     } else {
-                                        await reducePositionQuantity(tx, position.id, exitQty);
+                                        // 0 rows matched = the position was closed/shrunk by
+                                        // reconcile or a manual close while we were in the
+                                        // gate. Booking the trade anyway would leave a sell
+                                        // with realized PnL against an untouched position and
+                                        // poison the daily-loss breaker's input.
+                                        const reduced = await reducePositionQuantity(
+                                            tx,
+                                            position.id,
+                                            exitQty,
+                                        );
+                                        if (!reduced) throw new Error('POSITION_ALREADY_CLOSED');
                                     }
                                     await insertTrade(tx, {
                                         symbol: position.symbol,
@@ -807,6 +907,7 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'already_closed',
                                         score: 0,
+                                        detail: exitAudit({ mode: 'dry_run' }),
                                     });
                                     decisionPushed = true;
                                 } else {
@@ -863,13 +964,17 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'skipped_not_sellable',
                                         score: 0,
+                                        detail: exitAudit({ sellable }),
                                     });
                                     decisionPushed = true;
                                     break;
                                 }
                                 sellQty = clamped;
                             }
-                            const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
+                            // `-reeval-sell` distinguishes this from the watchlist loop's
+                            // signal sell: both can fire for one symbol in one run (partial
+                            // exit leaves a position behind), and `idempotency_key` is unique.
+                            const exitIdempotencyKey = `${cronRunId}-${position.symbol}-reeval-sell`;
                             const clientOrderId = crypto.randomUUID();
                             await createOrderTracking(db, {
                                 idempotencyKey: exitIdempotencyKey,
@@ -917,6 +1022,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: position.symbol,
                                     action: 'order_rejected',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        status: orderResult.status,
+                                        rejectReason: orderResult.rejectReason ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 await notifyError(
@@ -950,6 +1060,12 @@ async function handler(req: Request): Promise<Response> {
                                             ? 'order_partial'
                                             : 'order_submitted',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        status: orderResult.status,
+                                        filledQuantity: orderResult.filledQuantity ?? null,
+                                        orderId: orderResult.orderId ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -978,6 +1094,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: position.symbol,
                                     action: 'needs_review',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        filledQuantity: filledQ,
+                                        filledPrice: orderResult.avgFilledPrice ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -994,11 +1115,14 @@ async function handler(req: Request): Promise<Response> {
                                         );
                                         if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
                                     } else {
-                                        await reducePositionQuantity(
+                                        // See the dry_run branch: a no-match reduce must roll
+                                        // the whole booking back, never book a phantom sell.
+                                        const reduced = await reducePositionQuantity(
                                             tx,
                                             position.id,
                                             actualExitQty,
                                         );
+                                        if (!reduced) throw new Error('POSITION_ALREADY_CLOSED');
                                     }
                                     await insertTrade(tx, {
                                         symbol: position.symbol,
@@ -1036,6 +1160,11 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'already_closed',
                                         score: 0,
+                                        detail: exitAudit({
+                                            mode: 'auto',
+                                            filledQuantity: actualExitQty,
+                                            filledPrice: filledSellPrice,
+                                        }),
                                     });
                                     decisionPushed = true;
                                     break;
@@ -1109,7 +1238,10 @@ async function handler(req: Request): Promise<Response> {
             }
             currentExposure += pendingBuyExposure;
 
-            for (const item of watchlistItems) {
+            // A tripped risk breaker skips the whole watchlist pass — new entries obviously,
+            // and signal sells with them: the re-evaluation loop above already had first
+            // refusal on every held position (and under a loss breaker sold each in full).
+            for (const item of entryBlock ? [] : watchlistItems) {
                 try {
                     // Gather latest analysis results
                     const [tech, news, options, fundamental, congress] = await Promise.all([
@@ -1216,21 +1348,95 @@ async function handler(req: Request): Promise<Response> {
                     };
                     const maxPlan = planEntry({ ...entryPlanInputs, fraction: 1 });
 
-                    // Per-symbol cap exhausted on a symbol we already hold. This has to run
-                    // *before* makeTradeDecision: afterwards the decision is 'hold' with
-                    // calculatedSize 0, which falls into the '잔고 부족' branch below and mails
-                    // the operator about the total-exposure limit when the real cause is the
-                    // per-symbol one. Restricted to buy signals so a sell/hold on a fully
-                    // funded symbol still takes its normal path.
+                    /** Which budget zeroed the plan, in words, for the trade row + email. */
+                    const budgetCause = (limitedBy: EntryPlan['limitedBy']) => {
+                        if (limitedBy === 'total') {
+                            return `최대 노출 한도 초과 (총 노출 $${currentExposure.toFixed(2)} / 한도 $${maxTotalExposure})`;
+                        }
+                        if (limitedBy === 'cash') {
+                            const cash =
+                                remainingBuyingPower == null
+                                    ? '미상'
+                                    : `$${remainingBuyingPower.toFixed(2)}`;
+                            return `매수 가능 현금 부족 (현금 ${cash} / 주가 $${currentPrice.toFixed(2)})`;
+                        }
+                        if (limitedBy === 'symbol') {
+                            return `종목당 최대 투자 금액 소진 (이 종목 $${existingSymbolExposure.toFixed(2)} / 한도 $${maxPositionSize})`;
+                        }
+                        return `예산 산정 불가 (주가 $${currentPrice.toFixed(2)})`;
+                    };
+                    /** Audit payload for a buy that can't be funded — records the real cause. */
+                    const budgetDetail = {
+                        limitedBy: maxPlan.limitedBy,
+                        fullBudget: maxPlan.fullBudget,
+                        price: currentPrice,
+                        existingSymbolExposure,
+                        currentExposure,
+                        maxPositionSize,
+                        maxTotalExposure,
+                        availableCash: remainingBuyingPower,
+                    };
+                    /**
+                     * Buy signal with a zero budget: skipped-trade row + operator email, the
+                     * pre-gate behavior. Used from both the pre-`makeTradeDecision` branch
+                     * below and the post-decision 'hold' branch further down.
+                     */
+                    const recordUnfundedBuy = async () => {
+                        const cause = budgetCause(maxPlan.limitedBy);
+                        await insertTrade(db, {
+                            symbol: item.symbol,
+                            side: 'buy',
+                            orderType: 'market',
+                            quantity: 0,
+                            price: currentPrice,
+                            executedAt: new Date(),
+                            reason: `잔고 부족 — 신호 ${signalScore.total}/100 매수 신호 발생했으나 ${cause}로 미실행`,
+                            mode: 'skipped',
+                            cronRunId,
+                        });
+                        await notifyError(
+                            `잔고 부족: ${item.symbol}`,
+                            `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n원인: ${cause}\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
+                        );
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'skipped',
+                            score: signalScore.total,
+                            detail: {
+                                ...scoreDecisionDetail(
+                                    signalScore,
+                                    buyThreshold,
+                                    sellThreshold,
+                                    techReferenceTime,
+                                ),
+                                budget: budgetDetail,
+                            },
+                        });
+                    };
+
+                    // Budget exhausted on a symbol we already hold. This has to run *before*
+                    // makeTradeDecision: afterwards the decision is 'hold' with calculatedSize
+                    // 0, which falls into the '잔고 부족' branch below. Restricted to buy
+                    // signals so a sell/hold on a fully funded symbol still takes its normal
+                    // path.
                     if (
                         existingPosition &&
                         signalScore.signal === 'buy' &&
                         maxPlan.quantity === 0
                     ) {
+                        // A full per-symbol cap is a normal steady state — record it and move
+                        // on. Any other cause (total exposure / cash / bad price) is the same
+                        // condition the position-less path alerts on, so it gets the same
+                        // skipped-trade row and email instead of vanishing silently.
+                        if (maxPlan.limitedBy !== 'symbol') {
+                            await recordUnfundedBuy();
+                            continue;
+                        }
                         decisions.push({
                             symbol: item.symbol,
                             action: 'symbol_limit_reached',
                             score: signalScore.total,
+                            detail: { budget: budgetDetail },
                         });
                         continue;
                     }
@@ -1267,6 +1473,19 @@ async function handler(req: Request): Promise<Response> {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'cooldown_after_stop_loss',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+
+                    // Same-tick double-sell guard: the re-evaluation loop already acted on this
+                    // symbol. A partial exit leaves the position open, so without this the low
+                    // overall score that usually accompanies a stop-loss would fire a *second*
+                    // sell for the same symbol on the same tick.
+                    if (decision.action === 'sell' && exitedSymbols.has(item.symbol)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'exit_already_handled',
                             score: decision.score,
                         });
                         continue;
@@ -1326,28 +1545,7 @@ async function handler(req: Request): Promise<Response> {
                         signalScore.signal === 'buy' &&
                         maxPlan.quantity === 0
                     ) {
-                        await insertTrade(db, {
-                            symbol: item.symbol,
-                            side: 'buy',
-                            orderType: 'market',
-                            quantity: 0,
-                            price: currentPrice,
-                            executedAt: new Date(),
-                            reason: `잔고 부족 — 신호 ${signalScore.total}/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행`,
-                            mode: 'skipped',
-                            cronRunId,
-                        });
-
-                        await notifyError(
-                            `잔고 부족: ${item.symbol}`,
-                            `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
-                        );
-
-                        decisions.push({
-                            symbol: item.symbol,
-                            action: 'skipped',
-                            score: signalScore.total,
-                        });
+                        await recordUnfundedBuy();
                         continue;
                     }
 
@@ -1382,11 +1580,35 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // semi_auto duplicate-approval guard. Must precede the gate: while an
+                    // approval sits unanswered this branch fires every tick, and behind the
+                    // gate each of those ticks burned a 25s LLM call whose answer was thrown
+                    // away.
+                    if (tradingMode === 'semi_auto') {
+                        const existingPending = (await getPendingOrders(db)).find(
+                            (o) => o.symbol === item.symbol && o.status === 'pending',
+                        );
+                        if (existingPending) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'pending_exists',
+                                score: decision.score,
+                                detail: scoreDecisionDetail(
+                                    signalScore,
+                                    buyThreshold,
+                                    sellThreshold,
+                                    techReferenceTime,
+                                ),
+                            });
+                            continue;
+                        }
+                    }
+
                     // --- Sizing gate ---
                     // Deliberately last: every rule-engine guard above (stop-loss cooldown,
-                    // in-flight orders, phantom sell, kill switch, daily limits) has already
-                    // run, so an LLM call only happens on a path that is actually going to
-                    // place an order.
+                    // in-flight orders, phantom sell, kill switch, daily limits, duplicate
+                    // approvals) has already run, so an LLM call only happens on a path that
+                    // is actually going to place an order.
                     const scoreDetail = scoreDecisionDetail(
                         signalScore,
                         buyThreshold,
@@ -1425,6 +1647,9 @@ async function handler(req: Request): Promise<Response> {
                         ? {
                               quantity: existingPosition.quantity,
                               avgPrice: safeNumber(Number(existingPosition.avgPrice), 0),
+                              // How long it has been held — material to both an add-on and a
+                              // scale-out call.
+                              openedAt: existingPosition.openedAt ?? null,
                           }
                         : null;
                     const gateCommon = {
@@ -1443,7 +1668,7 @@ async function handler(req: Request): Promise<Response> {
                         userApiKey: gateApiKey,
                     };
 
-                    let entryDetail: ReturnType<typeof gateDetail> | undefined;
+                    let gateAudit: ReturnType<typeof gateDetail> | undefined;
 
                     if (decision.action === 'buy' || decision.action === 'average_in') {
                         // Entries are fail-CLOSED: no fraction, no order. A missed buy is a
@@ -1524,7 +1749,7 @@ async function handler(req: Request): Promise<Response> {
                             entryFraction === 1
                                 ? maxPlan
                                 : planEntry({ ...entryPlanInputs, fraction: entryFraction });
-                        entryDetail = gateDetail({
+                        gateAudit = gateDetail({
                             kind: 'entry',
                             source: entrySource,
                             model: gateConfig.modelId,
@@ -1541,7 +1766,7 @@ async function handler(req: Request): Promise<Response> {
                                 score: decision.score,
                                 executed: false,
                                 reason: decision.reason,
-                                detail: { ...scoreDetail, ...entryDetail },
+                                detail: { ...scoreDetail, ...gateAudit },
                             });
                             continue;
                         }
@@ -1553,13 +1778,17 @@ async function handler(req: Request): Promise<Response> {
                         let sellOutcome: TradeGateOutcome | null = null;
                         if (gateConfig.enabled && Date.now() > gateDeadlineMs) {
                             sellSource = 'deadline';
+                            await notifyError(
+                                `게이트 컷오프: ${item.symbol}`,
+                                `실행 시작 후 600초를 넘겨 청산 사이징 게이트를 건너뛰고 전량 매도합니다.`,
+                            );
                         } else if (gateConfig.enabled) {
                             sellOutcome = await runTradeGate({
                                 ...gateCommon,
                                 kind: 'exit',
                                 budget: null,
                                 exit: { trigger: 'signal_sell', ruleReason: decision.reason },
-                                correlationId: `${cronRunId}-${item.symbol}-exit`,
+                                correlationId: `${cronRunId}-${item.symbol}-signal-sell`,
                             });
                             if (sellOutcome.status === 'ok') {
                                 sellFraction = sellOutcome.fraction;
@@ -1577,7 +1806,7 @@ async function handler(req: Request): Promise<Response> {
                             fraction: sellFraction,
                             trigger: 'signal_sell',
                         });
-                        entryDetail = gateDetail({
+                        gateAudit = gateDetail({
                             kind: 'exit',
                             source: sellSource,
                             model: gateConfig.modelId,
@@ -1592,15 +1821,42 @@ async function handler(req: Request): Promise<Response> {
                                 score: decision.score,
                                 executed: false,
                                 reason: decision.reason,
-                                detail: { ...scoreDetail, ...entryDetail },
+                                detail: { ...scoreDetail, ...gateAudit },
                             });
                             continue;
                         }
                         decision = { ...decision, quantity: sellQty };
                     }
 
+                    // Kill-switch re-check, AFTER the gate and immediately before the order.
+                    // The guard further up runs before a gate call that can block 25s per
+                    // symbol, so on a multi-symbol run it leaves minutes in which the operator
+                    // has flipped the switch and orders still go out. Sells are stopped too:
+                    // the kill switch is not a risk breaker but an explicit "touch nothing",
+                    // and halting every order on it is the pre-existing contract.
+                    if (!((await getConfigValue<boolean>(db, 'trading_enabled')) ?? true)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'trading_disabled_mid_loop',
+                            score: decision.score,
+                            detail: { ...scoreDetail, ...(gateAudit ?? {}) },
+                        });
+                        continue;
+                    }
+
                     // Execute based on mode (snapshot from run start)
                     let decisionPushed = false;
+                    /**
+                     * Audit payload for every branch below, including the ones that end
+                     * without a trade. The gate block has to ride along on those too —
+                     * otherwise a broker rejection loses the record of how big the order was
+                     * and why the gate sized it that way.
+                     */
+                    const execAudit = (order?: Record<string, unknown>) => ({
+                        ...scoreDetail,
+                        ...(gateAudit ?? {}),
+                        ...(order ? { order: { intendedQty: decision.quantity, ...order } } : {}),
+                    });
                     switch (tradingMode) {
                         case 'dry_run':
                             if (decision.action === 'buy' || decision.action === 'average_in') {
@@ -1669,11 +1925,18 @@ async function handler(req: Request): Promise<Response> {
                                                 if (!closed)
                                                     throw new Error('POSITION_ALREADY_CLOSED');
                                             } else {
-                                                await reducePositionQuantity(
+                                                // A no-match reduce means the position was
+                                                // closed/shrunk elsewhere (reconcile, manual
+                                                // close) while the gate was running — roll the
+                                                // whole booking back rather than record a sell
+                                                // that moved nothing.
+                                                const reduced = await reducePositionQuantity(
                                                     tx,
                                                     existingSellPos.id,
                                                     decision.quantity,
                                                 );
+                                                if (!reduced)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
                                             }
                                             await insertTrade(tx, {
                                                 symbol: item.symbol,
@@ -1716,6 +1979,7 @@ async function handler(req: Request): Promise<Response> {
                                                 symbol: item.symbol,
                                                 action: 'already_closed',
                                                 score: decision.score,
+                                                detail: execAudit({ mode: 'dry_run' }),
                                             });
                                             decisionPushed = true;
                                         } else {
@@ -1728,6 +1992,7 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: item.symbol,
                                         action: 'no_position_to_sell',
                                         score: decision.score,
+                                        detail: execAudit({ mode: 'dry_run' }),
                                     });
                                     decisionPushed = true;
                                 }
@@ -1747,19 +2012,7 @@ async function handler(req: Request): Promise<Response> {
                             break;
 
                         case 'semi_auto': {
-                            // Prevent duplicate pending orders for the same symbol
-                            const existingPending = (await getPendingOrders(db)).find(
-                                (o) => o.symbol === item.symbol && o.status === 'pending',
-                            );
-                            if (existingPending) {
-                                decisions.push({
-                                    symbol: item.symbol,
-                                    action: 'pending_exists',
-                                    score: decision.score,
-                                });
-                                decisionPushed = true;
-                                break;
-                            }
+                            // Duplicate-approval guard lives above, ahead of the gate.
                             const pendingSide =
                                 decision.action === 'average_in' ? 'buy' : decision.action;
                             await insertPendingOrder(db, {
@@ -1791,6 +2044,8 @@ async function handler(req: Request): Promise<Response> {
                                 action: decision.action,
                                 score: decision.score,
                                 executed: false,
+                                reason: decision.reason,
+                                detail: execAudit({ mode: 'semi_auto', side: pendingSide }),
                             });
                             decisionPushed = true;
                             break;
@@ -1812,6 +2067,7 @@ async function handler(req: Request): Promise<Response> {
                                     action: 'skipped_no_buying_power',
                                     score: decision.score,
                                     executed: false,
+                                    detail: execAudit({ availableCash: null }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1827,6 +2083,10 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'skipped_insufficient_cash',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        cost: currentPrice * autoQuantity,
+                                        availableCash: remainingBuyingPower,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1846,6 +2106,7 @@ async function handler(req: Request): Promise<Response> {
                                             symbol: item.symbol,
                                             action: 'skipped_not_sellable',
                                             score: decision.score,
+                                            detail: execAudit({ sellable }),
                                         });
                                         decisionPushed = true;
                                         break;
@@ -1854,7 +2115,13 @@ async function handler(req: Request): Promise<Response> {
                                 }
                             }
 
-                            const idempotencyKey = `${cronRunId}-${item.symbol}-${autoSide}`;
+                            // `signal-sell` (not bare `sell`) so a partial exit booked by the
+                            // re-evaluation loop earlier in this same run cannot collide on
+                            // `order_tracking.idempotency_key`.
+                            const idempotencyKey =
+                                autoSide === 'sell'
+                                    ? `${cronRunId}-${item.symbol}-signal-sell`
+                                    : `${cronRunId}-${item.symbol}-${autoSide}`;
                             const clientOrderId = crypto.randomUUID();
                             await createOrderTracking(db, {
                                 idempotencyKey,
@@ -1903,6 +2170,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'order_rejected',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        status: orderResult.status,
+                                        rejectReason: orderResult.rejectReason ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 await notifyError(
@@ -1964,6 +2236,12 @@ async function handler(req: Request): Promise<Response> {
                                             ? 'order_partial'
                                             : 'order_submitted',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        status: orderResult.status,
+                                        filledQuantity: orderResult.filledQuantity ?? null,
+                                        orderId: orderResult.orderId ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1992,6 +2270,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'needs_review',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        filledQuantity: filledQ,
+                                        filledPrice: orderResult.avgFilledPrice ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -2056,11 +2339,15 @@ async function handler(req: Request): Promise<Response> {
                                                 if (!closed)
                                                     throw new Error('POSITION_ALREADY_CLOSED');
                                             } else {
-                                                await reducePositionQuantity(
+                                                // See the dry_run branch — never book a sell
+                                                // whose position update matched no rows.
+                                                const reduced = await reducePositionQuantity(
                                                     tx,
                                                     existingSellPos.id,
                                                     actualQuantity,
                                                 );
+                                                if (!reduced)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
                                             }
                                             await insertTrade(tx, {
                                                 symbol: item.symbol,
@@ -2098,6 +2385,11 @@ async function handler(req: Request): Promise<Response> {
                                                 symbol: item.symbol,
                                                 action: 'already_closed',
                                                 score: decision.score,
+                                                detail: execAudit({
+                                                    mode: 'auto',
+                                                    filledQuantity: actualQuantity,
+                                                    filledPrice,
+                                                }),
                                             });
                                             decisionPushed = true;
                                             break;
@@ -2176,7 +2468,7 @@ async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                             executed: true,
                             reason: decision.reason,
-                            detail: { ...scoreDetail, ...(entryDetail ?? {}) },
+                            detail: { ...scoreDetail, ...(gateAudit ?? {}) },
                         });
                     }
                 } catch (err) {
@@ -2191,18 +2483,28 @@ async function handler(req: Request): Promise<Response> {
             }, {});
             finishState = {
                 status: 'completed',
-                outcome: 'completed',
+                // A run that only liquidated keeps the breaker's outcome so the health view
+                // still shows *why* nothing was bought; `exitOnly` says the run did happen.
+                outcome: entryBlock ? entryBlock.outcome : 'completed',
                 summary: {
                     symbolsEvaluated: decisions.length,
                     decisionsByAction,
                     pendingBuyExposure,
                     pendingBuyExposureMissingPrice,
+                    ...(entryBlock
+                        ? {
+                              exitOnly: true,
+                              entriesBlockedBy: entryBlock.outcome,
+                              exitsForcedFull: forceFullExit,
+                          }
+                        : {}),
                 },
                 ...elapsed(),
             };
             return Response.json({
                 cronRunId,
                 tradingMode,
+                ...(entryBlock ? { exitOnly: true, entriesBlockedBy: entryBlock.outcome } : {}),
                 decisions: decisions.map(publicDecision),
             });
         } finally {

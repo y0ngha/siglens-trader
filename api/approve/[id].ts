@@ -302,7 +302,13 @@ async function handler(req: Request): Promise<Response> {
                 } else {
                     // Partial close
                     await db.transaction(async (tx) => {
-                        await reducePositionQuantity(tx, pos.id, actualQuantity);
+                        // 0 rows matched = the position was closed or shrunk between the
+                        // lookup above and here (reconcile, execute cron, manual close).
+                        // Booking the trade anyway would record a sell with realized PnL
+                        // against a position that never moved — and that PnL feeds the daily
+                        // loss circuit breaker. Same contract as the full-close branch.
+                        const reduced = await reducePositionQuantity(tx, pos.id, actualQuantity);
+                        if (!reduced) throw new Error('POSITION_ALREADY_CLOSED');
                         await insertTrade(tx, {
                             symbol: order.symbol,
                             side: order.side,

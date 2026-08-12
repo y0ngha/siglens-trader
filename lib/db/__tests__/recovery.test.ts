@@ -436,6 +436,80 @@ describe('autoRecoverFilledOrders', () => {
         expect(mockClosePosition).not.toHaveBeenCalled();
     });
 
+    it('fails the recovery when the partial reduce matches no rows', async () => {
+        // The position was looked up outside the transaction; if it moved in between,
+        // the UPDATE matches nothing and the recovery must abort rather than book a
+        // sell (with realized PnL) against an untouched position.
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 2,
+            idempotencyKey: 'exec-def-TSLA-sell',
+            symbol: 'TSLA',
+            side: 'sell',
+            quantity: 3,
+            filledPrice: '250.00',
+            submittedAt: new Date('2026-05-24T11:00:00Z'),
+            resolvedAt: new Date('2026-05-24T11:01:00Z'),
+            cronRunId: 'run-2',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 7,
+            symbol: 'TSLA',
+            quantity: 10,
+            avgPrice: '200.00',
+            status: 'open',
+        } as any);
+        mockReducePositionQuantity.mockResolvedValueOnce(false);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(0);
+        expect(result.failed).toBe(1);
+        expect(result.details[0]).toContain('자동 복구 실패');
+        expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+    });
+
+    it('fails the recovery when the full close matches no rows', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 2,
+            idempotencyKey: 'exec-def-TSLA-sell',
+            symbol: 'TSLA',
+            side: 'sell',
+            quantity: 10,
+            filledPrice: '250.00',
+            submittedAt: new Date('2026-05-24T11:00:00Z'),
+            resolvedAt: new Date('2026-05-24T11:01:00Z'),
+            cronRunId: 'run-2',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 7,
+            symbol: 'TSLA',
+            quantity: 10,
+            avgPrice: '200.00',
+            status: 'open',
+        } as any);
+        mockClosePosition.mockResolvedValueOnce(false);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(0);
+        expect(result.failed).toBe(1);
+        expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+    });
+
     it('fails when filledPrice is missing or zero', async () => {
         const mockDb = createChainableMockDb();
         const orderNoPrice = {

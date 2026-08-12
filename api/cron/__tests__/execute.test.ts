@@ -3545,12 +3545,21 @@ describe('execute cron handler', () => {
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
-            // totalPnl = -200 + (-350) = -550 < -500 -> halts
-            expect(body.skipped).toBe(true);
-            expect(body.reason).toBe('daily_loss_limit_reached');
-            expect(body.todayPnl).toBe(-200);
-            expect(body.unrealizedPnl).toBe(-350);
-            expect(body.totalPnl).toBe(-550);
+            // totalPnl = -200 + (-350) = -550 < -500 -> entries blocked, exits keep running
+            // (C1: a risk breaker must never block the risk-reducing path).
+            expect(body.skipped).toBeUndefined();
+            expect(body.exitOnly).toBe(true);
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({
+                    status: 'completed',
+                    outcome: 'daily_loss_limit',
+                    summary: expect.objectContaining({ exitOnly: true, exitsForcedFull: true }),
+                }),
+            );
         });
 
         it('sends error email with correct amounts when unrealized PnL triggers halt', async () => {
@@ -4015,7 +4024,7 @@ describe('execute cron handler', () => {
 
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
                 fakeDb,
-                expect.stringMatching(/^exec-.*-AAPL-sell$/),
+                expect.stringMatching(/^exec-.*-AAPL-reeval-sell$/),
                 expect.objectContaining({
                     status: 'error',
                     resolvedAt: expect.any(Date),
@@ -6127,7 +6136,7 @@ describe('execute cron handler', () => {
                     signal: null,
                     budget: null,
                     exit: { trigger: 'take_profit', ruleReason: '목표가 근접' },
-                    position: { quantity: 10, avgPrice: 100 },
+                    position: { quantity: 10, avgPrice: 100, openedAt: null },
                     correlationId: expect.stringContaining('-AAPL-exit'),
                 }),
             );
@@ -6282,6 +6291,643 @@ describe('execute cron handler', () => {
                 score: 20,
                 executed: false,
             });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Trade-pipeline audit fixes (C1–L4)
+    // -----------------------------------------------------------------------
+
+    describe('audit fixes', () => {
+        const heldPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+            openedAt: new Date('2026-05-20T13:35:00.000Z'),
+        };
+
+        /** One held AAPL position at $95, plus AAPL on the watchlist with a buy signal. */
+        function breakerSetup(config: Record<string, unknown>) {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key in config ? config[key] : null),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue([heldPosition]);
+            mockGetOpenPositionBySymbol.mockResolvedValue(heldPosition);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 95 } } }
+                            : null,
+                    ),
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockClosePosition.mockResolvedValue(true);
+        }
+
+        function gateOk(fraction: number, confidence = 70) {
+            mockRunTradeGate.mockResolvedValue({
+                status: 'ok',
+                fraction,
+                confidence,
+                reason: '게이트 판단',
+                model: 'deepseek-v4-flash',
+            });
+        }
+
+        /** Watchlist-driven signal sell on a held position (no re-evaluation exit). */
+        function signalSellSetup(mode: 'dry_run' | 'auto') {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? mode : null),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetOpenPositionBySymbol.mockResolvedValue(heldPosition);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(type === 'technical' ? fakeTechResult : null),
+            );
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 150,
+                filledQuantity: quantity,
+            }));
+        }
+
+        /** The decision audit rows handed to insertCronDecisions. */
+        function auditRows() {
+            const call = mockInsertCronDecisions.mock.calls.at(-1);
+            return (call?.[3] ?? []) as Array<{
+                symbol?: string;
+                action: string;
+                detail?: Record<string, unknown>;
+            }>;
+        }
+
+        // -------------------------------------------------------------------
+        // C1 — a risk breaker blocks new risk, never the risk-reducing path
+        // -------------------------------------------------------------------
+
+        it('C1 daily loss limit: the re-evaluation loop still runs and exits in full', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '지지선 이탈',
+            });
+            gateOk(0.3); // would only sell 3 of 10 — the breaker must override it
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Gate bypassed, whole position sold.
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+            expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ side: 'sell', quantity: 10 }),
+            );
+            expect(body.exitOnly).toBe(true);
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+        });
+
+        it('C1 daily loss limit: the watchlist entry pass is skipped', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // No buy of any kind, and the symbol never reaches the watchlist decisions.
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(body.decisions).toEqual([
+                { symbol: 'AAPL', action: 'hold', score: 0, executed: false },
+            ]);
+        });
+
+        it('C1 daily trade limit: exits keep running (gate-sized), entries are skipped', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_trades_per_day: 5 });
+            mockGetTodayTradeCount.mockResolvedValue(5);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.5); // trade-limit breach does NOT force a full exit
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 5);
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(body.entriesBlockedBy).toBe('daily_trade_limit');
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({
+                    status: 'completed',
+                    outcome: 'daily_trade_limit',
+                    summary: expect.objectContaining({ exitOnly: true, exitsForcedFull: false }),
+                }),
+            );
+        });
+
+        it('C1 regression: the kill switch still halts everything, exits included', async () => {
+            breakerSetup({ trading_mode: 'dry_run', trading_enabled: false });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '지지선 이탈',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({ skipped: true, reason: 'trading_disabled' });
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
+        it('C1: a breaker with nothing held still returns the old skipped response', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body).toEqual({
+                skipped: true,
+                reason: 'daily_loss_limit_reached',
+                todayPnl: -600,
+                limit: 500,
+            });
+        });
+
+        // -------------------------------------------------------------------
+        // C2 — a no-match reducePositionQuantity must roll the booking back
+        // -------------------------------------------------------------------
+
+        it('C2 dry_run exit: a failed partial reduce books no trade', async () => {
+            breakerSetup({ trading_mode: 'dry_run' });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.4);
+            mockReducePositionQuantity.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 4);
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'already_closed' }),
+            );
+        });
+
+        it('C2 auto exit: a failed partial reduce books no trade', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 95,
+                filledQuantity: quantity,
+            }));
+            gateOk(0.4);
+            mockReducePositionQuantity.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 4, expect.any(String));
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'already_closed' }),
+            );
+        });
+
+        it('C2 dry_run signal sell: a failed partial reduce books no trade', async () => {
+            signalSellSetup('dry_run');
+            gateOk(0.4);
+            mockReducePositionQuantity.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 4);
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'already_closed' }),
+            );
+        });
+
+        it('C2 auto signal sell: a failed partial reduce books no trade', async () => {
+            signalSellSetup('auto');
+            gateOk(0.4);
+            mockReducePositionQuantity.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 4, expect.any(String));
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'already_closed' }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // H1 — a zero budget that is NOT the per-symbol cap must still alert
+        // -------------------------------------------------------------------
+
+        it('H1: total-exposure exhaustion on a held symbol alerts instead of failing silently', async () => {
+            breakerSetup({
+                trading_mode: 'dry_run',
+                max_position_size: 100_000,
+                max_total_exposure: 0,
+            });
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '잔고 부족: AAPL',
+                expect.stringContaining('최대 노출 한도 초과'),
+
+                'test@example.com',
+            );
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ mode: 'skipped', quantity: 0 }),
+            );
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'skipped',
+                score: 80,
+            });
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'skipped',
+                    detail: expect.objectContaining({
+                        budget: expect.objectContaining({ limitedBy: 'total', fullBudget: 0 }),
+                    }),
+                }),
+            );
+        });
+
+        it('H1: a full per-symbol cap stays a quiet symbol_limit_reached, with the cause recorded', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_position_size: 100 });
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'symbol_limit_reached',
+                score: 80,
+            });
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'symbol_limit_reached',
+                    detail: expect.objectContaining({
+                        budget: expect.objectContaining({ limitedBy: 'symbol' }),
+                    }),
+                }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // H2 — one symbol is never sold twice in a single tick
+        // -------------------------------------------------------------------
+
+        it('H2: a symbol partially exited by the re-evaluation loop is skipped by the watchlist sell', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 6,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 95,
+                filledQuantity: quantity,
+            }));
+            gateOk(0.4);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // Exactly one sell order, from the re-evaluation loop.
+            expect(mockExecuteSellOrder).toHaveBeenCalledTimes(1);
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 4, expect.any(String));
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'exit_already_handled',
+                score: 20,
+            });
+        });
+
+        it('H2: the two sell loops use distinct idempotency keys', async () => {
+            // Re-evaluation exit only — its key must carry the loop tag so a watchlist
+            // signal sell in the same run cannot collide on the unique index.
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 95,
+                filledQuantity: quantity,
+            }));
+            gateOk(0.4);
+
+            await handler(makeRequest(true));
+
+            expect(mockCreateOrderTracking).toHaveBeenCalledTimes(1);
+            expect(mockCreateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({
+                    idempotencyKey: expect.stringMatching(/-AAPL-reeval-sell$/),
+                }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // H3 — the kill switch is re-read after the gate, before the order
+        // -------------------------------------------------------------------
+
+        it('H3 entry: a kill switch flipped during the gate call stops the order', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetOpenPositionBySymbol.mockResolvedValue(null);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+            gateOk(1);
+            // true until the gate has answered, false on the post-gate re-read.
+            let enabledReads = 0;
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                if (key === 'max_position_size') return Promise.resolve(1500);
+                if (key === 'trading_enabled') {
+                    enabledReads += 1;
+                    return Promise.resolve(enabledReads < 3);
+                }
+                return Promise.resolve(null);
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockRunTradeGate).toHaveBeenCalled();
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'trading_disabled_mid_loop' }),
+            );
+        });
+
+        it('H3 exit: a kill switch flipped during the gate call stops the sell', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.5);
+            let enabledReads = 0;
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('auto');
+                if (key === 'trading_enabled') {
+                    enabledReads += 1;
+                    return Promise.resolve(enabledReads < 2);
+                }
+                return Promise.resolve(null);
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockRunTradeGate).toHaveBeenCalled();
+            expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+            expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'trading_disabled_mid_loop' }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // M4 — every no-trade branch keeps the gate audit
+        // -------------------------------------------------------------------
+
+        it('M4: a rejected exit order records the gate block and the submitted quantity', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.4);
+            mockExecuteSellOrder.mockResolvedValue({
+                orderId: 'ord-9',
+                status: 'rejected',
+                rejectReason: '증거금 부족',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'order_rejected',
+                    detail: expect.objectContaining({
+                        gate: expect.objectContaining({ fraction: 0.4, quantity: 4 }),
+                        order: expect.objectContaining({
+                            intendedQty: 4,
+                            submittedQty: 4,
+                            rejectReason: '증거금 부족',
+                        }),
+                    }),
+                }),
+            );
+        });
+
+        it('M4: a not-sellable exit records the gate block', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.4);
+            mockGetSellableQuantity.mockResolvedValue(0);
+
+            await handler(makeRequest(true));
+
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'skipped_not_sellable',
+                    detail: expect.objectContaining({
+                        gate: expect.objectContaining({ quantity: 4 }),
+                        order: expect.objectContaining({ intendedQty: 4, sellable: 0 }),
+                    }),
+                }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // M5 — duplicate-approval guards run before the gate
+        // -------------------------------------------------------------------
+
+        it('M5: semi_auto skips the gate entirely when an approval is already queued', async () => {
+            breakerSetup({ trading_mode: 'semi_auto', max_position_size: 100_000 });
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetOpenPositionBySymbol.mockResolvedValue(null);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+            mockGetPendingOrders.mockResolvedValue([
+                { id: 7, symbol: 'AAPL', side: 'buy', status: 'pending' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(mockInsertPendingOrder).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_exists',
+                score: 80,
+            });
+        });
+
+        it('M5: the re-evaluation loop sees a queued semi_auto sell, not just in-flight orders', async () => {
+            breakerSetup({ trading_mode: 'semi_auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            mockGetPendingOrders.mockResolvedValue([
+                { id: 8, symbol: 'AAPL', side: 'sell', status: 'pending' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertPendingOrder).not.toHaveBeenCalled();
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_sell_in_progress',
+                score: 0,
+            });
+        });
+
+        // -------------------------------------------------------------------
+        // L1 / L2 / M6
+        // -------------------------------------------------------------------
+
+        it('L1: a deadline-skipped signal sell mails the operator like the exit loop does', async () => {
+            signalSellSetup('auto');
+            gateOk(0.5);
+            mockMakeTradeDecision.mockImplementation(() => {
+                vi.setSystemTime(new Date('2026-05-24T14:41:00.000Z')); // start + 660s
+                return {
+                    action: 'sell',
+                    symbol: 'AAPL',
+                    score: 20,
+                    reason: 'Score 20/100 — SELL',
+                    quantity: 10,
+                };
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '게이트 컷오프: AAPL',
+                expect.stringContaining('전량 매도'),
+
+                'test@example.com',
+            );
+        });
+
+        it('L2: the exit gate sees the re-queried fill count, like the watchlist gate does', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.5);
+            mockGetTodayTradeCount.mockResolvedValueOnce(2).mockResolvedValue(6);
+            mockGetTodayInflightOrderCount.mockResolvedValue(1);
+
+            await handler(makeRequest(true));
+
+            expect(mockRunTradeGate).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    account: expect.objectContaining({ todayTradeCount: 7 }),
+                }),
+            );
+        });
+
+        it('M6: the gate prompt receives the position open time', async () => {
+            breakerSetup({ trading_mode: 'auto' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            gateOk(0.5);
+
+            await handler(makeRequest(true));
+
+            expect(mockRunTradeGate).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    position: expect.objectContaining({ openedAt: heldPosition.openedAt }),
+                }),
+            );
         });
     });
 });

@@ -428,6 +428,119 @@ describe('CronRunsPage', () => {
         expect(pre).toHaveTextContent('"technical": 50');
     });
 
+    it('renders the gate block alongside score components (merged detail shape)', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 204,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'MSFT',
+                    action: 'gate_error',
+                    executed: false,
+                    score: '78.0',
+                    reason: '신호 78/100 — 매수',
+                    // Real shape from execute.ts: { ...scoreDetail, ...gateDetail } — both
+                    // components and gate are present together.
+                    detail: {
+                        components: { technical: 80, news: 75, options: 78, fundamental: 79 },
+                        gate: {
+                            kind: 'entry',
+                            source: 'error',
+                            model: 'deepseek-v4-flash',
+                            fraction: 0,
+                            confidence: null,
+                            reason: '게이트 호출 타임아웃',
+                            fullBudget: 1000,
+                            trancheBudget: null,
+                            limitedBy: 'symbol',
+                            quantity: 0,
+                        },
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        const rowBtn = screen.getByRole('button', { expanded: false });
+        await user.click(rowBtn);
+
+        await waitFor(() => {
+            expect(screen.getByText('MSFT')).toBeInTheDocument();
+        });
+
+        // Score components still render
+        expect(screen.getByText(/기술 80/)).toBeInTheDocument();
+        // Gate block renders alongside — not replaced by it, and no raw JSON fallback
+        expect(screen.getByText(/게이트 error/)).toBeInTheDocument();
+        expect(screen.getByText(/한도 symbol/)).toBeInTheDocument();
+        expect(screen.getByText('게이트 호출 타임아웃')).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+        // gate_error action chip
+        expect(screen.getByText('gate_error')).toBeInTheDocument();
+    });
+
+    it('renders the gate block alone when there are no score components (entry_deferred)', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 205,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'AMZN',
+                    action: 'entry_deferred',
+                    executed: false,
+                    score: '71.0',
+                    reason: '신호 71/100 — 매수',
+                    detail: {
+                        gate: {
+                            kind: 'entry',
+                            source: 'ai',
+                            model: 'deepseek-v4-flash',
+                            fraction: 0,
+                            confidence: 40,
+                            reason: '현금 여유 부족으로 이번 틱 진입 보류',
+                            fullBudget: 200,
+                            trancheBudget: 0,
+                            limitedBy: 'cash',
+                            quantity: 0,
+                        },
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        const rowBtn = screen.getByRole('button', { expanded: false });
+        await user.click(rowBtn);
+
+        await waitFor(() => {
+            expect(screen.getByText('AMZN')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText(/게이트 ai/)).toBeInTheDocument();
+        expect(screen.getByText(/한도 cash/)).toBeInTheDocument();
+        expect(screen.getByText('현금 여유 부족으로 이번 틱 진입 보류')).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+        expect(screen.getByText('entry_deferred')).toBeInTheDocument();
+    });
+
     it('shows empty decisions message when decisions array is empty', async () => {
         const user = userEvent.setup();
         mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[1]] });

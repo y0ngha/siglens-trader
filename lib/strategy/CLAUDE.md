@@ -11,7 +11,29 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |
 | `trade-plan.ts` | Fraction (0~1) → order quantity for split entries/exits. `clampFraction` (built on `safeNumber`) normalizes any value to 0~1 without ever producing NaN, and also clamps its own `fallback`. `planEntry` sanitizes every budget input with `safeNumber` before the min/max chain (a NaN budget must never silently disable the per-symbol/total-exposure circuit breaker), clamps a tranche against symbol/total/cash budgets (with a high-price 1-share correction that also realigns `trancheBudget`), and refuses to return a non-`Number.isSafeInteger` quantity. `planExit` turns a liquidation fraction into a share count, `hard: true` bypassing it for absolute risk exits. `fallbackEntryFraction` is a deterministic 3-rung sizing ladder, exported and tested but not currently wired into any caller — see its docstring. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
-| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` itself is unchanged (still used by `lib/analysis/trade-gate.ts`); it stays a plain-number filter, it is not the price-level extractor anymore. |
+| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
+
+### `priceTargets` extraction — same bug class as `keyLevels`
+
+siglens-core's real shape is `PriceTargets = { bullish: PriceScenario | null; bearish: PriceScenario | null }`
+with `PriceScenario = { targets: { price, basis }[]; condition: string }`. **There is no `target`
+scalar.** `safeAnalysisTargetPrice` used to read `priceTargets.bullish.target`, so it always
+returned `undefined` in production — which silently disabled the "95% of target price →
+take profit" branch of `evaluateExistingPosition`, because `api/cron/execute.ts` feeds that
+value in as `targetPrice`.
+
+`safeAnalysisPriceScenario(result, 'bullish' | 'bearish')` is now the extractor: it goes through
+`safePriceLevelArray` (so both the real `{ price }` objects and bare numbers work) and still
+accepts the legacy `{ target: number }` scalar for previously-stored rows. It returns the whole
+target ladder plus `condition`, which the trade-gate prompt renders.
+
+`safeAnalysisTargetPrice` is a thin wrapper returning the **first** bullish target. Its
+single-`number` return contract is load-bearing for `execute.ts` — do not widen it; use
+`safeAnalysisPriceScenario` when more is needed.
+
+Fixtures in tests must be typed against the core interfaces (`satisfies AnalysisResponse`
+etc.). Both this bug and the `keyLevels` one were hidden for a release by fixtures using a
+shape core never emits.
 
 ## Rules
 

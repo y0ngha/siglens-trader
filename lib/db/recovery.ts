@@ -172,11 +172,16 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                     }
                 } else if (order.side === 'sell') {
                     if (existingPosition) {
-                        if (quantity >= existingPosition.quantity) {
-                            await closePosition(tx, existingPosition.id, price);
-                        } else {
-                            await reducePositionQuantity(tx, existingPosition.id, quantity);
-                        }
+                        // The position was looked up outside the transaction. If it was
+                        // closed or shrunk in between (execute cron, manual close), the
+                        // update matches 0 rows — abort so the whole recovery rolls back and
+                        // is retried, instead of booking a sell with realized PnL against a
+                        // position that never moved.
+                        const applied =
+                            quantity >= existingPosition.quantity
+                                ? await closePosition(tx, existingPosition.id, price)
+                                : await reducePositionQuantity(tx, existingPosition.id, quantity);
+                        if (!applied) throw new Error('POSITION_ALREADY_CLOSED');
                     } else {
                         details.push(
                             `${order.symbol} sell: 거래 기록은 생성했으나 DB에 열린 포지션 없음 (브로커 확인 필요)`,

@@ -87,15 +87,44 @@ export function safeAnalysisResistance(result: unknown): number | undefined {
     return levels?.[0];
 }
 
-export function safeAnalysisTargetPrice(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const priceTargets = safeRecord(r.priceTargets);
+/** One side of `priceTargets`: the projected levels plus the condition that triggers them. */
+export interface AnalysisPriceScenario {
+    targets: number[];
+    condition?: string;
+}
+
+/**
+ * Extracts one side of `priceTargets` (`bullish` = upside scenario, `bearish` = downside).
+ *
+ * siglens-core's real shape is `PriceScenario | null` =
+ * `{ targets: { price: number; basis: string }[]; condition: string }` — there is **no**
+ * `target` scalar. Reading `bullish.target` (which this module used to do) therefore always
+ * produced `undefined` in production, silently killing the 95%-of-target take-profit branch
+ * in `evaluateExistingPosition`. Same failure mode as the old `safeAnalysisSupport` bug, so
+ * the fix is the same: go through `safePriceLevelArray`, which already accepts both the real
+ * `{ price }` object shape and bare numbers. The legacy `{ target: number }` scalar is still
+ * accepted so previously-stored analysis rows keep resolving.
+ */
+export function safeAnalysisPriceScenario(
+    result: unknown,
+    side: 'bullish' | 'bearish',
+): AnalysisPriceScenario | undefined {
+    const priceTargets = safeRecord(safeRecord(result)?.priceTargets);
     if (!priceTargets) return undefined;
-    const bullish = safeRecord(priceTargets.bullish);
-    if (!bullish) return undefined;
-    const target = bullish.target;
-    return isFinitePositive(target) ? target : undefined;
+    const scenario = safeRecord(priceTargets[side]);
+    if (!scenario) return undefined;
+    const targets = safePriceLevelArray(scenario.targets) ?? safePriceLevelArray([scenario.target]);
+    if (!targets) return undefined;
+    return { targets, condition: safeString(scenario.condition) };
+}
+
+/**
+ * First (nearest) bullish price target. Return contract is deliberately a single `number`
+ * — `api/cron/execute.ts` feeds it straight into `evaluateExistingPosition({ targetPrice })`.
+ * Use `safeAnalysisPriceScenario` when the full ladder or the trigger condition is needed.
+ */
+export function safeAnalysisTargetPrice(result: unknown): number | undefined {
+    return safeAnalysisPriceScenario(result, 'bullish')?.targets[0];
 }
 
 export function safeArray(obj: unknown, key: string): unknown[] | undefined {

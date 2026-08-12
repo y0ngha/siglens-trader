@@ -93,7 +93,8 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 5.5. Load the AI sizing gate config (`analysis_model_config['trade_gate']`, once per run) and
    set the gate cutoff at cron start + 600s
 6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
-   - Skip positions with pending sell in-flight
+   - Skip positions with a sell in-flight (`order_tracking`) **or** queued for approval
+     (`pending_orders`, semi_auto)
    - Non-`hold` exits go through the **exit sizing gate** (see below) → `exitQty`; a partial
      exit calls `reducePositionQuantity`, a full one `closePosition`, in all three modes
    - Track stop-loss closures for cooldown — registered on the *trigger*, so a partial
@@ -107,7 +108,12 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
      `calculatedSize` handed to `makeTradeDecision`. Because it already subtracts
      `existingSymbolExposure`, the old average_in-specific cap block is gone; the
      `symbol_limit_reached` decision now fires **before** `makeTradeDecision` (buy signals
-     only) so the '잔고 부족' path can't mail the wrong cause
+     only) so the '잔고 부족' path can't mail the wrong cause. It fires **only** when
+     `limitedBy === 'symbol'` (a full per-symbol cap is a normal steady state); any other
+     zero-budget cause on a held symbol takes the '잔고 부족' skipped-trade + email path, and
+     both record the real cause in `detail.budget`
+   - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
+     with an unanswered approval burned a 25s LLM call whose answer was discarded
    - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade
@@ -144,10 +150,31 @@ loss. Missing analysis axes are passed to the gate as `result: null` rather than
 prompt prints "데이터 없음" on purpose. In the re-evaluation loop the three extra axes
 (options/fundamental/congress) are read **only** when the gate is actually going to be called.
 
-New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`.
+New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
+`exit_already_handled` (the re-evaluation loop already sold this symbol this tick).
 Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
-`ai`/`disabled`/`hard`/`error`/`deadline`, `model`, `fraction`, `confidence`, `reason`,
-`fullBudget`, `trancheBudget`, `limitedBy`, `quantity`) merged alongside `scoreDecisionDetail`.
+`ai`/`disabled`/`hard`/`error`/`deadline`/`risk_halt`, `model`, `fraction`, `confidence`,
+`reason`, `fullBudget`, `trancheBudget`, `limitedBy`, `quantity`) merged alongside
+`scoreDecisionDetail`. `source: 'risk_halt'` means a tripped loss breaker forced a full exit
+without asking the model. Branches that end **without** a trade (rejected, not sellable,
+needs_review, already_closed, pending/partial, mid-loop kill switch) carry the same block
+plus a `detail.order` sub-block (`intendedQty`, `submittedQty`, broker status/reason) — the
+gate's sizing decision has to survive a broker rejection to be auditable.
+
+**One symbol is never sold twice in a tick.** The re-evaluation loop records every symbol it
+acted on; the watchlist sell path skips those with `exit_already_handled`. The two loops also
+use distinct idempotency keys (`…-reeval-sell` vs `…-signal-sell`) since a partial exit leaves
+a position behind and `order_tracking.idempotency_key` is unique.
+
+**Gate OFF is not byte-identical to the pre-gate build.** `planEntry` clamps the budget by
+real buying power (`auto` only), which `calculatePositionSize` never did — e.g. price $100 /
+cash $250 used to be `skipped_insufficient_cash` (no order) and now buys 2 shares. This is
+intentional (fewer broker rejections) and applies with the gate off too.
+
+**종목당 최대 투자 금액 (`max_position_size`) is a market-value cap, not a cost cap.**
+`existingSymbolExposure` is `currentPrice × quantity`, so a falling price frees budget back up
+and total cost basis can exceed the configured limit (e.g. buying at $100 → $50 → $25 under a
+$1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchanged.
 
 ## Reconcile Cron Flow
 
@@ -161,9 +188,33 @@ Every decision the gate took part in carries a `detail.gate` block (`kind`, `sou
 
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
-| Kill switch | `trading_enabled` | `true` | Re-checked before each trade in the loop |
-| Daily trade limit | `max_trades_per_day` | `20` | Checked at start + before each trade |
-| Daily loss limit | `max_daily_loss_usd` | `500` | Realized PnL + unrealized PnL (live prices) |
+| Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
+| Daily trade limit | `max_trades_per_day` | `20` | Blocks the watchlist pass (new entries + signal sells). Position exits still run, gate-sized |
+| Daily loss limit | `max_daily_loss_usd` | `500` | Realized + unrealized (live prices). Blocks the watchlist pass **and forces every exit to full size** (gate bypassed) |
+
+**A risk breaker stops new risk, never risk reduction.** Blocking liquidation would be a
+bug, not a safety net: with split exits the gate can defer a sell indefinitely, so an early
+`return` on the loss breaker would mean the position is never stopped out at all — the
+breaker would cap nothing while the loss kept growing. So the loss/trade breakers set an
+internal `entryBlock` (skip the watchlist loop) instead of returning, and the loss breakers
+additionally force `hard`-style full exits.
+
+The kill switch is the one exception and still stops everything: it is not a risk breaker
+but the operator's explicit "touch nothing" (e.g. they are about to trade the account by
+hand), and halting every order on it is the pre-existing contract.
+
+The response and audit row when a breaker trips:
+
+- **Nothing held** → unchanged: `{ skipped: true, reason: 'daily_loss_limit_reached' | 'daily_trade_limit_reached', … }`, `cron_runs.status='skipped'`.
+- **Positions held** → the run proceeds exit-only. Response gains `exitOnly: true` +
+  `entriesBlockedBy`; `cron_runs.status='completed'` with the breaker's **existing** outcome
+  (`daily_loss_limit` / `daily_trade_limit` — no new `CronOutcome` values) and
+  `summary.exitOnly` / `summary.entriesBlockedBy` / `summary.exitsForcedFull`.
+
+`max_trades_per_day` interacts badly with split entries: one target position now takes
+several fills instead of one (a `fraction 0.3` ladder to a 20-share target is ~9 trades,
+not 1), so the default 20 can be spent on three symbols. Review the setting upwards when
+turning the gate on — the limit is deliberately left as the operator's own knob.
 
 ## Order Lifecycle
 

@@ -8,6 +8,7 @@ import {
     safeAnalysisSupport,
     safeAnalysisResistance,
     safeAnalysisTargetPrice,
+    safeAnalysisPriceScenario,
     safeActionRecommendation,
     safeAnalysisIndicators,
     safeFundamentalCategories,
@@ -286,8 +287,99 @@ describe('safePriceLevelArray', () => {
     });
 });
 
+describe('safeAnalysisPriceScenario', () => {
+    // siglens-core's real shape: PriceScenario = { targets: PriceTarget[]; condition: string }.
+    // The old extractor read a `bullish.target` scalar that does not exist in core, so it
+    // always returned undefined in production — this block is the regression guard.
+    const coreShape = {
+        priceTargets: {
+            bullish: {
+                targets: [
+                    { price: 205, basis: '측정 목표' },
+                    { price: 212, basis: '확장 목표' },
+                ],
+                condition: '$195 돌파 시',
+            },
+            bearish: {
+                targets: [{ price: 172, basis: '지지 이탈' }],
+                condition: '$175 이탈 시',
+            },
+        },
+    };
+
+    it('extracts the full bullish target ladder plus its condition', () => {
+        expect(safeAnalysisPriceScenario(coreShape, 'bullish')).toEqual({
+            targets: [205, 212],
+            condition: '$195 돌파 시',
+        });
+    });
+
+    it('extracts the bearish scenario too', () => {
+        expect(safeAnalysisPriceScenario(coreShape, 'bearish')).toEqual({
+            targets: [172],
+            condition: '$175 이탈 시',
+        });
+    });
+
+    it('leaves condition undefined when core omits it', () => {
+        expect(
+            safeAnalysisPriceScenario(
+                { priceTargets: { bullish: { targets: [{ price: 9 }] } } },
+                'bullish',
+            ),
+        ).toEqual({ targets: [9], condition: undefined });
+    });
+
+    it('accepts a bare number array of targets', () => {
+        expect(
+            safeAnalysisPriceScenario(
+                { priceTargets: { bullish: { targets: [10, 20] } } },
+                'bullish',
+            ),
+        ).toMatchObject({ targets: [10, 20] });
+    });
+
+    it('accepts the legacy { target } scalar', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: { target: 200 } } }, 'bullish'),
+        ).toMatchObject({ targets: [200] });
+    });
+
+    it('returns undefined when the scenario is null (core default)', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: null } }, 'bullish'),
+        ).toBeUndefined();
+    });
+
+    it('returns undefined when no target survives validation', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: { targets: ['x'] } } }, 'bullish'),
+        ).toBeUndefined();
+    });
+
+    it('returns undefined for a non-record input', () => {
+        expect(safeAnalysisPriceScenario(null, 'bullish')).toBeUndefined();
+    });
+});
+
 describe('safeAnalysisTargetPrice', () => {
-    it('extracts bullish target price from valid structure', () => {
+    it('extracts the nearest bullish target from the real core shape', () => {
+        expect(
+            safeAnalysisTargetPrice({
+                priceTargets: {
+                    bullish: {
+                        targets: [
+                            { price: 205, basis: '측정 목표' },
+                            { price: 212, basis: '확장 목표' },
+                        ],
+                        condition: '$195 돌파 시',
+                    },
+                },
+            }),
+        ).toBe(205);
+    });
+
+    it('still extracts the legacy bullish target scalar', () => {
         expect(safeAnalysisTargetPrice({ priceTargets: { bullish: { target: 200 } } })).toBe(200);
     });
 

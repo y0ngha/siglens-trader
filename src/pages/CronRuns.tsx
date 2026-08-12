@@ -55,6 +55,26 @@ function readScoreComponents(detail: unknown): ScoreComponents | null {
     };
 }
 
+type GateInfo = {
+    source: string;
+    fraction: number;
+    limitedBy: string | null;
+    reason: string | null;
+};
+
+/** Safely read `detail.gate` (AI trade-gate audit block) from an untyped decision detail blob. */
+function readGateDetail(detail: unknown): GateInfo | null {
+    if (!isRecord(detail) || !isRecord(detail.gate)) return null;
+    const g = detail.gate;
+    if (typeof g.source !== 'string' || typeof g.fraction !== 'number') return null;
+    return {
+        source: g.source,
+        fraction: g.fraction,
+        limitedBy: typeof g.limitedBy === 'string' ? g.limitedBy : null,
+        reason: typeof g.reason === 'string' ? g.reason : null,
+    };
+}
+
 function timeAgo(dateStr: string): string {
     const diff = Date.now() - new Date(dateStr).getTime();
     const minutes = Math.floor(diff / 60_000);
@@ -179,7 +199,13 @@ function actionChipClass(action: string): string {
             return 'bg-green-500/10 text-green-400';
         case 'sell':
         case 'error':
+        case 'gate_error':
             return 'bg-red-500/10 text-red-400';
+        case 'gate_skipped_deadline':
+            return 'bg-orange-500/10 text-orange-400';
+        case 'entry_deferred':
+        case 'exit_deferred':
+            return 'bg-yellow-500/10 text-yellow-400';
         default:
             return 'bg-neutral-700 text-neutral-400';
     }
@@ -382,12 +408,32 @@ function DecisionsList({ runId }: { runId: string }) {
                     )}
                     {(() => {
                         const components = readScoreComponents(decision.detail);
-                        if (components) {
+                        const gate = readGateDetail(decision.detail);
+                        if (components || gate) {
                             return (
-                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
-                                    기술 {components.technical} · 뉴스 {components.news} · 옵션{' '}
-                                    {components.options} · 펀더멘털 {components.fundamental}
-                                </span>
+                                <>
+                                    {components && (
+                                        <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                            기술 {components.technical} · 뉴스 {components.news} ·
+                                            옵션 {components.options} · 펀더멘털{' '}
+                                            {components.fundamental}
+                                        </span>
+                                    )}
+                                    {gate && (
+                                        <div className="space-y-0.5">
+                                            <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                                게이트 {gate.source} · fraction{' '}
+                                                {gate.fraction.toFixed(2)}
+                                                {gate.limitedBy && ` · 한도 ${gate.limitedBy}`}
+                                            </span>
+                                            {gate.reason && (
+                                                <p className="line-clamp-2 text-[10px] leading-relaxed text-neutral-500">
+                                                    {gate.reason}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
                             );
                         }
                         if (decision.detail != null) {
