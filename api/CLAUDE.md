@@ -106,12 +106,12 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
    - `planEntry` (not `calculatePositionSize`) computes the budget ceiling from the per-symbol
      cap, the total-exposure cap and — in `auto` only — real buying power. It is the
      `calculatedSize` handed to `makeTradeDecision`. Because it already subtracts
-     `existingSymbolExposure`, the old average_in-specific cap block is gone; the
-     `symbol_limit_reached` decision now fires **before** `makeTradeDecision` (buy signals
-     only) so the '잔고 부족' path can't mail the wrong cause. It fires **only** when
-     `limitedBy === 'symbol'` (a full per-symbol cap is a normal steady state); any other
-     zero-budget cause on a held symbol takes the '잔고 부족' skipped-trade + email path, and
-     both record the real cause in `detail.budget`
+     `existingSymbolExposure`, the old average_in-specific cap block is gone
+   - A buy signal with a zero budget is handled **after the kill switch**, not before the
+     guards: `symbol_limit_reached` when `limitedBy === 'symbol'` (a full per-symbol cap is a
+     normal steady state, no alert), otherwise the '잔고 부족' skipped-trade row + email. Both
+     record the real cause in `detail.budget`. Running it earlier meant mailing the operator
+     about an unfunded buy on a run that could not have placed an order anyway
    - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
      with an unanswered approval burned a 25s LLM call whose answer was discarded
    - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols
@@ -151,7 +151,8 @@ prompt prints "데이터 없음" on purpose. In the re-evaluation loop the three
 (options/fundamental/congress) are read **only** when the gate is actually going to be called.
 
 New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
-`exit_already_handled` (the re-evaluation loop already sold this symbol this tick).
+`exit_already_handled` (the re-evaluation loop already sold this symbol this tick),
+`entry_blocked` (a risk breaker is up and this symbol's signal is not a sell).
 Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
 `ai`/`disabled`/`hard`/`error`/`deadline`/`risk_halt`, `model`, `fraction`, `confidence`,
 `reason`, `fullBudget`, `trancheBudget`, `limitedBy`, `quantity`) merged alongside
@@ -184,24 +185,55 @@ $1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchange
 4. Run DB consistency check (`checkConsistency`) — find filled orders without matching trades
 5. If inconsistencies found, send alert email
 
+`autoRecoverFilledOrders` only scans `status = 'filled'`, so a recovery that cannot succeed
+(no fill price, or a position update that matches no rows) is moved to `needs_review`. Left at
+`filled` it would be retried every 10 minutes for 24 hours and mail the operator each time.
+
 ## Circuit Breakers
 
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
-| Daily trade limit | `max_trades_per_day` | `20` | Blocks the watchlist pass (new entries + signal sells). Position exits still run, gate-sized |
-| Daily loss limit | `max_daily_loss_usd` | `500` | Realized + unrealized (live prices). Blocks the watchlist pass **and forces every exit to full size** (gate bypassed) |
+| Daily trade limit | `max_trades_per_day` | `20` | Blocks entries only — `entry_blocked`. Position exits and watchlist **sell** signals still run, gate-sized |
+| Daily loss limit | `max_daily_loss_usd` | `500` | Realized + unrealized (live prices). Blocks entries **and forces every exit to full size** (gate bypassed, `source: 'risk_halt'`) |
 
 **A risk breaker stops new risk, never risk reduction.** Blocking liquidation would be a
 bug, not a safety net: with split exits the gate can defer a sell indefinitely, so an early
 `return` on the loss breaker would mean the position is never stopped out at all — the
 breaker would cap nothing while the loss kept growing. So the loss/trade breakers set an
-internal `entryBlock` (skip the watchlist loop) instead of returning, and the loss breakers
-additionally force `hard`-style full exits.
+internal `entryBlock` instead of returning, and the loss breakers additionally force
+`hard`-style full exits.
+
+Three consequences that are easy to get wrong, and were:
+
+- **The watchlist loop still runs.** Only symbols whose signal is not `sell` short-circuit
+  with `entry_blocked`. `evaluateExistingPosition` is *not* a superset of the sell signal —
+  it reads the technical trend and news sentiment only, while `scoreSignals` also weighs
+  options/fundamentals/congress — so a neutral-trend position with a 25/100 composite score
+  holds in the re-evaluation loop and would otherwise have no exit path at all. The in-loop
+  `max_trades_per_day` re-check exempts sells for the same reason.
+- **A forced exit survives missing analysis.** Under `forceFullExit` the staleness guard is
+  skipped and the position is sold whole without consulting `evaluateExistingPosition` or the
+  gate. The gate and the technical cron share one LLM provider, so the outage that makes the
+  gate defer is the same outage that makes every symbol stale, and `fixed_exit_enabled`
+  defaults off — bailing on staleness meant selling nothing exactly when it mattered. No
+  stop-loss/take-profit label is invented from analysis known to be stale.
+- **No price → mode-dependent.** `auto` sends a market order and liquidates anyway; `dry_run`
+  (books at `currentPrice`) and `semi_auto` (queues a price limit) cannot, so they skip with
+  `skipped_no_price` + `detail.forcedLiquidationBlocked` **and an email** saying the forced
+  liquidation could not be carried out.
+
+The price feeding the unrealized-PnL breaker is sanity-banded to **1/3–3× the position's
+average entry price**; anything outside is dropped from the sum and mailed as
+`이상 시세 무시`. `fetchLivePrice` only checks "finite positive", and a wrong tick now
+liquidates the whole book rather than merely halting trading. A *failed* fetch is safe
+(contributes 0); a wrong positive value is not.
 
 The kill switch is the one exception and still stops everything: it is not a risk breaker
 but the operator's explicit "touch nothing" (e.g. they are about to trade the account by
-hand), and halting every order on it is the pre-existing contract.
+hand), and halting every order on it is the pre-existing contract. Because of that, the
+breaker alert text is mode-aware (`auto` sells / `semi_auto` only queues an approval /
+`dry_run` only simulates) instead of promising a liquidation that will not happen.
 
 The response and audit row when a breaker trips:
 

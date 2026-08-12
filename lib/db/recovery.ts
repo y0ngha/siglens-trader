@@ -85,6 +85,20 @@ export async function checkConsistency(db: Db): Promise<RecoveryReport> {
 }
 
 /**
+ * Takes an unrecoverable order out of the retry set.
+ *
+ * `autoRecoverFilledOrders` only looks at status 'filled', so anything left there is
+ * retried every reconcile tick for 24 hours — and reconcile mails on every failure.
+ * Best-effort: if this write fails the retry loop is the fallback, not a crash.
+ */
+async function markNeedsReview(db: Db, idempotencyKey: string) {
+    await updateOrderTracking(db, idempotencyKey, {
+        status: 'needs_review',
+        resolvedAt: new Date(),
+    }).catch((e) => console.error('[recovery] needs_review write failed', idempotencyKey, e));
+}
+
+/**
  * Auto-recovers filled orders from the last 24 hours that have no matching
  * trade record. For each orphaned order, creates the missing trade and
  * updates the position (open/average-in for buys, close/reduce for sells).
@@ -123,6 +137,7 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                     `${order.symbol} ${order.side}: 체결가 없어 자동 복구 불가 (수동 확인 필요)`,
                 );
                 failed++;
+                await markNeedsReview(db, order.idempotencyKey);
                 continue;
             }
 
@@ -201,6 +216,11 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
         } catch (err) {
             failed++;
             details.push(`${order.symbol} ${order.side}: 자동 복구 실패 — ${String(err)}`);
+            // Park it for a human. Left at 'filled' this order is re-attempted every
+            // reconcile tick for 24h and mails the operator each time (up to 144 mails /
+            // queued rows); 'needs_review' drops it out of the 'filled' query that feeds
+            // this function, so the alert fires once.
+            await markNeedsReview(db, order.idempotencyKey);
         }
     }
 

@@ -472,7 +472,13 @@ describe('autoRecoverFilledOrders', () => {
         expect(result.recovered).toBe(0);
         expect(result.failed).toBe(1);
         expect(result.details[0]).toContain('자동 복구 실패');
-        expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+        // L-1: a failed recovery is parked as needs_review so the 10-minute reconcile
+        // retry (and its alert) does not repeat for 24 hours.
+        expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'needs_review' }),
+        );
     });
 
     it('fails the recovery when the full close matches no rows', async () => {
@@ -507,7 +513,13 @@ describe('autoRecoverFilledOrders', () => {
 
         expect(result.recovered).toBe(0);
         expect(result.failed).toBe(1);
-        expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+        // L-1: a failed recovery is parked as needs_review so the 10-minute reconcile
+        // retry (and its alert) does not repeat for 24 hours.
+        expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'needs_review' }),
+        );
     });
 
     it('fails when filledPrice is missing or zero', async () => {
@@ -631,7 +643,13 @@ describe('autoRecoverFilledOrders', () => {
         expect(result.failed).toBe(1);
         expect(result.details[0]).toContain('자동 복구 실패');
         expect(result.details[0]).toContain('DB connection lost');
-        expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+        // L-1: a failed recovery is parked as needs_review so the 10-minute reconcile
+        // retry (and its alert) does not repeat for 24 hours.
+        expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'needs_review' }),
+        );
     });
 
     it('recovers sell order but warns when no open position exists', async () => {

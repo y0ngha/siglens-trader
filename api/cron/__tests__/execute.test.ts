@@ -1967,8 +1967,10 @@ describe('execute cron handler', () => {
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+            // avgPrice kept near the shared $150 analysis snapshot: a 3x+ gap would be
+            // rejected by the unrealized-PnL sanity band and mail a feed warning.
             mockGetOpenPositions.mockResolvedValue([
-                { symbol: 'MSFT', quantity: 10, avgPrice: '500', status: 'open' },
+                { symbol: 'MSFT', quantity: 10, avgPrice: '160', status: 'open' },
             ]);
         });
 
@@ -6424,6 +6426,9 @@ describe('execute cron handler', () => {
             expect(mockRunTradeGate).not.toHaveBeenCalled();
             expect(body.decisions).toEqual([
                 { symbol: 'AAPL', action: 'hold', score: 0, executed: false },
+                // The watchlist pass still runs (signal sells must survive a breaker);
+                // the buy signal is what gets blocked.
+                { symbol: 'AAPL', action: 'entry_blocked', score: 80 },
             ]);
         });
 
@@ -6927,6 +6932,258 @@ describe('execute cron handler', () => {
                 expect.objectContaining({
                     position: expect.objectContaining({ openedAt: heldPosition.openedAt }),
                 }),
+            );
+        });
+        // -------------------------------------------------------------------
+        // NEW-HIGH-1 — a forced liquidation survives missing analysis
+        // -------------------------------------------------------------------
+
+        it('NEW-HIGH-1: forceFullExit liquidates a position whose analysis is stale', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            // Technical analysis 10 days old → normally `stale_analysis`, no exit at all.
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? {
+                                  result: { keyLevels: { currentPrice: 95 } },
+                                  analyzedAt: new Date('2026-05-14T14:30:00.000Z'),
+                              }
+                            : null,
+                    ),
+            );
+            gateOk(0.3);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ side: 'sell', quantity: 10 }),
+            );
+            expect(body.decisions).not.toContainEqual(
+                expect.objectContaining({ action: 'stale_analysis' }),
+            );
+        });
+
+        it('NEW-HIGH-1: stale analysis still blocks the exit when no breaker tripped', async () => {
+            breakerSetup({ trading_mode: 'dry_run' });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? {
+                                  result: { keyLevels: { currentPrice: 95 } },
+                                  analyzedAt: new Date('2026-05-14T14:30:00.000Z'),
+                              }
+                            : null,
+                    ),
+            );
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockClosePosition).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'stale_analysis' }),
+            );
+        });
+
+        it('NEW-HIGH-1: auto liquidates with no price (market order needs none)', async () => {
+            breakerSetup({ trading_mode: 'auto', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockGetLatestAnalysisResult.mockResolvedValue(null); // no price anywhere
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 90,
+                filledQuantity: quantity,
+            }));
+
+            await handler(makeRequest(true));
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 90);
+        });
+
+        it('NEW-HIGH-1: dry_run cannot liquidate without a price and says so', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockGetLatestAnalysisResult.mockResolvedValue(null);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '가격 데이터 없음: AAPL',
+                expect.stringContaining('강제 청산 대상'),
+
+                'test@example.com',
+            );
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'skipped_no_price' }),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // NEW-HIGH-2 — a breaker blocks entries, not signal sells
+        // -------------------------------------------------------------------
+
+        it('NEW-HIGH-2 loss limit: a watchlist sell signal still reaches the broker', async () => {
+            breakerSetup({ trading_mode: 'auto', max_daily_loss_usd: 500 });
+            mockGetOpenPositions.mockResolvedValue([]); // nothing for the re-evaluation loop
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            // preCheckPositions must be non-empty for the run to continue past the breaker.
+            mockGetOpenPositions
+                .mockResolvedValueOnce([heldPosition]) // unrealized PnL pre-check
+                .mockResolvedValue([]);
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 150,
+                filledQuantity: quantity,
+            }));
+            gateOk(1);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+            expect(body.decisions).not.toContainEqual(
+                expect.objectContaining({ action: 'entry_blocked' }),
+            );
+        });
+
+        it('NEW-HIGH-2 trade limit: a watchlist sell signal still reaches the broker', async () => {
+            breakerSetup({ trading_mode: 'auto', max_trades_per_day: 5 });
+            mockGetTodayTradeCount.mockResolvedValue(5);
+            mockGetOpenPositions.mockResolvedValueOnce([heldPosition]).mockResolvedValue([]);
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 150,
+                filledQuantity: quantity,
+            }));
+            gateOk(1);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(body.entriesBlockedBy).toBe('daily_trade_limit');
+        });
+
+        it('NEW-HIGH-2: a buy signal under a breaker records entry_blocked and buys nothing', async () => {
+            breakerSetup({ trading_mode: 'auto', max_daily_loss_usd: 500 });
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockRunTradeGate).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'entry_blocked',
+                score: 80,
+            });
+        });
+
+        // -------------------------------------------------------------------
+        // NEW-MEDIUM-1 — one bad tick must not liquidate the book
+        // -------------------------------------------------------------------
+
+        it('NEW-MEDIUM-1: an absurd tick is excluded from the unrealized loss and alerts', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            // avg $100 × 10 shares; a $20 tick would read as -$800 unrealized → breaker.
+            mockFetchLivePrice.mockResolvedValue(20);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.entriesBlockedBy).toBeUndefined();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '이상 시세 무시: AAPL',
+                expect.stringContaining('비정상 범위'),
+
+                'test@example.com',
+            );
+        });
+
+        it('NEW-MEDIUM-1: a plausible drop still trips the breaker', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            // avg $100 × 10 shares at $40 → -$600 unrealized, inside the 1/3–3x band.
+            mockFetchLivePrice.mockResolvedValue(40);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                '이상 시세 무시: AAPL',
+                expect.anything(),
+                expect.anything(),
+            );
+        });
+
+        // -------------------------------------------------------------------
+        // NEW-MEDIUM-3 — no '잔고 부족' alert on a run that cannot trade
+        // -------------------------------------------------------------------
+
+        it('NEW-MEDIUM-3: a mid-loop kill switch suppresses the 잔고 부족 alert and trade row', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_total_exposure: 0 });
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetOpenPositionBySymbol.mockResolvedValue(null);
+            let enabledReads = 0;
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key === 'max_total_exposure') return Promise.resolve(0);
+                if (key === 'trading_enabled') {
+                    enabledReads += 1;
+                    return Promise.resolve(enabledReads < 2); // flipped after the run started
+                }
+                return Promise.resolve(null);
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+            expect(mockSendErrorEmail).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'trading_disabled_mid_loop' }),
             );
         });
     });

@@ -92,9 +92,14 @@ separately so tests (and prompt audits) can assert on the exact strings.
   - *`## 판단 지침`* — two separate ordered lists. The header says earlier items win, so the
     entry list (budget/cash first, position sizing, average-in) must never appear on an exit;
     the exit list starts at trigger strength and contains no budget, cash, or average-in item.
-  - *`## 계좌 상태` and the output example* — the buying-power line and the "cash unknown is
-    itself a conservative factor" note are entry-only; the exit prompt states the broker balance
-    is irrelevant instead.
+  - *`## 계좌 상태`, the output example, rule 4's `reason` example, and two analysis lines* —
+    the buying-power line and the "cash unknown is itself a conservative factor" note are
+    entry-only; the exit prompt states the broker balance is irrelevant instead. `진입 권고`
+    and `권장 진입 구간` are dropped from the exit prompt's technical block: a stop-loss prompt
+    reading "진입 권고: enter, 현재가가 권장 진입 구간 안" hands exit guideline 3 ("is the trend
+    still alive?") a reason to cut less. Stop-loss / take-profit / key levels / POC / price
+    targets stay — those *are* exit inputs. Rule 4's example likewise cites 예산 제약 on entry
+    and 트리거 강도 on exit, since `## 예산` declares itself 해당 없음 two sections later.
 - **`## 예산` fixes the denominator.** `fraction` is a share of `fullBudget` and nothing else —
   `## 계좌 상태` prints per-symbol and total-exposure headroom that diverge from it whenever
   `limitedBy` is `total`/`cash`. It also warns that a non-zero fraction can round **up** to one
@@ -104,7 +109,8 @@ separately so tests (and prompt audits) can assert on the exact strings.
   so they are a prompt-injection path.
 - **Every free-form string goes through `sanitize()`** — inside the fence *and* out
   (`companyName`, `symbol`, `modelId`, `ruleReason`, `tradingMode`, `limitedBy`). It strips
-  `<`/`>`, collapses all whitespace to single spaces, and truncates. Without it a value can
+  `<`/`>` (and their full-width twins `＜`/`＞`), collapses all whitespace to single spaces, and
+  truncates. Without it a value can
   close the fence and plant a forged `## 판단 지침` **outside** it: core's normalization passes
   fields like `indicatorName` and `condition` through as free strings, and an audit reproduced a
   4:3 fence imbalance this way. Removing newlines is what defeats it — a markdown header needs a
@@ -113,18 +119,38 @@ separately so tests (and prompt audits) can assert on the exact strings.
 - **Every number goes through a formatter** (`fmtUsd` / `fmtPct` / `fmtQty` / `fmtNum` /
   `fmtCount`). Raw interpolation leaked literal `NaN건` into a rendered prompt, and a model reads
   that as a figure. `fmtElapsed` guards *both* ends — a broken `decidedAt` produced `NaN일 NaN시간 전`.
+  Korean particles are avoided after a formatted value, since `미상` + `가` reads as `미상가`.
+- **Label lookups get the same discipline**: `PRICE_SOURCE_LABEL` / `TRIGGER_LABEL` /
+  `SESSION_LABEL` are keyed `Record<string, string>` with `?? '미상'`. Narrowing the key to a
+  union makes the compiler treat the fallback as dead code, and then the day the union widens
+  (core already aliases `EtSessionStatus` as `MarketSessionStatus`) the prompt ships
+  `미국 장 상태: undefined`.
 - Only sizing-relevant fields are extracted (via `lib/strategy/safe-extract.ts` plus local
   summarizers for the indicator/category/option-signal roll-ups that safe-extract doesn't cover):
-  trend, risk level, entry recommendation, `entryPrices` / `stopLoss` / `takeProfitPrices` /
-  `reconciledLevels`, support / resistance / `poc`, **both** `priceTargets` scenarios with their
+  trend, risk level, entry recommendation, `entryPrices` / `stopLoss` / `takeProfitPrices`,
+  support / resistance / `poc`, **both** `priceTargets` scenarios with their
   conditions, indicator signals (sorted by strength, so the cap drops the weak ones rather than
   the tail), news `keyEventsKo` / `upcomingEventsKo`, and fundamental `riskFactorsKo`.
   Each axis carries its own timestamp **and elapsed time** — a day-old fundamental must not be
   read with the same weight as a 30-minute-old technical.
+- **`reconciledLevels` replaces the value it corrects, rather than sitting on its own line.**
+  Core leaves the AI's `stopLoss` / `takeProfitPrices` untouched and attaches domain-derived
+  replacements when they were invalid. A separate `보정 레벨` line was one more row no guideline
+  referenced, while the model kept reading the (invalid, hence corrected) original above it. So
+  the corrected number takes the slot and the original follows in parentheses with core's reason.
 - **`## 결정 요청` carries ET wall-clock time, session state and minutes to the close**, derived
   from core's `getEtSessionStatus`. UTC alone leaves the model unable to tell the open from 30
   minutes before the close, and making it convert UTC→ET is exactly what rule 2 ("invent no new
   values") forbids.
+- **That session verdict is labelled as a guess, on purpose.** `getEtSessionStatus` looks only at
+  weekday + minute-of-day — core has no holiday table — so Thanksgiving 14:00 ET returns `open`,
+  and a half-day (13:00 ET close) also returns `open` while `ET_CLOSE_MINUTES` keeps counting to
+  16:00. The label is therefore `정규장 시간대`, not `정규장`, and both the state and the
+  minutes-to-close carry an explicit "holidays and early closes not accounted for" caveat.
+  Rule 2 tells the model everything in the prompt is true, and entry guideline 6 sizes on exactly
+  this value, so an unqualified claim here is a lie the model will act on. Calling
+  `isUsMarketOpen()` is *not* the fix — `lib/analysis/` must not reach the broker API, and a
+  network hop does not belong in a 25s budget. Honest labelling is the fix.
 - `position.openedAt` is optional and renders `미상` when absent — a 3-hour hold and a 3-week
   hold should not be liquidated in the same size.
 - `reasoning: false` — the execute cron makes up to ~10 gate calls inside a 780s lock, same

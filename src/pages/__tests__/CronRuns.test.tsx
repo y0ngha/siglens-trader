@@ -142,6 +142,115 @@ describe('CronRunsPage', () => {
         });
     });
 
+    // ─── breaker-trip coloring (status='completed' but outcome is a tripped breaker) ──
+
+    it('renders a completed run with a risk-breaker outcome in warning (orange) color, not green', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 10,
+                    runId: 'run-risk-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'daily_loss_limit',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5000,
+                    summary: {
+                        exitOnly: true,
+                        entriesBlockedBy: 'daily_loss_limit',
+                        exitsForcedFull: true,
+                    },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('daily_loss_limit')).toBeInTheDocument();
+        });
+
+        const outcomeEl = screen.getByText('daily_loss_limit');
+        expect(outcomeEl).toHaveClass('text-orange-400');
+        expect(outcomeEl).not.toHaveClass('text-green-400');
+
+        const row = outcomeEl.closest('li');
+        expect(row).not.toBeNull();
+        expect(row).toHaveClass('border-l-orange-500');
+        expect(row).not.toHaveClass('border-l-green-500');
+        expect(row?.querySelector('[aria-hidden="true"]')).toHaveClass('bg-orange-500');
+    });
+
+    it('keeps a normal completed run green (regression — no false-positive warning color)', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 11,
+                    runId: 'run-normal-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'completed',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5000,
+                    summary: { symbolsEvaluated: 2 },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('completed')).toBeInTheDocument();
+        });
+
+        const outcomeEl = screen.getByText('completed');
+        expect(outcomeEl).toHaveClass('text-green-400');
+
+        const row = outcomeEl.closest('li');
+        expect(row).toHaveClass('border-l-green-500');
+        expect(row?.querySelector('[aria-hidden="true"]')).toHaveClass('bg-green-500');
+    });
+
+    it('shows exit-only breaker info in the summary line (visible without expanding)', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 12,
+                    runId: 'run-exitonly-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'daily_trade_limit',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5000,
+                    summary: {
+                        exitOnly: true,
+                        entriesBlockedBy: 'daily_trade_limit',
+                        exitsForcedFull: false,
+                        symbolsEvaluated: 4,
+                    },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText(/청산전용/)).toBeInTheDocument();
+        });
+
+        expect(screen.getByText(/일일 체결 한도/)).toBeInTheDocument();
+        expect(screen.getByText(/청산전용/)).toHaveClass('text-red-400');
+    });
+
     // ─── type filter ────────────────────────────────────────────────────────
 
     it('renders cron type filter group', async () => {

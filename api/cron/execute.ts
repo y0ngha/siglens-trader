@@ -274,6 +274,17 @@ async function handler(req: Request): Promise<Response> {
             // Clean up expired pending orders
             await expireOldPendingOrders(db);
 
+            // Read ahead of the breakers: their alerts state what will still happen to open
+            // positions, and that differs per mode (auto sells, semi_auto only queues an
+            // approval, dry_run only simulates).
+            const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+            const exitPolicyNote =
+                tradingMode === 'auto'
+                    ? '보유 포지션의 청산 신호는 계속 처리되어 전량 시장가로 청산됩니다 (킬 스위치를 켜면 청산도 즉시 중단됩니다).'
+                    : tradingMode === 'semi_auto'
+                      ? '보유 포지션의 청산은 자동 실행되지 않고 승인 대기열에만 등록됩니다 — 대시보드에서 승인해야 체결됩니다.'
+                      : '보유 포지션의 청산은 dry_run 시뮬레이션으로만 기록됩니다 (실제 주문 없음).';
+
             // Risk breakers below stop NEW RISK, not risk reduction. A breaker that also
             // blocks liquidation is a bug: with split exits the gate can defer a sell
             // indefinitely, so an early `return` here would mean the position is never
@@ -314,7 +325,7 @@ async function handler(req: Request): Promise<Response> {
             if (todayPnl < -maxDailyLoss) {
                 await notifyError(
                     '일일 손실 한도 초과',
-                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다. 보유 포지션의 청산 신호는 계속 처리됩니다.`,
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                 );
                 entryBlock = {
                     outcome: 'daily_loss_limit',
@@ -345,8 +356,29 @@ async function handler(req: Request): Promise<Response> {
                             'technical',
                         );
                         const curPrice = livePreCheck ?? safeAnalysisPrice(techForPos?.result);
-                        if (curPrice > 0) {
-                            const avgP = safeNumber(Number(pos.avgPrice), 0);
+                        const avgP = safeNumber(Number(pos.avgPrice), 0);
+                        // Sanity band on the price that feeds the breaker. `fetchLivePrice`
+                        // only checks "finite positive", so one bad quote can trip the loss
+                        // limit, which now forces a full liquidation of every position — a
+                        // wrong tick would liquidate the book. A *failed* fetch is safe
+                        // (contributes 0); a wrong positive value is not.
+                        //
+                        // 1/3–3× of the average entry price: wide enough that a real -67%
+                        // day still trips the breaker on the next tick (a bad tick that
+                        // repeats is indistinguishable from a real move, and being one tick
+                        // late beats liquidating on a typo), narrow enough to catch the
+                        // classic feed failures — a stale price from another listing, a
+                        // decimal shift, a cents/dollars unit mixup.
+                        const sane =
+                            curPrice > 0 &&
+                            (avgP <= 0 || (curPrice >= avgP / 3 && curPrice <= avgP * 3));
+                        if (curPrice > 0 && !sane) {
+                            await notifyError(
+                                `이상 시세 무시: ${pos.symbol}`,
+                                `${pos.symbol} 현재가 $${curPrice}가 평단 $${avgP} 대비 비정상 범위(1/3~3배 밖)라 일일 손실 한도 계산에서 제외했습니다. 시세 피드 확인이 필요합니다.`,
+                            );
+                        }
+                        if (sane) {
                             const dir = pos.side === 'short' ? avgP - curPrice : curPrice - avgP;
                             unrealizedPnl += dir * pos.quantity;
                         }
@@ -358,7 +390,7 @@ async function handler(req: Request): Promise<Response> {
                 if (totalPnl < -maxDailyLoss) {
                     await notifyError(
                         '일일 손실 한도 초과 (미실현 포함)',
-                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다. 보유 포지션의 청산 신호는 계속 처리됩니다.`,
+                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                     );
                     entryBlock = {
                         outcome: 'daily_loss_limit',
@@ -383,7 +415,6 @@ async function handler(req: Request): Promise<Response> {
             }
 
             // Load config
-            const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
             const maxPositionSize = (await getConfigValue<number>(db, 'max_position_size')) ?? 1000;
             const maxTotalExposure =
                 (await getConfigValue<number>(db, 'max_total_exposure')) ?? 5000;
@@ -607,7 +638,21 @@ async function handler(req: Request): Promise<Response> {
                     const techAge = techReferenceTime
                         ? Date.now() - techReferenceTime.getTime()
                         : Infinity;
-                    if (techAge > maxTechnicalAge) {
+                    const techResult = tech?.result;
+                    const currentPrice =
+                        priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
+                    const staleAnalysis = techAge > maxTechnicalAge;
+
+                    // A forced liquidation is driven by the loss limit, not by analysis, so it
+                    // must survive missing analysis. This matters because the gate and the
+                    // technical cron call the *same* LLM provider: the outage that makes the
+                    // gate defer a sell is the same outage that leaves every symbol stale, and
+                    // `fixed_exit_enabled` defaults off so no analysis-free stop line exists
+                    // either. Bailing on staleness here meant the forced liquidation sold
+                    // nothing at the exact moment it was needed.
+                    const mechanicalExit = forceFullExit && (staleAnalysis || currentPrice <= 0);
+
+                    if (staleAnalysis && !forceFullExit) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'stale_analysis',
@@ -621,39 +666,54 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const techResult = tech?.result;
-                    const currentPrice =
-                        priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
-                    if (currentPrice <= 0) {
+                    // `auto` places a market order, so it can liquidate with no price at all;
+                    // dry_run books a fill at `currentPrice` and semi_auto queues a price
+                    // limit, so neither can act without one.
+                    if (currentPrice <= 0 && !(forceFullExit && tradingMode === 'auto')) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'skipped_no_price',
                             score: 0,
-                            detail: noPriceDetail(
-                                position.symbol,
-                                priceFailures.get(position.symbol),
-                                techResult,
-                            ),
+                            detail: {
+                                ...noPriceDetail(
+                                    position.symbol,
+                                    priceFailures.get(position.symbol),
+                                    techResult,
+                                ),
+                                forcedLiquidationBlocked: forceFullExit,
+                            },
                         });
                         await notifyError(
                             `가격 데이터 없음: ${position.symbol}`,
-                            `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
+                            forceFullExit
+                                ? `${position.symbol}는 일일 손실 한도 초과로 강제 청산 대상이지만, 현재 가격을 확인할 수 없어 ${tradingMode} 모드에서는 청산하지 못했습니다. 즉시 수동 확인이 필요합니다.`
+                                : `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
                         );
                         continue;
                     }
 
-                    const evaluation = evaluateExistingPosition({
-                        avgPrice: safeNumber(Number(position.avgPrice), 0),
-                        currentPrice,
-                        stopLossPercent,
-                        takeProfitPercent,
-                        fixedExitEnabled,
-                        supportLevel: safeAnalysisSupport(techResult),
-                        resistanceLevel: safeAnalysisResistance(techResult),
-                        targetPrice: safeAnalysisTargetPrice(techResult),
-                        technicalTrend: safeAnalysisTrend(techResult),
-                        newsSentiment: safeAnalysisSentiment(news?.result),
-                    });
+                    // No stop-loss/take-profit label is invented from analysis we know is
+                    // stale (or from a price we don't have) — the whole position goes.
+                    const evaluation = mechanicalExit
+                        ? {
+                              action: 'stop_loss' as const,
+                              reason: '일일 손실 한도 초과 — 분석 없이 강제 전량 청산',
+                              // Not `hard`: the audit should read `risk_halt` (breaker), not
+                              // `hard` (corrupt data / operator stop line).
+                              hard: false,
+                          }
+                        : evaluateExistingPosition({
+                              avgPrice: safeNumber(Number(position.avgPrice), 0),
+                              currentPrice,
+                              stopLossPercent,
+                              takeProfitPercent,
+                              fixedExitEnabled,
+                              supportLevel: safeAnalysisSupport(techResult),
+                              resistanceLevel: safeAnalysisResistance(techResult),
+                              targetPrice: safeAnalysisTargetPrice(techResult),
+                              technicalTrend: safeAnalysisTrend(techResult),
+                              newsSentiment: safeAnalysisSentiment(news?.result),
+                          });
 
                     if (evaluation.action === 'hold') {
                         decisions.push({
@@ -1241,7 +1301,7 @@ async function handler(req: Request): Promise<Response> {
             // A tripped risk breaker skips the whole watchlist pass — new entries obviously,
             // and signal sells with them: the re-evaluation loop above already had first
             // refusal on every held position (and under a loss breaker sold each in full).
-            for (const item of entryBlock ? [] : watchlistItems) {
+            for (const item of watchlistItems) {
                 try {
                     // Gather latest analysis results
                     const [tech, news, options, fundamental, congress] = await Promise.all([
@@ -1309,6 +1369,23 @@ async function handler(req: Request): Promise<Response> {
                         buyThreshold,
                         sellThreshold,
                     );
+
+                    // A tripped breaker blocks new risk only. Signal sells must still get
+                    // through: `evaluateExistingPosition` (which the re-evaluation loop runs)
+                    // is NOT a superset of the sell signal — it looks at the technical trend
+                    // and news sentiment alone, while `scoreSignals` also weighs options,
+                    // fundamentals and congress. A position with a neutral trend and a 25/100
+                    // composite score holds in that loop, so skipping this one left it with no
+                    // exit path at all.
+                    if (entryBlock && signalScore.signal !== 'sell') {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_blocked',
+                            score: signalScore.total,
+                            detail: { entriesBlockedBy: entryBlock.outcome },
+                        });
+                        continue;
+                    }
 
                     // Position + pricing
                     const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
@@ -1414,32 +1491,10 @@ async function handler(req: Request): Promise<Response> {
                         });
                     };
 
-                    // Budget exhausted on a symbol we already hold. This has to run *before*
-                    // makeTradeDecision: afterwards the decision is 'hold' with calculatedSize
-                    // 0, which falls into the '잔고 부족' branch below. Restricted to buy
-                    // signals so a sell/hold on a fully funded symbol still takes its normal
-                    // path.
-                    if (
-                        existingPosition &&
-                        signalScore.signal === 'buy' &&
-                        maxPlan.quantity === 0
-                    ) {
-                        // A full per-symbol cap is a normal steady state — record it and move
-                        // on. Any other cause (total exposure / cash / bad price) is the same
-                        // condition the position-less path alerts on, so it gets the same
-                        // skipped-trade row and email instead of vanishing silently.
-                        if (maxPlan.limitedBy !== 'symbol') {
-                            await recordUnfundedBuy();
-                            continue;
-                        }
-                        decisions.push({
-                            symbol: item.symbol,
-                            action: 'symbol_limit_reached',
-                            score: signalScore.total,
-                            detail: { budget: budgetDetail },
-                        });
-                        continue;
-                    }
+                    // A buy signal with no budget left. Handled after the kill switch below,
+                    // not here: the alert + skipped-trade row must not fire on a run that
+                    // could not have placed an order anyway.
+                    const unfundedBuy = signalScore.signal === 'buy' && maxPlan.quantity === 0;
 
                     // Circuit breaker: re-check daily trade limit before each trade
                     // Include in-flight orders to prevent limit overshoot across concurrent runs.
@@ -1447,7 +1502,12 @@ async function handler(req: Request): Promise<Response> {
                         getTodayTradeCount(db),
                         getTodayInflightOrderCount(db),
                     ]);
-                    if (currentDayCount + currentInflightCount >= maxTradesPerDay) {
+                    if (
+                        currentDayCount + currentInflightCount >= maxTradesPerDay &&
+                        signalScore.signal !== 'sell'
+                    ) {
+                        // Sells are exempt: the fill limit caps how much new risk is opened,
+                        // and refusing to close a position is not a way to trade less.
                         decisions.push({
                             symbol: item.symbol,
                             action: 'daily_limit',
@@ -1539,17 +1599,7 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Insufficient balance — signal is buy but position size is 0
-                    if (
-                        decision.action === 'hold' &&
-                        signalScore.signal === 'buy' &&
-                        maxPlan.quantity === 0
-                    ) {
-                        await recordUnfundedBuy();
-                        continue;
-                    }
-
-                    if (decision.action === 'hold') {
+                    if (decision.action === 'hold' && !unfundedBuy) {
                         decisions.push({
                             symbol: item.symbol,
                             action: decision.action,
@@ -1577,6 +1627,23 @@ async function handler(req: Request): Promise<Response> {
                             action: 'trading_disabled_mid_loop',
                             score: decision.score,
                         });
+                        continue;
+                    }
+
+                    // Insufficient budget for a buy signal. A full per-symbol cap is a normal
+                    // steady state → quiet `symbol_limit_reached`; any other cause (total
+                    // exposure, cash, bad price) gets the skipped-trade row + operator email.
+                    if (unfundedBuy) {
+                        if (existingPosition && maxPlan.limitedBy === 'symbol') {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'symbol_limit_reached',
+                                score: signalScore.total,
+                                detail: { budget: budgetDetail },
+                            });
+                        } else {
+                            await recordUnfundedBuy();
+                        }
                         continue;
                     }
 
