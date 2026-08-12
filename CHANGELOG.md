@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/y0ngha/siglens-trader/compare/v0.15.0...v0.15.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* 형식 검사를 세션 캐시 앞으로 확장 ([2b3792c](https://github.com/y0ngha/siglens-trader/commit/2b3792ca0805f822791d547ff4b7b4007481ff8a))
+* 형식이 잘못된 세션 쿠키가 DB 왕복·스택트레이스를 유발하던 문제 ([3eb8486](https://github.com/y0ngha/siglens-trader/commit/3eb8486fbb7ec6642db7cfed2e11d8deb36dbfb5))
+
 # [0.15.0](https://github.com/y0ngha/siglens-trader/compare/v0.14.0...v0.15.0) (2026-08-12)
 
 
