@@ -61,6 +61,7 @@ function createFakeDb(results: unknown[][]) {
 }
 
 const NOW = new Date('2026-08-12T00:00:00.000Z');
+const SESSION_ID = '9f8e7d6c-5b4a-4321-8765-0a1b2c3d4e5f';
 
 describe('createSession', () => {
     it('stores a row expiring one TTL from now and returns its id', async () => {
@@ -92,7 +93,7 @@ describe('resolveSessionUser', () => {
             ],
         ]);
 
-        await expect(resolveSessionUser(db, 'session-1', NOW)).resolves.toEqual({
+        await expect(resolveSessionUser(db, SESSION_ID, NOW)).resolves.toEqual({
             id: 'user-1',
             email: 'operator@example.com',
             name: 'Operator',
@@ -102,7 +103,34 @@ describe('resolveSessionUser', () => {
 
     it('returns null for an unknown session id', async () => {
         const { db } = createFakeDb([[]]);
-        await expect(resolveSessionUser(db, 'nope', NOW)).resolves.toBeNull();
+        await expect(
+            resolveSessionUser(db, '11111111-2222-3333-4444-555555555555', NOW),
+        ).resolves.toBeNull();
+    });
+
+    it('rejects a non-uuid cookie without touching the database', async () => {
+        // `sessions.id` is a uuid column, so a junk value raises 22P02 instead of
+        // returning no rows: the caller failed closed either way, but every request
+        // with a junk cookie cost a round trip and a stack trace in CloudWatch.
+        for (const junk of [
+            '%',
+            'nope',
+            '',
+            "' OR 1=1 --",
+            '11111111-2222-3333-4444-55555555555',
+        ]) {
+            const { db, ops } = createFakeDb([[]]);
+            await expect(resolveSessionUser(db, junk, NOW)).resolves.toBeNull();
+            expect(ops).toEqual([]);
+        }
+    });
+
+    it('accepts an uppercase uuid', async () => {
+        const { db, ops } = createFakeDb([[]]);
+        await expect(
+            resolveSessionUser(db, 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE', NOW),
+        ).resolves.toBeNull();
+        expect(ops).toEqual(['select']);
     });
 
     it('rejects an expired session and deletes the row', async () => {
@@ -112,7 +140,7 @@ describe('resolveSessionUser', () => {
         ]);
 
         // expiresAt exactly equal to now is already expired (<=).
-        await expect(resolveSessionUser(db, 'session-1', NOW)).resolves.toBeNull();
+        await expect(resolveSessionUser(db, SESSION_ID, NOW)).resolves.toBeNull();
         expect(ops).toEqual(['select', 'delete']);
     });
 });
@@ -120,8 +148,14 @@ describe('resolveSessionUser', () => {
 describe('destroySession', () => {
     it('issues a delete', async () => {
         const { db, ops } = createFakeDb([[]]);
-        await destroySession(db, 'session-1');
+        await destroySession(db, '11111111-2222-3333-4444-555555555555');
         expect(ops).toEqual(['delete']);
+    });
+
+    it('no-ops on a malformed id rather than raising 22P02', async () => {
+        const { db, ops } = createFakeDb([[]]);
+        await destroySession(db, '%');
+        expect(ops).toEqual([]);
     });
 });
 
