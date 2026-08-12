@@ -80,6 +80,24 @@ export function buildErrorEmail(subject: string, error: string): { subject: stri
     };
 }
 
+/**
+ * Cron health alert — sent by the digest when the night was quiet but something
+ * about the system is not. Deliberately plain: it exists to be noticed, not read.
+ */
+export function buildCronHealthEmail(lines: readonly string[]): {
+    subject: string;
+    html: string;
+} {
+    const items = lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('');
+    return {
+        subject: '[Trader] 시스템 이상 감지',
+        html:
+            `<p>알림으로 보낼 거래 이벤트는 없었지만, 크론 상태에서 이상이 발견됐습니다.</p>` +
+            `<ul>${items}</ul>` +
+            `<p>대시보드의 감사(Audit) 탭에서 크론 실행 이력을 확인하세요.</p>`,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Send functions — call the corresponding builder then deliver via Resend.
 // ---------------------------------------------------------------------------
@@ -106,6 +124,13 @@ export async function sendErrorEmail(subject: string, error: string, to?: string
     const resend = getResend();
     const { subject: emailSubject, html } = buildErrorEmail(subject, error);
     await resend.emails.send({ from: FROM(), to: recipient, subject: emailSubject, html });
+}
+
+export async function sendCronHealthEmail(lines: readonly string[], to?: string): Promise<void> {
+    const recipient = to ?? DEFAULT_TO;
+    const resend = getResend();
+    const { subject, html } = buildCronHealthEmail(lines);
+    await resend.emails.send({ from: FROM(), to: recipient, subject, html });
 }
 
 // ---------------------------------------------------------------------------

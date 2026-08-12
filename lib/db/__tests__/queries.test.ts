@@ -1308,6 +1308,28 @@ describe('Cron audit log queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
         });
 
+        it('persists a summary on a skipped run', async () => {
+            // The digest records health findings on an otherwise-skipped (empty queue)
+            // run; dropping the summary there would erase the only audit trail of it.
+            const finishedAt = new Date('2026-06-12T13:01:00Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'digest-skipped-with-summary', {
+                status: 'skipped',
+                outcome: 'queue_empty',
+                summary: { healthIssues: 2 },
+                finishedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'skipped',
+                    outcome: 'queue_empty',
+                    summary: { healthIssues: 2 },
+                }),
+            );
+        });
+
         it('handles skipped status with no summary or error', async () => {
             const finishedAt = new Date('2026-06-12T13:01:00Z');
             const db = createMockDb(undefined);

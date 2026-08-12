@@ -37,6 +37,7 @@ const NOTIFICATION_EVENTS = [
     { key: 'order_pending', label: '주문 승인 대기' },
     { key: 'stop_loss', label: '손절 발동' },
     { key: 'error', label: '시스템 오류' },
+    { key: 'cron_health', label: '시스템 이상 감지' },
 ] as const;
 
 interface WatchlistItem {
@@ -801,6 +802,21 @@ export function SettingsPage() {
                             </label>
                         ))}
                     </div>
+
+                    {/* Quiet hours has no toggle — it is always on. Surfacing it here
+                        because the behaviour is otherwise invisible: mail simply
+                        doesn't arrive overnight and there is nothing in the UI saying why. */}
+                    <p className="mt-4 border-t border-[#262626] pt-3 text-xs leading-5 text-neutral-500">
+                        수면 모드: <span className="text-neutral-400">00:00~09:59</span>에 발생한
+                        알림은 발송하지 않고 모아뒀다가{' '}
+                        <span className="text-neutral-400">매일 오전 10시</span>에 한 통으로
+                        보냅니다.
+                        <br />
+                        조용한 밤에는 메일이 오지 않습니다. 단
+                        <span className="text-neutral-400"> 시스템 이상 감지</span>가 켜져 있으면,
+                        보낼 이벤트가 없더라도 크론이 실패했거나 72시간 이상 멈춘 경우에는
+                        알려줍니다.
+                    </p>
                 </div>
             </section>
         </div>

@@ -14,6 +14,10 @@
  *
  * If the Resend call throws: rows are left unsent so the next invocation can
  * retry — we prefer "maybe send twice" over "definitely lose".
+ *
+ * An empty queue does NOT mean an empty run: before going silent the digest checks
+ * cron health and sends an alert if the crons are failing or have gone quiet. Silence
+ * should mean "nothing happened", never "the system died and nobody noticed".
  */
 
 import crypto from 'node:crypto';
@@ -21,6 +25,7 @@ import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import {
+    getCronRuns,
     getNotificationConfig,
     getPendingNotifications,
     markNotificationsSent,
@@ -29,7 +34,13 @@ import {
     finalizeStaleCronRuns,
 } from '../../lib/db/queries.js';
 import type { CronRunFinish } from '../../lib/db/queries.js';
-import { sendDigestEmail } from '../../lib/notification/email.js';
+import { sendCronHealthEmail, sendDigestEmail } from '../../lib/notification/email.js';
+import { makeEmailGate } from '../../lib/notification/gate.js';
+import {
+    SILENCE_THRESHOLD_MS,
+    assessCronHealth,
+    describeCronHealth,
+} from '../../lib/notification/cron-health.js';
 
 const LOCK_KEY = 'cron:digest:lock';
 /** TTL well under any reasonable max invocation time; long enough to prevent overlap. */
@@ -60,14 +71,21 @@ export async function GET(req: Request): Promise<Response> {
         }
 
         const pending = await getPendingNotifications(db);
+        const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
+        const emailEnabled = emailNotif?.enabled ?? false;
+
         if (pending.length === 0) {
-            finishState = { status: 'skipped', outcome: 'queue_empty', ...elapsed() };
-            return Response.json({ skipped: true, reason: 'queue_empty' });
+            const health = await checkHealth(db, startedAt, emailNotif);
+            finishState = {
+                status: 'skipped',
+                outcome: 'queue_empty',
+                summary: health.issues.length ? { healthIssues: health.issues.length } : undefined,
+                ...elapsed(),
+            };
+            return Response.json({ skipped: true, reason: 'queue_empty', ...health.response });
         }
 
         const ids = pending.map((r) => r.id);
-        const emailNotif = (await getNotificationConfig(db)).find((n) => n.channel === 'email');
-        const emailEnabled = emailNotif?.enabled ?? false;
 
         if (!emailEnabled) {
             // Email is off — drain the queue silently so it doesn't accumulate indefinitely.
@@ -111,5 +129,35 @@ export async function GET(req: Request): Promise<Response> {
         if (finishState) {
             await safe(finishCronRun(db, runId, finishState));
         }
+    }
+}
+
+/**
+ * Look for failing or stalled crons and alert when found.
+ *
+ * Gated on the `cron_health` event so the dashboard toggle actually turns it off —
+ * and on the master email switch, since "email OFF" must mean silence. Never throws:
+ * a health check that breaks the digest would be worse than the blind spot it closes.
+ */
+async function checkHealth(
+    db: ReturnType<typeof getDb>,
+    now: Date,
+    emailNotif: { enabled: boolean; target: string | null; events: string[] } | undefined,
+): Promise<{ issues: string[]; response: Record<string, unknown> }> {
+    try {
+        if (!makeEmailGate(emailNotif)('cron_health')) return { issues: [], response: {} };
+
+        const runs = await getCronRuns(db, {
+            from: new Date(now.getTime() - SILENCE_THRESHOLD_MS),
+            limit: 500,
+        });
+        const issues = describeCronHealth(assessCronHealth(runs, now));
+        if (issues.length === 0) return { issues: [], response: {} };
+
+        await sendCronHealthEmail(issues, emailNotif?.target ?? undefined);
+        return { issues, response: { healthAlert: issues } };
+    } catch (e) {
+        console.error('[cron:digest] health check failed', e);
+        return { issues: [], response: {} };
     }
 }
