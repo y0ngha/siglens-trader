@@ -5,7 +5,7 @@
  * so password guessing has to cost something. Counters are per-client-key and
  * only failures count — a successful login clears the bucket.
  *
- * ponytail: in-process Map, which is exactly right for the single-instance
+ * Deliberate ceiling: an in-process Map, which is exactly right for the single-instance
  * deployment (one EC2 box behind one tunnel). Move the counter to Redis if a
  * second app instance is ever added, otherwise the limit multiplies by N.
  */

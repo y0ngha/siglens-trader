@@ -306,6 +306,114 @@ describe('isAuthenticated', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Session cache
+    // -----------------------------------------------------------------------
+
+    describe('session cache', () => {
+        beforeEach(async () => {
+            vi.stubEnv('DISABLE_AUTH', '');
+            vi.stubEnv('CF_ACCESS_TEAM_DOMAIN', '');
+            vi.stubEnv('CF_ACCESS_AUD', '');
+            mockResolveSessionUser.mockReset();
+            const { resetSessionCache } = await import('../auth');
+            resetSessionCache();
+        });
+
+        it('resolves the database once for repeated requests on the same cookie', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+
+            // The dashboard polls several endpoints every 10s; without this each one
+            // would be a cross-region round trip.
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
+        });
+
+        it('caches misses too, so junk cookies cannot hammer the database', async () => {
+            mockResolveSessionUser.mockResolvedValue(null);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps separate entries per cookie', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=a' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=b' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+        });
+
+        it('forgetSession drops the entry so a logout takes effect at once', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser, forgetSession } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            forgetSession('abc-123');
+
+            mockResolveSessionUser.mockResolvedValue(null);
+            await expect(
+                getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' })),
+            ).resolves.toBeNull();
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+        });
+
+        it('expires an entry after the TTL', async () => {
+            vi.useFakeTimers();
+            try {
+                vi.setSystemTime(new Date('2026-08-12T00:00:00.000Z'));
+                mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+                const { getSessionUser } = await import('../auth');
+
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                vi.setSystemTime(new Date('2026-08-12T00:00:04.999Z'));
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
+
+                vi.setSystemTime(new Date('2026-08-12T00:00:05.001Z'));
+                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('does not cache a lookup failure — the next request retries', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            mockResolveSessionUser.mockRejectedValue(new Error('connection refused'));
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
+            errorSpy.mockRestore();
+        });
+
+        it('evicts rather than growing without bound under a flood of distinct cookies', async () => {
+            mockResolveSessionUser.mockResolvedValue(null);
+            const { getSessionUser } = await import('../auth');
+
+            for (let i = 0; i < 1_100; i += 1) {
+                await getSessionUser(makeRequest({ cookie: `trader_session=junk-${i}` }));
+            }
+            const afterFlood = mockResolveSessionUser.mock.calls.length;
+
+            // The earliest keys must have been evicted, so re-asking hits the database again.
+            await getSessionUser(makeRequest({ cookie: 'trader_session=junk-0' }));
+            expect(mockResolveSessionUser.mock.calls.length).toBe(afterFlood + 1);
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // getSessionUser
     // -----------------------------------------------------------------------
 
