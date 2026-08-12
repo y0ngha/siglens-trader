@@ -8,11 +8,13 @@ import {
     safeAnalysisSupport,
     safeAnalysisResistance,
     safeAnalysisTargetPrice,
+    safeAnalysisPriceScenario,
     safeActionRecommendation,
     safeAnalysisIndicators,
     safeFundamentalCategories,
     safeArray,
     safeNumberArray,
+    safePriceLevelArray,
 } from '../safe-extract';
 
 describe('safeRecord', () => {
@@ -175,6 +177,22 @@ describe('safeAnalysisSupport', () => {
     it('returns undefined when keyLevels is an array (not object)', () => {
         expect(safeAnalysisSupport({ keyLevels: [{ support: [95] }] })).toBeUndefined();
     });
+
+    // Regression: siglens-core's real KeyLevels.support is { price, reason }[], not
+    // number[]. This is the shape that used to make safeAnalysisSupport always
+    // return undefined in production (see lib/strategy/CLAUDE.md).
+    it('extracts price from real core-shaped KeyLevel objects', () => {
+        expect(
+            safeAnalysisSupport({
+                keyLevels: {
+                    support: [
+                        { price: 95, reason: 'prior swing low' },
+                        { price: 90, reason: '200-day MA' },
+                    ],
+                },
+            }),
+        ).toBe(95);
+    });
 });
 
 describe('safeAnalysisResistance', () => {
@@ -190,6 +208,10 @@ describe('safeAnalysisResistance', () => {
         expect(safeAnalysisResistance({ keyLevels: {} })).toBeUndefined();
     });
 
+    it('returns undefined when keyLevels itself is missing', () => {
+        expect(safeAnalysisResistance({})).toBeUndefined();
+    });
+
     it('returns undefined when resistance is not an array', () => {
         expect(safeAnalysisResistance({ keyLevels: { resistance: 'high' } })).toBeUndefined();
     });
@@ -199,10 +221,165 @@ describe('safeAnalysisResistance', () => {
             safeAnalysisResistance({ keyLevels: { resistance: [null, undefined] } }),
         ).toBeUndefined();
     });
+
+    // Regression: same core-shape bug as safeAnalysisSupport, mirrored here.
+    it('extracts price from real core-shaped KeyLevel objects', () => {
+        expect(
+            safeAnalysisResistance({
+                keyLevels: {
+                    resistance: [
+                        { price: 110, reason: 'prior swing high' },
+                        { price: 120, reason: 'psychological round number' },
+                    ],
+                },
+            }),
+        ).toBe(110);
+    });
+});
+
+describe('safePriceLevelArray', () => {
+    it('extracts price from a KeyLevel-shaped object array (core shape)', () => {
+        expect(safePriceLevelArray([{ price: 95, reason: 'swing low' }])).toEqual([95]);
+    });
+
+    it('accepts a bare number array unchanged (legacy/manual fixture shape)', () => {
+        expect(safePriceLevelArray([95, 90, 85])).toEqual([95, 90, 85]);
+    });
+
+    it('accepts a mix of bare numbers and KeyLevel objects, keeping only valid ones', () => {
+        expect(
+            safePriceLevelArray([95, { price: 90, reason: 'ma' }, 'garbage', { price: NaN }]),
+        ).toEqual([95, 90]);
+    });
+
+    it('filters out a KeyLevel object with price 0', () => {
+        expect(safePriceLevelArray([{ price: 0, reason: 'x' }])).toBeUndefined();
+    });
+
+    it('filters out a KeyLevel object with negative price', () => {
+        expect(safePriceLevelArray([{ price: -10, reason: 'x' }])).toBeUndefined();
+    });
+
+    it('filters out a KeyLevel object with NaN price', () => {
+        expect(safePriceLevelArray([{ price: NaN, reason: 'x' }])).toBeUndefined();
+    });
+
+    it('filters out a KeyLevel object with a string price', () => {
+        expect(safePriceLevelArray([{ price: '95', reason: 'x' }])).toBeUndefined();
+    });
+
+    it('returns undefined when every element is invalid', () => {
+        expect(safePriceLevelArray([null, undefined, 'x', { reason: 'no price field' }])).toBe(
+            undefined,
+        );
+    });
+
+    it('returns undefined for an empty array', () => {
+        expect(safePriceLevelArray([])).toBeUndefined();
+    });
+
+    it('returns undefined when the input is not an array', () => {
+        expect(safePriceLevelArray('not-array')).toBeUndefined();
+    });
+
+    it('returns undefined for null', () => {
+        expect(safePriceLevelArray(null)).toBeUndefined();
+    });
+});
+
+describe('safeAnalysisPriceScenario', () => {
+    // siglens-core's real shape: PriceScenario = { targets: PriceTarget[]; condition: string }.
+    // The old extractor read a `bullish.target` scalar that does not exist in core, so it
+    // always returned undefined in production — this block is the regression guard.
+    const coreShape = {
+        priceTargets: {
+            bullish: {
+                targets: [
+                    { price: 205, basis: '측정 목표' },
+                    { price: 212, basis: '확장 목표' },
+                ],
+                condition: '$195 돌파 시',
+            },
+            bearish: {
+                targets: [{ price: 172, basis: '지지 이탈' }],
+                condition: '$175 이탈 시',
+            },
+        },
+    };
+
+    it('extracts the full bullish target ladder plus its condition', () => {
+        expect(safeAnalysisPriceScenario(coreShape, 'bullish')).toEqual({
+            targets: [205, 212],
+            condition: '$195 돌파 시',
+        });
+    });
+
+    it('extracts the bearish scenario too', () => {
+        expect(safeAnalysisPriceScenario(coreShape, 'bearish')).toEqual({
+            targets: [172],
+            condition: '$175 이탈 시',
+        });
+    });
+
+    it('leaves condition undefined when core omits it', () => {
+        expect(
+            safeAnalysisPriceScenario(
+                { priceTargets: { bullish: { targets: [{ price: 9 }] } } },
+                'bullish',
+            ),
+        ).toEqual({ targets: [9], condition: undefined });
+    });
+
+    it('accepts a bare number array of targets', () => {
+        expect(
+            safeAnalysisPriceScenario(
+                { priceTargets: { bullish: { targets: [10, 20] } } },
+                'bullish',
+            ),
+        ).toMatchObject({ targets: [10, 20] });
+    });
+
+    it('accepts the legacy { target } scalar', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: { target: 200 } } }, 'bullish'),
+        ).toMatchObject({ targets: [200] });
+    });
+
+    it('returns undefined when the scenario is null (core default)', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: null } }, 'bullish'),
+        ).toBeUndefined();
+    });
+
+    it('returns undefined when no target survives validation', () => {
+        expect(
+            safeAnalysisPriceScenario({ priceTargets: { bullish: { targets: ['x'] } } }, 'bullish'),
+        ).toBeUndefined();
+    });
+
+    it('returns undefined for a non-record input', () => {
+        expect(safeAnalysisPriceScenario(null, 'bullish')).toBeUndefined();
+    });
 });
 
 describe('safeAnalysisTargetPrice', () => {
-    it('extracts bullish target price from valid structure', () => {
+    it('extracts the nearest bullish target from the real core shape', () => {
+        expect(
+            safeAnalysisTargetPrice({
+                priceTargets: {
+                    bullish: {
+                        targets: [
+                            { price: 205, basis: '측정 목표' },
+                            { price: 212, basis: '확장 목표' },
+                        ],
+                        condition: '$195 돌파 시',
+                    },
+                },
+            }),
+        ).toBe(205);
+    });
+
+    it('still extracts the legacy bullish target scalar', () => {
         expect(safeAnalysisTargetPrice({ priceTargets: { bullish: { target: 200 } } })).toBe(200);
     });
 

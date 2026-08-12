@@ -1487,6 +1487,24 @@ describe('POST /api/config — analysis type allowlist', () => {
         }
         expect(mockUpdateAnalysisConfig).toHaveBeenCalledTimes(4);
     });
+
+    it('accepts the trade_gate analysis type', async () => {
+        // trade_gate reuses the analysis-config allowlist so the AI trade gate's model
+        // picks up ON/OFF + model + BYOK from the same dashboard UI as the other axes.
+        mockUpdateAnalysisConfig.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'analysis',
+                analysisType: 'trade_gate',
+                updates: { enabled: true },
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockUpdateAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'trade_gate', {
+            enabled: true,
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------

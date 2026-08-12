@@ -30,7 +30,7 @@ describe('mock config handler', () => {
         const body = (await response.json()) as ConfigResponse;
 
         expect(response.ok).toBe(true);
-        expect(body.analysis).toHaveLength(4);
+        expect(body.analysis).toHaveLength(5);
         expect(body.analysis.every(({ modelId }) => modelId === 'deepseek-v4-flash')).toBe(true);
     });
 });

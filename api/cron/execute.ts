@@ -27,15 +27,22 @@ import {
     finishCronRun,
     finalizeStaleCronRuns,
     insertCronDecisions,
+    getAnalysisConfig,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { getAnalysisReferenceTime } from '../../lib/analysis/source-time.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
-import {
-    calculatePositionSize,
-    evaluateExistingPosition,
-} from '../../lib/strategy/risk-manager.js';
+import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
+import { planEntry, planExit } from '../../lib/strategy/trade-plan.js';
+import type { EntryPlan, ExitTrigger } from '../../lib/strategy/trade-plan.js';
+import { runTradeGate } from '../../lib/analysis/trade-gate.js';
+import type {
+    TradeGateAnalysisEntry,
+    TradeGateKind,
+    TradeGateOutcome,
+} from '../../lib/analysis/trade-gate.js';
+import { resolveApiKey } from './_run-analysis-cron.js';
 import { makeTradeDecision } from '../../lib/strategy/decision.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
@@ -119,6 +126,95 @@ function scoreDecisionDetail(
     };
 }
 
+/**
+ * Where a sizing `fraction` came from. Recorded on every decision the gate took part in so
+ * an audit can tell "the model chose half" from "the model was never asked".
+ */
+type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline' | 'risk_halt';
+
+/**
+ * How far the live quote may sit from the technical snapshot before the snapshot is used
+ * instead for the daily-loss breaker.
+ *
+ * Two same-session sources normally differ by a fraction of a percent — the snapshot is at
+ * most `getTechnicalMaxAgeMs` old (45min–2h). 25% still clears a violent but real gap without
+ * crying wolf, while every classic feed corruption (decimal shift, cents/dollars mixup,
+ * another listing's price) is an order of magnitude outside it. Deliberately compared against
+ * the snapshot and not `avgPrice`: the entry price can be weeks old, so a position genuinely
+ * down 70% would fail an entry-relative band on every run and be silently under-counted.
+ */
+const MAX_PRICE_SOURCE_DIVERGENCE = 0.25;
+
+/** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
+const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
+    'technical',
+    'news',
+    'options',
+    'fundamental',
+    'congress',
+];
+
+type AnalysisRow = {
+    result: unknown;
+    modelId?: string | null;
+    analyzedAt: Date | string;
+    sourceAnalyzedAt?: Date | string | null;
+} | null;
+
+/**
+ * Builds the gate's five-axis analysis block.
+ *
+ * A missing axis is passed through as `result: null` rather than dropped: `trade-gate.ts`
+ * prints "데이터 없음" for it on purpose, and a silently absent section reads to the model as
+ * "not applicable", which invites it to invent one.
+ */
+function toGateAnalyses(rows: Partial<Record<TradeGateAnalysisEntry['type'], AnalysisRow>>) {
+    return GATE_AXES.map((type) => {
+        const row = rows[type] ?? null;
+        return {
+            type,
+            result: row?.result ?? null,
+            // source_analyzed_at (the LLM's own stamp) wins over the row's write time —
+            // same freshness clock the staleness guard above uses.
+            analyzedAt: row ? getAnalysisReferenceTime(row) : null,
+            modelId: row?.modelId ?? null,
+        };
+    });
+}
+
+/**
+ * Audit block merged into `cron_decisions.detail` (design doc §9.3). Entry decisions carry the
+ * budget that bounded them; exits have no buy budget, so those fields stay null.
+ */
+function gateDetail(params: {
+    kind: TradeGateKind;
+    source: GateSource;
+    model: string;
+    fraction: number;
+    outcome: TradeGateOutcome | null;
+    plan?: EntryPlan | null;
+    quantity: number;
+}) {
+    const ok = params.outcome?.status === 'ok' ? params.outcome : null;
+    return {
+        gate: {
+            kind: params.kind,
+            source: params.source,
+            model: params.model,
+            fraction: params.fraction,
+            confidence: ok?.confidence ?? null,
+            reason:
+                ok?.reason ??
+                (params.outcome?.status === 'error' ? params.outcome.error : null) ??
+                null,
+            fullBudget: params.plan?.fullBudget ?? null,
+            trancheBudget: params.plan?.trancheBudget ?? null,
+            limitedBy: params.plan?.limitedBy ?? null,
+            quantity: params.quantity,
+        },
+    };
+}
+
 function publicDecision(decision: ExecuteDecision) {
     return {
         symbol: decision.symbol,
@@ -191,6 +287,31 @@ async function handler(req: Request): Promise<Response> {
             // Clean up expired pending orders
             await expireOldPendingOrders(db);
 
+            // Read ahead of the breakers: their alerts state what will still happen to open
+            // positions, and that differs per mode (auto sells, semi_auto only queues an
+            // approval, dry_run only simulates).
+            const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+            const exitPolicyNote =
+                tradingMode === 'auto'
+                    ? '보유 포지션의 청산 신호는 계속 처리되어 전량 시장가로 청산됩니다 (킬 스위치를 켜면 청산도 즉시 중단됩니다).'
+                    : tradingMode === 'semi_auto'
+                      ? '보유 포지션의 청산은 자동 실행되지 않고 승인 대기열에만 등록됩니다 — 대시보드에서 승인해야 체결됩니다.'
+                      : '※ dry_run 시뮬레이션 — 위 손익은 모의 포지션 기준이며, 청산도 시뮬레이션으로만 기록됩니다 (실제 주문 없음). 실계좌 사고가 아닙니다.';
+
+            // Risk breakers below stop NEW RISK, not risk reduction. A breaker that also
+            // blocks liquidation is a bug: with split exits the gate can defer a sell
+            // indefinitely, so an early `return` here would mean the position is never
+            // stopped out at all — the breaker would cap nothing while the loss grew.
+            // So they set `entryBlock` (skip the watchlist loop) instead of returning, and
+            // the loss breakers additionally set `forceFullExit` (every exit is treated as
+            // `hard` → full size, gate bypassed). The kill switch is the sole exception and
+            // still stops everything: it is the operator's explicit "stop trading".
+            let entryBlock: {
+                outcome: 'daily_trade_limit' | 'daily_loss_limit';
+                body: unknown;
+            } | null = null;
+            let forceFullExit = false;
+
             // Circuit breaker: daily trade limit
             // Count both settled trades AND in-flight orders (submitted/pending/partial) so
             // concurrent/rapid runs cannot exceed the limit by racing before any order settles.
@@ -200,13 +321,15 @@ async function handler(req: Request): Promise<Response> {
                 getTodayInflightOrderCount(db),
             ]);
             if (todayTradeCount + todayInflightCount >= maxTradesPerDay) {
-                finishState = { status: 'skipped', outcome: 'daily_trade_limit', ...elapsed() };
-                return Response.json({
-                    skipped: true,
-                    reason: 'daily_trade_limit_reached',
-                    todayCount: todayTradeCount + todayInflightCount,
-                    limit: maxTradesPerDay,
-                });
+                entryBlock = {
+                    outcome: 'daily_trade_limit',
+                    body: {
+                        skipped: true,
+                        reason: 'daily_trade_limit_reached',
+                        todayCount: todayTradeCount + todayInflightCount,
+                        limit: maxTradesPerDay,
+                    },
+                };
             }
 
             // Circuit breaker: daily loss limit
@@ -215,23 +338,32 @@ async function handler(req: Request): Promise<Response> {
             if (todayPnl < -maxDailyLoss) {
                 await notifyError(
                     '일일 손실 한도 초과',
-                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                 );
-                finishState = { status: 'skipped', outcome: 'daily_loss_limit', ...elapsed() };
-                return Response.json({
-                    skipped: true,
-                    reason: 'daily_loss_limit_reached',
-                    todayPnl,
-                    limit: maxDailyLoss,
-                });
+                entryBlock = {
+                    outcome: 'daily_loss_limit',
+                    body: {
+                        skipped: true,
+                        reason: 'daily_loss_limit_reached',
+                        todayPnl,
+                        limit: maxDailyLoss,
+                    },
+                };
+                forceFullExit = true;
             }
 
             // Circuit breaker: unrealized loss limit
             // Fetch current prices for all open positions to calculate unrealized PnL.
             // Failures to fetch individual position prices are silently skipped (best-effort).
+            // Skipped once the realized breaker already tripped — the state is identical
+            // (entries blocked, exits forced full) and re-computing would only double-mail.
             const preCheckPositions = await getOpenPositions(db);
-            if (preCheckPositions.length > 0) {
+            if (!forceFullExit && preCheckPositions.length > 0) {
                 let unrealizedPnl = 0;
+                // Collected, not mailed per position: a real gap diverges every run until the
+                // snapshot catches up, and one line per symbol per run is how an inbox stops
+                // being read.
+                const priceDivergences: string[] = [];
                 for (const pos of preCheckPositions) {
                     try {
                         const livePreCheck = await fetchLivePrice(pos.symbol).catch(() => null);
@@ -240,9 +372,63 @@ async function handler(req: Request): Promise<Response> {
                             pos.symbol,
                             'technical',
                         );
-                        const curPrice = livePreCheck ?? safeAnalysisPrice(techForPos?.result);
+                        // Cross-check the FMP quote against the technical snapshot.
+                        // `fetchLivePrice` only checks "finite positive", so a corrupt quote
+                        // would otherwise trip the loss limit — which now forces a full
+                        // liquidation of every position.
+                        //
+                        // These are NOT independent sources. Both originate at FMP (quote
+                        // endpoint vs OHLC via `getMarketDataProvider`), and the snapshot value
+                        // is `keyLevels.currentPrice` — a number the LLM copied into its own
+                        // JSON, not a raw feed reading. So this catches the dominant failure
+                        // (one bad quote tick) and catches nothing vendor-wide: a symbol
+                        // mapping error, an unadjusted split or a currency mixup corrupts both
+                        // values together and passes the check.
+                        // TODO: a genuinely independent cross-check needs the Yahoo provider
+                        // already in `lib/data/` — out of scope here.
+                        const snapshotPrice = safeAnalysisPrice(techForPos?.result);
+                        const avgP = safeNumber(Number(pos.avgPrice), 0);
+                        const liveOk = livePreCheck != null && livePreCheck > 0;
+                        const diverged =
+                            liveOk &&
+                            snapshotPrice > 0 &&
+                            Math.abs(livePreCheck - snapshotPrice) / snapshotPrice >
+                                MAX_PRICE_SOURCE_DIVERGENCE;
+
+                        // Substitute, never exclude. Dropping a position from the sum always
+                        // understates the loss, which delays the very breaker this guard
+                        // protects — and the entry price is the wrong yardstick anyway: it can
+                        // be weeks old, so a position legitimately down 70% looked like a bad
+                        // tick and was dropped on every single run.
+                        //
+                        // NOTE: this is the *breaker's* price only. The per-position exit
+                        // decision below uses `priceCache` (the live quote) — so one run can
+                        // legitimately value the same position at two different prices. On a
+                        // real gap the aggregate breaker reads the snapshot and is blunt for up
+                        // to one analysis cycle, while the stop-loss path sees the live drop
+                        // and fires normally. Deliberate: the blunt side fails toward doing
+                        // nothing destructive.
+                        let curPrice: number;
+                        if (diverged) {
+                            curPrice = snapshotPrice;
+                        } else if (liveOk) {
+                            curPrice = livePreCheck;
+                        } else if (snapshotPrice > 0) {
+                            curPrice = snapshotPrice;
+                        } else {
+                            // Neither source has a price. avgPrice yields unrealized 0, which
+                            // is the neutral "unknown" value, not a claim of "no loss" — the
+                            // same contribution the previous no-price behavior produced, but
+                            // reached explicitly.
+                            curPrice = avgP;
+                        }
+
+                        if (diverged) {
+                            priceDivergences.push(
+                                `${pos.symbol}: 실시간 호가 $${livePreCheck} vs 기술분석 스냅샷 $${snapshotPrice} → 스냅샷 가격으로 합산`,
+                            );
+                        }
                         if (curPrice > 0) {
-                            const avgP = safeNumber(Number(pos.avgPrice), 0);
                             const dir = pos.side === 'short' ? avgP - curPrice : curPrice - avgP;
                             unrealizedPnl += dir * pos.quantity;
                         }
@@ -250,30 +436,41 @@ async function handler(req: Request): Promise<Response> {
                         // Skip this position's unrealized PnL — analysis data unavailable
                     }
                 }
+                if (priceDivergences.length > 0) {
+                    await notifyError(
+                        `시세 출처 불일치 (${priceDivergences.length}건, ${tradingMode})`,
+                        `실시간 호가가 기술분석 스냅샷과 ${Math.round(MAX_PRICE_SOURCE_DIVERGENCE * 100)}% 넘게 어긋나 일일 손실 한도 계산에 스냅샷 가격을 사용했습니다. 시세 피드 확인이 필요합니다.\n\n${priceDivergences.join('\n')}`,
+                    );
+                }
                 const totalPnl = todayPnl + unrealizedPnl;
                 if (totalPnl < -maxDailyLoss) {
                     await notifyError(
                         '일일 손실 한도 초과 (미실현 포함)',
-                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 매매가 중지되었습니다.`,
+                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 미실현 손실($${Math.abs(unrealizedPnl).toFixed(2)}) = 총 $${Math.abs(totalPnl).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                     );
-                    finishState = {
-                        status: 'skipped',
+                    entryBlock = {
                         outcome: 'daily_loss_limit',
-                        ...elapsed(),
+                        body: {
+                            skipped: true,
+                            reason: 'daily_loss_limit_reached',
+                            todayPnl,
+                            unrealizedPnl,
+                            totalPnl,
+                            limit: maxDailyLoss,
+                        },
                     };
-                    return Response.json({
-                        skipped: true,
-                        reason: 'daily_loss_limit_reached',
-                        todayPnl,
-                        unrealizedPnl,
-                        totalPnl,
-                        limit: maxDailyLoss,
-                    });
+                    forceFullExit = true;
                 }
             }
 
+            // Nothing held → nothing to liquidate, so a tripped breaker is just a skip
+            // (identical response to the pre-split behavior).
+            if (entryBlock && preCheckPositions.length === 0) {
+                finishState = { status: 'skipped', outcome: entryBlock.outcome, ...elapsed() };
+                return Response.json(entryBlock.body);
+            }
+
             // Load config
-            const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
             const maxPositionSize = (await getConfigValue<number>(db, 'max_position_size')) ?? 1000;
             const maxTotalExposure =
                 (await getConfigValue<number>(db, 'max_total_exposure')) ?? 5000;
@@ -340,6 +537,17 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
+            // AI sizing gate config — read once per run. No row means never configured, and
+            // getAnalysisConfig defaults that to enabled, so the gate is live the moment this
+            // deploys (design doc §4). Turning it off in 설정 > 분석 설정 restores the old
+            // all-or-nothing behavior with no redeploy.
+            const gateConfig = await getAnalysisConfig(db, 'trade_gate');
+            const gateApiKey = gateConfig.useByok ? resolveApiKey(gateConfig.modelId) : undefined;
+            // Hard cutoff at start+600s. The lock TTL is 780s and the audit rows are written
+            // after the loops, so a few slow gate calls late in a run must not eat the budget
+            // that finalizing the audit needs — past this point we decide without the model.
+            const gateDeadlineMs = startedMs + 600_000;
+
             const watchlistItems = await getEnabledWatchlist(db);
 
             // Calculate current exposure using current market prices when available,
@@ -376,6 +584,11 @@ async function handler(req: Request): Promise<Response> {
 
             // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
             const recentStopLossSymbols = new Set<string>();
+            // Symbols the re-evaluation loop already sold (fully or partially) this run. The
+            // watchlist loop must not sell them again on the same tick: a partial exit leaves
+            // a position behind, so a low overall score would otherwise open a *second* sell
+            // for the same symbol — same bearish data, two orders, colliding idempotency keys.
+            const exitedSymbols = new Set<string>();
 
             // --- Price cache: batch fetch all needed symbols once ---
             const priceCache = new Map<string, number>();
@@ -449,7 +662,20 @@ async function handler(req: Request): Promise<Response> {
                             o.side === 'sell' &&
                             ['submitted', 'pending', 'partial'].includes(o.status),
                     );
-                    if (hasPendingSell) {
+                    // semi_auto queues sells in `pending_orders`, not `order_tracking`, so the
+                    // in-flight check above cannot see them. Without this a queued approval
+                    // that the operator has not acted on yet gets a duplicate queued every
+                    // tick. Re-queried per position (not snapshotted) because this same loop
+                    // inserts pending sells as it goes.
+                    const hasPendingApprovalSell =
+                        tradingMode === 'semi_auto' &&
+                        (await getPendingOrders(db)).some(
+                            (o) =>
+                                o.symbol === position.symbol &&
+                                o.side === 'sell' &&
+                                o.status === 'pending',
+                        );
+                    if (hasPendingSell || hasPendingApprovalSell) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'pending_sell_in_progress',
@@ -468,7 +694,21 @@ async function handler(req: Request): Promise<Response> {
                     const techAge = techReferenceTime
                         ? Date.now() - techReferenceTime.getTime()
                         : Infinity;
-                    if (techAge > maxTechnicalAge) {
+                    const techResult = tech?.result;
+                    const currentPrice =
+                        priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
+                    const staleAnalysis = techAge > maxTechnicalAge;
+
+                    // A forced liquidation is driven by the loss limit, not by analysis, so it
+                    // must survive missing analysis. This matters because the gate and the
+                    // technical cron call the *same* LLM provider: the outage that makes the
+                    // gate defer a sell is the same outage that leaves every symbol stale, and
+                    // `fixed_exit_enabled` defaults off so no analysis-free stop line exists
+                    // either. Bailing on staleness here meant the forced liquidation sold
+                    // nothing at the exact moment it was needed.
+                    const mechanicalExit = forceFullExit && (staleAnalysis || currentPrice <= 0);
+
+                    if (staleAnalysis && !forceFullExit) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'stale_analysis',
@@ -482,39 +722,54 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const techResult = tech?.result;
-                    const currentPrice =
-                        priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
-                    if (currentPrice <= 0) {
+                    // `auto` places a market order, so it can liquidate with no price at all;
+                    // dry_run books a fill at `currentPrice` and semi_auto queues a price
+                    // limit, so neither can act without one.
+                    if (currentPrice <= 0 && !(forceFullExit && tradingMode === 'auto')) {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'skipped_no_price',
                             score: 0,
-                            detail: noPriceDetail(
-                                position.symbol,
-                                priceFailures.get(position.symbol),
-                                techResult,
-                            ),
+                            detail: {
+                                ...noPriceDetail(
+                                    position.symbol,
+                                    priceFailures.get(position.symbol),
+                                    techResult,
+                                ),
+                                forcedLiquidationBlocked: forceFullExit,
+                            },
                         });
                         await notifyError(
                             `가격 데이터 없음: ${position.symbol}`,
-                            `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
+                            forceFullExit
+                                ? `${position.symbol}는 일일 손실 한도 초과로 강제 청산 대상이지만, 현재 가격을 확인할 수 없어 ${tradingMode} 모드에서는 청산하지 못했습니다.${tradingMode === 'dry_run' ? ' (dry_run 시뮬레이션 — 실계좌 포지션이 아닙니다.)' : ' 즉시 수동 확인이 필요합니다.'}`
+                                : `${position.symbol} 포지션의 현재 가격을 확인할 수 없어 평가를 건너뛰었습니다. 수동 확인이 필요합니다.`,
                         );
                         continue;
                     }
 
-                    const evaluation = evaluateExistingPosition({
-                        avgPrice: safeNumber(Number(position.avgPrice), 0),
-                        currentPrice,
-                        stopLossPercent,
-                        takeProfitPercent,
-                        fixedExitEnabled,
-                        supportLevel: safeAnalysisSupport(techResult),
-                        resistanceLevel: safeAnalysisResistance(techResult),
-                        targetPrice: safeAnalysisTargetPrice(techResult),
-                        technicalTrend: safeAnalysisTrend(techResult),
-                        newsSentiment: safeAnalysisSentiment(news?.result),
-                    });
+                    // No stop-loss/take-profit label is invented from analysis we know is
+                    // stale (or from a price we don't have) — the whole position goes.
+                    const evaluation = mechanicalExit
+                        ? {
+                              action: 'stop_loss' as const,
+                              reason: '일일 손실 한도 초과 — 분석 없이 강제 전량 청산',
+                              // Not `hard`: the audit should read `risk_halt` (breaker), not
+                              // `hard` (corrupt data / operator stop line).
+                              hard: false,
+                          }
+                        : evaluateExistingPosition({
+                              avgPrice: safeNumber(Number(position.avgPrice), 0),
+                              currentPrice,
+                              stopLossPercent,
+                              takeProfitPercent,
+                              fixedExitEnabled,
+                              supportLevel: safeAnalysisSupport(techResult),
+                              resistanceLevel: safeAnalysisResistance(techResult),
+                              targetPrice: safeAnalysisTargetPrice(techResult),
+                              technicalTrend: safeAnalysisTrend(techResult),
+                              newsSentiment: safeAnalysisSentiment(news?.result),
+                          });
 
                     if (evaluation.action === 'hold') {
                         decisions.push({
@@ -527,28 +782,202 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Track stop-loss closures to prevent same-run re-buy
+                    // Track stop-loss closures to prevent same-run re-buy. Registered on the
+                    // *trigger*, not on how much actually gets sold: a partial stop-loss is
+                    // not a safer reason to re-buy the same symbol minutes later — the thesis
+                    // that tripped the stop is unchanged either way.
                     if (evaluation.action === 'stop_loss') {
                         recentStopLossSymbols.add(position.symbol);
                     }
 
+                    // --- Exit sizing gate ---
+                    // Exits are fail-OPEN: any gate problem sells the full position. Failing to
+                    // buy costs an opportunity, failing to sell costs realized money, so a
+                    // provider outage must never leave a stop-loss signal holding the bag.
+                    const exitTrigger: ExitTrigger =
+                        evaluation.action === 'stop_loss' ? 'stop_loss' : 'take_profit';
+                    let exitFraction = 1;
+                    let exitGateSource: GateSource = 'disabled';
+                    let exitOutcome: TradeGateOutcome | null = null;
+                    // A tripped loss breaker forces every exit to full size: the whole point
+                    // of the breaker is to stop the bleeding, and letting the gate shave the
+                    // exit down (or defer it entirely) would defeat it.
+                    const hardExit = evaluation.hard === true || forceFullExit;
+                    if (forceFullExit && evaluation.hard !== true) {
+                        exitGateSource = 'risk_halt';
+                    } else if (hardExit) {
+                        // Corrupt price data or the operator's fixed stop line — absolute risk
+                        // controls, not a call for the model to soften (design doc §6).
+                        exitGateSource = 'hard';
+                    } else if (!gateConfig.enabled) {
+                        exitGateSource = 'disabled';
+                    } else if (Date.now() > gateDeadlineMs) {
+                        exitGateSource = 'deadline';
+                        await notifyError(
+                            `게이트 컷오프: ${position.symbol}`,
+                            `실행 시작 후 600초를 넘겨 청산 사이징 게이트를 건너뛰고 전량 청산합니다.`,
+                        );
+                    } else {
+                        // The remaining three axes are read only here: on hold / hard-exit /
+                        // gate-off paths nothing consumes them, so fetching them up front
+                        // would be three wasted queries per position on every tick.
+                        const [options, fundamental, congress] = await Promise.all([
+                            getLatestAnalysisResult(db, position.symbol, 'options'),
+                            getLatestAnalysisResult(db, position.symbol, 'fundamental'),
+                            getLatestAnalysisResult(db, position.symbol, 'congress'),
+                        ]);
+                        // Re-read the day's fill count instead of using the run-start
+                        // snapshot: the watchlist loop re-reads it per symbol, and the model
+                        // must not see two different "오늘 체결 건수" in one run.
+                        const [exitDayCount, exitInflightCount] = await Promise.all([
+                            getTodayTradeCount(db),
+                            getTodayInflightOrderCount(db),
+                        ]);
+                        exitOutcome = await runTradeGate({
+                            kind: 'exit',
+                            symbol: position.symbol,
+                            price: currentPrice,
+                            priceSource: priceCache.has(position.symbol)
+                                ? 'live'
+                                : 'analysis_fallback',
+                            decidedAt: new Date(),
+                            account: {
+                                availableCashUsd: remainingBuyingPower,
+                                maxPositionSize,
+                                symbolExposure: currentPrice * position.quantity,
+                                currentExposure,
+                                maxTotalExposure,
+                                todayRealizedPnl: todayPnl,
+                                maxDailyLossUsd: maxDailyLoss,
+                                todayTradeCount: exitDayCount + exitInflightCount,
+                                maxTradesPerDay,
+                                tradingMode,
+                            },
+                            // This path never scores signals — it re-evaluates a held position.
+                            signal: null,
+                            position: {
+                                quantity: position.quantity,
+                                avgPrice: safeNumber(Number(position.avgPrice), 0),
+                                // How long it has been held — material to a scale-out call.
+                                openedAt: position.openedAt ?? null,
+                            },
+                            budget: null,
+                            exit: { trigger: exitTrigger, ruleReason: evaluation.reason },
+                            analyses: toGateAnalyses({
+                                technical: tech,
+                                news,
+                                options,
+                                fundamental,
+                                congress,
+                            }),
+                            modelId: gateConfig.modelId,
+                            userApiKey: gateApiKey,
+                            correlationId: `${cronRunId}-${position.symbol}-exit`,
+                        });
+                        if (exitOutcome.status === 'ok') {
+                            exitFraction = exitOutcome.fraction;
+                            exitGateSource = 'ai';
+                        } else {
+                            exitGateSource = 'error';
+                            await notifyError(
+                                `청산 게이트 실패: ${position.symbol}`,
+                                `사이징 게이트 오류로 전량 청산합니다 (fail-open).\n오류: ${exitOutcome.error}`,
+                            );
+                        }
+                    }
+
+                    const exitQty = planExit({
+                        positionQuantity: position.quantity,
+                        fraction: exitFraction,
+                        trigger: exitTrigger,
+                        hard: hardExit,
+                    });
+                    const exitDetail = gateDetail({
+                        kind: 'exit',
+                        source: exitGateSource,
+                        model: gateConfig.modelId,
+                        fraction: exitFraction,
+                        outcome: exitOutcome,
+                        quantity: exitQty,
+                    });
+                    /**
+                     * Audit payload for every exit outcome, including the ones that end
+                     * without a trade. Without the gate block on those, "broker rejected it"
+                     * is unreconstructable after the fact: how many shares the gate sized and
+                     * why are gone.
+                     */
+                    const exitAudit = (order?: Record<string, unknown>) =>
+                        order
+                            ? { ...exitDetail, order: { intendedQty: exitQty, ...order } }
+                            : exitDetail;
+
+                    if (exitQty === 0) {
+                        // fraction 0 is a deliberate "not this tick" call, not a failure — the
+                        // position stays open and the next tick re-evaluates. No email.
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'exit_deferred',
+                            score: 0,
+                            executed: false,
+                            reason: evaluation.reason,
+                            detail: exitDetail,
+                        });
+                        continue;
+                    }
+
+                    // Kill-switch re-check, deliberately AFTER the gate and immediately before
+                    // the order: the gate call can block for up to 25s per symbol, and a run
+                    // with several positions would otherwise keep firing orders for minutes
+                    // after the operator flipped the switch.
+                    //
+                    // Yes, this blocks liquidation too — unlike the loss breakers above. The
+                    // kill switch is not a risk breaker, it is the operator saying "touch
+                    // nothing" (e.g. they are about to trade the account by hand), and the
+                    // pre-existing contract already halts every order on it.
+                    if (!((await getConfigValue<boolean>(db, 'trading_enabled')) ?? true)) {
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'trading_disabled_mid_loop',
+                            score: 0,
+                            detail: exitDetail,
+                        });
+                        continue;
+                    }
+
                     // Execute the exit
+                    exitedSymbols.add(position.symbol);
                     let decisionPushed = false;
                     switch (tradingMode) {
                         case 'dry_run':
                             try {
                                 await db.transaction(async (tx) => {
-                                    const closed = await closePosition(
-                                        tx,
-                                        position.id,
-                                        currentPrice,
-                                    );
-                                    if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                    // Partial exits leave the position open — only a full-size
+                                    // exit closes it.
+                                    if (exitQty >= position.quantity) {
+                                        const closed = await closePosition(
+                                            tx,
+                                            position.id,
+                                            currentPrice,
+                                        );
+                                        if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                    } else {
+                                        // 0 rows matched = the position was closed/shrunk by
+                                        // reconcile or a manual close while we were in the
+                                        // gate. Booking the trade anyway would leave a sell
+                                        // with realized PnL against an untouched position and
+                                        // poison the daily-loss breaker's input.
+                                        const reduced = await reducePositionQuantity(
+                                            tx,
+                                            position.id,
+                                            exitQty,
+                                        );
+                                        if (!reduced) throw new Error('POSITION_ALREADY_CLOSED');
+                                    }
                                     await insertTrade(tx, {
                                         symbol: position.symbol,
                                         side: 'sell',
                                         orderType: 'market',
-                                        quantity: position.quantity,
+                                        quantity: exitQty,
                                         price: currentPrice,
                                         executedAt: new Date(),
                                         reason: evaluation.reason,
@@ -557,7 +986,7 @@ async function handler(req: Request): Promise<Response> {
                                         realizedPnl: realizedPnlForSell(
                                             currentPrice,
                                             Number(position.avgPrice),
-                                            position.quantity,
+                                            exitQty,
                                         ),
                                     });
                                 });
@@ -574,7 +1003,7 @@ async function handler(req: Request): Promise<Response> {
                                             {
                                                 symbol: position.symbol,
                                                 side: 'sell',
-                                                quantity: position.quantity,
+                                                quantity: exitQty,
                                                 price: currentPrice,
                                                 reason: evaluation.reason,
                                                 mode: 'dry_run',
@@ -583,7 +1012,7 @@ async function handler(req: Request): Promise<Response> {
                                         )
                                         .catch((err) => console.error('[email] send failed:', err));
                                 }
-                                currentExposure -= currentPrice * position.quantity;
+                                currentExposure -= currentPrice * exitQty;
                                 if (currentExposure < 0) currentExposure = 0;
                             } catch (txErr) {
                                 if (
@@ -594,6 +1023,7 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'already_closed',
                                         score: 0,
+                                        detail: exitAudit({ mode: 'dry_run' }),
                                     });
                                     decisionPushed = true;
                                 } else {
@@ -606,7 +1036,7 @@ async function handler(req: Request): Promise<Response> {
                             await insertPendingOrder(db, {
                                 symbol: position.symbol,
                                 side: 'sell',
-                                quantity: position.quantity,
+                                quantity: exitQty,
                                 priceLimit: currentPrice,
                                 analysisSummary: evaluation.reason,
                                 signalScore: 0,
@@ -616,7 +1046,7 @@ async function handler(req: Request): Promise<Response> {
                                 .notifyApprovalRequest({
                                     symbol: position.symbol,
                                     side: 'sell',
-                                    quantity: position.quantity,
+                                    quantity: exitQty,
                                     score: 0,
                                     reason: evaluation.reason,
                                     approveUrl: 'https://auto-trade.siglens.io/pending',
@@ -628,13 +1058,16 @@ async function handler(req: Request): Promise<Response> {
                                 action: evaluation.action,
                                 score: 0,
                                 executed: false,
+                                detail: exitDetail,
                             });
                             decisionPushed = true;
                             break;
 
                         case 'auto': {
                             // Sellable-quantity guard: confirm broker holds enough shares.
-                            let sellQty = position.quantity;
+                            // Starts from the gate-sized quantity; the broker clamp below can
+                            // only shrink it further.
+                            let sellQty = exitQty;
                             const sellable = await getSellableQuantity(position.symbol).catch(
                                 () => null,
                             );
@@ -647,13 +1080,17 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'skipped_not_sellable',
                                         score: 0,
+                                        detail: exitAudit({ sellable }),
                                     });
                                     decisionPushed = true;
                                     break;
                                 }
                                 sellQty = clamped;
                             }
-                            const exitIdempotencyKey = `${cronRunId}-${position.symbol}-sell`;
+                            // `-reeval-sell` distinguishes this from the watchlist loop's
+                            // signal sell: both can fire for one symbol in one run (partial
+                            // exit leaves a position behind), and `idempotency_key` is unique.
+                            const exitIdempotencyKey = `${cronRunId}-${position.symbol}-reeval-sell`;
                             const clientOrderId = crypto.randomUUID();
                             await createOrderTracking(db, {
                                 idempotencyKey: exitIdempotencyKey,
@@ -701,6 +1138,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: position.symbol,
                                     action: 'order_rejected',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        status: orderResult.status,
+                                        rejectReason: orderResult.rejectReason ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 await notifyError(
@@ -734,6 +1176,12 @@ async function handler(req: Request): Promise<Response> {
                                             ? 'order_partial'
                                             : 'order_submitted',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        status: orderResult.status,
+                                        filledQuantity: orderResult.filledQuantity ?? null,
+                                        orderId: orderResult.orderId ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -762,6 +1210,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: position.symbol,
                                     action: 'needs_review',
                                     score: 0,
+                                    detail: exitAudit({
+                                        submittedQty: sellQty,
+                                        filledQuantity: filledQ,
+                                        filledPrice: orderResult.avgFilledPrice ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -778,11 +1231,14 @@ async function handler(req: Request): Promise<Response> {
                                         );
                                         if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
                                     } else {
-                                        await reducePositionQuantity(
+                                        // See the dry_run branch: a no-match reduce must roll
+                                        // the whole booking back, never book a phantom sell.
+                                        const reduced = await reducePositionQuantity(
                                             tx,
                                             position.id,
                                             actualExitQty,
                                         );
+                                        if (!reduced) throw new Error('POSITION_ALREADY_CLOSED');
                                     }
                                     await insertTrade(tx, {
                                         symbol: position.symbol,
@@ -820,6 +1276,11 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: position.symbol,
                                         action: 'already_closed',
                                         score: 0,
+                                        detail: exitAudit({
+                                            mode: 'auto',
+                                            filledQuantity: actualExitQty,
+                                            filledPrice: filledSellPrice,
+                                        }),
                                     });
                                     decisionPushed = true;
                                     break;
@@ -859,6 +1320,7 @@ async function handler(req: Request): Promise<Response> {
                             action: evaluation.action,
                             score: 0,
                             executed: true,
+                            detail: exitDetail,
                         });
                     }
                 } catch (err) {
@@ -892,6 +1354,9 @@ async function handler(req: Request): Promise<Response> {
             }
             currentExposure += pendingBuyExposure;
 
+            // A tripped risk breaker skips the whole watchlist pass — new entries obviously,
+            // and signal sells with them: the re-evaluation loop above already had first
+            // refusal on every held position (and under a loss breaker sold each in full).
             for (const item of watchlistItems) {
                 try {
                     // Gather latest analysis results
@@ -961,6 +1426,23 @@ async function handler(req: Request): Promise<Response> {
                         sellThreshold,
                     );
 
+                    // A tripped breaker blocks new risk only. Signal sells must still get
+                    // through: `evaluateExistingPosition` (which the re-evaluation loop runs)
+                    // is NOT a superset of the sell signal — it looks at the technical trend
+                    // and news sentiment alone, while `scoreSignals` also weighs options,
+                    // fundamentals and congress. A position with a neutral trend and a 25/100
+                    // composite score holds in that loop, so skipping this one left it with no
+                    // exit path at all.
+                    if (entryBlock && signalScore.signal !== 'sell') {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_blocked',
+                            score: signalScore.total,
+                            detail: { entriesBlockedBy: entryBlock.outcome },
+                        });
+                        continue;
+                    }
+
                     // Position + pricing
                     const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
                     const currentPrice =
@@ -980,12 +1462,95 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const calculatedSize = calculatePositionSize({
+                    // Budget ceiling for this symbol, before the gate applies any fraction.
+                    // planEntry folds in the per-symbol cap, the total-exposure cap and (auto
+                    // only) real cash, which is why the old average_in-specific cap block that
+                    // used to live further down is gone — it was the same arithmetic twice.
+                    const existingSymbolExposure = existingPosition
+                        ? currentPrice * existingPosition.quantity
+                        : 0;
+                    const entryPlanInputs = {
                         price: currentPrice,
                         maxPositionSize,
                         maxTotalExposure,
                         currentExposure,
-                    });
+                        existingSymbolExposure,
+                        // dry_run/semi_auto never query the broker, so cash is unknown there
+                        // (null) and must not constrain the plan.
+                        availableCash: remainingBuyingPower,
+                    };
+                    const maxPlan = planEntry({ ...entryPlanInputs, fraction: 1 });
+
+                    /** Which budget zeroed the plan, in words, for the trade row + email. */
+                    const budgetCause = (limitedBy: EntryPlan['limitedBy']) => {
+                        if (limitedBy === 'total') {
+                            return `최대 노출 한도 초과 (총 노출 $${currentExposure.toFixed(2)} / 한도 $${maxTotalExposure})`;
+                        }
+                        if (limitedBy === 'cash') {
+                            const cash =
+                                remainingBuyingPower == null
+                                    ? '미상'
+                                    : `$${remainingBuyingPower.toFixed(2)}`;
+                            return `매수 가능 현금 부족 (현금 ${cash} / 주가 $${currentPrice.toFixed(2)})`;
+                        }
+                        if (limitedBy === 'symbol') {
+                            return `종목당 최대 투자 금액 소진 (이 종목 $${existingSymbolExposure.toFixed(2)} / 한도 $${maxPositionSize})`;
+                        }
+                        return `예산 산정 불가 (주가 $${currentPrice.toFixed(2)})`;
+                    };
+                    /** Audit payload for a buy that can't be funded — records the real cause. */
+                    const budgetDetail = {
+                        limitedBy: maxPlan.limitedBy,
+                        fullBudget: maxPlan.fullBudget,
+                        price: currentPrice,
+                        existingSymbolExposure,
+                        currentExposure,
+                        maxPositionSize,
+                        maxTotalExposure,
+                        availableCash: remainingBuyingPower,
+                    };
+                    /**
+                     * Buy signal with a zero budget: skipped-trade row + operator email, the
+                     * pre-gate behavior. Used from both the pre-`makeTradeDecision` branch
+                     * below and the post-decision 'hold' branch further down.
+                     */
+                    const recordUnfundedBuy = async () => {
+                        const cause = budgetCause(maxPlan.limitedBy);
+                        await insertTrade(db, {
+                            symbol: item.symbol,
+                            side: 'buy',
+                            orderType: 'market',
+                            quantity: 0,
+                            price: currentPrice,
+                            executedAt: new Date(),
+                            reason: `잔고 부족 — 신호 ${signalScore.total}/100 매수 신호 발생했으나 ${cause}로 미실행`,
+                            mode: 'skipped',
+                            cronRunId,
+                        });
+                        await notifyError(
+                            `잔고 부족: ${item.symbol}`,
+                            `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n원인: ${cause}\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
+                        );
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'skipped',
+                            score: signalScore.total,
+                            detail: {
+                                ...scoreDecisionDetail(
+                                    signalScore,
+                                    buyThreshold,
+                                    sellThreshold,
+                                    techReferenceTime,
+                                ),
+                                budget: budgetDetail,
+                            },
+                        });
+                    };
+
+                    // A buy signal with no budget left. Handled after the kill switch below,
+                    // not here: the alert + skipped-trade row must not fire on a run that
+                    // could not have placed an order anyway.
+                    const unfundedBuy = signalScore.signal === 'buy' && maxPlan.quantity === 0;
 
                     // Circuit breaker: re-check daily trade limit before each trade
                     // Include in-flight orders to prevent limit overshoot across concurrent runs.
@@ -993,7 +1558,12 @@ async function handler(req: Request): Promise<Response> {
                         getTodayTradeCount(db),
                         getTodayInflightOrderCount(db),
                     ]);
-                    if (currentDayCount + currentInflightCount >= maxTradesPerDay) {
+                    if (
+                        currentDayCount + currentInflightCount >= maxTradesPerDay &&
+                        signalScore.signal !== 'sell'
+                    ) {
+                        // Sells are exempt: the fill limit caps how much new risk is opened,
+                        // and refusing to close a position is not a way to trade less.
                         decisions.push({
                             symbol: item.symbol,
                             action: 'daily_limit',
@@ -1008,17 +1578,35 @@ async function handler(req: Request): Promise<Response> {
                         signalScore,
                         hasOpenPosition: !!existingPosition,
                         positionQuantity: existingPosition?.quantity ?? 0,
-                        calculatedSize,
+                        calculatedSize: maxPlan.quantity,
                     });
 
-                    // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in this run
+                    // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in
+                    // this run. `unfundedBuy` is included because a zero budget makes the
+                    // decision 'hold', which would otherwise slip past this guard and mail a
+                    // 잔고 부족 alert about a symbol we refuse to buy anyway.
                     if (
-                        (decision.action === 'buy' || decision.action === 'average_in') &&
+                        (decision.action === 'buy' ||
+                            decision.action === 'average_in' ||
+                            unfundedBuy) &&
                         recentStopLossSymbols.has(item.symbol)
                     ) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'cooldown_after_stop_loss',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+
+                    // Same-tick double-sell guard: the re-evaluation loop already acted on this
+                    // symbol. A partial exit leaves the position open, so without this the low
+                    // overall score that usually accompanies a stop-loss would fire a *second*
+                    // sell for the same symbol on the same tick.
+                    if (decision.action === 'sell' && exitedSymbols.has(item.symbol)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'exit_already_handled',
                             score: decision.score,
                         });
                         continue;
@@ -1072,66 +1660,7 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    // Per-symbol exposure cap for average_in: respect BOTH the per-symbol
-                    // limit and the total-exposure budget (whichever is tighter).
-                    if (decision.action === 'average_in' && existingPosition) {
-                        const existingExposure = currentPrice * existingPosition.quantity;
-                        const remainingSymbolBudget = Math.max(
-                            0,
-                            maxPositionSize - existingExposure,
-                        );
-                        const remainingTotalBudget = Math.max(
-                            0,
-                            maxTotalExposure - currentExposure,
-                        );
-                        const effectiveBudget = Math.min(
-                            remainingSymbolBudget,
-                            remainingTotalBudget,
-                        );
-                        const cappedSize = Math.floor(effectiveBudget / currentPrice);
-                        if (cappedSize <= 0) {
-                            decisions.push({
-                                symbol: item.symbol,
-                                action: 'symbol_limit_reached',
-                                score: decision.score,
-                            });
-                            continue;
-                        }
-                        decision = { ...decision, quantity: cappedSize };
-                    }
-
-                    // Insufficient balance — signal is buy but position size is 0
-                    if (
-                        decision.action === 'hold' &&
-                        signalScore.signal === 'buy' &&
-                        calculatedSize === 0
-                    ) {
-                        await insertTrade(db, {
-                            symbol: item.symbol,
-                            side: 'buy',
-                            orderType: 'market',
-                            quantity: 0,
-                            price: currentPrice,
-                            executedAt: new Date(),
-                            reason: `잔고 부족 — 신호 ${signalScore.total}/100 매수 신호 발생했으나 최대 노출 한도 초과로 미실행`,
-                            mode: 'skipped',
-                            cronRunId,
-                        });
-
-                        await notifyError(
-                            `잔고 부족: ${item.symbol}`,
-                            `${item.symbol} 매수 신호 (${signalScore.total}/100) 발생했으나 잔고 부족으로 미실행.\n현재 총 노출: $${currentExposure.toFixed(2)} / 한도: $${maxTotalExposure}`,
-                        );
-
-                        decisions.push({
-                            symbol: item.symbol,
-                            action: 'skipped',
-                            score: signalScore.total,
-                        });
-                        continue;
-                    }
-
-                    if (decision.action === 'hold') {
+                    if (decision.action === 'hold' && !unfundedBuy) {
                         decisions.push({
                             symbol: item.symbol,
                             action: decision.action,
@@ -1162,8 +1691,310 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // Insufficient budget for a buy signal. A full per-symbol cap is a normal
+                    // steady state → quiet `symbol_limit_reached`; any other cause (total
+                    // exposure, cash, bad price) gets the skipped-trade row + operator email.
+                    if (unfundedBuy) {
+                        if (existingPosition && maxPlan.limitedBy === 'symbol') {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'symbol_limit_reached',
+                                score: signalScore.total,
+                                detail: { budget: budgetDetail },
+                            });
+                        } else {
+                            await recordUnfundedBuy();
+                        }
+                        continue;
+                    }
+
+                    // semi_auto duplicate-approval guard. Must precede the gate: while an
+                    // approval sits unanswered this branch fires every tick, and behind the
+                    // gate each of those ticks burned a 25s LLM call whose answer was thrown
+                    // away.
+                    if (tradingMode === 'semi_auto') {
+                        const existingPending = (await getPendingOrders(db)).find(
+                            (o) => o.symbol === item.symbol && o.status === 'pending',
+                        );
+                        if (existingPending) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'pending_exists',
+                                score: decision.score,
+                                detail: scoreDecisionDetail(
+                                    signalScore,
+                                    buyThreshold,
+                                    sellThreshold,
+                                    techReferenceTime,
+                                ),
+                            });
+                            continue;
+                        }
+                    }
+
+                    // --- Sizing gate ---
+                    // Deliberately last: every rule-engine guard above (stop-loss cooldown,
+                    // in-flight orders, phantom sell, kill switch, daily limits, duplicate
+                    // approvals) has already run, so an LLM call only happens on a path that
+                    // is actually going to place an order.
+                    const scoreDetail = scoreDecisionDetail(
+                        signalScore,
+                        buyThreshold,
+                        sellThreshold,
+                        techReferenceTime,
+                    );
+                    const gateAnalyses = toGateAnalyses({
+                        technical: tech,
+                        news,
+                        options,
+                        fundamental,
+                        congress,
+                    });
+                    const gateAccount = {
+                        availableCashUsd: remainingBuyingPower,
+                        maxPositionSize,
+                        symbolExposure: existingSymbolExposure,
+                        currentExposure,
+                        maxTotalExposure,
+                        todayRealizedPnl: todayPnl,
+                        maxDailyLossUsd: maxDailyLoss,
+                        todayTradeCount: currentDayCount + currentInflightCount,
+                        maxTradesPerDay,
+                        tradingMode,
+                    };
+                    const gateSignal = {
+                        total: signalScore.total,
+                        signal: signalScore.signal,
+                        components: signalScore.components,
+                        weights,
+                        buyThreshold,
+                        sellThreshold,
+                        sourceAnalyzedAt: techReferenceTime,
+                    };
+                    const gatePosition = existingPosition
+                        ? {
+                              quantity: existingPosition.quantity,
+                              avgPrice: safeNumber(Number(existingPosition.avgPrice), 0),
+                              // How long it has been held — material to both an add-on and a
+                              // scale-out call.
+                              openedAt: existingPosition.openedAt ?? null,
+                          }
+                        : null;
+                    const gateCommon = {
+                        symbol: item.symbol,
+                        companyName: item.companyName ?? undefined,
+                        price: currentPrice,
+                        priceSource: priceCache.has(item.symbol)
+                            ? ('live' as const)
+                            : ('analysis_fallback' as const),
+                        decidedAt: new Date(),
+                        account: gateAccount,
+                        signal: gateSignal,
+                        position: gatePosition,
+                        analyses: gateAnalyses,
+                        modelId: gateConfig.modelId,
+                        userApiKey: gateApiKey,
+                    };
+
+                    let gateAudit: ReturnType<typeof gateDetail> | undefined;
+
+                    if (decision.action === 'buy' || decision.action === 'average_in') {
+                        // Entries are fail-CLOSED: no fraction, no order. A missed buy is a
+                        // missed opportunity, but committing the full budget on an unverified
+                        // signal is real money at risk — the asymmetry is deliberate (§8).
+                        let entryFraction = 1;
+                        let entrySource: GateSource = 'disabled';
+                        let entryOutcome: TradeGateOutcome | null = null;
+                        if (gateConfig.enabled) {
+                            if (Date.now() > gateDeadlineMs) {
+                                await notifyError(
+                                    `게이트 컷오프: ${item.symbol}`,
+                                    `실행 시작 후 600초를 넘겨 진입 사이징 게이트를 호출하지 못해 매수를 건너뜁니다.`,
+                                );
+                                decisions.push({
+                                    symbol: item.symbol,
+                                    action: 'gate_skipped_deadline',
+                                    score: decision.score,
+                                    executed: false,
+                                    reason: decision.reason,
+                                    detail: {
+                                        ...scoreDetail,
+                                        ...gateDetail({
+                                            kind: 'entry',
+                                            source: 'deadline',
+                                            model: gateConfig.modelId,
+                                            fraction: 0,
+                                            outcome: null,
+                                            plan: maxPlan,
+                                            quantity: 0,
+                                        }),
+                                    },
+                                });
+                                continue;
+                            }
+                            entryOutcome = await runTradeGate({
+                                ...gateCommon,
+                                kind: 'entry',
+                                budget: {
+                                    fullBudget: maxPlan.fullBudget,
+                                    limitedBy: maxPlan.limitedBy,
+                                    maxQuantity: maxPlan.quantity,
+                                },
+                                exit: null,
+                                correlationId: `${cronRunId}-${item.symbol}-entry`,
+                            });
+                            if (entryOutcome.status === 'ok') {
+                                entryFraction = entryOutcome.fraction;
+                                entrySource = 'ai';
+                            } else {
+                                await notifyError(
+                                    `진입 게이트 실패: ${item.symbol}`,
+                                    `사이징 게이트 오류로 매수를 실행하지 않습니다 (fail-closed).\n오류: ${entryOutcome.error}`,
+                                );
+                                decisions.push({
+                                    symbol: item.symbol,
+                                    action: 'gate_error',
+                                    score: decision.score,
+                                    executed: false,
+                                    reason: decision.reason,
+                                    detail: {
+                                        ...scoreDetail,
+                                        ...gateDetail({
+                                            kind: 'entry',
+                                            source: 'error',
+                                            model: gateConfig.modelId,
+                                            fraction: 0,
+                                            outcome: entryOutcome,
+                                            plan: maxPlan,
+                                            quantity: 0,
+                                        }),
+                                    },
+                                });
+                                continue;
+                            }
+                        }
+                        const finalPlan =
+                            entryFraction === 1
+                                ? maxPlan
+                                : planEntry({ ...entryPlanInputs, fraction: entryFraction });
+                        gateAudit = gateDetail({
+                            kind: 'entry',
+                            source: entrySource,
+                            model: gateConfig.modelId,
+                            fraction: entryFraction,
+                            outcome: entryOutcome,
+                            plan: finalPlan,
+                            quantity: finalPlan.quantity,
+                        });
+                        if (finalPlan.quantity === 0) {
+                            // A deliberate "sit this tick out", not an error — no email.
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'entry_deferred',
+                                score: decision.score,
+                                executed: false,
+                                reason: decision.reason,
+                                detail: { ...scoreDetail, ...gateAudit },
+                            });
+                            continue;
+                        }
+                        decision = { ...decision, quantity: finalPlan.quantity };
+                    } else if (decision.action === 'sell' && existingPosition) {
+                        // Signal-driven sell — same fail-OPEN policy as the re-evaluation loop.
+                        let sellFraction = 1;
+                        let sellSource: GateSource = 'disabled';
+                        let sellOutcome: TradeGateOutcome | null = null;
+                        if (forceFullExit) {
+                            // Same contract as the re-evaluation loop: a tripped loss breaker
+                            // sells the whole position and never asks the model. This path is
+                            // the *only* exit route for a position the rule engine holds and
+                            // the composite score wants sold, so leaving the size to the gate
+                            // meant a `fraction: 0` could defer it forever with the loss limit
+                            // already breached. The call is skipped outright — 25s per symbol
+                            // for an answer that is discarded is pure cost.
+                            sellSource = 'risk_halt';
+                        } else if (gateConfig.enabled && Date.now() > gateDeadlineMs) {
+                            sellSource = 'deadline';
+                            await notifyError(
+                                `게이트 컷오프: ${item.symbol}`,
+                                `실행 시작 후 600초를 넘겨 청산 사이징 게이트를 건너뛰고 전량 매도합니다.`,
+                            );
+                        } else if (gateConfig.enabled) {
+                            sellOutcome = await runTradeGate({
+                                ...gateCommon,
+                                kind: 'exit',
+                                budget: null,
+                                exit: { trigger: 'signal_sell', ruleReason: decision.reason },
+                                correlationId: `${cronRunId}-${item.symbol}-signal-sell`,
+                            });
+                            if (sellOutcome.status === 'ok') {
+                                sellFraction = sellOutcome.fraction;
+                                sellSource = 'ai';
+                            } else {
+                                sellSource = 'error';
+                                await notifyError(
+                                    `청산 게이트 실패: ${item.symbol}`,
+                                    `사이징 게이트 오류로 전량 매도합니다 (fail-open).\n오류: ${sellOutcome.error}`,
+                                );
+                            }
+                        }
+                        const sellQty = planExit({
+                            positionQuantity: existingPosition.quantity,
+                            fraction: sellFraction,
+                            trigger: 'signal_sell',
+                            hard: forceFullExit,
+                        });
+                        gateAudit = gateDetail({
+                            kind: 'exit',
+                            source: sellSource,
+                            model: gateConfig.modelId,
+                            fraction: sellFraction,
+                            outcome: sellOutcome,
+                            quantity: sellQty,
+                        });
+                        if (sellQty === 0) {
+                            decisions.push({
+                                symbol: item.symbol,
+                                action: 'exit_deferred',
+                                score: decision.score,
+                                executed: false,
+                                reason: decision.reason,
+                                detail: { ...scoreDetail, ...gateAudit },
+                            });
+                            continue;
+                        }
+                        decision = { ...decision, quantity: sellQty };
+                    }
+
+                    // Kill-switch re-check, AFTER the gate and immediately before the order.
+                    // The guard further up runs before a gate call that can block 25s per
+                    // symbol, so on a multi-symbol run it leaves minutes in which the operator
+                    // has flipped the switch and orders still go out. Sells are stopped too:
+                    // the kill switch is not a risk breaker but an explicit "touch nothing",
+                    // and halting every order on it is the pre-existing contract.
+                    if (!((await getConfigValue<boolean>(db, 'trading_enabled')) ?? true)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'trading_disabled_mid_loop',
+                            score: decision.score,
+                            detail: { ...scoreDetail, ...(gateAudit ?? {}) },
+                        });
+                        continue;
+                    }
+
                     // Execute based on mode (snapshot from run start)
                     let decisionPushed = false;
+                    /**
+                     * Audit payload for every branch below, including the ones that end
+                     * without a trade. The gate block has to ride along on those too —
+                     * otherwise a broker rejection loses the record of how big the order was
+                     * and why the gate sized it that way.
+                     */
+                    const execAudit = (order?: Record<string, unknown>) => ({
+                        ...scoreDetail,
+                        ...(gateAudit ?? {}),
+                        ...(order ? { order: { intendedQty: decision.quantity, ...order } } : {}),
+                    });
                     switch (tradingMode) {
                         case 'dry_run':
                             if (decision.action === 'buy' || decision.action === 'average_in') {
@@ -1220,12 +2051,31 @@ async function handler(req: Request): Promise<Response> {
                                 if (existingSellPos) {
                                     try {
                                         await db.transaction(async (tx) => {
-                                            const closed = await closePosition(
-                                                tx,
-                                                existingSellPos.id,
-                                                currentPrice,
-                                            );
-                                            if (!closed) throw new Error('POSITION_ALREADY_CLOSED');
+                                            // A gate-sized signal sell can be partial — only a
+                                            // full-size sell closes the position (mirrors the
+                                            // auto path and the re-evaluation loop).
+                                            if (decision.quantity >= existingSellPos.quantity) {
+                                                const closed = await closePosition(
+                                                    tx,
+                                                    existingSellPos.id,
+                                                    currentPrice,
+                                                );
+                                                if (!closed)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
+                                            } else {
+                                                // A no-match reduce means the position was
+                                                // closed/shrunk elsewhere (reconcile, manual
+                                                // close) while the gate was running — roll the
+                                                // whole booking back rather than record a sell
+                                                // that moved nothing.
+                                                const reduced = await reducePositionQuantity(
+                                                    tx,
+                                                    existingSellPos.id,
+                                                    decision.quantity,
+                                                );
+                                                if (!reduced)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
+                                            }
                                             await insertTrade(tx, {
                                                 symbol: item.symbol,
                                                 side: decision.action,
@@ -1267,6 +2117,7 @@ async function handler(req: Request): Promise<Response> {
                                                 symbol: item.symbol,
                                                 action: 'already_closed',
                                                 score: decision.score,
+                                                detail: execAudit({ mode: 'dry_run' }),
                                             });
                                             decisionPushed = true;
                                         } else {
@@ -1279,6 +2130,7 @@ async function handler(req: Request): Promise<Response> {
                                         symbol: item.symbol,
                                         action: 'no_position_to_sell',
                                         score: decision.score,
+                                        detail: execAudit({ mode: 'dry_run' }),
                                     });
                                     decisionPushed = true;
                                 }
@@ -1298,19 +2150,7 @@ async function handler(req: Request): Promise<Response> {
                             break;
 
                         case 'semi_auto': {
-                            // Prevent duplicate pending orders for the same symbol
-                            const existingPending = (await getPendingOrders(db)).find(
-                                (o) => o.symbol === item.symbol && o.status === 'pending',
-                            );
-                            if (existingPending) {
-                                decisions.push({
-                                    symbol: item.symbol,
-                                    action: 'pending_exists',
-                                    score: decision.score,
-                                });
-                                decisionPushed = true;
-                                break;
-                            }
+                            // Duplicate-approval guard lives above, ahead of the gate.
                             const pendingSide =
                                 decision.action === 'average_in' ? 'buy' : decision.action;
                             await insertPendingOrder(db, {
@@ -1342,6 +2182,8 @@ async function handler(req: Request): Promise<Response> {
                                 action: decision.action,
                                 score: decision.score,
                                 executed: false,
+                                reason: decision.reason,
+                                detail: execAudit({ mode: 'semi_auto', side: pendingSide }),
                             });
                             decisionPushed = true;
                             break;
@@ -1363,6 +2205,7 @@ async function handler(req: Request): Promise<Response> {
                                     action: 'skipped_no_buying_power',
                                     score: decision.score,
                                     executed: false,
+                                    detail: execAudit({ availableCash: null }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1378,6 +2221,10 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'skipped_insufficient_cash',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        cost: currentPrice * autoQuantity,
+                                        availableCash: remainingBuyingPower,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1397,6 +2244,7 @@ async function handler(req: Request): Promise<Response> {
                                             symbol: item.symbol,
                                             action: 'skipped_not_sellable',
                                             score: decision.score,
+                                            detail: execAudit({ sellable }),
                                         });
                                         decisionPushed = true;
                                         break;
@@ -1405,7 +2253,13 @@ async function handler(req: Request): Promise<Response> {
                                 }
                             }
 
-                            const idempotencyKey = `${cronRunId}-${item.symbol}-${autoSide}`;
+                            // `signal-sell` (not bare `sell`) so a partial exit booked by the
+                            // re-evaluation loop earlier in this same run cannot collide on
+                            // `order_tracking.idempotency_key`.
+                            const idempotencyKey =
+                                autoSide === 'sell'
+                                    ? `${cronRunId}-${item.symbol}-signal-sell`
+                                    : `${cronRunId}-${item.symbol}-${autoSide}`;
                             const clientOrderId = crypto.randomUUID();
                             await createOrderTracking(db, {
                                 idempotencyKey,
@@ -1454,6 +2308,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'order_rejected',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        status: orderResult.status,
+                                        rejectReason: orderResult.rejectReason ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 await notifyError(
@@ -1515,6 +2374,12 @@ async function handler(req: Request): Promise<Response> {
                                             ? 'order_partial'
                                             : 'order_submitted',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        status: orderResult.status,
+                                        filledQuantity: orderResult.filledQuantity ?? null,
+                                        orderId: orderResult.orderId ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1543,6 +2408,11 @@ async function handler(req: Request): Promise<Response> {
                                     symbol: item.symbol,
                                     action: 'needs_review',
                                     score: decision.score,
+                                    detail: execAudit({
+                                        submittedQty: autoQuantity,
+                                        filledQuantity: filledQ,
+                                        filledPrice: orderResult.avgFilledPrice ?? null,
+                                    }),
                                 });
                                 decisionPushed = true;
                                 break;
@@ -1607,11 +2477,15 @@ async function handler(req: Request): Promise<Response> {
                                                 if (!closed)
                                                     throw new Error('POSITION_ALREADY_CLOSED');
                                             } else {
-                                                await reducePositionQuantity(
+                                                // See the dry_run branch — never book a sell
+                                                // whose position update matched no rows.
+                                                const reduced = await reducePositionQuantity(
                                                     tx,
                                                     existingSellPos.id,
                                                     actualQuantity,
                                                 );
+                                                if (!reduced)
+                                                    throw new Error('POSITION_ALREADY_CLOSED');
                                             }
                                             await insertTrade(tx, {
                                                 symbol: item.symbol,
@@ -1649,6 +2523,11 @@ async function handler(req: Request): Promise<Response> {
                                                 symbol: item.symbol,
                                                 action: 'already_closed',
                                                 score: decision.score,
+                                                detail: execAudit({
+                                                    mode: 'auto',
+                                                    filledQuantity: actualQuantity,
+                                                    filledPrice,
+                                                }),
                                             });
                                             decisionPushed = true;
                                             break;
@@ -1727,12 +2606,7 @@ async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                             executed: true,
                             reason: decision.reason,
-                            detail: scoreDecisionDetail(
-                                signalScore,
-                                buyThreshold,
-                                sellThreshold,
-                                techReferenceTime,
-                            ),
+                            detail: { ...scoreDetail, ...(gateAudit ?? {}) },
                         });
                     }
                 } catch (err) {
@@ -1747,18 +2621,28 @@ async function handler(req: Request): Promise<Response> {
             }, {});
             finishState = {
                 status: 'completed',
-                outcome: 'completed',
+                // A run that only liquidated keeps the breaker's outcome so the health view
+                // still shows *why* nothing was bought; `exitOnly` says the run did happen.
+                outcome: entryBlock ? entryBlock.outcome : 'completed',
                 summary: {
                     symbolsEvaluated: decisions.length,
                     decisionsByAction,
                     pendingBuyExposure,
                     pendingBuyExposureMissingPrice,
+                    ...(entryBlock
+                        ? {
+                              exitOnly: true,
+                              entriesBlockedBy: entryBlock.outcome,
+                              exitsForcedFull: forceFullExit,
+                          }
+                        : {}),
                 },
                 ...elapsed(),
             };
             return Response.json({
                 cronRunId,
                 tradingMode,
+                ...(entryBlock ? { exitOnly: true, entriesBlockedBy: entryBlock.outcome } : {}),
                 decisions: decisions.map(publicDecision),
             });
         } finally {

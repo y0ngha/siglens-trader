@@ -367,6 +367,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('고정 손절선');
             expect(result.reason).toContain('-5%');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss when loss exactly equals stopLossPercent', () => {
@@ -375,9 +376,10 @@ describe('evaluateExistingPosition', () => {
                 currentPrice: 95, // exactly -5%
             });
             expect(result.action).toBe('stop_loss');
+            expect(result.hard).toBe(true);
         });
 
-        it('returns take_profit when gain exceeds takeProfitPercent', () => {
+        it('returns take_profit when gain exceeds takeProfitPercent (not hard — a target, not a risk control)', () => {
             const result = evaluateExistingPosition({
                 ...enabledParams,
                 currentPrice: 112, // +12% gain, threshold is 10%
@@ -385,6 +387,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.action).toBe('take_profit');
             expect(result.reason).toContain('고정 익절선');
             expect(result.reason).toContain('+10%');
+            expect(result.hard).toBeUndefined();
         });
 
         it('returns take_profit when gain exactly equals takeProfitPercent', () => {
@@ -393,11 +396,12 @@ describe('evaluateExistingPosition', () => {
                 currentPrice: 110, // exactly +10%
             });
             expect(result.action).toBe('take_profit');
+            expect(result.hard).toBeUndefined();
         });
     });
 
     describe('support level break', () => {
-        it('returns stop_loss when price is below support level and in loss', () => {
+        it('returns stop_loss when price is below support level and in loss (not hard — analysis-derived)', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 98,
@@ -407,6 +411,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('지지선 이탈');
             expect(result.reason).toContain('$99');
             expect(result.reason).toContain('$98');
+            expect(result.hard).toBeUndefined();
         });
 
         it('returns take_profit when price is below support level but in profit', () => {
@@ -454,7 +459,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('수익 구간 익절');
         });
 
-        it('returns stop_loss when trend is bearish and in loss', () => {
+        it('returns stop_loss when trend is bearish and in loss (not hard — analysis-derived)', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 99, // -1% loss
@@ -462,6 +467,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('기술적 추세 반전');
+            expect(result.hard).toBeUndefined();
         });
 
         it('does not trigger for neutral trend', () => {
@@ -550,7 +556,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('선제 익절');
         });
 
-        it('returns stop_loss when news is bearish and not in profit', () => {
+        it('returns stop_loss when news is bearish and not in profit (not hard — analysis-derived)', () => {
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 99, // -1% (not in profit, but above stop loss)
@@ -560,6 +566,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('뉴스 악재');
             expect(result.reason).toContain('손절');
+            expect(result.hard).toBeUndefined();
         });
 
         it('holds when news is bearish but trend is bullish (override)', () => {
@@ -582,6 +589,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
             expect(result.reason).toContain('수동 확인 필요');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when avgPrice is NaN', () => {
@@ -591,6 +599,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when avgPrice is negative', () => {
@@ -600,6 +609,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when avgPrice is Infinity', () => {
@@ -609,6 +619,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 매수가');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when currentPrice is 0', () => {
@@ -619,6 +630,7 @@ describe('evaluateExistingPosition', () => {
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
             expect(result.reason).toContain('수동 확인 필요');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when currentPrice is NaN', () => {
@@ -628,6 +640,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when currentPrice is negative', () => {
@@ -637,6 +650,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
+            expect(result.hard).toBe(true);
         });
 
         it('returns stop_loss with reason when currentPrice is Infinity', () => {
@@ -646,6 +660,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('유효하지 않은 현재가');
+            expect(result.hard).toBe(true);
         });
     });
 
@@ -674,6 +689,7 @@ describe('evaluateExistingPosition', () => {
             });
             expect(result.action).toBe('stop_loss');
             expect(result.reason).toContain('고정 손절선');
+            expect(result.hard).toBe(true);
         });
 
         it('support break takes priority over trend reversal (loss zone)', () => {

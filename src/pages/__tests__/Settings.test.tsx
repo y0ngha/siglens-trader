@@ -96,6 +96,14 @@ const mockConfig = {
             useByok: false,
             updatedAt: '2026-01-01T00:00:00Z',
         },
+        {
+            id: 5,
+            analysisType: 'trade_gate',
+            enabled: true,
+            modelId: 'gpt-5.4',
+            useByok: false,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
     ],
     notification: [
         {
@@ -634,6 +642,28 @@ describe('SettingsPage', () => {
         });
     });
 
+    it('renders the trade gate row and changing its model calls the API', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const tradeGateItem = (await screen.findByText('매매 게이트')).closest('li');
+        expect(tradeGateItem).not.toBeNull();
+
+        const modelSelect = within(tradeGateItem!).getByRole('combobox');
+        expect(modelSelect).toHaveValue('gpt-5.4');
+
+        await user.selectOptions(modelSelect, 'claude-opus-4-7');
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'analysis',
+            analysisType: 'trade_gate',
+            updates: { modelId: 'claude-opus-4-7' },
+        });
+    });
+
     it('offers flash lite while preserving the configured technical analysis model', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
 
@@ -661,9 +691,9 @@ describe('SettingsPage', () => {
         const analysisList = analysisHeading.closest('section')?.querySelector('ul');
         expect(analysisList).not.toBeNull();
 
-        // technical, news, options, fundamental, congress
+        // technical, news, options, fundamental, congress, trade_gate
         const modelSelects = within(analysisList!).getAllByRole('combobox');
-        expect(modelSelects).toHaveLength(5);
+        expect(modelSelects).toHaveLength(6);
         modelSelects.forEach((select) => {
             expect(select).toHaveValue('deepseek-v4-flash');
         });

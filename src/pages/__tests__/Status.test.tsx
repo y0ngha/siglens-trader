@@ -12,6 +12,8 @@ vi.mock('@/lib/api', () => ({
         getTrades: vi.fn(),
         getConfig: vi.fn(),
         dismissAlert: vi.fn(),
+        getCronRuns: vi.fn(),
+        getCronDecisions: vi.fn(),
     },
 }));
 
@@ -122,6 +124,8 @@ describe('StatusPage', () => {
         vi.clearAllMocks();
         mockedApi.getPositions.mockResolvedValue([]);
         mockedApi.getTrades.mockResolvedValue([]);
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [] });
+        mockedApi.getCronDecisions.mockResolvedValue({ decisions: [] });
         mockedApi.getConfig.mockResolvedValue({
             config: [
                 { key: 'take_profit_percent', value: 5, updatedAt: '' },
@@ -589,6 +593,114 @@ describe('StatusPage', () => {
         // SYM5 and SYM6 appear only in recent trades, not in the alert
         expect(screen.getAllByText('SYM5')).toHaveLength(1); // recent trades only
         expect(screen.getAllByText('SYM6')).toHaveLength(1); // recent trades only
+    });
+
+    // --- Gate-blocked decisions alert tests (AI trade gate — no trade row is created) ---
+
+    it('shows gate 알림 section when the latest execute run has gate-blocked decisions', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 1,
+                    runId: 'run-exec-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'COMPLETED',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 1000,
+                    summary: {},
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 501,
+                    runId: 'run-exec-1',
+                    cronType: 'execute',
+                    symbol: 'AMZN',
+                    action: 'entry_deferred',
+                    executed: false,
+                    score: '71.0',
+                    reason: '신호 71/100 — 매수',
+                    detail: { gate: { reason: '현금 여유 부족으로 이번 틱 진입 보류' } },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('게이트 알림')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('AMZN')).toBeInTheDocument();
+        expect(screen.getByText('진입 보류')).toBeInTheDocument();
+        expect(screen.getByText('현금 여유 부족으로 이번 틱 진입 보류')).toBeInTheDocument();
+    });
+
+    it('does not show gate 알림 section when the latest run has no gate-blocked decisions', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 1,
+                    runId: 'run-exec-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'COMPLETED',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 1000,
+                    summary: {},
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 502,
+                    runId: 'run-exec-1',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'buy',
+                    executed: true,
+                    score: '82.0',
+                    reason: null,
+                    detail: {},
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        expect(screen.queryByText('게이트 알림')).not.toBeInTheDocument();
+    });
+
+    it('does not show gate 알림 section when there is no execute run yet', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [] });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+        });
+
+        expect(screen.queryByText('게이트 알림')).not.toBeInTheDocument();
+        expect(mockedApi.getCronDecisions).not.toHaveBeenCalled();
     });
 
     // --- Dismiss alert tests ---

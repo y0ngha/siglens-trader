@@ -273,6 +273,7 @@ async function handler(req: Request): Promise<Response> {
                     'news',
                     'options',
                     'fundamental',
+                    'trade_gate',
                 ]);
                 if (!ALLOWED_ANALYSIS_TYPES.has(analysisType)) {
                     return Response.json({ error: 'Unknown analysis type' }, { status: 400 });

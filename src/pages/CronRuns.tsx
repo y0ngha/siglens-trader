@@ -55,6 +55,26 @@ function readScoreComponents(detail: unknown): ScoreComponents | null {
     };
 }
 
+type GateInfo = {
+    source: string;
+    fraction: number;
+    limitedBy: string | null;
+    reason: string | null;
+};
+
+/** Safely read `detail.gate` (AI trade-gate audit block) from an untyped decision detail blob. */
+function readGateDetail(detail: unknown): GateInfo | null {
+    if (!isRecord(detail) || !isRecord(detail.gate)) return null;
+    const g = detail.gate;
+    if (typeof g.source !== 'string' || typeof g.fraction !== 'number') return null;
+    return {
+        source: g.source,
+        fraction: g.fraction,
+        limitedBy: typeof g.limitedBy === 'string' ? g.limitedBy : null,
+        reason: typeof g.reason === 'string' ? g.reason : null,
+    };
+}
+
 function timeAgo(dateStr: string): string {
     const diff = Date.now() - new Date(dateStr).getTime();
     const minutes = Math.floor(diff / 60_000);
@@ -133,12 +153,32 @@ function cronTypeChipClass(type: string): string {
     }
 }
 
-function statusBorderClass(status: string): string {
-    switch (status) {
+// `execute` outcomes where a circuit breaker tripped but the run still finished normally
+// (exit-only mode — see api/cron/execute.ts risk-breaker docs). `cron_runs.status` for these
+// is 'completed', same as a routine run, so color must be decided from `outcome`, not `status`
+// alone, or a breaker trip reads as a normal green completion. Verified against `CronOutcome`
+// (lib/db/queries.ts) and api/cron/execute.ts: these two are the only outcomes that can pair
+// with status 'completed' — every other non-'completed' outcome (market_status_unavailable,
+// us_market_holiday, trading_disabled, empty_watchlist, disabled, queue_empty, …) only ever
+// pairs with status 'skipped', which already renders neutral, not green.
+const RISK_OUTCOMES = new Set(['daily_loss_limit', 'daily_trade_limit']);
+
+/** Effective visual state for a run — 'warning' overrides a misleadingly-green 'completed'. */
+function runVisualState(run: CronRun): string {
+    if (run.status === 'completed' && run.outcome != null && RISK_OUTCOMES.has(run.outcome)) {
+        return 'warning';
+    }
+    return run.status;
+}
+
+function statusBorderClass(state: string): string {
+    switch (state) {
         case 'completed':
             return 'border-l-green-500';
         case 'error':
             return 'border-l-red-500';
+        case 'warning':
+            return 'border-l-orange-500';
         case 'running':
             return 'border-l-amber-500';
         default:
@@ -146,12 +186,14 @@ function statusBorderClass(status: string): string {
     }
 }
 
-function statusDotClass(status: string): string {
-    switch (status) {
+function statusDotClass(state: string): string {
+    switch (state) {
         case 'completed':
             return 'bg-green-500';
         case 'error':
             return 'bg-red-500';
+        case 'warning':
+            return 'bg-orange-500';
         case 'running':
             return 'bg-amber-500 animate-pulse';
         default:
@@ -159,12 +201,14 @@ function statusDotClass(status: string): string {
     }
 }
 
-function outcomeTextClass(status: string): string {
-    switch (status) {
+function outcomeTextClass(state: string): string {
+    switch (state) {
         case 'completed':
             return 'text-green-400';
         case 'error':
             return 'text-red-400';
+        case 'warning':
+            return 'text-orange-400';
         case 'running':
             return 'text-amber-400';
         default:
@@ -179,13 +223,26 @@ function actionChipClass(action: string): string {
             return 'bg-green-500/10 text-green-400';
         case 'sell':
         case 'error':
+        case 'gate_error':
             return 'bg-red-500/10 text-red-400';
+        case 'gate_skipped_deadline':
+        case 'entry_blocked':
+            return 'bg-orange-500/10 text-orange-400';
+        case 'entry_deferred':
+        case 'exit_deferred':
+            return 'bg-yellow-500/10 text-yellow-400';
         default:
             return 'bg-neutral-700 text-neutral-400';
     }
 }
 
 // ─── summary parsing ──────────────────────────────────────────────────────────
+
+function breakerLabel(outcome: unknown): string {
+    if (outcome === 'daily_loss_limit') return '일일 손실 한도';
+    if (outcome === 'daily_trade_limit') return '일일 체결 한도';
+    return typeof outcome === 'string' ? outcome : '알 수 없음';
+}
 
 function parseSummary(cronType: string, summary: unknown): string {
     try {
@@ -194,6 +251,10 @@ function parseSummary(cronType: string, summary: unknown): string {
 
         if (cronType === 'execute') {
             const parts: string[] = [];
+            if (s.exitOnly === true) {
+                const forced = s.exitsForcedFull === true ? ' · 전량청산' : '';
+                parts.push(`⚠ 청산전용 (${breakerLabel(s.entriesBlockedBy)})${forced}`);
+            }
             if (typeof s.symbolsEvaluated === 'number') {
                 parts.push(`${s.symbolsEvaluated}종목`);
             }
@@ -253,6 +314,9 @@ function summaryHasAlert(cronType: string, summary: unknown): boolean {
         const s = summary;
         if (isAnalysisCronType(cronType) && isRecord(s.byStatus)) {
             return typeof s.byStatus.error === 'number' && s.byStatus.error > 0;
+        }
+        if (cronType === 'execute') {
+            return s.exitOnly === true;
         }
         if (cronType !== 'reconcile') return false;
         const alerts =
@@ -382,12 +446,32 @@ function DecisionsList({ runId }: { runId: string }) {
                     )}
                     {(() => {
                         const components = readScoreComponents(decision.detail);
-                        if (components) {
+                        const gate = readGateDetail(decision.detail);
+                        if (components || gate) {
                             return (
-                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
-                                    기술 {components.technical} · 뉴스 {components.news} · 옵션{' '}
-                                    {components.options} · 펀더멘털 {components.fundamental}
-                                </span>
+                                <>
+                                    {components && (
+                                        <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                            기술 {components.technical} · 뉴스 {components.news} ·
+                                            옵션 {components.options} · 펀더멘털{' '}
+                                            {components.fundamental}
+                                        </span>
+                                    )}
+                                    {gate && (
+                                        <div className="space-y-0.5">
+                                            <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                                게이트 {gate.source} · fraction{' '}
+                                                {gate.fraction.toFixed(2)}
+                                                {gate.limitedBy && ` · 한도 ${gate.limitedBy}`}
+                                            </span>
+                                            {gate.reason && (
+                                                <p className="line-clamp-2 text-[10px] leading-relaxed text-neutral-500">
+                                                    {gate.reason}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
                             );
                         }
                         if (decision.detail != null) {
@@ -411,10 +495,11 @@ function RunRow({ run }: { run: CronRun }) {
     const [expanded, setExpanded] = useState(false);
     const summary = parseSummary(run.cronType, run.summary);
     const hasAlert = summaryHasAlert(run.cronType, run.summary);
+    const visualState = runVisualState(run);
 
     return (
         <li
-            className={`rounded-lg border border-l-2 border-[#262626] ${statusBorderClass(run.status)} bg-[#141414]`}
+            className={`rounded-lg border border-l-2 border-[#262626] ${statusBorderClass(visualState)} bg-[#141414]`}
         >
             {/* Main row — toggle button */}
             <button
@@ -426,7 +511,7 @@ function RunRow({ run }: { run: CronRun }) {
                 <div className="flex flex-wrap items-center gap-2">
                     {/* status dot */}
                     <span
-                        className={`inline-block h-2 w-2 flex-shrink-0 rounded-full ${statusDotClass(run.status)}`}
+                        className={`inline-block h-2 w-2 flex-shrink-0 rounded-full ${statusDotClass(visualState)}`}
                         aria-hidden="true"
                     />
                     {/* time */}
@@ -446,7 +531,7 @@ function RunRow({ run }: { run: CronRun }) {
                     </span>
                     {/* outcome */}
                     <span
-                        className={`font-mono text-[10px] tracking-wide uppercase ${outcomeTextClass(run.status)}`}
+                        className={`font-mono text-[10px] tracking-wide uppercase ${outcomeTextClass(visualState)}`}
                     >
                         {run.outcome ?? run.status}
                     </span>

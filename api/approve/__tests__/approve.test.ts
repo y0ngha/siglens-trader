@@ -656,6 +656,28 @@ describe('approve handler', () => {
             );
         });
 
+        it('returns position_already_closed when the partial reduce matches no rows', async () => {
+            // The position was read before the transaction; if execute/reconcile closed or
+            // shrank it in between, the UPDATE matches nothing. Booking the trade anyway
+            // would leave a sell with realized PnL against an untouched position.
+            const partialSellOrder = { ...fakeSellOrder, quantity: 4 };
+            mockGetPendingOrderById.mockResolvedValue(partialSellOrder);
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 1,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '140',
+                status: 'open',
+            });
+            mockReducePositionQuantity.mockResolvedValue(false);
+
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            const body = await res.json();
+
+            expect(body.note).toBe('position_already_closed');
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
         it('closes position fully when sell quantity >= position quantity', async () => {
             mockGetPendingOrderById.mockResolvedValue(fakeSellOrder); // quantity: 10
             mockGetOpenPositionBySymbol.mockResolvedValue({

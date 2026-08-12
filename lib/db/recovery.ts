@@ -85,6 +85,20 @@ export async function checkConsistency(db: Db): Promise<RecoveryReport> {
 }
 
 /**
+ * Takes an unrecoverable order out of the retry set.
+ *
+ * `autoRecoverFilledOrders` only looks at status 'filled', so anything left there is
+ * retried every reconcile tick for 24 hours — and reconcile mails on every failure.
+ * Best-effort: if this write fails the retry loop is the fallback, not a crash.
+ */
+async function markNeedsReview(db: Db, idempotencyKey: string) {
+    await updateOrderTracking(db, idempotencyKey, {
+        status: 'needs_review',
+        resolvedAt: new Date(),
+    }).catch((e) => console.error('[recovery] needs_review write failed', idempotencyKey, e));
+}
+
+/**
  * Auto-recovers filled orders from the last 24 hours that have no matching
  * trade record. For each orphaned order, creates the missing trade and
  * updates the position (open/average-in for buys, close/reduce for sells).
@@ -123,6 +137,7 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                     `${order.symbol} ${order.side}: 체결가 없어 자동 복구 불가 (수동 확인 필요)`,
                 );
                 failed++;
+                await markNeedsReview(db, order.idempotencyKey);
                 continue;
             }
 
@@ -172,11 +187,16 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                     }
                 } else if (order.side === 'sell') {
                     if (existingPosition) {
-                        if (quantity >= existingPosition.quantity) {
-                            await closePosition(tx, existingPosition.id, price);
-                        } else {
-                            await reducePositionQuantity(tx, existingPosition.id, quantity);
-                        }
+                        // The position was looked up outside the transaction. If it was
+                        // closed or shrunk in between (execute cron, manual close), the
+                        // update matches 0 rows — abort so the whole recovery rolls back and
+                        // is retried, instead of booking a sell with realized PnL against a
+                        // position that never moved.
+                        const applied =
+                            quantity >= existingPosition.quantity
+                                ? await closePosition(tx, existingPosition.id, price)
+                                : await reducePositionQuantity(tx, existingPosition.id, quantity);
+                        if (!applied) throw new Error('POSITION_ALREADY_CLOSED');
                     } else {
                         details.push(
                             `${order.symbol} sell: 거래 기록은 생성했으나 DB에 열린 포지션 없음 (브로커 확인 필요)`,
@@ -196,6 +216,11 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
         } catch (err) {
             failed++;
             details.push(`${order.symbol} ${order.side}: 자동 복구 실패 — ${String(err)}`);
+            // Park it for a human. Left at 'filled' this order is re-attempted every
+            // reconcile tick for 24h and mails the operator each time (up to 144 mails /
+            // queued rows); 'needs_review' drops it out of the 'filled' query that feeds
+            // this function, so the alert fires once.
+            await markNeedsReview(db, order.idempotencyKey);
         }
     }
 

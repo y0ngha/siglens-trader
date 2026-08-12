@@ -7,6 +7,54 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const MAX_RECENT_TRADES = 10;
 
+// AI trade-gate decisions that never produce a trade row (no order was placed), so the
+// existing "skipped trades" alert below (which reads `trades`) can never see them. Surfacing
+// the latest execute run's blocked decisions is the lightest way to make that visible without
+// a new endpoint — see docs/specs/2026-08-12-ai-trade-gate-design.md §9.3.
+const GATE_BLOCKED_ACTIONS = new Set([
+    'entry_deferred',
+    'exit_deferred',
+    'gate_error',
+    'gate_skipped_deadline',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Safely read `detail.gate.reason` from an untyped decision detail blob (untrusted JSONB). */
+function readGateReason(detail: unknown): string | null {
+    if (!isRecord(detail) || !isRecord(detail.gate)) return null;
+    const reason = detail.gate.reason;
+    return typeof reason === 'string' ? reason : null;
+}
+
+function gateActionLabel(action: string): string {
+    switch (action) {
+        case 'entry_deferred':
+            return '진입 보류';
+        case 'exit_deferred':
+            return '청산 보류';
+        case 'gate_error':
+            return '게이트 오류';
+        case 'gate_skipped_deadline':
+            return '게이트 시간초과';
+        default:
+            return action;
+    }
+}
+
+function gateActionClass(action: string): string {
+    switch (action) {
+        case 'gate_error':
+            return 'bg-red-500/10 text-red-400';
+        case 'gate_skipped_deadline':
+            return 'bg-orange-500/10 text-orange-400';
+        default:
+            return 'bg-yellow-500/10 text-yellow-400';
+    }
+}
+
 function modeLabel(mode: string): string {
     switch (mode) {
         case 'paper':
@@ -101,6 +149,29 @@ export function StatusPage() {
         queryFn: ({ signal }) => api.getConfig(signal),
     });
 
+    // Latest execute run → its decisions, filtered to gate-blocked ones. Two lightweight calls
+    // against the cron-runs API CronRuns.tsx already uses; see GATE_BLOCKED_ACTIONS above.
+    const { data: latestExecuteRun } = useQuery({
+        queryKey: ['cron-runs', 'execute'] as const,
+        queryFn: async ({ queryKey: [, qType], signal }) => {
+            const { runs } = await api.getCronRuns({ type: qType }, signal);
+            return runs[0] ?? null;
+        },
+        refetchInterval: 30_000,
+    });
+
+    const latestExecuteRunId = latestExecuteRun?.runId;
+    const { data: latestExecuteDecisions } = useQuery({
+        queryKey: ['cron-decisions', latestExecuteRunId] as const,
+        queryFn: async ({ queryKey: [, qRunId], signal }) => {
+            if (!qRunId) return [];
+            const { decisions } = await api.getCronDecisions(qRunId, signal);
+            return decisions;
+        },
+        enabled: Boolean(latestExecuteRunId),
+        refetchInterval: 30_000,
+    });
+
     if (isLoading) return <LoadingSkeleton />;
     if (error) return <ErrorMessage error={error as Error} />;
     if (!data) return null;
@@ -118,6 +189,9 @@ export function StatusPage() {
     );
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
+    const gateBlocks = (latestExecuteDecisions ?? []).filter((d) =>
+        GATE_BLOCKED_ACTIONS.has(d.action),
+    );
 
     const configEntries = configData as
         | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
@@ -493,6 +567,35 @@ export function StatusPage() {
                                         </div>
                                         <p className="mt-0.5 text-[11px] text-yellow-500/60">
                                             {trade.reason}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+                    )}
+
+                    {/* 경고: 최근 실행에서 AI 게이트가 막은 진입/청산 (거래 행이 없어 위 경고에 안 잡힘) */}
+                    {gateBlocks.length > 0 && (
+                        <section>
+                            <h2 className="text-xs font-medium text-yellow-500">게이트 알림</h2>
+                            <div className="mt-2 space-y-1.5">
+                                {gateBlocks.slice(0, 5).map((d) => (
+                                    <div
+                                        key={d.id}
+                                        className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-yellow-400">
+                                                {d.symbol ?? '—'}
+                                            </span>
+                                            <span
+                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${gateActionClass(d.action)}`}
+                                            >
+                                                {gateActionLabel(d.action)}
+                                            </span>
+                                        </div>
+                                        <p className="mt-0.5 text-[11px] text-yellow-500/60">
+                                            {readGateReason(d.detail) ?? d.reason ?? '사유 없음'}
                                         </p>
                                     </div>
                                 ))}
