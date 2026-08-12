@@ -643,7 +643,15 @@ export type CronRunFinish =
           durationMs?: number;
           finishedAt: Date;
       }
-    | { status: 'skipped'; outcome: CronOutcome; durationMs?: number; finishedAt: Date }
+    | {
+          status: 'skipped';
+          outcome: CronOutcome;
+          /** A skipped run can still have something worth recording — e.g. the digest
+              finding cron-health issues on an otherwise empty queue. */
+          summary?: unknown;
+          durationMs?: number;
+          finishedAt: Date;
+      }
     | {
           status: 'error';
           error: string;
@@ -665,7 +673,7 @@ export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
         if (p.outcome !== undefined) set.outcome = p.outcome;
     } else {
         set.outcome = p.outcome;
-        if (p.status === 'completed' && p.summary !== undefined) {
+        if (p.summary !== undefined) {
             set.summary = p.summary as (typeof cronRuns.$inferInsert)['summary'];
         }
     }

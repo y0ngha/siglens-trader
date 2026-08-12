@@ -22,6 +22,7 @@ vi.mock('../../../lib/lock', () => ({
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
+const mockGetCronRuns = vi.fn();
 const mockGetPendingNotifications = vi.fn();
 const mockMarkNotificationsSent = vi.fn();
 const mockGetNotificationConfig = vi.fn();
@@ -29,6 +30,7 @@ const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
 const mockFinalizeStaleCronRuns = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
+    getCronRuns: (...args: unknown[]) => mockGetCronRuns(...args),
     getPendingNotifications: (...args: unknown[]) => mockGetPendingNotifications(...args),
     markNotificationsSent: (...args: unknown[]) => mockMarkNotificationsSent(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
@@ -38,8 +40,10 @@ vi.mock('../../../lib/db/queries', () => ({
 }));
 
 const mockSendDigestEmail = vi.fn();
+const mockSendCronHealthEmail = vi.fn();
 vi.mock('../../../lib/notification/email', () => ({
     sendDigestEmail: (...args: unknown[]) => mockSendDigestEmail(...args),
+    sendCronHealthEmail: (...args: unknown[]) => mockSendCronHealthEmail(...args),
 }));
 
 const makeRequest = () => new Request('https://example.com/api/cron/digest');
@@ -78,6 +82,10 @@ describe('digest cron', () => {
             },
         ]);
         mockSendDigestEmail.mockResolvedValue(undefined);
+        mockSendCronHealthEmail.mockResolvedValue(undefined);
+        mockGetCronRuns.mockResolvedValue([
+            { cronType: 'technical', status: 'completed', startedAt: new Date() },
+        ]);
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
         mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
@@ -172,5 +180,98 @@ describe('digest cron', () => {
             expect.stringMatching(/^digest-/),
             expect.objectContaining({ status: 'completed' }),
         );
+    });
+
+    // -----------------------------------------------------------------------
+    // Cron health alert — closes the "silence means nothing happened OR the
+    // system is dead" blind spot without sending a mail every quiet morning.
+    // -----------------------------------------------------------------------
+
+    describe('cron health alert', () => {
+        const withHealthEvent = (events: string[]) =>
+            mockGetNotificationConfig.mockResolvedValue([
+                { channel: 'email', enabled: true, target: 'ops@example.com', events },
+            ]);
+
+        it('stays silent on an empty queue when the crons are healthy', async () => {
+            withHealthEvent(['trade_executed', 'cron_health']);
+
+            const res = await handler(makeRequest());
+
+            expect(await res.json()).toEqual({ skipped: true, reason: 'queue_empty' });
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+        });
+
+        it('alerts when recent runs failed', async () => {
+            withHealthEvent(['cron_health']);
+            mockGetCronRuns.mockResolvedValue([
+                { cronType: 'execute', status: 'error', startedAt: new Date() },
+            ]);
+
+            const res = await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).toHaveBeenCalledTimes(1);
+            const [lines, to] = mockSendCronHealthEmail.mock.calls[0];
+            expect(lines[0]).toContain('execute');
+            expect(to).toBe('ops@example.com');
+            expect((await res.json()).healthAlert).toHaveLength(1);
+        });
+
+        it('alerts when the crons have gone silent', async () => {
+            withHealthEvent(['cron_health']);
+            mockGetCronRuns.mockResolvedValue([]);
+
+            await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).toHaveBeenCalledTimes(1);
+        });
+
+        it('respects the cron_health checkbox being off', async () => {
+            withHealthEvent(['trade_executed']);
+            mockGetCronRuns.mockResolvedValue([]);
+
+            await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+            expect(mockGetCronRuns).not.toHaveBeenCalled();
+        });
+
+        it('respects the master email switch being off', async () => {
+            mockGetNotificationConfig.mockResolvedValue([
+                {
+                    channel: 'email',
+                    enabled: false,
+                    target: 'ops@example.com',
+                    events: ['cron_health'],
+                },
+            ]);
+            mockGetCronRuns.mockResolvedValue([]);
+
+            await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+        });
+
+        it('never lets a failing health check break the digest', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            withHealthEvent(['cron_health']);
+            mockGetCronRuns.mockRejectedValue(new Error('connection refused'));
+
+            const res = await handler(makeRequest());
+
+            expect(res.status).toBe(200);
+            expect(await res.json()).toEqual({ skipped: true, reason: 'queue_empty' });
+            errorSpy.mockRestore();
+        });
+
+        it('does not run the health check when there are notifications to send', async () => {
+            withHealthEvent(['cron_health']);
+            mockGetPendingNotifications.mockResolvedValue(queued);
+
+            await handler(makeRequest());
+
+            expect(mockSendDigestEmail).toHaveBeenCalledTimes(1);
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+        });
     });
 });
