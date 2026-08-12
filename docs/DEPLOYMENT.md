@@ -146,7 +146,7 @@ Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서·Elastic 
    - Subdomain `auto-trade`, Domain `siglens.io`
    - Service: `HTTP` → `localhost:3000`
    - CNAME은 Cloudflare가 자동 생성한다(수동 DNS 레코드 추가 불필요)
-3. 기존 Cloudflare Access 애플리케이션(`auto-trade.siglens.io`)은 그대로 앞단 인증을 담당한다.
+3. Cloudflare Access 애플리케이션(`auto-trade.siglens.io`)은 앞단 인증으로 남겨둘 수 있지만 필수는 아니다 — 자체 로그인이 기본 인증이다(§5 참고).
 
 ---
 
@@ -171,29 +171,66 @@ Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서·Elastic 
 4. 인증 방법: **One-time PIN** (이메일 OTP)
    - 접속 시 이메일로 6자리 코드 발송 → 입력하면 7일간 유효
 
-### API 인증 체계 (JWT 검증)
+### API 인증 체계
 
-`api/_lib/auth.ts`의 `isAuthenticated()` 동작:
+`api/_lib/auth.ts`의 `isAuthenticated()` 동작 (위에서부터 순서대로 평가):
 
 | 상황 | 동작 |
 |------|------|
-| `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` 환경변수 설정됨 | `Cf-Access-Jwt-Assertion` JWT 헤더를 JWKS로 검증 (엄격 모드) |
-| 위 환경변수 미설정 | `cf-access-authenticated-user-email` 헤더를 신뢰 (fallback, 약한 모드) — `[auth]` 경고 로그 출력 |
 | `DISABLE_AUTH=true` (비프로덕션 환경) | 모든 인증 우회 (로컬 개발 전용) |
 | `DISABLE_AUTH=true` (프로덕션 환경) | **무시됨** — 프로덕션에서는 DISABLE_AUTH가 동작하지 않음 |
+| `trader_session` 쿠키가 살아있는 세션을 가리킴 | 통과 (**기본 경로**) |
+| `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` 설정 + 유효한 `Cf-Access-Jwt-Assertion` | 통과 (Access를 앞단에 두는 동안의 병행 경로) |
+| 그 외 | 403 |
 
-**JWT 검증 활성화 환경변수** (SSM `/siglens-trader/*` — `infra/aws/params.sh`로 주입):
+`cf-access-authenticated-user-email` **헤더만 믿는 fallback은 제거됐다**. Access를 끄면
+오리진이 직접 접근 가능해지므로, 그 헤더를 신뢰하면 누구나 위조해서 로그인을 우회할 수 있다.
+
+### 자체 로그인 (기본 인증)
+
+회원가입 엔드포인트는 없다. 계정은 스크립트로 생성한다.
+
+```bash
+# 마이그레이션 먼저 (users / sessions 테이블 + user_id 컬럼 생성)
+yarn db:migrate
+
+# 운영자 계정 생성 + 기존 데이터 소유권 이관
+OPERATOR_EMAIL=dev.y0ngha@gmail.com OPERATOR_PASSWORD='<password>' yarn db:seed-operator
+```
+
+`db:seed-operator`는 멱등하다. 이미 계정이 있으면 비밀번호를 재설정하고(= 로테이션)
+기존 세션을 전부 무효화한다. 이어서 `watchlist`, `analysis_model_config`, `positions`,
+`trades`, `pending_orders`, `config`, `order_tracking`, `notification_config`의
+`user_id`가 비어있는 행을 그 계정으로 채우고, 컬럼 DEFAULT도 같은 uuid로 설정한다
+(그래서 매매·크론 insert 경로는 코드 변경 없이 그대로 동작한다).
+
+- 세션 쿠키: `trader_session` — HttpOnly, SameSite=Lax, 프로덕션에서만 Secure, 30일
+- 비밀번호 해시: bcrypt cost 12 (siglens와 동일 — 나중에 계정 통합 시 해시 그대로 사용 가능)
+- 로그인 실패 스로틀: 클라이언트당 15분에 10회 (인프로세스 카운터, 단일 인스턴스 전제)
+
+### Cloudflare Access 해제 순서
+
+자체 로그인 배포 후 Access를 끌 때는 반드시 이 순서로 한다.
+
+1. 배포 완료 확인 후, Access가 켜져 있는 상태에서 `auto-trade.siglens.io`에 접속해
+   로그인 폼이 뜨고 실제 로그인이 되는지 확인한다 (Access + 자체 로그인 이중 통과).
+2. Cloudflare Dashboard → Zero Trust → Access → Applications → `SigLens Trader` 삭제
+   (또는 정책을 Bypass로 변경).
+3. 시크릿 창에서 다시 접속해 **로그인 폼이 그대로 뜨는지** 확인한다. 대시보드가 바로
+   보이면 인증이 통째로 열린 것이므로 즉시 Access를 되돌린다.
+
+되돌리기: Access Application을 다시 만들면 원래 상태로 복귀한다.
+
+**JWT 검증 환경변수** (SSM `/siglens-trader/*` — `infra/aws/params.sh`로 주입). Access를
+완전히 제거했다면 더 이상 필요 없다.
 
 ```
-# Cloudflare Access JWT 검증 (엄격 모드 — 설정 권장)
 CF_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
 CF_ACCESS_AUD=<Access Application Audience Tag>
 
 # 선택: 쉼표로 구분된 허용 이메일 목록 (설정 시 이 목록에 없는 이메일은 거부)
 CF_ACCESS_ALLOWED_EMAILS=dev.y0ngha@gmail.com
 ```
-
-`CF_ACCESS_TEAM_DOMAIN`과 `CF_ACCESS_AUD`를 설정하기 전까지는 fallback(헤더 신뢰) 모드로 동작한다. 이 모드는 Cloudflare Access가 정상적으로 설정된 경우 현재 프로덕션 상태를 유지하지만, JWT 검증보다 약하다. **가능한 한 빨리 JWT 검증 환경변수를 설정할 것을 권장한다.**
 
 `CF_ACCESS_AUD`는 Cloudflare Dashboard → Zero Trust → Access → Applications → 해당 앱 → Overview → **Application Audience (AUD) Tag**에서 확인할 수 있다.
 
@@ -396,7 +433,9 @@ Vercel에서 AWS로 넘길 때의 순서. 실매매 도구라 **`trading_mode=dr
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | Cron 401 | CRON_SECRET 불일치/미설정 | SSM `/siglens-trader/CRON_SECRET` 확인 (미설정 시 스케줄러 자체가 비활성) |
-| Dashboard 403 | Cloudflare Access 미설정 또는 DISABLE_AUTH 미설정 (로컬) | Zero Trust 정책 확인 / .env.local에 DISABLE_AUTH=true (프로덕션에서는 무시됨) |
+| Dashboard 403 | 세션 만료/없음, 또는 로컬에서 DISABLE_AUTH 미설정 | 다시 로그인 / .env.local에 DISABLE_AUTH=true (프로덕션에서는 무시됨) |
+| 로그인 429 | 15분 내 실패 10회 초과 | Retry-After 만큼 대기하거나 앱 재시작(카운터는 인프로세스) |
+| 로그인이 계속 401 | 계정 미생성 또는 비밀번호 불일치 | `yarn db:seed-operator`로 계정 생성/비밀번호 재설정 |
 | Dashboard 403 (JWT) | CF_ACCESS_TEAM_DOMAIN/AUD 설정 후 JWT 검증 실패 | Cf-Access-Jwt-Assertion 헤더 존재 여부 확인, AUD Tag 오타 점검 |
 | 분석 안 됨 | LLM API 키 미설정 | ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY 확인 |
 | 빈 대시보드 | watchlist 비어있음 | 설정에서 종목 추가 |

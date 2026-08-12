@@ -1,14 +1,43 @@
 const BASE = '/api';
 
+/** Error carrying the HTTP status so callers can branch on 401/429 without parsing text. */
+export class ApiError extends Error {
+    constructor(
+        readonly status: number,
+        readonly body: string,
+    ) {
+        super(`API ${status}: ${body}`);
+        this.name = 'ApiError';
+    }
+
+    /** Server-supplied `{ error }` message when present, else the raw body. */
+    get displayMessage(): string {
+        try {
+            const parsed: unknown = JSON.parse(this.body);
+            const message = (parsed as { error?: unknown } | null)?.error;
+            if (typeof message === 'string' && message) return message;
+        } catch {
+            // Non-JSON body (e.g. plain "Forbidden") — fall through.
+        }
+        return this.body || this.message;
+    }
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
     const res = await fetch(`${BASE}${path}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...options?.headers },
     });
     if (!res.ok) {
-        throw new Error(`API ${res.status}: ${await res.text()}`);
+        throw new ApiError(res.status, await res.text());
     }
     return res.json() as Promise<T>;
+}
+
+export interface SessionUser {
+    id: string;
+    email: string;
+    name: string | null;
 }
 
 export interface StatusResponse {
@@ -92,6 +121,22 @@ export interface CronDecision {
 }
 
 export const api = {
+    /** Resolve the current session. Returns null (rather than throwing) when logged out. */
+    getMe: async (signal?: AbortSignal): Promise<SessionUser | null> => {
+        try {
+            const { user } = await fetchJson<{ user: SessionUser }>('/auth/me', { signal });
+            return user;
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 401) return null;
+            throw err;
+        }
+    },
+    login: (email: string, password: string) =>
+        fetchJson<{ user: SessionUser }>('/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email, password }),
+        }),
+    logout: () => fetchJson<{ success: boolean }>('/auth/logout', { method: 'POST' }),
     getStatus: (signal?: AbortSignal) => fetchJson<StatusResponse>('/status', { signal }),
     getPositions: (signal?: AbortSignal) => fetchJson<Position[]>('/positions', { signal }),
     getTrades: (signal?: AbortSignal) => fetchJson<Trade[]>('/trades', { signal }),

@@ -48,11 +48,34 @@ lib/validation.ts → No external deps (pure guards)
 
 ## Authentication
 
-In production, Cloudflare Access sets `cf-access-authenticated-user-email` header.
-For local development, set `DISABLE_AUTH=true` in `.env.local` to bypass authentication.
+Primary path is the app's own login: `POST /api/auth/login` verifies the password
+(bcrypt cost 12) against `users`, opens a `sessions` row, and returns it as the
+`trader_session` HttpOnly cookie. There is **no signup endpoint** — accounts are
+provisioned with `yarn db:seed-operator` (`OPERATOR_EMAIL` / `OPERATOR_PASSWORD`).
+
+`users` / `sessions` deliberately mirror siglens' column shapes so the two account
+systems can be merged later without a schema redesign.
+
+A Cloudflare Access JWT is still accepted (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`)
+so the site keeps working while Access sits in front of the origin. There is **no
+`cf-access-authenticated-user-email` header-trust fallback**: with Access off the
+origin is reachable directly and a forged header would be an auth bypass.
+
+For local development, set `DISABLE_AUTH=true` in `.env.local`. It is ignored in
+production, and it never fabricates an identity — `getSessionUser()` still returns
+null, only `isAuthenticated()` short-circuits.
 
 All dashboard API endpoints (non-cron) check `isAuthenticated(req)` from `api/_lib/auth.ts`.
 Cron endpoints use `CRON_SECRET` header verification via `api/_lib/cron-auth.ts`.
+
+### Data ownership
+
+Operator-owned tables (`watchlist`, `analysis_model_config`, `positions`, `trades`,
+`pending_orders`, `config`, `order_tracking`, `notification_config`) carry a `user_id`
+column. `db:seed-operator` backfills existing rows and sets the column DEFAULT to the
+operator, so trading and cron insert paths need no user plumbing. Reads are **not**
+scoped by `user_id` — that is correct only while signup is absent and exactly one
+account exists. Adding signup means dropping the DEFAULT and scoping every read.
 
 ---
 

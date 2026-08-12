@@ -1,9 +1,10 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router';
 import { lazy, Suspense } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type SessionUser } from '@/lib/api';
 import { MobileNav } from '@/components/MobileNav';
 import type { NavItem } from '@/components/MobileNav';
+import { LoginPage } from './pages/Login';
 
 const StatusPage = lazy(() => import('./pages/Status').then((m) => ({ default: m.StatusPage })));
 const PositionsPage = lazy(() =>
@@ -24,7 +25,35 @@ const CronRunsPage = lazy(() =>
 const INVESTMENT_DISCLAIMER =
     '본 서비스는 Siglens의 분석 결과를 바탕으로 이용자가 설정한 값에 따라 자동 매매를 진행하는 서비스입니다. 모든 투자 판단, 설정값 구성, 자동 매매 실행 및 그 결과에 대한 책임은 이용자 본인에게 있으며, Siglens 및 Siglens Trader는 투자 손실이나 기타 불이익에 대해 책임을 지지 않습니다.';
 
+/**
+ * Session gate. Every dashboard endpoint is auth-guarded server-side, so the
+ * dashboard is only mounted once a session resolves — otherwise its queries
+ * would just fan out 401s behind the login form.
+ */
 export function App() {
+    const { data: user, isPending } = useQuery({
+        queryKey: ['me'],
+        queryFn: ({ signal }) => api.getMe(signal),
+        // A session lasts 30 days; polling it on the global 10s interval is pure noise.
+        refetchInterval: false,
+        staleTime: 5 * 60_000,
+        retry: false,
+    });
+
+    if (isPending) {
+        return (
+            <div className="flex min-h-dvh items-center justify-center bg-[#0a0a0a]">
+                <LoadingSpinner />
+            </div>
+        );
+    }
+
+    if (!user) return <LoginPage />;
+
+    return <Dashboard user={user} />;
+}
+
+function Dashboard({ user }: { user: SessionUser }) {
     const { data: pendingOrders } = useQuery({
         queryKey: ['pending'],
         queryFn: ({ signal }) => api.getPending(signal),
@@ -44,8 +73,14 @@ export function App() {
     return (
         <BrowserRouter>
             <div className="flex min-h-dvh w-full max-w-full flex-col overflow-x-clip bg-[#0a0a0a] text-[#fafafa]">
+                {/* Mobile account strip — the bottom tab bar has no room for a logout control */}
+                <div className="flex items-center justify-between gap-2 border-b border-[#262626] px-3 py-2 sm:hidden">
+                    <span className="truncate text-[11px] text-neutral-500">{user.email}</span>
+                    <LogoutButton />
+                </div>
+
                 {/* Desktop top nav — hidden on mobile */}
-                <DesktopNav navItems={navItems} />
+                <DesktopNav navItems={navItems} user={user} />
 
                 {/* Fix 3: mobile bottom padding clears nav (52px) + safe-area; desktop uses sm:pb-4 */}
                 <main className="min-w-0 flex-1 p-3 pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-4">
@@ -75,7 +110,27 @@ export function App() {
     );
 }
 
-function DesktopNav({ navItems }: { navItems: NavItem[] }) {
+function LogoutButton() {
+    const queryClient = useQueryClient();
+    const logout = useMutation({
+        mutationFn: () => api.logout(),
+        // Clear rather than invalidate — nothing cached should survive a user change.
+        onSettled: () => queryClient.clear(),
+    });
+
+    return (
+        <button
+            type="button"
+            onClick={() => logout.mutate()}
+            disabled={logout.isPending}
+            className="shrink-0 rounded-md px-2 py-1 text-xs whitespace-nowrap text-neutral-400 transition-colors hover:text-neutral-200 disabled:opacity-50"
+        >
+            로그아웃
+        </button>
+    );
+}
+
+function DesktopNav({ navItems, user }: { navItems: NavItem[]; user: SessionUser }) {
     return (
         <nav
             className="scrollbar-hide sticky top-0 z-10 hidden gap-1 overflow-x-auto border-b border-[#262626] bg-[#0a0a0a]/80 px-3 py-2 backdrop-blur-sm sm:flex sm:gap-3 sm:px-4 sm:py-3"
@@ -98,6 +153,13 @@ function DesktopNav({ navItems }: { navItems: NavItem[] }) {
                     )}
                 </NavLink>
             ))}
+
+            <div className="ml-auto flex items-center gap-2 pl-3">
+                <span className="max-w-[200px] truncate text-xs text-neutral-500">
+                    {user.email}
+                </span>
+                <LogoutButton />
+            </div>
         </nav>
     );
 }
