@@ -8,6 +8,11 @@ vi.mock('../../../lib/auth/session', () => ({
     destroySession: (...args: unknown[]) => mockDestroySession(...args),
 }));
 
+const mockForgetSession = vi.fn();
+vi.mock('../../_lib/auth', () => ({
+    forgetSession: (...args: unknown[]) => mockForgetSession(...args),
+}));
+
 import { POST as logout } from '../logout';
 
 function makeRequest(cookie?: string, method = 'POST'): Request {
@@ -37,6 +42,20 @@ describe('POST /api/auth/logout', () => {
         expect(res.status).toBe(200);
         expect(mockDestroySession).toHaveBeenCalledWith(fakeDb, 'session-1');
         expect(setCookieOf(res)).toContain('Max-Age=0');
+    });
+
+    it('evicts the cached lookup, so the cookie dies now and not one TTL later', async () => {
+        await logout(makeRequest('trader_session=session-1'));
+        expect(mockForgetSession).toHaveBeenCalledWith('session-1');
+    });
+
+    it('evicts even when the database delete fails', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        mockDestroySession.mockRejectedValue(new Error('connection refused'));
+
+        await logout(makeRequest('trader_session=session-1'));
+        expect(mockForgetSession).toHaveBeenCalledWith('session-1');
+        errorSpy.mockRestore();
     });
 
     it('still clears the cookie when there is no session to revoke', async () => {

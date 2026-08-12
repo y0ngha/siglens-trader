@@ -55,8 +55,9 @@ export const sessions = pgTable(
  * The migration backfills existing rows to the seeded operator and sets a column
  * DEFAULT to that same uuid, so trading/cron insert paths need no code change.
  * ponytail: reads are NOT filtered by user_id — correct while signup is absent and
- * exactly one account exists. Add scoping (and drop the column DEFAULT) the moment
- * a second account can be created.
+ * exactly one account exists. The moment a second account can be created, all three
+ * of these are required: scope every read by user_id, drop the column DEFAULT so an
+ * owner must be passed explicitly, and add a user_id index to each table below.
  */
 const ownerUserId = () => uuid('user_id').references(() => users.id, { onDelete: 'restrict' });
 

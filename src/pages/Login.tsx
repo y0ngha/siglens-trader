@@ -50,7 +50,7 @@ export function LoginPage() {
                             required
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
-                            className="rounded-md border border-[#262626] bg-[#111] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-neutral-500"
+                            className="rounded-md border border-[#262626] bg-[#141414] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-neutral-500"
                         />
                     </label>
 
@@ -63,7 +63,7 @@ export function LoginPage() {
                             required
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            className="rounded-md border border-[#262626] bg-[#111] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-neutral-500"
+                            className="rounded-md border border-[#262626] bg-[#141414] px-3 py-2 text-sm text-[#fafafa] outline-none focus:border-neutral-500"
                         />
                     </label>
 

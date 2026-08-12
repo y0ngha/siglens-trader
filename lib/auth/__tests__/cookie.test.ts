@@ -38,6 +38,16 @@ describe('readCookie', () => {
     it('returns an empty string for a present-but-empty cookie', () => {
         expect(readCookie(makeRequest('x='), 'x')).toBe('');
     });
+
+    it('does not throw on a malformed percent-escape', () => {
+        // `decodeURIComponent('%')` throws URIError. The header is attacker-controlled
+        // and parsed before any auth check, so throwing would 500 every guarded route.
+        for (const bad of ['%', '%zz', '%E0%A4']) {
+            const req = makeRequest(`${SESSION_COOKIE_NAME}=${bad}`);
+            expect(() => readSessionCookie(req)).not.toThrow();
+            expect(readSessionCookie(req)).toBe(bad);
+        }
+    });
 });
 
 describe('serializeSessionCookie', () => {

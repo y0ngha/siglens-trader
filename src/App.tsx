@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type SessionUser } from '@/lib/api';
 import { MobileNav } from '@/components/MobileNav';
 import type { NavItem } from '@/components/MobileNav';
-import { LoginPage } from './pages/Login';
+import { LoginPage } from '@/pages/Login';
 
 const StatusPage = lazy(() => import('./pages/Status').then((m) => ({ default: m.StatusPage })));
 const PositionsPage = lazy(() =>

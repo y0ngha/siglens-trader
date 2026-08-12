@@ -35,7 +35,19 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ error: '이메일과 비밀번호를 입력해 주세요.' }, { status: 400 });
     }
 
-    const result = await authenticate(getDb(), email, password);
+    let result: Awaited<ReturnType<typeof authenticate>>;
+    try {
+        result = await authenticate(getDb(), email, password);
+    } catch (err) {
+        // Surface the cause the way the other auth routes do — a silent 500 here reads
+        // as "wrong password" to the operator and hides a database outage.
+        console.error('[auth] login failed:', err);
+        return Response.json(
+            { error: '로그인 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' },
+            { status: 503 },
+        );
+    }
+
     if (!result) {
         recordFailure(key);
         return Response.json({ error: INVALID_CREDENTIALS }, { status: 401 });

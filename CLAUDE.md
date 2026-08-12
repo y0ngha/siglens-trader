@@ -18,7 +18,8 @@ lib/analysis/     → Application: siglens-core integration
 lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
-lib/db/           → Infrastructure: Neon PostgreSQL I/O (9 tables, DB transactions, consistency checker)
+lib/auth/         → Application: login/session lifecycle (bcrypt, session cookie, login throttle)
+lib/db/           → Infrastructure: Neon PostgreSQL I/O (15 tables, DB transactions, consistency checker)
 lib/lock.ts       → Distributed lock (Redis SETNX + UUID owner + Lua script release)
 lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 ```
@@ -33,7 +34,8 @@ lib/analysis/ → @y0ngha/siglens-core, lib/data
 lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
 lib/notification/ → External HTTP (Resend)
-lib/db/ → @neondatabase/serverless, drizzle-orm. recovery.ts → DB consistency checks.
+lib/auth/ → lib/db (Db type + schema) only. cookie.ts and throttle.ts are pure.
+lib/db/ → @neondatabase/serverless, drizzle-orm. recovery.ts → DB consistency checks. seed-operator.ts (CLI only) → lib/auth.
 lib/lock.ts → @upstash/redis (SETNX distributed lock)
 lib/validation.ts → No external deps (pure guards)
 ```

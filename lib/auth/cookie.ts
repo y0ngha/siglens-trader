@@ -6,7 +6,18 @@
  * table, so a forged value cannot be validated without a matching row.
  */
 
-/** HttpOnly cookie carrying the session id. */
+/**
+ * HttpOnly cookie carrying the session id.
+ *
+ * CSRF defence is `SameSite=Lax` alone, deliberately. Lax withholds the cookie from
+ * cross-site form POSTs and sub-resource requests, which covers every state-changing
+ * route here (`/api/config`, `/api/approve/:id`, `/api/positions/:id/close`,
+ * `/api/trades`) — they are all POST, and none is reachable by a top-level GET
+ * navigation, the one case Lax still allows. An Origin/Referer check was considered
+ * and left out: it would have to be threaded through every handler for no additional
+ * coverage on a single-operator tool. Add one if a state-changing GET is ever
+ * introduced, or if the cookie has to move to SameSite=None.
+ */
 export const SESSION_COOKIE_NAME = 'trader_session';
 
 /** Session lifetime (30 days) — matches siglens' DEFAULT_SESSION_TTL_SECONDS. */
@@ -23,7 +34,17 @@ export function readCookie(req: Request, name: string): string | null {
         const eq = part.indexOf('=');
         if (eq === -1) continue;
         if (part.slice(0, eq).trim() !== name) continue;
-        return decodeURIComponent(part.slice(eq + 1).trim());
+
+        const raw = part.slice(eq + 1).trim();
+        try {
+            return decodeURIComponent(raw);
+        } catch {
+            // `decodeURIComponent` throws URIError on a malformed escape ("%", "%zz").
+            // The header is attacker-controlled and this runs before any auth check, so
+            // throwing here would turn `Cookie: trader_session=%` into a 500 on every
+            // guarded route. Fall back to the raw value — it simply won't match a session.
+            return raw;
+        }
     }
     return null;
 }
@@ -42,7 +63,10 @@ function secureAttribute(): string {
 }
 
 /** Build the `Set-Cookie` value that establishes a session. */
-export function serializeSessionCookie(sessionId: string, maxAgeSeconds = SESSION_TTL_SECONDS) {
+export function serializeSessionCookie(
+    sessionId: string,
+    maxAgeSeconds = SESSION_TTL_SECONDS,
+): string {
     return `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureAttribute()}`;
 }
 

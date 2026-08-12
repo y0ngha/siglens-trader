@@ -7,9 +7,10 @@ Mobile-first PWA dashboard for monitoring and controlling the auto-trading syste
 ```
 src/
 ├── main.tsx           # Entry point (QueryClient, ErrorBoundary)
-├── App.tsx            # Router shell with lazy-loaded pages
+├── App.tsx            # Session gate (renders Login until /api/auth/me resolves) + router shell
 ├── index.css          # Tailwind + body styles + PWA safe area
 ├── pages/             # Route components
+│   ├── Login.tsx      # Login form — eagerly imported (it is the logged-out critical path)
 │   ├── Status.tsx     # System status + portfolio + position targets + alerts
 │   ├── Positions.tsx  # Open positions list (with manual close)
 │   ├── Trades.tsx     # Trade history with reasons (includes skipped trades)

@@ -59,14 +59,14 @@ export async function upsertOperator(db: Db, email: string, password: string): P
     return created.id;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Point every unowned row at `userId` and make it the column DEFAULT.
  *
  * The DEFAULT is what keeps insert sites free of user plumbing while exactly one
  * account exists; drop it (and start passing an explicit owner) when signup lands.
  */
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function claimExistingData(db: Db, userId: string): Promise<Record<string, number>> {
     // `ALTER TABLE … SET DEFAULT` is DDL and cannot take a bind parameter, so the id
     // has to be inlined. Validate its shape first rather than interpolating blindly.
@@ -74,15 +74,22 @@ export async function claimExistingData(db: Db, userId: string): Promise<Record<
 
     const claimed: Record<string, number> = {};
 
-    for (const table of OWNED_TABLES) {
-        const result = await db.execute(
-            sql`UPDATE ${sql.identifier(table)} SET user_id = ${userId}::uuid WHERE user_id IS NULL`,
-        );
-        claimed[table] = result.rowCount ?? 0;
-        await db.execute(
-            sql.raw(`ALTER TABLE "${table}" ALTER COLUMN user_id SET DEFAULT '${userId}'::uuid`),
-        );
-    }
+    // One transaction for all eight tables: a failure halfway through would otherwise
+    // leave some tables owned and defaulted and others not, which is the confusing state
+    // to debug. Postgres runs ALTER TABLE transactionally, so the DEFAULTs roll back too.
+    await db.transaction(async (tx) => {
+        for (const table of OWNED_TABLES) {
+            const result = await tx.execute(
+                sql`UPDATE ${sql.identifier(table)} SET user_id = ${userId}::uuid WHERE user_id IS NULL`,
+            );
+            claimed[table] = result.rowCount ?? 0;
+            await tx.execute(
+                sql.raw(
+                    `ALTER TABLE "${table}" ALTER COLUMN user_id SET DEFAULT '${userId}'::uuid`,
+                ),
+            );
+        }
+    });
 
     return claimed;
 }

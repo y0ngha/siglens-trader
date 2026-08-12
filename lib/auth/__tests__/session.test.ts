@@ -64,8 +64,14 @@ const NOW = new Date('2026-08-12T00:00:00.000Z');
 
 describe('createSession', () => {
     it('stores a row expiring one TTL from now and returns its id', async () => {
-        const { db } = createFakeDb([[{ id: 'session-1' }]]);
+        const { db } = createFakeDb([[{ id: 'session-1' }], []]);
         await expect(createSession(db, 'user-1', NOW)).resolves.toBe('session-1');
+    });
+
+    it("sweeps the user's expired rows — nothing else ever reaps unpresented sessions", async () => {
+        const { db, ops } = createFakeDb([[{ id: 'session-1' }], []]);
+        await createSession(db, 'user-1', NOW);
+        expect(ops).toEqual(['insert', 'delete']);
     });
 
     it('uses the 30-day TTL shared with the cookie', () => {
@@ -136,13 +142,14 @@ describe('authenticate', () => {
                 },
             ],
             [{ id: 'session-1' }],
+            [],
         ]);
 
         await expect(authenticate(db, 'operator@example.com', 'secret', NOW)).resolves.toEqual({
             user: { id: 'user-1', email: 'operator@example.com', name: null },
             sessionId: 'session-1',
         });
-        expect(ops).toEqual(['select', 'insert']);
+        expect(ops).toEqual(['select', 'insert', 'delete']);
     });
 
     it('normalizes the email before lookup', async () => {
@@ -150,6 +157,7 @@ describe('authenticate', () => {
         const { db } = createFakeDb([
             [{ id: 'user-1', email: 'operator@example.com', name: null, passwordHash: 'h' }],
             [{ id: 'session-1' }],
+            [],
         ]);
 
         await expect(
@@ -157,21 +165,25 @@ describe('authenticate', () => {
         ).resolves.not.toBeNull();
     });
 
-    it('returns null for an unknown email without touching bcrypt', async () => {
+    it('returns null for an unknown email, still paying one bcrypt to hide the timing', async () => {
+        mockVerifyPassword.mockResolvedValue(false);
         const { db, ops } = createFakeDb([[]]);
 
         await expect(authenticate(db, 'ghost@example.com', 'secret', NOW)).resolves.toBeNull();
-        expect(mockVerifyPassword).not.toHaveBeenCalled();
+        // Skipping the compare would answer a missing account ~270ms sooner than a
+        // wrong password, which is the account-existence leak the shared message hides.
+        expect(mockVerifyPassword).toHaveBeenCalledTimes(1);
         expect(ops).toEqual(['select']);
     });
 
-    it('returns null for an account with no password hash (OAuth-only shape)', async () => {
+    it('returns null for an account with no password hash (OAuth-only shape), also paying bcrypt', async () => {
+        mockVerifyPassword.mockResolvedValue(false);
         const { db } = createFakeDb([
             [{ id: 'user-1', email: 'operator@example.com', name: null, passwordHash: null }],
         ]);
 
         await expect(authenticate(db, 'operator@example.com', 'secret', NOW)).resolves.toBeNull();
-        expect(mockVerifyPassword).not.toHaveBeenCalled();
+        expect(mockVerifyPassword).toHaveBeenCalledTimes(1);
     });
 
     it('returns null — and creates no session — on a wrong password', async () => {

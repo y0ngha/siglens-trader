@@ -718,9 +718,52 @@ const cronDecisions: CronDecisionFixture[] = [
     },
 ];
 
+// --- Auth (mock session) ---
+
+const MOCK_USER = { id: 'mock-operator', email: 'mock@localhost', name: 'Mock Operator' };
+
+/**
+ * `yarn dev:mock` has no backend, so the session lives here. It starts logged in —
+ * the point of mock mode is to land straight on the dashboard — but logout and login
+ * both work so the auth screens stay developable.
+ */
+let mockSession: typeof MOCK_USER | null = MOCK_USER;
+
 // --- Handlers ---
 
 export const handlers = [
+    // Auth
+    http.get('/api/auth/me', () =>
+        mockSession
+            ? HttpResponse.json({ user: mockSession })
+            : HttpResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    ),
+
+    http.post('/api/auth/login', async ({ request }) => {
+        const body = (await request.json()) as { email?: string; password?: string };
+        if (!body.email || !body.password) {
+            return HttpResponse.json(
+                { error: '이메일과 비밀번호를 입력해 주세요.' },
+                { status: 400 },
+            );
+        }
+        // Any non-empty password is accepted except the literal "wrong", which exists so
+        // the failure path can be exercised without a backend.
+        if (body.password === 'wrong') {
+            return HttpResponse.json(
+                { error: '이메일 또는 비밀번호가 올바르지 않습니다.' },
+                { status: 401 },
+            );
+        }
+        mockSession = { ...MOCK_USER, email: body.email };
+        return HttpResponse.json({ user: mockSession });
+    }),
+
+    http.post('/api/auth/logout', () => {
+        mockSession = null;
+        return HttpResponse.json({ success: true });
+    }),
+
     // Status
     http.get('/api/status', () => {
         const openCount = positions.filter((p) => p.status === 'open').length;

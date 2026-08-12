@@ -62,7 +62,16 @@ export function recordFailure(key: string, now = Date.now()): void {
         bucket.failures += 1;
         return;
     }
+    // Lapsed buckets are otherwise only dropped when their own key is looked up again,
+    // so a rotating source of keys would grow the map without bound.
+    sweepLapsed(now);
     buckets.set(key, { failures: 1, resetAt: now + THROTTLE_WINDOW_MS });
+}
+
+function sweepLapsed(now: number): void {
+    for (const [key, bucket] of buckets) {
+        if (bucket.resetAt <= now) buckets.delete(key);
+    }
 }
 
 /** Clear the client's failures after a successful login. */

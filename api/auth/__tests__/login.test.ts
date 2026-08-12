@@ -77,6 +77,20 @@ describe('POST /api/auth/login', () => {
         });
     });
 
+    it('503s and logs when the database is unreachable — not a silent 500', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        mockAuthenticate.mockRejectedValue(new Error('connection refused'));
+
+        const res = await login(makeRequest({ email: 'operator@example.com', password: 'x' }));
+
+        expect(res.status).toBe(503);
+        expect(errorSpy).toHaveBeenCalledWith(
+            expect.stringContaining('[auth] login failed:'),
+            expect.any(Error),
+        );
+        errorSpy.mockRestore();
+    });
+
     it('429s after too many failures and stops hitting the database', async () => {
         mockAuthenticate.mockResolvedValue(null);
         const body = { email: 'operator@example.com', password: 'wrong' };

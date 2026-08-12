@@ -7,9 +7,13 @@ HTTP handlers deployed as Vercel Serverless Functions. Includes cron jobs and da
 ```
 api/
 ├── _lib/              # Shared utilities (NOT deployed as routes)
-│   ├── auth.ts        # isAuthenticated() — Cloudflare Access header + DISABLE_AUTH
+│   ├── auth.ts        # isAuthenticated() / getSessionUser() — session cookie, CF Access JWT, DISABLE_AUTH
 │   ├── cron-auth.ts   # verifyCronSecret() — CRON_SECRET verification
 │   └── db.ts          # Singleton DB instance (getDb())
+├── auth/              # Login surface (no signup route)
+│   ├── login.ts       # POST — verify credentials, open a session, set the cookie
+│   ├── logout.ts      # POST — revoke the session, clear the cookie
+│   └── me.ts          # GET  — resolve the current session (401 when logged out)
 ├── cron/              # Scheduled functions (Vercel Cron)
 │   ├── _run-analysis-cron.ts  # Shared factory + resolveApiKey() (NOT a route)
 │   ├── technical.ts   # hourly — technical analysis
@@ -57,7 +61,20 @@ Single-purpose routes can also export the method function directly
 
 ## Authentication
 
-- **Dashboard routes**: `isAuthenticated(req)` is async (`Promise<boolean>`). When `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` are set, verifies the `Cf-Access-Jwt-Assertion` JWT via JWKS (strict mode). Otherwise falls back to trusting the `cf-access-authenticated-user-email` header. `DISABLE_AUTH=true` bypasses auth only in non-production. Returns 403 on failure.
+- **Dashboard routes**: `isAuthenticated(req)` is async (`Promise<boolean>`) and evaluates, in order:
+  1. `DISABLE_AUTH=true` in a non-production environment → pass (ignored in production).
+  2. A `trader_session` cookie resolving to a live session row → pass. **This is the primary path.**
+     Lookups are cached in-process for 5s because the dashboard polls several endpoints every 10s.
+  3. `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` set *and* a valid `Cf-Access-Jwt-Assertion` → pass.
+     Kept so the app works while Cloudflare Access still fronts the origin.
+
+  Returns 403 on failure. There is **no `cf-access-authenticated-user-email` header-trust
+  fallback** — with Access removed the origin is directly reachable and that header is forgeable.
+- **Caller identity**: `getSessionUser(req)` returns the `SessionUser` behind the cookie, or `null`.
+  It ignores `DISABLE_AUTH` on purpose (a flag cannot conjure an identity); `api/auth/me.ts` layers
+  a clearly-labelled `DEV_BYPASS_USER` on top for local development only.
+- **Auth routes** (`api/auth/*`): unguarded by design — the login form has to be reachable while
+  logged out. `login.ts` is throttled to 10 failures per client per 15 minutes.
 - **Cron routes**: `verifyCronSecret(req)` checks `Authorization: Bearer <CRON_SECRET>` header. Returns 401 on failure.
 
 ## Config POST Security
