@@ -10,7 +10,7 @@ own login. There is **no signup** — accounts are provisioned by
 |------|---------------|
 | `cookie.ts` | Pure cookie string handling: `readCookie` / `readSessionCookie`, `serializeSessionCookie`, `serializeClearedSessionCookie`, `SESSION_COOKIE_NAME`, `SESSION_TTL_SECONDS`. No I/O. |
 | `password.ts` | bcrypt wrapper — `hashPassword` / `verifyPassword` at `BCRYPT_SALT_ROUNDS = 12` |
-| `session.ts` | DB-backed session lifecycle: `authenticate`, `createSession`, `resolveSessionUser`, `destroySession`, `destroyUserSessions`, `normalizeEmail`, `SessionUser` |
+| `session.ts` | DB-backed session lifecycle: `authenticate`, `createSession`, `resolveSessionUser`, `destroySession`, `destroyUserSessions`, `normalizeEmail`, `isSessionId`, `SessionUser` |
 | `throttle.ts` | In-process failed-login counter: `clientKey`, `isThrottled`, `recordFailure`, `clearFailures`, `retryAfterSeconds` |
 
 ## Dependency Direction
@@ -41,7 +41,12 @@ pointing back from `lib/db/`, and it is inert: `seed-operator.ts` is a CLI entry
 4. **Sessions expire on read.** `resolveSessionUser` treats `expiresAt <= now` as
    expired and deletes the row; rows never presented again are swept at the owner's
    next login. There is no reaper cron.
-5. **`throttle.ts` is per-process.** Correct for the single-instance deployment; a
+5. **Session ids are uuids, and the shape is checked before any use.** `sessions.id`
+   is a uuid column, so a malformed cookie raises `22P02` instead of matching nothing.
+   `isSessionId` gates the query *and* `api/_lib/auth.ts`'s session cache, so an
+   unauthenticated client cannot spend database round trips, CloudWatch lines, or cache
+   slots on junk values.
+6. **`throttle.ts` is per-process.** Correct for the single-instance deployment; a
    second app instance would multiply the limit by N and needs a shared counter.
 
 ## Related

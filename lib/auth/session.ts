@@ -26,8 +26,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * correct, but every request carrying a junk cookie cost a database round trip and a
  * full stack trace in CloudWatch. Unauthenticated clients control that value, so
  * rejecting the shape up front removes the whole class of noise.
+ *
+ * Exported so `api/_lib/auth.ts` can reject the same values before they reach its
+ * session cache; the rule itself stays here so the dependency keeps pointing
+ * `api/ → lib/auth/`.
  */
-function isSessionId(value: string): boolean {
+export function isSessionId(value: string): boolean {
     return UUID_PATTERN.test(value);
 }
 
