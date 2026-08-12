@@ -16,7 +16,11 @@ const mockResolveSessionUser = vi.fn();
 const FAKE_DB = Symbol('fake-db');
 const SESSION_USER = { id: 'user-1', email: 'operator@example.com', name: null };
 
-vi.mock('../../../lib/auth/session.js', () => ({
+vi.mock('../../../lib/auth/session.js', async (importOriginal) => ({
+    // isSessionId is the real rule — mocking it would let the tests pass while the
+    // shape gate is wrong.
+    isSessionId: (await importOriginal<typeof import('../../../lib/auth/session.js')>())
+        .isSessionId,
     resolveSessionUser: (...args: unknown[]) => mockResolveSessionUser(...args),
 }));
 
@@ -35,6 +39,11 @@ function makeRequest(headers: Record<string, string> = {}): Request {
 const TEAM_DOMAIN = 'https://myteam.cloudflareaccess.com';
 const AUDIENCE = 'test-audience-tag';
 const FAKE_JWKS = Symbol('fake-jwks');
+
+// Session ids must be uuid-shaped: the shape gate now runs before the cache and the query.
+const SESSION_ID = '9f8e7d6c-5b4a-4321-8765-0a1b2c3d4e5f';
+const OTHER_ID = '11111111-2222-3333-4444-555555555555';
+const junkUuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -261,10 +270,10 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(SESSION_USER);
 
             const { isAuthenticated: auth } = await import('../auth');
-            const result = await auth(makeRequest({ cookie: 'trader_session=abc-123' }));
+            const result = await auth(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
 
             expect(result).toBe(true);
-            expect(mockResolveSessionUser).toHaveBeenCalledWith(FAKE_DB, 'abc-123');
+            expect(mockResolveSessionUser).toHaveBeenCalledWith(FAKE_DB, SESSION_ID);
         });
 
         it('returns false when the cookie is absent', async () => {
@@ -278,7 +287,7 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(null);
 
             const { isAuthenticated: auth } = await import('../auth');
-            expect(await auth(makeRequest({ cookie: 'trader_session=stale' }))).toBe(false);
+            expect(await auth(makeRequest({ cookie: `trader_session=${OTHER_ID}` }))).toBe(false);
         });
 
         it('fails closed (and logs) when the session lookup throws', async () => {
@@ -286,7 +295,7 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockRejectedValue(new Error('connection refused'));
 
             const { isAuthenticated: auth } = await import('../auth');
-            expect(await auth(makeRequest({ cookie: 'trader_session=abc-123' }))).toBe(false);
+            expect(await auth(makeRequest({ cookie: `trader_session=${SESSION_ID}` }))).toBe(false);
             expect(errorSpy).toHaveBeenCalledWith(
                 expect.stringContaining('[auth] session lookup failed:'),
                 expect.any(Error),
@@ -323,9 +332,9 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(SESSION_USER);
             const { getSessionUser } = await import('../auth');
 
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
 
             // The dashboard polls several endpoints every 10s; without this each one
             // would be a cross-region round trip.
@@ -336,8 +345,8 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(null);
             const { getSessionUser } = await import('../auth');
 
-            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
-            await getSessionUser(makeRequest({ cookie: 'trader_session=junk' }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${OTHER_ID}` }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${OTHER_ID}` }));
 
             expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
         });
@@ -346,8 +355,8 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(SESSION_USER);
             const { getSessionUser } = await import('../auth');
 
-            await getSessionUser(makeRequest({ cookie: 'trader_session=a' }));
-            await getSessionUser(makeRequest({ cookie: 'trader_session=b' }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${OTHER_ID}` }));
 
             expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
         });
@@ -356,12 +365,12 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockResolvedValue(SESSION_USER);
             const { getSessionUser, forgetSession } = await import('../auth');
 
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
-            forgetSession('abc-123');
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            forgetSession(SESSION_ID);
 
             mockResolveSessionUser.mockResolvedValue(null);
             await expect(
-                getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' })),
+                getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` })),
             ).resolves.toBeNull();
             expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
         });
@@ -373,13 +382,13 @@ describe('isAuthenticated', () => {
                 mockResolveSessionUser.mockResolvedValue(SESSION_USER);
                 const { getSessionUser } = await import('../auth');
 
-                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
                 vi.setSystemTime(new Date('2026-08-12T00:00:04.999Z'));
-                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
                 expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
 
                 vi.setSystemTime(new Date('2026-08-12T00:00:05.001Z'));
-                await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+                await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
                 expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
             } finally {
                 vi.useRealTimers();
@@ -391,11 +400,25 @@ describe('isAuthenticated', () => {
             mockResolveSessionUser.mockRejectedValue(new Error('connection refused'));
             const { getSessionUser } = await import('../auth');
 
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
-            await getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
 
             expect(mockResolveSessionUser).toHaveBeenCalledTimes(2);
             errorSpy.mockRestore();
+        });
+
+        it('never caches a malformed cookie, so junk cannot evict the real session', async () => {
+            mockResolveSessionUser.mockResolvedValue(SESSION_USER);
+            const { getSessionUser } = await import('../auth');
+
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            for (let i = 0; i < 2_000; i += 1) {
+                await getSessionUser(makeRequest({ cookie: `trader_session=junk-${i}` }));
+            }
+
+            // The operator's entry survives the flood: still one lookup, served from cache.
+            await getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` }));
+            expect(mockResolveSessionUser).toHaveBeenCalledTimes(1);
         });
 
         it('evicts rather than growing without bound under a flood of distinct cookies', async () => {
@@ -403,12 +426,12 @@ describe('isAuthenticated', () => {
             const { getSessionUser } = await import('../auth');
 
             for (let i = 0; i < 1_100; i += 1) {
-                await getSessionUser(makeRequest({ cookie: `trader_session=junk-${i}` }));
+                await getSessionUser(makeRequest({ cookie: `trader_session=${junkUuid(i)}` }));
             }
             const afterFlood = mockResolveSessionUser.mock.calls.length;
 
             // The earliest keys must have been evicted, so re-asking hits the database again.
-            await getSessionUser(makeRequest({ cookie: 'trader_session=junk-0' }));
+            await getSessionUser(makeRequest({ cookie: `trader_session=${junkUuid(0)}` }));
             expect(mockResolveSessionUser.mock.calls.length).toBe(afterFlood + 1);
         });
     });
@@ -427,7 +450,7 @@ describe('isAuthenticated', () => {
 
             const { getSessionUser } = await import('../auth');
             await expect(
-                getSessionUser(makeRequest({ cookie: 'trader_session=abc-123' })),
+                getSessionUser(makeRequest({ cookie: `trader_session=${SESSION_ID}` })),
             ).resolves.toEqual(SESSION_USER);
         });
 

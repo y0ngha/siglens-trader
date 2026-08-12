@@ -1,6 +1,6 @@
 import * as jose from 'jose';
 import { readSessionCookie } from '../../lib/auth/cookie.js';
-import { resolveSessionUser, type SessionUser } from '../../lib/auth/session.js';
+import { isSessionId, resolveSessionUser, type SessionUser } from '../../lib/auth/session.js';
 import { getDb } from './db.js';
 
 // Cache the JWKS set at module scope so it is not recreated per request.
@@ -90,13 +90,20 @@ export async function getSessionUser(req: Request): Promise<SessionUser | null> 
     const sessionId = readSessionCookie(req);
     if (!sessionId) return null;
 
+    // Reject the shape before the cache, not just before the query. A malformed value
+    // can never match a session, so caching it buys nothing — and an unauthenticated
+    // client streaming distinct junk cookies would otherwise fill the map and evict the
+    // operator's real entry.
+    if (!isSessionId(sessionId)) return null;
+
     const now = Date.now();
     const cached = sessionCache.get(sessionId);
     if (cached && cached.expiresAt > now) return cached.user;
 
     try {
         const user = await resolveSessionUser(getDb(), sessionId);
-        // Misses are cached too, so a flood of junk cookies cannot hammer the database.
+        // Misses are cached too: a well-formed uuid that matches no row would otherwise
+        // hit the database on every request.
         if (sessionCache.size >= SESSION_CACHE_MAX_ENTRIES) pruneSessionCache(now);
         sessionCache.set(sessionId, { user, expiresAt: now + SESSION_CACHE_TTL_MS });
         return user;

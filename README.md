@@ -118,7 +118,7 @@ priority-weighted average (합 26):
 - **인증**: 자체 로그인 (bcrypt + 세션 쿠키, 회원가입 없음) — Cloudflare Access JWT도 병행 지원
 - **알림**: Resend (Email)
 - **락**: Upstash Redis (distributed lock, SETNX + Lua release)
-- **테스트**: Vitest + MSW (Mock Service Worker), 1528개 테스트
+- **테스트**: Vitest + MSW (Mock Service Worker), 1532개 테스트
 - **패키지 매니저**: Yarn 4
 
 ## 필요한 외부 서비스

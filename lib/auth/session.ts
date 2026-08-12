@@ -16,6 +16,25 @@ const MS_PER_SECOND = 1000;
  */
 const TIMING_EQUALIZER_HASH = '$2b$12$Bw/GsDWpqVtN3EwiTfWBPO3twbX4.osEHk5GjklDyghPp.TZY.Y5e';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Session ids are uuids, and `sessions.id` is a uuid column — anything else makes
+ * Postgres raise `22P02 invalid input syntax for type uuid` rather than return no rows.
+ *
+ * Callers treat that as a lookup failure and fail closed, so the outcome was already
+ * correct, but every request carrying a junk cookie cost a database round trip and a
+ * full stack trace in CloudWatch. Unauthenticated clients control that value, so
+ * rejecting the shape up front removes the whole class of noise.
+ *
+ * Exported so `api/_lib/auth.ts` can reject the same values before they reach its
+ * session cache; the rule itself stays here so the dependency keeps pointing
+ * `api/ → lib/auth/`.
+ */
+export function isSessionId(value: string): boolean {
+    return UUID_PATTERN.test(value);
+}
+
 /** The caller identity attached to an authenticated request. */
 export interface SessionUser {
     id: string;
@@ -54,6 +73,8 @@ export async function resolveSessionUser(
     sessionId: string,
     now = new Date(),
 ): Promise<SessionUser | null> {
+    if (!isSessionId(sessionId)) return null;
+
     const [row] = await db
         .select({
             expiresAt: schema.sessions.expiresAt,
@@ -76,8 +97,9 @@ export async function resolveSessionUser(
     return { id: row.id, email: row.email, name: row.name };
 }
 
-/** Delete a session (logout). Silently no-ops on an unknown id. */
+/** Delete a session (logout). Silently no-ops on an unknown or malformed id. */
 export async function destroySession(db: Db, sessionId: string): Promise<void> {
+    if (!isSessionId(sessionId)) return;
     await db.delete(schema.sessions).where(eq(schema.sessions.id, sessionId));
 }
 
