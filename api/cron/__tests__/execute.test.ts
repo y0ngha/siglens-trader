@@ -1967,10 +1967,8 @@ describe('execute cron handler', () => {
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
-            // avgPrice kept near the shared $150 analysis snapshot: a 3x+ gap would be
-            // rejected by the unrealized-PnL sanity band and mail a feed warning.
             mockGetOpenPositions.mockResolvedValue([
-                { symbol: 'MSFT', quantity: 10, avgPrice: '160', status: 'open' },
+                { symbol: 'MSFT', quantity: 10, avgPrice: '500', status: 'open' },
             ]);
         });
 
@@ -7120,31 +7118,14 @@ describe('execute cron handler', () => {
         // NEW-MEDIUM-1 — one bad tick must not liquidate the book
         // -------------------------------------------------------------------
 
-        it('NEW-MEDIUM-1: an absurd tick is excluded from the unrealized loss and alerts', async () => {
-            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+        // heldPosition: 10 shares @ avg $100. breakerSetup's technical snapshot is $95, so
+        // the unrealized loss is -$50 on the snapshot and -$100 on a $90 live quote — a
+        // $75 limit separates "live was used" from "snapshot was used".
+        it('NEW-MEDIUM-1: a live quote close to the snapshot is the one that counts', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 75 });
             mockGetEnabledWatchlist.mockResolvedValue([]);
             mockGetTodayRealizedPnl.mockResolvedValue(0);
-            // avg $100 × 10 shares; a $20 tick would read as -$800 unrealized → breaker.
-            mockFetchLivePrice.mockResolvedValue(20);
-
-            const res = await handler(makeRequest(true));
-            const body = await res.json();
-
-            expect(body.entriesBlockedBy).toBeUndefined();
-            expect(mockSendErrorEmail).toHaveBeenCalledWith(
-                '이상 시세 무시: AAPL',
-                expect.stringContaining('비정상 범위'),
-
-                'test@example.com',
-            );
-        });
-
-        it('NEW-MEDIUM-1: a plausible drop still trips the breaker', async () => {
-            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
-            mockGetEnabledWatchlist.mockResolvedValue([]);
-            mockGetTodayRealizedPnl.mockResolvedValue(0);
-            // avg $100 × 10 shares at $40 → -$600 unrealized, inside the 1/3–3x band.
-            mockFetchLivePrice.mockResolvedValue(40);
+            mockFetchLivePrice.mockResolvedValue(90); // 5% off the $95 snapshot
             mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
 
             const res = await handler(makeRequest(true));
@@ -7152,7 +7133,72 @@ describe('execute cron handler', () => {
 
             expect(body.entriesBlockedBy).toBe('daily_loss_limit');
             expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
-                '이상 시세 무시: AAPL',
+                '시세 출처 불일치: AAPL',
+                expect.anything(),
+                expect.anything(),
+            );
+        });
+
+        it('NEW-MEDIUM-1: a diverging tick falls back to the snapshot instead of being dropped', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 75 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            mockFetchLivePrice.mockResolvedValue(20); // 79% off the $95 snapshot
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // -$50 on the snapshot price: counted (not excluded), and under the $75 limit.
+            expect(body.entriesBlockedBy).toBeUndefined();
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                '시세 출처 불일치: AAPL',
+                expect.stringContaining('스냅샷 가격을 사용'),
+
+                'test@example.com',
+            );
+        });
+
+        it('NEW-MEDIUM-1: with no snapshot to cross-check, the live quote is trusted', async () => {
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            mockGetLatestAnalysisResult.mockResolvedValue(null); // no snapshot anywhere
+            mockFetchLivePrice.mockResolvedValue(20); // -$800 unrealized
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                '시세 출처 불일치: AAPL',
+                expect.anything(),
+                expect.anything(),
+            );
+        });
+
+        it('NEW-MEDIUM-1 regression: a position down 70% from entry still counts toward the limit', async () => {
+            // The entry-relative band used to drop this every run, understating the loss and
+            // delaying the breaker — the exact false-negative this rewrite removes.
+            breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetTodayRealizedPnl.mockResolvedValue(0);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 30 } } }
+                            : null,
+                    ),
+            );
+            mockFetchLivePrice.mockResolvedValue(30); // both sources agree at -70%
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            // (30 - 100) * 10 = -$700 → over the $500 limit.
+            expect(body.entriesBlockedBy).toBe('daily_loss_limit');
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                '시세 출처 불일치: AAPL',
                 expect.anything(),
                 expect.anything(),
             );

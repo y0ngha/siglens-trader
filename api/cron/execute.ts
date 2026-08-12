@@ -132,6 +132,19 @@ function scoreDecisionDetail(
  */
 type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline' | 'risk_halt';
 
+/**
+ * How far the live quote may sit from the technical snapshot before the snapshot is used
+ * instead for the daily-loss breaker.
+ *
+ * Two same-session sources normally differ by a fraction of a percent — the snapshot is at
+ * most `getTechnicalMaxAgeMs` old (45min–2h). 25% still clears a violent but real gap without
+ * crying wolf, while every classic feed corruption (decimal shift, cents/dollars mixup,
+ * another listing's price) is an order of magnitude outside it. Deliberately compared against
+ * the snapshot and not `avgPrice`: the entry price can be weeks old, so a position genuinely
+ * down 70% would fail an entry-relative band on every run and be silently under-counted.
+ */
+const MAX_PRICE_SOURCE_DIVERGENCE = 0.25;
+
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
     'technical',
@@ -355,30 +368,46 @@ async function handler(req: Request): Promise<Response> {
                             pos.symbol,
                             'technical',
                         );
-                        const curPrice = livePreCheck ?? safeAnalysisPrice(techForPos?.result);
+                        // Two independent prices for the same moment: the FMP quote and the
+                        // technical snapshot. `fetchLivePrice` only checks "finite positive",
+                        // so a corrupt quote would otherwise trip the loss limit — which now
+                        // forces a full liquidation of every position.
+                        const snapshotPrice = safeAnalysisPrice(techForPos?.result);
                         const avgP = safeNumber(Number(pos.avgPrice), 0);
-                        // Sanity band on the price that feeds the breaker. `fetchLivePrice`
-                        // only checks "finite positive", so one bad quote can trip the loss
-                        // limit, which now forces a full liquidation of every position — a
-                        // wrong tick would liquidate the book. A *failed* fetch is safe
-                        // (contributes 0); a wrong positive value is not.
-                        //
-                        // 1/3–3× of the average entry price: wide enough that a real -67%
-                        // day still trips the breaker on the next tick (a bad tick that
-                        // repeats is indistinguishable from a real move, and being one tick
-                        // late beats liquidating on a typo), narrow enough to catch the
-                        // classic feed failures — a stale price from another listing, a
-                        // decimal shift, a cents/dollars unit mixup.
-                        const sane =
-                            curPrice > 0 &&
-                            (avgP <= 0 || (curPrice >= avgP / 3 && curPrice <= avgP * 3));
-                        if (curPrice > 0 && !sane) {
+                        const liveOk = livePreCheck != null && livePreCheck > 0;
+                        const diverged =
+                            liveOk &&
+                            snapshotPrice > 0 &&
+                            Math.abs(livePreCheck - snapshotPrice) / snapshotPrice >
+                                MAX_PRICE_SOURCE_DIVERGENCE;
+
+                        // Substitute, never exclude. Dropping a position from the sum always
+                        // understates the loss, which delays the very breaker this guard
+                        // protects — and the entry price is the wrong yardstick anyway: it can
+                        // be weeks old, so a position legitimately down 70% looked like a bad
+                        // tick and was dropped on every single run.
+                        let curPrice: number;
+                        if (diverged) {
+                            curPrice = snapshotPrice;
+                        } else if (liveOk) {
+                            curPrice = livePreCheck;
+                        } else if (snapshotPrice > 0) {
+                            curPrice = snapshotPrice;
+                        } else {
+                            // Neither source has a price. avgPrice yields unrealized 0, which
+                            // is the neutral "unknown" value, not a claim of "no loss" — the
+                            // same contribution the previous no-price behavior produced, but
+                            // reached explicitly.
+                            curPrice = avgP;
+                        }
+
+                        if (diverged) {
                             await notifyError(
-                                `이상 시세 무시: ${pos.symbol}`,
-                                `${pos.symbol} 현재가 $${curPrice}가 평단 $${avgP} 대비 비정상 범위(1/3~3배 밖)라 일일 손실 한도 계산에서 제외했습니다. 시세 피드 확인이 필요합니다.`,
+                                `시세 출처 불일치: ${pos.symbol}`,
+                                `${pos.symbol} 실시간 호가 $${livePreCheck}가 기술분석 스냅샷 $${snapshotPrice}와 ${Math.round(MAX_PRICE_SOURCE_DIVERGENCE * 100)}% 넘게 어긋나, 일일 손실 한도 계산에는 스냅샷 가격을 사용했습니다. 시세 피드 확인이 필요합니다.`,
                             );
                         }
-                        if (sane) {
+                        if (curPrice > 0) {
                             const dir = pos.side === 'short' ? avgP - curPrice : curPrice - avgP;
                             unrealizedPnl += dir * pos.quantity;
                         }

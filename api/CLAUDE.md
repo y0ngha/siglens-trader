@@ -223,11 +223,34 @@ Three consequences that are easy to get wrong, and were:
   `skipped_no_price` + `detail.forcedLiquidationBlocked` **and an email** saying the forced
   liquidation could not be carried out.
 
-The price feeding the unrealized-PnL breaker is sanity-banded to **1/3–3× the position's
-average entry price**; anything outside is dropped from the sum and mailed as
-`이상 시세 무시`. `fetchLivePrice` only checks "finite positive", and a wrong tick now
-liquidates the whole book rather than merely halting trading. A *failed* fetch is safe
-(contributes 0); a wrong positive value is not.
+A tripped loss breaker therefore liquidates a stale/priceless position whole, while a position
+with fresh analysis evaluating to `hold` is left alone. That is one rule, not an asymmetry:
+**평가 가능하면 평가를 따르고, 불가능하면 나간다.**
+
+- The daily loss limit means "take no more risk today", not "flatten the book" — liquidating
+  healthy positions on a trip would realize losses for nothing.
+- With fresh analysis the evaluation is trusted; what changes is that a triggered exit is
+  upsized to the full position. There is a basis for judgment, so it is used.
+- With stale analysis or no price there is **no evaluation possible at all**. Holding a
+  position you cannot evaluate while already past the risk limit is the more dangerous of the
+  two, so it is closed out.
+
+The price feeding the unrealized-PnL breaker is **cross-checked against the technical
+snapshot** (`safeAnalysisPrice`), an independent source for the same moment: if the live FMP
+quote diverges from it by more than **25%**, the snapshot price is summed instead and the run
+mails `시세 출처 불일치`. `fetchLivePrice` only checks "finite positive", and a wrong tick now
+liquidates the whole book rather than merely halting trading.
+
+Two properties matter more than the threshold:
+
+- **Substitute, never exclude.** Dropping a suspicious position from the sum always
+  *understates* the loss and so delays the breaker — trading a wrong liquidation for a blunted
+  risk control. Priority is live → snapshot → `avgPrice` (the last yields unrealized 0, the
+  neutral "unknown", not a claim of "no loss").
+- **The yardstick is the snapshot, not `avgPrice`.** The entry price can be weeks old, so an
+  entry-relative band flags a position genuinely down 70% on *every* run and silently
+  under-counts it. Two same-session sources normally differ by a fraction of a percent, which
+  is why 25% is both safe and far tighter than an entry-relative band could ever be.
 
 The kill switch is the one exception and still stops everything: it is not a risk breaker
 but the operator's explicit "touch nothing" (e.g. they are about to trade the account by
