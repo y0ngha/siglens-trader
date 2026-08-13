@@ -1,3 +1,5 @@
+import { scoreConfluence } from './confluence.js';
+import type { ConfluenceSnapshot } from './confluence.js';
 import type { ScoreWeights, SignalDirection, SignalScore } from './types.js';
 
 // Pseudo-count for options score shrinkage — pulls small signal samples toward 50.
@@ -15,6 +17,11 @@ export interface ActionRecommendation {
 }
 
 export interface AnalysisInputs {
+    /**
+     * 지표 컨플루언스 스냅샷 (LLM이 아니라 규칙이 만든 축).
+     * 봉을 못 받았거나 계산에 실패하면 `null`이고, 그때는 이 축이 투표하지 않는다.
+     */
+    confluence?: ConfluenceSnapshot | null;
     technical: {
         trend?: string;
         riskLevel?: string;
@@ -46,6 +53,7 @@ export function scoreSignals(
     sellThreshold: number,
 ): SignalScore {
     const components = {
+        confluence: scoreConfluence(inputs.confluence ?? null),
         technical: scoreTechnical(inputs.technical),
         news: scoreSentiment(inputs.news),
         options: scoreOptions(inputs.options),
@@ -64,14 +72,25 @@ export function scoreSignals(
     // when null would instead let a single component clear the threshold on its own).
     const congressWeight = inputs.congress ? weights.congress : 0;
 
+    // congress와 같은 조건부 투표. 봉 조회가 실패한 심볼에서 중립 50이 최상위 가중치로
+    // 투표하면 다른 축의 신호를 12/38만큼 50 쪽으로 끌어내려, FMP 장애가 곧 "아무것도
+    // 사거나 팔지 않음"이 된다. 데이터가 없으면 말을 하지 않는 쪽이 옳다.
+    const confluenceWeight = inputs.confluence ? weights.confluence : 0;
+
     const totalWeight =
-        weights.technical + weights.news + weights.options + weights.fundamental + congressWeight;
+        confluenceWeight +
+        weights.technical +
+        weights.news +
+        weights.options +
+        weights.fundamental +
+        congressWeight;
 
     if (totalWeight === 0) {
-        return { total: 50, components, signal: 'hold' as const };
+        return { total: 50, totalWithoutConfluence: 50, components, signal: 'hold' as const };
     }
 
     const weightedSum =
+        components.confluence * confluenceWeight +
         components.technical * weights.technical +
         components.news * weights.news +
         components.options * weights.options +
@@ -80,9 +99,50 @@ export function scoreSignals(
 
     const total = clamp(Math.round(weightedSum / totalWeight), 0, 100);
 
+    // 컨플루언스는 매수를 막을 수 있어도 매도를 막지 못한다.
+    //
+    // 축을 하나 더하면 분모가 커져 매수와 매도 양쪽 문턱이 대칭으로 올라간다. 매수가
+    // 어려워지는 건 이 축을 넣은 목적이지만(지표가 받쳐주지 않는 진입은 하지 않는다),
+    // 매도가 어려워지는 건 정반대다. 놓친 매수는 기회비용이고 놓친 매도는 실현 손실이다 —
+    // AI 사이징 게이트가 진입 fail-closed / 청산 fail-open으로 갈라놓은 그 비대칭이
+    // 점수 단계에도 그대로 적용돼야 한다.
+    //
+    // 구체적으로 위험한 조합: 뉴스·펀더멘털이 무너져 기존 축 합성이 매도인데 하락이 아직
+    // 가격에 반영되지 않아 단기 지표만 우호적인 종목. 이때 technicalTrend는 아직 bearish가
+    // 아니라 evaluateExistingPosition도 잡지 못하고, fixed_exit_enabled는 기본 off다.
+    // 신호 매도가 유일한 출구인데 컨플루언스가 그걸 hold로 덮으면 청산 경로가 통째로 사라진다.
+    //
+    // 그래서 컨플루언스를 뺀 점수가 매도였다면 매도를 유지한다. 반대로 컨플루언스가
+    // 하락 트리거로 점수를 끌어내려 새로 매도가 서는 것은 그대로 허용한다 — 청산을
+    // 쉽게 만드는 방향은 막을 이유가 없다.
     const signal = determineSignal(total, buyThreshold, sellThreshold);
 
-    return { total, components, signal };
+    // 컨플루언스를 뺀 점수는 감사에도 남는다(`SignalScore.totalWithoutConfluence`). 보정이
+    // 걸린 행은 `total`이 매도 임계값을 크게 웃도는데 `signal='sell'`이라, 이 값이 없으면
+    // 나중에 그 행을 보는 사람이 정상 보정과 버그를 구분할 수 없다.
+    const totalWithoutConfluence =
+        confluenceWeight > 0 && totalWeight > confluenceWeight
+            ? clamp(
+                  Math.round(
+                      (weightedSum - components.confluence * confluenceWeight) /
+                          (totalWeight - confluenceWeight),
+                  ),
+                  0,
+                  100,
+              )
+            : total;
+    const signalWithoutConfluence = determineSignal(
+        totalWithoutConfluence,
+        buyThreshold,
+        sellThreshold,
+    );
+
+    return {
+        total,
+        totalWithoutConfluence,
+        components,
+        signal: signalWithoutConfluence === 'sell' ? 'sell' : signal,
+    };
 }
 
 function scoreTechnical(

@@ -29,6 +29,13 @@ export interface EvaluatePositionParams {
     technicalTrend?: string;
     /** if news turned bearish -> tighten stops */
     newsSentiment?: string;
+    /**
+     * 하락 지표 컨플루언스가 성립했는가 (`isConfluenceExit`의 결과).
+     *
+     * 백테스트 진입 룰이 온전히 뒤집힌 상태 — 약세 시그널 3종 이상 + 신규 1종 이상 +
+     * 종가가 MA50 아래. 진입에 쓴 근거가 사라졌다는 뜻이므로 청산 사유가 된다.
+     */
+    confluenceExit?: boolean;
 }
 
 interface PositionSizeParams {
@@ -75,6 +82,7 @@ export function shouldTakeProfit(
  * 1. Fixed stop loss (only when fixedExitEnabled)
  * 2. Dynamic stop loss (support level break) — always active
  * 3. Technical trend reversal (bearish) — always active
+ * 3.5. 하락 지표 컨플루언스 — always active
  * 4. Fixed take profit (only when fixedExitEnabled)
  * 5. Dynamic take profit (resistance / target approach) — always active
  * 6. News-driven preemptive exit (bearish news + profit zone) — always active
@@ -125,6 +133,18 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             return { action: 'take_profit', reason: '기술적 추세 반전 — 수익 구간 익절' };
         }
         return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
+    }
+
+    // 3.5. 하락 지표 컨플루언스: 진입 근거였던 룰이 반대 방향으로 성립했다.
+    // 추세 반전(3번) 뒤에 두는 이유 — 그쪽이 이미 잡는 케이스를 중복 처리하지 않는다.
+    // `hard`를 세우지 않는 이유 — 이건 지표 판단이지 절대 리스크 한계가 아니다.
+    // 고정 손절선과 손상 데이터만 게이트를 건너뛴다.
+    if (params.confluenceExit) {
+        const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+        if (gainPercent >= 0) {
+            return { action: 'take_profit', reason: '하락 지표 컨플루언스 — 수익 구간 익절' };
+        }
+        return { action: 'stop_loss', reason: '하락 지표 컨플루언스 (약세 3종 + MA50 이탈)' };
     }
 
     // 4. Fixed take profit check (only when enabled)

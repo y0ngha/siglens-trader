@@ -6,7 +6,8 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{technical:8, news:6, options:5, fundamental:4}`, DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `types.ts` | Type definitions (SignalScore — including `totalWithoutConfluence`, the confluence-excluded weighted average that is the real basis of a corrected `sell` and equals `total` whenever confluence doesn't vote; ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:3}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `confluence.ts` | `ConfluenceSnapshot` type + `scoreConfluence` / `isConfluenceExit`. Scores the backtest's rule (3+ bullish types, ≥1 fresh, close > SMA(50)) from a snapshot the analysis layer computed. Constants: `CONFLUENCE_MIN` 3, `CONFLUENCE_SPAN` 30, `CONFLUENCE_SHRINK` 1, `CONFLUENCE_TRIGGER_SCORE` 92, `CONFLUENCE_EXIT_SCORE` 8. |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |
 | `trade-plan.ts` | Fraction (0~1) → order quantity for split entries/exits. `clampFraction` (built on `safeNumber`) normalizes any value to 0~1 without ever producing NaN, and also clamps its own `fallback`. `planEntry` sanitizes every budget input with `safeNumber` before the min/max chain (a NaN budget must never silently disable the per-symbol/total-exposure circuit breaker), clamps a tranche against symbol/total/cash budgets (with a high-price 1-share correction that also realigns `trancheBudget`), and refuses to return a non-`Number.isSafeInteger` quantity. `planExit` turns a liquidation fraction into a share count, `hard: true` bypassing it for absolute risk exits. `fallbackEntryFraction` is a deterministic 3-rung sizing ladder, exported and tested but not currently wired into any caller — see its docstring. |
@@ -44,11 +45,34 @@ shape core never emits.
 
 ## Signal Scoring
 
-Priority-weighted average of 4 analysis axes (weights sum to 23):
+Priority-weighted average of 6 analysis axes (weights sum to 38 on the default `1Hour` profile):
+- Confluence (12): the only rule-based axis — no LLM anywhere in it. Continuous 20..80 from the
+  shrunk bullish/bearish type ratio (same pseudo-count trick as options), snapping to ≥92 when the
+  backtest entry rule holds exactly and ≤8 when its bearish inverse does. 92 is deliberately below
+  what a lone axis needs to cross the buy threshold: trigger + everything else neutral = 63 → hold.
 - Technical (8): strength-weighted aggregate of `indicatorResults` signals (continuous, 50 ± 35) + riskLevel (±10) + actionRecommendation.entryRecommendation (enter +20 / wait −15 / avoid −25). Falls back to the single top-level `trend` when no indicator signals exist.
 - News (6): overallSentiment (bullish 80 / neutral 50 / bearish 20)
 - Options (5): directional (bullish/bearish) signal ratio with shrinkage (pseudo-count k=1) so a lone signal doesn't snap to 0/100; neutral/volatility kinds ignored
 - Fundamental (4): mean of `categoryAssessments` sentiments (continuous, 50 ± 30), falling back to overallSentiment when no categories exist
+- Congress (3): `overallSentiment` through the same `scoreSentiment` as news — the shape is identical
+
+**Confluence can block a buy but never a sell.** Adding a sixth axis widens the denominator, which
+raises the buy *and* sell thresholds symmetrically. The first half is the point; the second half is
+a defect — a missed buy is opportunity cost, a missed sell is a realized loss, the same asymmetry
+the AI sizing gate encodes as entry fail-closed / exit fail-open. Concretely: news and fundamentals
+collapse to a 25/100 composite (sell) while the drop is not in the price yet, so short-horizon
+indicators still read favorably (confluence 65) → 38.7 → hold. `evaluateExistingPosition` does not
+catch it (`technicalTrend` is not bearish yet), `fixed_exit_enabled` is off by default, and
+`confluenceExit` is false, so the signal sell was the only exit and confluence just closed it. So
+`scoreSignals` re-scores without confluence and keeps `sell` when that verdict was `sell`.
+Confluence dragging a score *down* into a new sell is still allowed — making exits easier needs no
+guard. See design §2.4-a.
+
+**Confluence and congress are conditional voters**: when the input is `null` their weight drops to
+0 and leaves the denominator entirely. Most symbols have no congressional disclosure, and a symbol
+whose bars FMP could not serve has no snapshot — in both cases a constant neutral 50 carrying real
+weight would drag every other axis toward 50 and make the system *less* decisive for both entries
+and exits. The other four always produce a number, so they always vote.
 
 ## Position Re-evaluation Priority
 
@@ -56,18 +80,22 @@ When evaluating an existing position, checks fire in this order:
 1. Fixed stop loss % breach → stop_loss (**only when `fixedExitEnabled` is true**) — `hard: true`
 2. Price below key support level → stop_loss (always active)
 3. Technical trend reversal (bearish) → take_profit if in profit, stop_loss if in loss (always active)
-4. Fixed take profit % reached → take_profit (**only when `fixedExitEnabled` is true**)
-5. Approaching resistance (98%) or target price (95%) → take_profit (always active)
-6. Bearish news + non-bullish trend + profit zone → take_profit (always active)
-7. None of the above → hold
+4. Bearish indicator confluence (`confluenceExit`: 3+ bearish types, ≥1 fresh, close < MA50) →
+   take_profit if in profit, stop_loss if in loss (always active). **`hard` is deliberately unset** —
+   this is an indicator judgment, not an absolute risk limit, so the sizing gate decides how much to
+   cut. It sits *behind* the trend reversal so it never re-handles a case step 3 already caught.
+5. Fixed take profit % reached → take_profit (**only when `fixedExitEnabled` is true**)
+6. Approaching resistance (98%) or target price (95%) → take_profit (always active)
+7. Bearish news + non-bullish trend + profit zone → take_profit (always active)
+8. None of the above → hold
 
 The two invalid-price guards ahead of step 1 (bad `avgPrice` / `currentPrice`) also return
 `hard: true`. `hard` marks exits an upstream AI sizing gate (see
 `docs/specs/2026-08-12-ai-trade-gate-design.md`) must execute in full rather than partially —
 corrupted data and an operator-set fixed stop-loss are absolute risk controls, not calls for
 the gate to soften. Every other branch (support break, trend reversal, fixed/dynamic take
-profit, bearish news) is an analysis-derived opinion and leaves `hard` unset, letting the gate
-size the exit.
+profit, bearish news, bearish confluence) is an analysis-derived opinion and leaves `hard` unset,
+letting the gate size the exit.
 
 ## Trade Decision Logic
 

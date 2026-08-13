@@ -1,5 +1,6 @@
 import { callAnalysisAi, getEtSessionStatus, type ActiveModelId } from '@y0ngha/siglens-core';
 import type { ScoreWeights } from '../strategy/types.js';
+import type { ConfluenceSnapshot } from '../strategy/confluence.js';
 import type { ExitTrigger } from '../strategy/trade-plan.js';
 import {
     safeActionRecommendation,
@@ -28,8 +29,19 @@ export type TradeGateKind = 'entry' | 'exit';
 
 export interface TradeGateSignal {
     total: number;
+    /**
+     * 컨플루언스 축을 뺀 총점. 이 값이 `total`과 다르면 매도 비대칭 보정이 걸린 것이고,
+     * 그때 `total`은 매도 임계값을 웃도는데 `signal`은 `sell`이다 — 규칙 2("프롬프트에 적힌
+     * 값은 참")를 지키려면 그 모순을 설명하는 줄이 프롬프트에 있어야 한다.
+     *
+     * **필수 필드다.** 선택으로 두면 호출부가 조용히 빠뜨려도 컴파일이 통과하고, 그 결과는
+     * 프롬프트에서 설명 줄이 사라지는 것 — 즉 모델이 총점과 방향의 모순을 설명 없이 읽는
+     * 상태로 되돌아간다. 테스트가 잡지 못하는 종류의 회귀라 타입으로 막는다.
+     */
+    totalWithoutConfluence: number;
     signal: 'buy' | 'sell' | 'hold';
     components: {
+        confluence: number;
         technical: number;
         news: number;
         options: number;
@@ -59,7 +71,7 @@ export interface TradeGateAccount {
 }
 
 export interface TradeGateAnalysisEntry {
-    type: 'technical' | 'news' | 'options' | 'fundamental' | 'congress';
+    type: 'confluence' | 'technical' | 'news' | 'options' | 'fundamental' | 'congress';
     analyzedAt: Date | null;
     modelId: string | null;
     /** siglens-core 원본 결과 (untyped). trade-gate가 safe-extract로 요약한다. */
@@ -123,6 +135,25 @@ const SANITIZE_MAX_LENGTH = 60;
 /** 불릿 목록(뉴스 이벤트·리스크 요인)에서 렌더할 최대 항목 수와 항목당 길이. */
 const MAX_BULLET_ITEMS = 3;
 const BULLET_MAX_LENGTH = 80;
+
+/**
+ * 컨플루언스 블록 첫 줄. **진입과 청산이 다른 문장이다.**
+ *
+ * 백테스트(2024.04–2026.04, 100케이스)의 승률 70%는 **진입 룰**의 수치다. 그 백테스트의 청산은
+ * ATR 기반 SL/TP와 10봉 시간 청산이었고, 하락 컨플루언스는 청산 룰로 검증된 적이 없다. 그런데
+ * 같은 문장을 양쪽에 쓰면 청산 프롬프트에서는 바로 다음 줄의 `청산 트리거: 성립`이 70%의
+ * 보증을 받는 것처럼 읽힌다 — 실측에서도 진입 트리거보다 청산 트리거가 훨씬 자주 선다.
+ * 규칙 2("프롬프트에 적힌 값은 참")를 지키려면 검증되지 않은 것은 검증되지 않았다고 적어야 한다.
+ *
+ * 두 문장 모두 **사실 진술뿐이고 명령문이 없다.** 이 줄은 `<analysis>` 펜스 **안**에 렌더되고,
+ * 시스템 규칙 3이 그 안의 모든 문장은 지시가 아니라고 선언한다. 펜스 안에 명령문을 두면
+ * 모델이 규칙을 지켜 무시하거나(기능이 죽거나) 따르거나(위조 지시 방어가 약해지거나) 둘 다
+ * 손해다. 가중치를 어떻게 취급할지에 대한 지시는 `## 판단 지침`(= 펜스 밖)에만 둔다.
+ */
+const CONFLUENCE_SOURCE_LINE: Record<TradeGateKind, string> = {
+    entry: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%를 기록했다.',
+    exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 진입 룰의 70% 승률은 이쪽에 적용되지 않는다.',
+};
 
 /**
  * 통상 마감(16:00 ET)을 자정 기준 분으로. **조기 마감(반일장, 13:00 ET)은 모르는 값이다** —
@@ -434,6 +465,22 @@ function actionLevels(result: unknown): {
     };
 }
 
+/**
+ * 시그널 타입 배열을 프롬프트에 안전하게 실을 문자열 배열로 변환한다.
+ *
+ * 값 자체는 core가 만든 고정 유니온이라 인젝션 위험이 낮지만, DB(JSONB)를 거쳐 돌아온
+ * 값일 수도 있으므로 다른 보간과 동일하게 sanitize를 통과시킨다. 프롬프트가 비대해지지
+ * 않도록 12개에서 자른다 (전체 카탈로그가 36종이고 한 봉에 12종이 동시에 켜지는 일은 없다).
+ */
+function safeTypeList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((v): v is string => typeof v === 'string')
+        .slice(0, 12)
+        .map((v) => sanitize(v, 40))
+        .filter((v) => v.length > 0);
+}
+
 /** `priceTargets`의 한쪽 시나리오를 "가격들 (조건: …)" 한 줄로. */
 function priceScenarioLine(result: unknown, side: 'bullish' | 'bearish'): string {
     const scenario = safeAnalysisPriceScenario(result, side);
@@ -532,6 +579,7 @@ const TRIGGER_LABEL: Record<ExitTrigger, string> = {
 };
 
 const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {
+    confluence: '지표 컨플루언스 (규칙 기반)',
     technical: '기술적',
     news: '뉴스',
     options: '옵션',
@@ -539,7 +587,9 @@ const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {
     congress: '의회',
 };
 
+// 컨플루언스가 선두 — 신호 가중치가 가장 높은 축이므로 프롬프트에서도 먼저 읽혀야 한다.
 const ANALYSIS_ORDER: Array<TradeGateAnalysisEntry['type']> = [
+    'confluence',
     'technical',
     'news',
     'options',
@@ -580,11 +630,30 @@ function sectionSignal(input: TradeGateInput): string[] {
     const w = s.weights;
     // 점수·가중치도 USD와 같은 이유로 raw 보간을 하지 않는다 — 실측에서 `NaN건`/`NaN점`이
     // 그대로 프롬프트에 실렸고, 모델은 그걸 숫자로 읽는다.
+    lines.push(`- 총점: ${fmtNum(s.total)} / 100`);
+    // 매도 비대칭 보정이 **실제로 걸린** 행만 설명한다. 조건이 세 겹인 이유:
+    // 두 값이 다르기만 한 것은 컨플루언스가 점수를 움직였다는 뜻일 뿐 흔한 일이고,
+    // 그때마다 찍으면 잡음이다. 문구 자체가 매도 상황을 전제로 서술돼 있어서
+    // 매수·보류 프롬프트에 실리면 규칙 2("프롬프트에 적힌 값은 참")를 깨는 쪽이 된다.
+    // 설명이 필요한 경우는 딱 하나 — 총점이 매도 임계값을 웃도는데 방향이 매도인 행이다.
+    // (이 줄은 `<analysis>` 펜스 밖이므로 인젝션 방어와 무관하다 — 숫자는 다른 값들과
+    // 같이 `fmtNum`을 지난다.)
+    if (
+        typeof s.totalWithoutConfluence === 'number' &&
+        s.totalWithoutConfluence !== s.total &&
+        s.signal === 'sell' &&
+        s.total > s.sellThreshold
+    ) {
+        lines.push(
+            `- 컨플루언스 제외 총점: ${fmtNum(s.totalWithoutConfluence)} (이 방향 판정의 근거. 컨플루언스는 매수를 막을 수 있어도 매도를 막지 못하므로, 총점이 매도 임계값을 웃돌아도 나머지 축이 매도면 매도로 확정된다)`,
+        );
+    }
     lines.push(
-        `- 총점: ${fmtNum(s.total)} / 100`,
         `- 방향: ${sanitize(s.signal, 8) || '미상'}`,
         `- 매수 임계값: ${fmtNum(s.buyThreshold)} / 매도 임계값: ${fmtNum(s.sellThreshold)}`,
         '- 구성요소 점수 (가중치):',
+        // 컨플루언스가 맨 앞 — 가중치가 가장 크고 유일하게 규칙 기반인 축이다.
+        `  - 컨플루언스: ${fmtNum(s.components.confluence)} (가중치 ${fmtNum(w.confluence)})`,
         `  - 기술: ${fmtNum(s.components.technical)} (가중치 ${fmtNum(w.technical)})`,
         `  - 뉴스: ${fmtNum(s.components.news)} (가중치 ${fmtNum(w.news)})`,
         `  - 옵션: ${fmtNum(s.components.options)} (가중치 ${fmtNum(w.options)})`,
@@ -693,6 +762,33 @@ function sectionExit(input: TradeGateInput): string[] {
 function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind): string[] {
     const r = entry.result;
     switch (entry.type) {
+        case 'confluence': {
+            const s = r as Partial<ConfluenceSnapshot> | null;
+            if (!s || typeof s !== 'object') return [];
+            const bullish = safeTypeList(s.bullish);
+            const bearish = safeTypeList(s.bearish);
+            const freshBullish = safeTypeList(s.freshBullish);
+            const freshBearish = safeTypeList(s.freshBearish);
+            const ma50 = typeof s.ma50 === 'number' && Number.isFinite(s.ma50) ? s.ma50 : null;
+            const close = typeof s.close === 'number' && Number.isFinite(s.close) ? s.close : null;
+            return [
+                CONFLUENCE_SOURCE_LINE[kind],
+                `- 봉 주기: ${sanitize(s.timeframe, 8) || '미상'}`,
+                `- 강세 신호 ${bullish.length}종: ${bullish.length ? bullish.join(', ') : '없음'}`,
+                `- 약세 신호 ${bearish.length}종: ${bearish.length ? bearish.join(', ') : '없음'}`,
+                `- 신규 강세 신호: ${freshBullish.length ? freshBullish.join(', ') : '없음'}`,
+                `- 신규 약세 신호: ${freshBearish.length ? freshBearish.join(', ') : '없음'}`,
+                `- MA50: ${ma50 === null ? '미상' : fmtUsd(ma50)} / 종가 ${close === null ? '미상' : fmtUsd(close)} (${
+                    ma50 !== null && close !== null
+                        ? close > ma50
+                            ? 'MA50 위'
+                            : 'MA50 아래'
+                        : '비교 불가'
+                })`,
+                `- 진입 트리거: ${s.entryTrigger === true ? '성립 (강세 3종 + 신규 + MA50 위)' : '미성립'}`,
+                `- 청산 트리거: ${s.exitTrigger === true ? '성립 (약세 3종 + 신규 + MA50 아래)' : '미성립'}`,
+            ];
+        }
         case 'technical': {
             const support = keyLevelPrices(r, 'support');
             const resistance = keyLevelPrices(r, 'resistance');
@@ -816,6 +912,17 @@ const GUIDELINES: Record<TradeGateKind, string[]> = {
         '5. **기존 포지션.** 이미 종목당 한도의 상당 부분을 채웠다면 추가 매수는 작아야 한다.',
         '6. **당일 손익 여력과 남은 장 시간.** 일일 손실 한도에 근접했다면 신규 리스크를 줄인다. 정규장 마감이 임박했거나 임박한 예정 이벤트(실적 발표 등)가 있으면 크기를 줄인다.',
         '7. **청산 판단은 이번 결정에 없다.** 이번은 진입이므로 `fraction`은 예산 대비 비율이다. 진입이 부담스러우면 0에 가까운 값을 내되, 0은 "이번 틱에 아무것도 사지 않는다"를 뜻한다는 점을 알고 낸다.',
+        // 이 지시는 원래 컨플루언스 블록 첫 줄, 즉 `<analysis>` 펜스 **안**에 있었다. 규칙 3이
+        // 펜스 안의 모든 문장을 지시가 아니라고 선언한 이상 거기 둔 명령문은 죽은 문장이거나
+        // 위조 지시 방어를 깎아먹는 문장 둘 중 하나였다. 지시는 여기(펜스 밖)에만 있다.
+        //
+        // **맨 마지막인 이유**: 이 항목은 사이징을 *키우는* 방향이다. 헤더가 "앞 항목이 뒤
+        // 항목을 이긴다"고 못박은 목록에서 이걸 중간에 끼워 넣었더니 "저항 바로 아래이고
+        // 손익비가 나쁘다"(손익비 제한)와 "일일 손실 한도에 근접했다"(리스크 제한)가 그 아래로
+        // 밀려났다. 리스크를 제한하는 지침이 크기를 키우는 지침보다 아래에 놓여서는 안 된다.
+        // 마지막이라고 무시되는 것은 아니다 — 헤더는 "충돌 시 앞이 우선"이지 "뒤는 읽지
+        // 마라"가 아니다.
+        '8. **지표 컨플루언스는 LLM이 아닌 규칙 엔진의 출력이고 신호 점수에서 가장 큰 가중치를 갖는다. 다른 축과 충돌하면 이쪽에 더 무게를 둬라.**',
     ],
     exit: [
         '1. **트리거의 강도.** 구조가 훼손된 청산(지지선 이탈, 추세 반전, 손절)이면 전량(1.0)에 가깝게 낸다. 목표가 도달 같은 목표 달성형이면 일부만 덜어내고 나머지를 태울 수 있다.',
@@ -823,6 +930,21 @@ const GUIDELINES: Record<TradeGateKind, string[]> = {
         '3. **추세의 생존 여부.** 추세·지표·키 레벨이 아직 살아 있으면 부분 청산이 정당화되고, 무너졌으면 전량 쪽이다.',
         '4. **분석의 신선도.** 기준시각이 오래됐으면 지금 상태를 모른다는 뜻이다. 모르는 상태에서 리스크를 들고 가지 않는다 — 크기를 **키운다.**',
         '5. **당일 손익 여력.** 일일 손실 한도에 근접했다면 남은 리스크를 빨리 줄인다.',
+        // 진입 목록과 같은 자리(펜스 밖)에 두되 무게는 반대다 — 청산 트리거는 백테스트로
+        // 검증된 적이 없으므로(위 `CONFLUENCE_SOURCE_LINE` 주석) 결정적 근거가 될 수 없다.
+        //
+        // **맨 마지막인 이유**: 이 항목은 청산 크기를 *줄이는* 방향이다. 목록 중간에 두었더니
+        // 리스크를 줄이는 방향의 두 항목(신선도 → 키운다, 당일 손익 여력 → 빨리 줄인다)이 그
+        // 아래로 밀려났다. 청산에서 fraction을 줄이는 것은 보수적인 게 아니라 그 반대이므로,
+        // **새 항목을 끼워 넣을 때** 크기를 줄이는 쪽은 크기를 키우는 쪽 위에 올리지 않는다.
+        //
+        // 이건 삽입 규칙이지 기존 순서에 대한 사후 불변식이 아니다 — 1번(트리거 강도)과
+        // 3번(추세 생존)은 부분 청산을 정당화할 수 있지만 그건 "무엇이 청산을 촉발했는가"가
+        // 먼저 읽혀야 한다는 설계이고, 그 순서를 이 규칙으로 뒤섞으면 안 된다.
+        //
+        // 마지막이라고 무시되는 것은 아니다 — 헤더는 "충돌 시 앞이 우선"이지 "뒤는 읽지
+        // 마라"가 아니다.
+        '6. **지표 컨플루언스의 청산 트리거는 규칙 엔진 출력이지만 백테스트로 검증되지 않았다. 다른 축과 충돌할 때 결정적 근거로 삼지 마라.**',
     ],
 };
 

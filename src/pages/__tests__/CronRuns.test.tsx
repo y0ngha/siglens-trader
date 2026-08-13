@@ -435,10 +435,12 @@ describe('CronRunsPage', () => {
                     reason: '신호 50/100 — 대기',
                     detail: {
                         components: {
+                            confluence: 50,
                             technical: 51,
                             news: 52,
                             options: 53,
                             fundamental: 54,
+                            congress: 55,
                         },
                         signal: 'hold',
                         thresholds: { buy: 70, sell: 30 },
@@ -467,9 +469,51 @@ describe('CronRunsPage', () => {
         // structured component scores rendered (not raw JSON)
         const componentsLine = screen.getByText(/기술 51/);
         expect(componentsLine).toBeInTheDocument();
-        expect(componentsLine).toHaveTextContent('뉴스 52');
-        expect(componentsLine).toHaveTextContent('옵션 53');
-        expect(componentsLine).toHaveTextContent('펀더멘털 54');
+        // 컨플루언스가 가중치 최상위 축이라 맨 앞, 의회가 맨 뒤.
+        expect(componentsLine).toHaveTextContent(
+            '컨플루언스 50 · 기술 51 · 뉴스 52 · 옵션 53 · 펀더멘털 54 · 의회 55',
+        );
+    });
+
+    it('구 레코드(컨플루언스·의회 없음)도 나머지 축만으로 렌더된다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 204,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'hold',
+                    executed: false,
+                    score: '50.0',
+                    reason: '구 레코드',
+                    detail: {
+                        components: { technical: 51, news: 52, options: 53, fundamental: 54 },
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+
+        const componentsLine = screen.getByText(/기술 51/);
+        expect(componentsLine).toHaveTextContent('기술 51 · 뉴스 52 · 옵션 53 · 펀더멘털 54');
+        expect(componentsLine).not.toHaveTextContent('컨플루언스');
+        expect(componentsLine).not.toHaveTextContent('의회');
+        expect(document.querySelector('pre')).toBeNull();
     });
 
     it('renders a decision with null detail without crashing and shows no component line', async () => {

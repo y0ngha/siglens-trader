@@ -11,15 +11,19 @@ Calls siglens-core's direct `run*` functions (no polling loop) with per-symbol A
 | `run-news.ts` | Fetches news from FMP → `runNewsAnalysis` |
 | `run-options.ts` | Fetches options from Yahoo → `runOptionsAnalysis` |
 | `run-fundamental.ts` | Injects `FmpFundamentalClient` → `runFundamentalAnalysis` |
+| `run-congress.ts` | Congressional disclosure trend analysis (`runCongressTrendAnalysis`) |
+| `confluence.ts` | **No LLM.** FMP bars → siglens-core `calculateIndicators`/`detectSignals` → `ConfluenceSnapshot` (see below) |
 | `enrich-news-cards.ts` | Per-symbol news card enrichment via fixed worker pool (see below) |
+| `cadence.ts` | Per-type clock windows the analysis crons use to skip an already-covered symbol |
 | `timeframe.ts` | `analysis_timeframe` contract + per-timeframe technical staleness limits |
 | `source-time.ts` | `extractSourceAnalyzedAt` / `getAnalysisReferenceTime` — freshness-time helpers |
 | `trade-gate.ts` | AI position-sizing gate: prompt build → `callAnalysisAi` → JSON parse/validate (see below) |
 
 ## Dependencies
 
-- `@y0ngha/siglens-core` — submit/poll functions, types
-- `lib/data/` — FMP and Yahoo data adapters
+- `@y0ngha/siglens-core` — submit/poll functions, types, and the pure indicator engine
+  (`calculateIndicators` / `detectSignals`) `confluence.ts` runs locally
+- `lib/data/` — FMP and Yahoo data adapters, including `getMarketDataProvider()` (OHLC bars)
 - `lib/strategy/` — **types and pure helpers only** (`safe-extract.ts`, `ScoreWeights`, `ExitTrigger`).
   Allowed because `lib/strategy/` is pure with no I/O; the arrow never points back.
 
@@ -66,6 +70,33 @@ cumulative failures (throw **or** unexpected non-done resolve) hit `ENRICH_TOTAL
 audit finalization inside `maxDuration` (800s); if time runs out the aggregate per-symbol news
 analysis is skipped.
 
+## Indicator Confluence (`confluence.ts`)
+
+The one file here that never calls an LLM. It fetches OHLC bars for the configured
+`analysis_timeframe`, runs siglens-core's indicator engine locally, and returns the
+`ConfluenceSnapshot` that `lib/strategy/confluence.ts` scores. The rule it detects is siglens'
+backtest winner: **3+ distinct bullish signal types active, ≥1 of them newly lit since the
+previous bar, close > SMA(50)** — and its bearish inverse as an exit trigger.
+
+- **`MIN_BARS = 120`** (the check is `length <= MIN_BARS`, so 121 bars is the real minimum, matching
+  the backtest). Below it the `bollinger_squeeze_*` detectors read a 120-bar bandwidth percentile
+  and structurally stay silent, so a "3 bearish types" count taken on 80 bars is not a weaker
+  reading — it is a differently-defined one. Short history abstains rather than scoring.
+- **`detectSignals` runs twice** — once on `bars`, once on `bars.slice(0, -1)`. Core evaluates only
+  the tail of the array it is given, so there is no "state at bar N−1" to read out of a single call;
+  recomputing on the truncated array is the only way to get it. That diff is what "fresh" means, and
+  freshness is what separates a new signal from one that has been on for twenty bars.
+- **SMA(50) is computed here, not by core** — core does not export `calculateMA` from its root and
+  50 is not in its `MA_DEFAULT_PERIODS`. Fifty closes and a loop is cheaper than either fork.
+- **Every failure is `null`, never a throw** — bad bars, too few bars, a non-finite close, an FMP
+  outage. `scoreSignals` reads `null` as weight 0, so the axis abstains and the system scores
+  exactly as it did before this file existed. Abstention paths `console.warn`: the snapshot is
+  `null` in `cron_decisions.detail` either way, so without a log a symbol permanently short on bars
+  is indistinguishable from a dead vendor.
+- **The last bar may still be forming.** FMP's intraday tail is the in-progress candle, so a trigger
+  can flicker before the bar closes. Kept on purpose — dropping it costs a full timeframe of
+  latency. Fix by truncating the last bar (and firing a tick late) only if flicker becomes real.
+
 ## Trade Gate (`trade-gate.ts`)
 
 Called by the execute cron **after** every rule-engine guard has already decided *whether* to
@@ -92,6 +123,15 @@ separately so tests (and prompt audits) can assert on the exact strings.
   - *`## 판단 지침`* — two separate ordered lists. The header says earlier items win, so the
     entry list (budget/cash first, position sizing, average-in) must never appear on an exit;
     the exit list starts at trigger strength and contains no budget, cash, or average-in item.
+- **The guideline order is a priority contract — inserting into the middle demotes something.**
+  Both lists put the confluence item **last** (entry #8, exit #6) for that reason. Its first draft
+  sat at #4 in both, and both demotions went the wrong way: on exit, an item that *shrinks* the
+  fraction pushed the two risk-reducing items (`분석의 신선도` → enlarge, `당일 손익 여력` → cut
+  fast) below it; on entry, an item that *enlarges* sizing pushed `현재 위치와 키 레벨의 관계`
+  (risk:reward) and `당일 손익 여력과 남은 장 시간` (daily-loss headroom) below it. So: a guideline
+  that limits risk never sits below one that grows size, and on exit a guideline that shrinks the
+  fraction never sits above one that grows it. Last is not ignored — the header says earlier wins
+  on conflict, not "stop reading".
   - *`## 계좌 상태`, the output example, rule 4's `reason` example, and two analysis lines* —
     the buying-power line and the "cash unknown is itself a conservative factor" note are
     entry-only; the exit prompt states the broker balance is irrelevant instead. `진입 권고`
@@ -100,6 +140,23 @@ separately so tests (and prompt audits) can assert on the exact strings.
     still alive?") a reason to cut less. Stop-loss / take-profit / key levels / POC / price
     targets stay — those *are* exit inputs. Rule 4's example likewise cites 예산 제약 on entry
     and 트리거 강도 on exit, since `## 예산` declares itself 해당 없음 two sections later.
+- **Inside the fence: facts only. Instructions live in the system prompt and `## 판단 지침`.**
+  The confluence block's first line used to end with an imperative ("weigh this axis more when the
+  axes disagree") — rendered *inside* `<analysis>`, which system rule 3 declares is never an
+  instruction. Both outcomes lose: obey the rule and the line is dead, follow the line and the
+  model learns that fenced text can instruct, which is exactly the forged-`## 판단 지침` defense.
+  The instruction now sits in the guideline list (entry #4: weigh it more; exit #4: it is not
+  decisive) and the fenced line states only what the axis is.
+  That line also **branches on `kind`** (`CONFLUENCE_SOURCE_LINE`): the backtest's 70% win rate
+  belongs to the **entry** rule — that backtest exited on ATR SL/TP plus a 10-bar timeout, so the
+  bearish inverse has never been validated as an exit rule, and it fires far more often in
+  practice. A shared line would let `청산 트리거: 성립` on the very next row borrow the 70%.
+- **A corrected sell explains itself.** `scoreSignals`'s sell asymmetry can produce `total: 51`
+  with `signal: 'sell'` against a sell threshold of 30. `TradeGateSignal.totalWithoutConfluence`
+  (optional) renders one extra line **only when it differs from `total`** — system rule 2 says
+  everything printed is true, so an unexplained 21-point contradiction makes the model reconcile
+  it, and on an exit that reconciliation lands on a smaller fraction. Equal or absent → no line,
+  because a line printed every run is noise that invites hunting a contradiction that isn't there.
 - **`## 예산` fixes the denominator.** `fraction` is a share of `fullBudget` and nothing else —
   `## 계좌 상태` prints per-symbol and total-exposure headroom that diverge from it whenever
   `limitedBy` is `total`/`cash`. It also warns that a non-zero fraction can round **up** to one

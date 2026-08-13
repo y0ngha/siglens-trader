@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { scoreSignals } from '../signal-scorer';
+import type { AnalysisInputs } from '../signal-scorer';
 import { DEFAULT_WEIGHTS, DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../types';
 import type { ScoreWeights } from '../types';
+import type { ConfluenceSnapshot } from '../confluence';
 
 describe('scoreSignals', () => {
     describe('happy path — bullish inputs', () => {
@@ -236,6 +238,9 @@ describe('scoreSignals', () => {
     describe('custom weights', () => {
         it('heavily weighted technical produces different result than default', () => {
             const techHeavyWeights: ScoreWeights = {
+                // 이 테스트는 technical 지배력만 본다. inputs에 confluence 스냅샷이 없어
+                // 어차피 분모에서 빠지지만, 의도를 분명히 하려고 0으로 둔다.
+                confluence: 0,
                 technical: 80,
                 news: 5,
                 options: 5,
@@ -260,6 +265,7 @@ describe('scoreSignals', () => {
 
         it('equal weights produce simple average', () => {
             const equalWeights: ScoreWeights = {
+                confluence: 20,
                 technical: 20,
                 news: 20,
                 options: 20,
@@ -615,7 +621,7 @@ describe('scoreSignals', () => {
                     options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 0 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 0 },
                 70,
                 30,
             );
@@ -929,7 +935,7 @@ describe('scoreSignals', () => {
                     fundamental: null,
                     congress: { overallSentiment: 'bullish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
                 DEFAULT_BUY_THRESHOLD,
                 DEFAULT_SELL_THRESHOLD,
             );
@@ -948,7 +954,7 @@ describe('scoreSignals', () => {
                     fundamental: null,
                     congress: { overallSentiment: 'bearish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
                 DEFAULT_BUY_THRESHOLD,
                 DEFAULT_SELL_THRESHOLD,
             );
@@ -1016,6 +1022,270 @@ describe('scoreSignals', () => {
         it('falls back when all category sentiments are unknown', () => {
             // all unknown → agg null → fallback overallSentiment neutral → 50
             expect(fund([{ sentiment: '???' }], { overallSentiment: 'neutral' })).toBe(50);
+        });
+    });
+});
+
+describe('confluence 축', () => {
+    const neutralInputs = {
+        technical: null,
+        news: null,
+        options: null,
+        fundamental: null,
+        congress: null,
+    };
+
+    function confluenceSnapshot(over: Partial<ConfluenceSnapshot> = {}): ConfluenceSnapshot {
+        return {
+            timeframe: '1Hour',
+            barTime: 1_760_000_000,
+            close: 100,
+            ma50: 90,
+            bullish: [],
+            bearish: [],
+            freshBullish: [],
+            freshBearish: [],
+            entryTrigger: false,
+            exitTrigger: false,
+            ...over,
+        };
+    }
+
+    it('스냅샷이 없으면 분모에서 빠져 도입 이전과 동일한 점수가 나온다', () => {
+        const inputs = { ...neutralInputs, technical: { trend: 'bullish' } };
+        const withNull = scoreSignals({ ...inputs, confluence: null }, DEFAULT_WEIGHTS, 70, 30);
+        const withoutAxis = scoreSignals(
+            { ...inputs, confluence: null },
+            { ...DEFAULT_WEIGHTS, confluence: 0 },
+            70,
+            30,
+        );
+        expect(withNull.total).toBe(withoutAxis.total);
+        expect(withNull.components.confluence).toBe(50);
+    });
+
+    it('스냅샷이 있으면 가중 평균에 참여한다', () => {
+        const bull = scoreSignals(
+            { ...neutralInputs, confluence: confluenceSnapshot({ bullish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        // bull 3 / bear 0 → 73. 나머지 축은 모두 50이고, congress는 null이라 기존 규칙대로
+        // 분모에서 빠진다. (73*12 + 50*(8+6+5+4)) / (12+8+6+5+4) = 2026/35 = 57.9 → 58
+        expect(bull.components.confluence).toBe(73);
+        expect(bull.total).toBe(58);
+    });
+
+    it('진입 트리거 단독으로는 매수 임계(70)를 넘지 못한다', () => {
+        const score = scoreSignals(
+            {
+                ...neutralInputs,
+                confluence: confluenceSnapshot({
+                    bullish: ['a', 'b', 'c'],
+                    freshBullish: ['a'],
+                    entryTrigger: true,
+                }),
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(score.components.confluence).toBe(92);
+        expect(score.total).toBeLessThan(70);
+        expect(score.signal).toBe('hold');
+    });
+
+    it('청산 트리거 단독으로는 매도 임계(30)를 밑돌지 않는다', () => {
+        const score = scoreSignals(
+            {
+                ...neutralInputs,
+                confluence: confluenceSnapshot({
+                    close: 80,
+                    bearish: ['a', 'b', 'c'],
+                    freshBearish: ['a'],
+                    exitTrigger: true,
+                }),
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(score.components.confluence).toBe(8);
+        expect(score.total).toBeGreaterThan(30);
+        expect(score.signal).toBe('hold');
+    });
+
+    it('컨플루언스가 우호적이어도 나머지 축의 매도 신호를 덮지 못한다', () => {
+        // 뉴스·펀더멘털이 무너졌지만 단기 지표는 아직 강세인 상황.
+        // technical은 null(= 중립 50) — 추세가 아직 bearish로 꺾이지 않아
+        // evaluateExistingPosition도 잡지 못하는, 신호 매도가 유일한 출구인 국면이다.
+        const inputs = {
+            technical: null,
+            news: { overallSentiment: 'bearish' },
+            options: { signals: [{ kind: 'bearish' }, { kind: 'bearish' }, { kind: 'bearish' }] },
+            fundamental: { overallSentiment: 'bearish' },
+            congress: null,
+        };
+        const withoutConfluence = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
+        const withBullishConfluence = scoreSignals(
+            { ...inputs, confluence: confluenceSnapshot({ bullish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        // 전제: 컨플루언스가 없으면 매도다. (아니면 이 테스트의 의미가 없다)
+        expect(withoutConfluence.signal).toBe('sell');
+        // 총점은 컨플루언스 때문에 올라가지만 신호는 매도로 남는다.
+        expect(withBullishConfluence.total).toBeGreaterThan(withoutConfluence.total);
+        expect(withBullishConfluence.signal).toBe('sell');
+        // 보정이 걸린 행은 total이 매도 임계값 위에 있고, 매도의 실제 근거는
+        // totalWithoutConfluence다 — 감사에서 이 둘을 대조해야 정상 보정임을 알 수 있다.
+        expect(withBullishConfluence.total).toBeGreaterThan(30);
+        expect(withBullishConfluence.totalWithoutConfluence).toBeLessThanOrEqual(30);
+        expect(withBullishConfluence.totalWithoutConfluence).toBe(withoutConfluence.total);
+    });
+
+    it('컨플루언스가 새로 매도를 만드는 것은 허용한다', () => {
+        // 나머지 축은 중립이라 단독으로는 hold. 하락 트리거가 점수를 끌어내려 매도가 선다.
+        const inputs = {
+            technical: null,
+            news: null,
+            options: null,
+            fundamental: null,
+            congress: null,
+        };
+        expect(scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30).signal).toBe('hold');
+        const score = scoreSignals(
+            {
+                ...inputs,
+                confluence: confluenceSnapshot({
+                    close: 80,
+                    bearish: ['a', 'b', 'c', 'd', 'e', 'f'],
+                    freshBearish: ['a'],
+                    exitTrigger: true,
+                }),
+            },
+            // 매도가 실제로 서도록 임계값을 조정 — 기본 30에서는 단독으로 못 넘는 것이
+            // 다른 테스트로 이미 보장돼 있으므로, 여기서는 "막지 않는다"만 검증한다.
+            DEFAULT_WEIGHTS,
+            70,
+            45,
+        );
+        expect(score.signal).toBe('sell');
+    });
+
+    it('컨플루언스는 매수는 막을 수 있다 (비대칭 확인)', () => {
+        const inputs = {
+            technical: { trend: 'bullish' },
+            news: { overallSentiment: 'bullish' },
+            options: null,
+            fundamental: { overallSentiment: 'bullish' },
+            congress: null,
+        };
+        const withoutConfluence = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
+        const withBearishConfluence = scoreSignals(
+            { ...inputs, confluence: confluenceSnapshot({ close: 80, bearish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(withoutConfluence.signal).toBe('buy');
+        expect(withBearishConfluence.signal).not.toBe('buy');
+    });
+
+    it('모든 가중치가 0이면 total 50 / hold', () => {
+        const zero = {
+            confluence: 0,
+            technical: 0,
+            news: 0,
+            options: 0,
+            fundamental: 0,
+            congress: 0,
+        };
+        const score = scoreSignals(
+            { ...neutralInputs, confluence: confluenceSnapshot() },
+            zero,
+            70,
+            30,
+        );
+        expect(score.total).toBe(50);
+        expect(score.totalWithoutConfluence).toBe(50);
+        expect(score.signal).toBe('hold');
+    });
+
+    describe('totalWithoutConfluence', () => {
+        // 컨플루언스 축을 실제로 제거한 호출의 total과 정확히 일치해야 한다.
+        // 그게 아니면 감사에 남는 값이 판정 근거가 아니라 다른 숫자다.
+        const cases: Array<[string, Omit<AnalysisInputs, 'confluence'>]> = [
+            ['모든 축 중립', neutralInputs],
+            [
+                '강세 조합',
+                {
+                    technical: { trend: 'bullish' },
+                    news: { overallSentiment: 'bullish' },
+                    options: { signals: [{ kind: 'bullish' }, { kind: 'bullish' }] },
+                    fundamental: { overallSentiment: 'bullish' },
+                    congress: { overallSentiment: 'bullish' },
+                },
+            ],
+            [
+                '약세 조합',
+                {
+                    technical: { trend: 'bearish', riskLevel: 'high' },
+                    news: { overallSentiment: 'bearish' },
+                    options: { signals: [{ kind: 'bearish' }] },
+                    fundamental: { overallSentiment: 'bearish' },
+                    congress: null,
+                },
+            ],
+            [
+                '엇갈린 조합',
+                {
+                    technical: { trend: 'bullish' },
+                    news: { overallSentiment: 'bearish' },
+                    options: null,
+                    fundamental: { overallSentiment: 'neutral' },
+                    congress: { overallSentiment: 'bearish' },
+                },
+            ],
+        ];
+
+        it.each(cases)('%s — 컨플루언스 없는 호출의 total과 일치한다', (_name, inputs) => {
+            const snapshot = confluenceSnapshot({ bullish: ['a', 'b', 'c'], freshBullish: ['a'] });
+            const withAxis = scoreSignals(
+                { ...inputs, confluence: snapshot },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            const withoutAxis = scoreSignals(
+                { ...inputs, confluence: null },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            expect(withAxis.totalWithoutConfluence).toBe(withoutAxis.total);
+        });
+
+        it('컨플루언스가 투표하지 않으면 total과 같다', () => {
+            const score = scoreSignals(
+                { ...neutralInputs, technical: { trend: 'bullish' }, confluence: null },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            expect(score.totalWithoutConfluence).toBe(score.total);
+        });
+
+        it('가중치가 0이면 투표하지 않으므로 total과 같다', () => {
+            const score = scoreSignals(
+                { ...neutralInputs, confluence: confluenceSnapshot({ bearish: ['a', 'b', 'c'] }) },
+                { ...DEFAULT_WEIGHTS, confluence: 0 },
+                70,
+                30,
+            );
+            expect(score.totalWithoutConfluence).toBe(score.total);
         });
     });
 });

@@ -75,6 +75,14 @@ vi.mock('../../../lib/strategy/signal-scorer', () => ({
     scoreSignals: (...args: unknown[]) => mockScoreSignals(...args),
 }));
 
+// 컨플루언스는 FMP 봉 조회를 하므로 mock한다. `lib/strategy/confluence`(순수 함수)는
+// mock하지 않는다 — isConfluenceExit의 실제 판정이 배선 테스트의 대상이다.
+const computeConfluenceMock = vi.fn();
+vi.mock('../../../lib/analysis/confluence', () => ({
+    computeConfluence: (...args: unknown[]) => computeConfluenceMock(...args),
+    MIN_BARS: 120,
+}));
+
 const mockCalculatePositionSize = vi.fn();
 const mockEvaluateExistingPosition = vi.fn();
 vi.mock('../../../lib/strategy/risk-manager', () => ({
@@ -181,18 +189,21 @@ const fakeFundamentalResult = { result: { overallSentiment: 'neutral' } };
 
 const fakeBuySignalScore = {
     total: 80,
+    totalWithoutConfluence: 62,
     components: { technical: 95, news: 80, options: 75, fundamental: 50 },
     signal: 'buy' as const,
 };
 
 const fakeSellSignalScore = {
     total: 20,
+    totalWithoutConfluence: 20,
     components: { technical: 15, news: 20, options: 25, fundamental: 50 },
     signal: 'sell' as const,
 };
 
 const fakeHoldSignalScore = {
     total: 50,
+    totalWithoutConfluence: 50,
     components: { technical: 50, news: 50, options: 50, fundamental: 50 },
     signal: 'hold' as const,
 };
@@ -223,6 +234,8 @@ function setupDefaults() {
     mockOpenPosition.mockResolvedValue([]);
     mockClosePosition.mockResolvedValue([]);
     mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
+    // 기본은 기권(null) — 컨플루언스 도입 이전과 동일하게 동작해야 한다.
+    computeConfluenceMock.mockResolvedValue(null);
     mockCalculatePositionSize.mockReturnValue(5);
     // Gate defaults: ON (getAnalysisConfig fails open when no row exists) and always
     // answering "full size", so every pre-gate test keeps its original quantities.
@@ -1761,6 +1774,8 @@ describe('execute cron handler', () => {
 
             expect(mockScoreSignals).toHaveBeenCalledWith(
                 {
+                    // 기본 mock은 null — 스코어러가 가중치를 0으로 떨어뜨린다.
+                    confluence: null,
                     technical: {
                         trend: 'bullish',
                         riskLevel: 'low',
@@ -2149,9 +2164,14 @@ describe('execute cron handler', () => {
                                 options: expect.any(Number),
                                 fundamental: expect.any(Number),
                             },
+                            // 이 필드가 빠지면 `signal='sell'`인데 `score`가 매도 임계값보다
+                            // 높은 보정 매도 행을 사후에 설명할 방법이 없다. detail은 정확
+                            // 일치로 검증되므로 배선이 조용히 끊기면 여기서 걸린다.
+                            totalWithoutConfluence: expect.any(Number),
                             signal: 'hold',
                             thresholds: { buy: 70, sell: 30 },
                             sourceAnalyzedAt: expect.any(String),
+                            confluence: null,
                         },
                     }),
                 ]),
@@ -5715,9 +5735,10 @@ describe('execute cron handler', () => {
                     correlationId: expect.stringContaining('-AAPL-entry'),
                 }),
             );
-            // All five axes are always present, missing ones as result:null (never dropped).
+            // All six axes are always present, missing ones as result:null (never dropped).
             const call = mockRunTradeGate.mock.calls[0][0];
             expect(call.analyses.map((a: { type: string }) => a.type)).toEqual([
+                'confluence',
                 'technical',
                 'news',
                 'options',
@@ -7325,6 +7346,215 @@ describe('execute cron handler', () => {
             expect(divergenceMails[0][0]).toBe('시세 출처 불일치 (2건, dry_run)');
             expect(divergenceMails[0][1]).toContain('AAPL');
             expect(divergenceMails[0][1]).toContain('TSLA');
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // 지표 컨플루언스 배선
+    // -----------------------------------------------------------------------
+
+    describe('지표 컨플루언스', () => {
+        const barTime = Math.floor(Date.parse('2026-05-24T14:00:00.000Z') / 1000);
+
+        const bullishSnapshot = {
+            timeframe: '1Hour',
+            barTime,
+            close: 150,
+            ma50: 140,
+            bullish: ['golden_cross', 'macd_bullish_cross', 'rsi_oversold_bounce'],
+            bearish: [],
+            freshBullish: ['golden_cross'],
+            freshBearish: [],
+            entryTrigger: true,
+            exitTrigger: false,
+        };
+
+        const bearishSnapshot = {
+            timeframe: '1Hour',
+            barTime,
+            close: 105,
+            ma50: 140,
+            bullish: [],
+            bearish: ['death_cross', 'macd_bearish_cross', 'rsi_overbought_reversal'],
+            freshBullish: [],
+            freshBearish: ['death_cross'],
+            entryTrigger: false,
+            exitTrigger: true,
+        };
+
+        /** 재평가 루프가 3.5번(컨플루언스)까지 내려가도록 만든 중립 스냅샷. */
+        const neutralTech = {
+            result: {
+                trend: 'neutral',
+                riskLevel: 'medium',
+                keyLevels: { currentPrice: 105, support: [90], resistance: [200] },
+            },
+        };
+
+        const heldPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        };
+
+        function dryRunConfig(extra: Record<string, unknown> = {}) {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key in extra) return Promise.resolve(extra[key]);
+                return Promise.resolve(null);
+            });
+        }
+
+        async function realScorer() {
+            const mod = await vi.importActual<typeof import('../../../lib/strategy/signal-scorer')>(
+                '../../../lib/strategy/signal-scorer',
+            );
+            return mod.scoreSignals;
+        }
+
+        beforeEach(() => {
+            dryRunConfig();
+            mockGetEnabledWatchlist.mockResolvedValue([
+                { symbol: 'AAPL', companyName: 'Apple Inc.', enabled: true },
+            ]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(fakeTechResult);
+                    if (type === 'news') return Promise.resolve(fakeNewsResult);
+                    if (type === 'options') return Promise.resolve(fakeOptionsResult);
+                    if (type === 'fundamental') return Promise.resolve(fakeFundamentalResult);
+                    return Promise.resolve(null);
+                },
+            );
+        });
+
+        it('한 실행에서 같은 심볼의 봉을 두 번 조회하지 않는다 (실행 스코프 캐시)', async () => {
+            // 재평가 루프와 워치리스트 루프가 둘 다 AAPL을 본다.
+            mockGetOpenPositions.mockResolvedValue([heldPosition]);
+            computeConfluenceMock.mockResolvedValue(bullishSnapshot);
+
+            await handler(makeRequest(true));
+
+            const aaplCalls = computeConfluenceMock.mock.calls.filter((c) => c[0] === 'AAPL');
+            expect(aaplCalls).toHaveLength(1);
+        });
+
+        it('컨플루언스 계산이 던져도 실행은 200으로 끝나고 결정이 기록된다', async () => {
+            computeConfluenceMock.mockRejectedValue(new Error('boom'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'hold' }),
+            );
+            // 실패는 null과 같게 취급된다 — 축이 통째로 빠질 뿐 실행은 계속된다.
+            expect(mockScoreSignals.mock.calls[0][0].confluence).toBeNull();
+        });
+
+        it('null이면 컨플루언스 도입 이전과 동일한 점수가 나온다', async () => {
+            computeConfluenceMock.mockResolvedValue(null);
+
+            await handler(makeRequest(true));
+
+            const [inputs, weights, buy, sell] = mockScoreSignals.mock.calls[0];
+            expect(inputs.confluence).toBeNull();
+
+            // 실제 스코어러로 대조: null은 축을 아예 넘기지 않은 것과 같아야 한다.
+            const scoreSignals = await realScorer();
+            const withNull = scoreSignals(inputs, weights, buy, sell);
+            const withoutAxis = scoreSignals(
+                { ...inputs, confluence: undefined },
+                weights,
+                buy,
+                sell,
+            );
+            expect(withNull.total).toBe(withoutAxis.total);
+            // 컴포넌트는 중립 50으로 찍히지만 가중치 0이라 total에는 안 들어간다.
+            expect(withNull.components.confluence).toBe(50);
+
+            // 감사 로그에도 null이 그대로 남는다.
+            const rows = mockInsertCronDecisions.mock.calls[0][3];
+            expect(rows.find((r: { symbol: string }) => r.symbol === 'AAPL').detail).toMatchObject({
+                confluence: null,
+            });
+        });
+
+        it('강세 스냅샷은 같은 분석 입력에서 총점을 끌어올린다', async () => {
+            computeConfluenceMock.mockResolvedValue(bullishSnapshot);
+
+            await handler(makeRequest(true));
+
+            const [inputs, weights, buy, sell] = mockScoreSignals.mock.calls[0];
+            expect(inputs.confluence).toEqual(bullishSnapshot);
+
+            const scoreSignals = await realScorer();
+            const withSnapshot = scoreSignals(inputs, weights, buy, sell);
+            const withoutSnapshot = scoreSignals(
+                { ...inputs, confluence: null },
+                weights,
+                buy,
+                sell,
+            );
+            expect(withSnapshot.total).toBeGreaterThan(withoutSnapshot.total);
+
+            // 스냅샷은 게이트 프롬프트와 감사 로그에도 실려야 한다.
+            const rows = mockInsertCronDecisions.mock.calls[0][3];
+            expect(rows.find((r: { symbol: string }) => r.symbol === 'AAPL').detail).toMatchObject({
+                confluence: bullishSnapshot,
+            });
+        });
+
+        it('약세 스냅샷은 보유 포지션을 청산으로 보낸다', async () => {
+            // 룰 우선순위 3.5를 실제로 타야 하므로 risk-manager는 진짜 구현으로 돌린다.
+            const risk = await vi.importActual<typeof import('../../../lib/strategy/risk-manager')>(
+                '../../../lib/strategy/risk-manager',
+            );
+            mockEvaluateExistingPosition.mockImplementation(risk.evaluateExistingPosition);
+            mockGetEnabledWatchlist.mockResolvedValue([]); // 재평가 루프만 남긴다
+            mockGetOpenPositions.mockResolvedValue([heldPosition]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) => {
+                    if (type === 'technical') return Promise.resolve(neutralTech);
+                    return Promise.resolve(null);
+                },
+            );
+
+            // 대조군: 같은 입력에 스냅샷만 없으면 그대로 보유한다.
+            computeConfluenceMock.mockResolvedValue(null);
+            const holdRes = await handler(makeRequest(true));
+            expect((await holdRes.json()).decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'hold' }),
+            );
+            expect(mockClosePosition).not.toHaveBeenCalled();
+
+            computeConfluenceMock.mockResolvedValue(bearishSnapshot);
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                expect.objectContaining({ confluenceExit: true }),
+            );
+            // +5% 수익 구간이라 익절 라벨로 전량 청산된다.
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'take_profit', executed: true }),
+            );
+            expect(mockClosePosition).toHaveBeenCalled();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ side: 'sell', quantity: 10 }),
+            );
+        });
+
+        it('설정된 analysis_timeframe으로 계산한다', async () => {
+            dryRunConfig({ analysis_timeframe: '15Min' });
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', '15Min');
         });
     });
 });

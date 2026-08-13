@@ -31,6 +31,9 @@ import {
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { getAnalysisReferenceTime } from '../../lib/analysis/source-time.js';
+import { computeConfluence } from '../../lib/analysis/confluence.js';
+import { isConfluenceExit } from '../../lib/strategy/confluence.js';
+import type { ConfluenceSnapshot } from '../../lib/strategy/confluence.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
@@ -111,6 +114,7 @@ function scoreDecisionDetail(
     buyThreshold: number,
     sellThreshold: number,
     sourceAnalyzedAt: Date | null,
+    confluence: ConfluenceSnapshot | null = null,
 ) {
     // Guard against an Invalid Date (e.g. analysis row without a parseable
     // timestamp) — toISOString() would throw on a NaN-time Date.
@@ -120,9 +124,14 @@ function scoreDecisionDetail(
             : null;
     return {
         components: signalScore.components,
+        // 컨플루언스 보정이 걸리면 `signal='sell'`인데 `total`이 매도 임계값을 크게 웃돈다.
+        // 이 값이 없으면 그 행은 저장된 숫자만으로 재현되지 않아 버그와 구분되지 않는다.
+        totalWithoutConfluence: signalScore.totalWithoutConfluence,
         signal: signalScore.signal,
         thresholds: { buy: buyThreshold, sell: sellThreshold },
         sourceAnalyzedAt: sourceIso,
+        // 어떤 지표가 켜져 있었는지까지 남긴다. 점수만으로는 사후에 재현할 수 없다.
+        confluence,
     };
 }
 
@@ -147,6 +156,9 @@ const MAX_PRICE_SOURCE_DIVERGENCE = 0.25;
 
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
+    // 컨플루언스가 선두인 이유 — 유일하게 LLM을 거치지 않은 결정론적 축이라
+    // 다른 축과 충돌할 때 기준점이 된다. `trade-gate.ts`의 렌더 순서와 같다.
+    'confluence',
     'technical',
     'news',
     'options',
@@ -489,6 +501,30 @@ async function handler(req: Request): Promise<Response> {
             );
             const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
 
+            /**
+             * 실행 스코프 컨플루언스 캐시.
+             *
+             * 포지션 재평가 루프와 워치리스트 루프가 같은 심볼을 각각 한 번씩 보므로,
+             * 캐시가 없으면 FMP 봉 조회가 심볼당 두 번 나간다. 한 실행 안에서 두 루프가
+             * 서로 다른 스냅샷을 보는 것도 곤란하다 — 같은 틱의 판단은 같은 데이터에서 나와야 한다.
+             */
+            const confluenceCache = new Map<string, ConfluenceSnapshot | null>();
+            const getConfluence = async (symbol: string): Promise<ConfluenceSnapshot | null> => {
+                const cached = confluenceCache.get(symbol);
+                if (cached !== undefined) return cached;
+                let snapshot: ConfluenceSnapshot | null = null;
+                try {
+                    snapshot = await computeConfluence(symbol, analysisTimeframe);
+                } catch (err) {
+                    // computeConfluence는 내부에서 이미 삼키지만, 이 조립부가 그 구현
+                    // 세부에 의존하지 않게 한 겹 더 막는다. 컨플루언스 실패가 실행 전체를
+                    // 중단시키는 일은 없어야 한다.
+                    console.warn('[execute] 컨플루언스 계산 실패:', symbol, err);
+                }
+                confluenceCache.set(symbol, snapshot);
+                return snapshot;
+            };
+
             // Weights start from the profile for the timeframe being traded (slow signals
             // count for less the shorter the horizon), then any dashboard-configured value
             // overrides per key — an explicit setting must always win.
@@ -684,9 +720,10 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const [tech, news] = await Promise.all([
+                    const [tech, news, confluence] = await Promise.all([
                         getLatestAnalysisResult(db, position.symbol, 'technical'),
                         getLatestAnalysisResult(db, position.symbol, 'news'),
+                        getConfluence(position.symbol),
                     ]);
 
                     // Staleness check: skip position if technical analysis is too old
@@ -769,6 +806,8 @@ async function handler(req: Request): Promise<Response> {
                               targetPrice: safeAnalysisTargetPrice(techResult),
                               technicalTrend: safeAnalysisTrend(techResult),
                               newsSentiment: safeAnalysisSentiment(news?.result),
+                              // 하락 컨플루언스는 우선순위 3.5 — 추세 반전 뒤, 고정 익절 앞.
+                              confluenceExit: isConfluenceExit(confluence),
                           });
 
                     if (evaluation.action === 'hold') {
@@ -864,6 +903,15 @@ async function handler(req: Request): Promise<Response> {
                             budget: null,
                             exit: { trigger: exitTrigger, ruleReason: evaluation.reason },
                             analyses: toGateAnalyses({
+                                // DB row가 아니라 방금 계산한 스냅샷이라 AnalysisRow 형태로
+                                // 맞춰 넘긴다. analyzedAt은 마지막 봉 시각(unix seconds).
+                                confluence: confluence
+                                    ? {
+                                          result: confluence,
+                                          modelId: 'rule-engine',
+                                          analyzedAt: new Date(confluence.barTime * 1000),
+                                      }
+                                    : null,
                                 technical: tech,
                                 news,
                                 options,
@@ -1360,13 +1408,15 @@ async function handler(req: Request): Promise<Response> {
             for (const item of watchlistItems) {
                 try {
                     // Gather latest analysis results
-                    const [tech, news, options, fundamental, congress] = await Promise.all([
-                        getLatestAnalysisResult(db, item.symbol, 'technical'),
-                        getLatestAnalysisResult(db, item.symbol, 'news'),
-                        getLatestAnalysisResult(db, item.symbol, 'options'),
-                        getLatestAnalysisResult(db, item.symbol, 'fundamental'),
-                        getLatestAnalysisResult(db, item.symbol, 'congress'),
-                    ]);
+                    const [tech, news, options, fundamental, congress, confluence] =
+                        await Promise.all([
+                            getLatestAnalysisResult(db, item.symbol, 'technical'),
+                            getLatestAnalysisResult(db, item.symbol, 'news'),
+                            getLatestAnalysisResult(db, item.symbol, 'options'),
+                            getLatestAnalysisResult(db, item.symbol, 'fundamental'),
+                            getLatestAnalysisResult(db, item.symbol, 'congress'),
+                            getConfluence(item.symbol),
+                        ]);
 
                     // Staleness check: skip symbol if technical analysis is too old
                     const techReferenceTime = tech ? getAnalysisReferenceTime(tech) : null;
@@ -1389,6 +1439,7 @@ async function handler(req: Request): Promise<Response> {
 
                     // Score signals — build type-safe inputs from untyped AI results
                     const signalInputs = {
+                        confluence,
                         technical: tech?.result
                             ? {
                                   trend: safeAnalysisTrend(tech.result),
@@ -1541,6 +1592,7 @@ async function handler(req: Request): Promise<Response> {
                                     buyThreshold,
                                     sellThreshold,
                                     techReferenceTime,
+                                    confluence,
                                 ),
                                 budget: budgetDetail,
                             },
@@ -1672,6 +1724,7 @@ async function handler(req: Request): Promise<Response> {
                                 buyThreshold,
                                 sellThreshold,
                                 techReferenceTime,
+                                confluence,
                             ),
                         });
                         continue;
@@ -1726,6 +1779,7 @@ async function handler(req: Request): Promise<Response> {
                                     buyThreshold,
                                     sellThreshold,
                                     techReferenceTime,
+                                    confluence,
                                 ),
                             });
                             continue;
@@ -1742,8 +1796,17 @@ async function handler(req: Request): Promise<Response> {
                         buyThreshold,
                         sellThreshold,
                         techReferenceTime,
+                        confluence,
                     );
                     const gateAnalyses = toGateAnalyses({
+                        // 재평가 루프와 같은 조립 — DB row가 아니므로 AnalysisRow 형태로 맞춘다.
+                        confluence: confluence
+                            ? {
+                                  result: confluence,
+                                  modelId: 'rule-engine',
+                                  analyzedAt: new Date(confluence.barTime * 1000),
+                              }
+                            : null,
                         technical: tech,
                         news,
                         options,
@@ -1764,6 +1827,7 @@ async function handler(req: Request): Promise<Response> {
                     };
                     const gateSignal = {
                         total: signalScore.total,
+                        totalWithoutConfluence: signalScore.totalWithoutConfluence,
                         signal: signalScore.signal,
                         components: signalScore.components,
                         weights,

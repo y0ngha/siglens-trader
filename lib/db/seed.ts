@@ -30,7 +30,14 @@ export async function seed() {
         { key: 'analysis_timeframe', value: '1Hour' },
         {
             key: 'score_weights',
-            value: { technical: 8, news: 6, options: 5, fundamental: 4, congress: 3 },
+            value: {
+                confluence: 12,
+                technical: 8,
+                news: 6,
+                options: 5,
+                fundamental: 4,
+                congress: 3,
+            },
         },
         { key: 'fixed_exit_enabled', value: false },
         { key: 'trading_enabled', value: true },
