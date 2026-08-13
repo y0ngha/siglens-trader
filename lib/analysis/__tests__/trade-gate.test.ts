@@ -567,6 +567,37 @@ describe('buildTradeGatePrompt — 신호 스코어', () => {
 
             expect(user).not.toContain(LINE);
         });
+
+        it('방향이 매도가 아니면 값이 달라도 줄이 없다', () => {
+            // 문구가 매도 상황을 전제로 서술돼 있다. 컨플루언스가 점수를 움직이기만 한
+            // 흔한 경우(매수/보류)에까지 실리면 규칙 2를 깨는 쪽이 된다.
+            const signal = baseInput().signal!;
+            for (const dir of ['buy', 'hold'] as const) {
+                const { user } = buildTradeGatePrompt(
+                    baseInput({
+                        signal: { ...signal, total: 51, signal: dir, totalWithoutConfluence: 28 },
+                    }),
+                );
+                expect(user).not.toContain(LINE);
+            }
+        });
+
+        it('매도라도 총점이 매도 임계값 아래면 설명할 모순이 없어 줄이 없다', () => {
+            const signal = baseInput().signal!;
+            const { user } = buildTradeGatePrompt(
+                baseInput({
+                    signal: {
+                        ...signal,
+                        total: 25,
+                        signal: 'sell',
+                        sellThreshold: 30,
+                        totalWithoutConfluence: 20,
+                    },
+                }),
+            );
+
+            expect(user).not.toContain(LINE);
+        });
     });
 });
 

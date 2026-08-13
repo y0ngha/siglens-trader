@@ -628,10 +628,19 @@ function sectionSignal(input: TradeGateInput): string[] {
     // 점수·가중치도 USD와 같은 이유로 raw 보간을 하지 않는다 — 실측에서 `NaN건`/`NaN점`이
     // 그대로 프롬프트에 실렸고, 모델은 그걸 숫자로 읽는다.
     lines.push(`- 총점: ${fmtNum(s.total)} / 100`);
-    // 매도 비대칭 보정이 걸린 행만 설명한다. 두 값이 같은 정상 케이스에도 매번 찍으면
-    // 잡음만 늘고, 모델이 있지도 않은 모순을 찾게 된다. (이 줄은 `<analysis>` 펜스 밖이므로
-    // 인젝션 방어와 무관하다 — 숫자는 다른 값들과 같이 `fmtNum`을 지난다.)
-    if (typeof s.totalWithoutConfluence === 'number' && s.totalWithoutConfluence !== s.total) {
+    // 매도 비대칭 보정이 **실제로 걸린** 행만 설명한다. 조건이 세 겹인 이유:
+    // 두 값이 다르기만 한 것은 컨플루언스가 점수를 움직였다는 뜻일 뿐 흔한 일이고,
+    // 그때마다 찍으면 잡음이다. 문구 자체가 매도 상황을 전제로 서술돼 있어서
+    // 매수·보류 프롬프트에 실리면 규칙 2("프롬프트에 적힌 값은 참")를 깨는 쪽이 된다.
+    // 설명이 필요한 경우는 딱 하나 — 총점이 매도 임계값을 웃도는데 방향이 매도인 행이다.
+    // (이 줄은 `<analysis>` 펜스 밖이므로 인젝션 방어와 무관하다 — 숫자는 다른 값들과
+    // 같이 `fmtNum`을 지난다.)
+    if (
+        typeof s.totalWithoutConfluence === 'number' &&
+        s.totalWithoutConfluence !== s.total &&
+        s.signal === 'sell' &&
+        s.total > s.sellThreshold
+    ) {
         lines.push(
             `- 컨플루언스 제외 총점: ${fmtNum(s.totalWithoutConfluence)} (이 방향 판정의 근거. 컨플루언스는 매수를 막을 수 있어도 매도를 막지 못하므로, 총점이 매도 임계값을 웃돌아도 나머지 축이 매도면 매도로 확정된다)`,
         );
