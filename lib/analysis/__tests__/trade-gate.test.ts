@@ -156,6 +156,8 @@ function baseInput(overrides: Partial<TradeGateInput> = {}): TradeGateInput {
         },
         signal: {
             total: 78,
+            // 보정이 걸리지 않은 정상 행 — 설명 줄이 나오지 않는 기준 케이스다.
+            totalWithoutConfluence: 78,
             signal: 'buy',
             components: {
                 confluence: 92,
@@ -320,6 +322,7 @@ describe('buildTradeGatePrompt — 계좌 상태', () => {
                 },
                 signal: {
                     total: Number.NaN,
+                    totalWithoutConfluence: Number.NaN,
                     signal: 'buy',
                     components: {
                         confluence: Number.NaN,
@@ -562,7 +565,7 @@ describe('buildTradeGatePrompt — 신호 스코어', () => {
             expect(user).not.toContain(LINE);
         });
 
-        it('값이 없으면(undefined) 줄 자체가 없다', () => {
+        it('기본 입력(보정 없음)에는 줄이 없다', () => {
             const { user } = buildTradeGatePrompt(baseInput());
 
             expect(user).not.toContain(LINE);

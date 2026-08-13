@@ -189,18 +189,21 @@ const fakeFundamentalResult = { result: { overallSentiment: 'neutral' } };
 
 const fakeBuySignalScore = {
     total: 80,
+    totalWithoutConfluence: 62,
     components: { technical: 95, news: 80, options: 75, fundamental: 50 },
     signal: 'buy' as const,
 };
 
 const fakeSellSignalScore = {
     total: 20,
+    totalWithoutConfluence: 20,
     components: { technical: 15, news: 20, options: 25, fundamental: 50 },
     signal: 'sell' as const,
 };
 
 const fakeHoldSignalScore = {
     total: 50,
+    totalWithoutConfluence: 50,
     components: { technical: 50, news: 50, options: 50, fundamental: 50 },
     signal: 'hold' as const,
 };
@@ -2161,6 +2164,10 @@ describe('execute cron handler', () => {
                                 options: expect.any(Number),
                                 fundamental: expect.any(Number),
                             },
+                            // 이 필드가 빠지면 `signal='sell'`인데 `score`가 매도 임계값보다
+                            // 높은 보정 매도 행을 사후에 설명할 방법이 없다. detail은 정확
+                            // 일치로 검증되므로 배선이 조용히 끊기면 여기서 걸린다.
+                            totalWithoutConfluence: expect.any(Number),
                             signal: 'hold',
                             thresholds: { buy: 70, sell: 30 },
                             sourceAnalyzedAt: expect.any(String),
