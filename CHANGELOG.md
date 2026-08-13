@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.18.0](https://github.com/y0ngha/siglens-trader/compare/v0.17.0...v0.18.0) (2026-08-13)
+
+
+### Features
+
+* 지표 컨플루언스 신호 축 (백테스트 승률 70% 룰 이식) ([#40](https://github.com/y0ngha/siglens-trader/issues/40)) ([dd7b48d](https://github.com/y0ngha/siglens-trader/commit/dd7b48d55be12ff51a5a1cf931abede66744e06a))
+
 # [0.17.0](https://github.com/y0ngha/siglens-trader/compare/v0.16.0...v0.17.0) (2026-08-12)
 
 
