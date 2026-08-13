@@ -127,7 +127,8 @@ async function handler(req: Request): Promise<Response> {
                     // working (the runtime fills the missing weight from the timeframe profile).
                     // Without listing it here the unknown-key check below rejects any object
                     // that does include it — which would make the weight unsettable.
-                    const optionalKeys = ['congress'];
+                    // `confluence`도 같은 이유로 선택 키다.
+                    const optionalKeys = ['congress', 'confluence'];
                     const knownKeySet = new Set([...requiredKeys, ...optionalKeys]);
                     const extraKeys = Object.keys(w).filter((k) => !knownKeySet.has(k));
                     if (extraKeys.length > 0) {

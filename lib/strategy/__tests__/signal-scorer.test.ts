@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { scoreSignals } from '../signal-scorer';
 import { DEFAULT_WEIGHTS, DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../types';
 import type { ScoreWeights } from '../types';
+import type { ConfluenceSnapshot } from '../confluence';
 
 describe('scoreSignals', () => {
     describe('happy path — bullish inputs', () => {
@@ -236,6 +237,9 @@ describe('scoreSignals', () => {
     describe('custom weights', () => {
         it('heavily weighted technical produces different result than default', () => {
             const techHeavyWeights: ScoreWeights = {
+                // 이 테스트는 technical 지배력만 본다. inputs에 confluence 스냅샷이 없어
+                // 어차피 분모에서 빠지지만, 의도를 분명히 하려고 0으로 둔다.
+                confluence: 0,
                 technical: 80,
                 news: 5,
                 options: 5,
@@ -260,6 +264,7 @@ describe('scoreSignals', () => {
 
         it('equal weights produce simple average', () => {
             const equalWeights: ScoreWeights = {
+                confluence: 20,
                 technical: 20,
                 news: 20,
                 options: 20,
@@ -615,7 +620,7 @@ describe('scoreSignals', () => {
                     options: { signals: [{ kind: 'bullish' }] },
                     fundamental: { overallSentiment: 'bullish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 0 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 0 },
                 70,
                 30,
             );
@@ -929,7 +934,7 @@ describe('scoreSignals', () => {
                     fundamental: null,
                     congress: { overallSentiment: 'bullish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
                 DEFAULT_BUY_THRESHOLD,
                 DEFAULT_SELL_THRESHOLD,
             );
@@ -948,7 +953,7 @@ describe('scoreSignals', () => {
                     fundamental: null,
                     congress: { overallSentiment: 'bearish' },
                 },
-                { technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
+                { confluence: 0, technical: 0, news: 0, options: 0, fundamental: 0, congress: 10 },
                 DEFAULT_BUY_THRESHOLD,
                 DEFAULT_SELL_THRESHOLD,
             );
@@ -1017,5 +1022,115 @@ describe('scoreSignals', () => {
             // all unknown → agg null → fallback overallSentiment neutral → 50
             expect(fund([{ sentiment: '???' }], { overallSentiment: 'neutral' })).toBe(50);
         });
+    });
+});
+
+describe('confluence 축', () => {
+    const neutralInputs = {
+        technical: null,
+        news: null,
+        options: null,
+        fundamental: null,
+        congress: null,
+    };
+
+    function confluenceSnapshot(over: Partial<ConfluenceSnapshot> = {}): ConfluenceSnapshot {
+        return {
+            timeframe: '1Hour',
+            barTime: 1_760_000_000,
+            close: 100,
+            ma50: 90,
+            bullish: [],
+            bearish: [],
+            freshBullish: [],
+            freshBearish: [],
+            entryTrigger: false,
+            exitTrigger: false,
+            ...over,
+        };
+    }
+
+    it('스냅샷이 없으면 분모에서 빠져 도입 이전과 동일한 점수가 나온다', () => {
+        const inputs = { ...neutralInputs, technical: { trend: 'bullish' } };
+        const withNull = scoreSignals({ ...inputs, confluence: null }, DEFAULT_WEIGHTS, 70, 30);
+        const withoutAxis = scoreSignals(
+            { ...inputs, confluence: null },
+            { ...DEFAULT_WEIGHTS, confluence: 0 },
+            70,
+            30,
+        );
+        expect(withNull.total).toBe(withoutAxis.total);
+        expect(withNull.components.confluence).toBe(50);
+    });
+
+    it('스냅샷이 있으면 가중 평균에 참여한다', () => {
+        const bull = scoreSignals(
+            { ...neutralInputs, confluence: confluenceSnapshot({ bullish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        // bull 3 / bear 0 → 73. 나머지 축은 모두 50이고, congress는 null이라 기존 규칙대로
+        // 분모에서 빠진다. (73*12 + 50*(8+6+5+4)) / (12+8+6+5+4) = 2026/35 = 57.9 → 58
+        expect(bull.components.confluence).toBe(73);
+        expect(bull.total).toBe(58);
+    });
+
+    it('진입 트리거 단독으로는 매수 임계(70)를 넘지 못한다', () => {
+        const score = scoreSignals(
+            {
+                ...neutralInputs,
+                confluence: confluenceSnapshot({
+                    bullish: ['a', 'b', 'c'],
+                    freshBullish: ['a'],
+                    entryTrigger: true,
+                }),
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(score.components.confluence).toBe(92);
+        expect(score.total).toBeLessThan(70);
+        expect(score.signal).toBe('hold');
+    });
+
+    it('청산 트리거 단독으로는 매도 임계(30)를 밑돌지 않는다', () => {
+        const score = scoreSignals(
+            {
+                ...neutralInputs,
+                confluence: confluenceSnapshot({
+                    close: 80,
+                    bearish: ['a', 'b', 'c'],
+                    freshBearish: ['a'],
+                    exitTrigger: true,
+                }),
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(score.components.confluence).toBe(8);
+        expect(score.total).toBeGreaterThan(30);
+        expect(score.signal).toBe('hold');
+    });
+
+    it('모든 가중치가 0이면 total 50 / hold', () => {
+        const zero = {
+            confluence: 0,
+            technical: 0,
+            news: 0,
+            options: 0,
+            fundamental: 0,
+            congress: 0,
+        };
+        const score = scoreSignals(
+            { ...neutralInputs, confluence: confluenceSnapshot() },
+            zero,
+            70,
+            30,
+        );
+        expect(score.total).toBe(50);
+        expect(score.signal).toBe('hold');
     });
 });

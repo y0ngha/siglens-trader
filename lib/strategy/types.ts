@@ -7,6 +7,7 @@ export type TradingSignal = 'buy' | 'sell' | 'hold' | 'average_in';
 export interface SignalScore {
     total: number; // 0-100
     components: {
+        confluence: number;
         technical: number;
         news: number;
         options: number;
@@ -17,6 +18,7 @@ export interface SignalScore {
 }
 
 export interface ScoreWeights {
+    confluence: number;
     technical: number;
     news: number;
     options: number;
@@ -25,6 +27,7 @@ export interface ScoreWeights {
 }
 
 export const DEFAULT_WEIGHTS: ScoreWeights = {
+    confluence: 12,
     technical: 8,
     news: 6,
     options: 5,
@@ -43,10 +46,14 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
  *
  * `1Hour` intentionally equals {@link DEFAULT_WEIGHTS} — it is the existing behaviour, kept
  * as the baseline so this only changes the shorter timeframes.
+ *
+ * `confluence`(지표 컨플루언스)는 유일하게 LLM을 거치지 않는 축이고, siglens 백테스트에서
+ * 이 룰의 승률(70%)이 같은 시점 LLM 판단(61.5%)을 앞섰기 때문에 모든 프로파일에서 최상위
+ * 가중치를 갖는다. 호흡이 짧을수록 서술 판단보다 가격행동이 신뢰할 만하므로 15Min에서 더 높다.
  */
 export const WEIGHTS_BY_TIMEFRAME: Record<string, ScoreWeights> = {
-    '15Min': { technical: 10, news: 6, options: 6, fundamental: 2, congress: 1 },
-    '30Min': { technical: 9, news: 6, options: 5, fundamental: 3, congress: 2 },
+    '15Min': { confluence: 14, technical: 10, news: 6, options: 6, fundamental: 2, congress: 1 },
+    '30Min': { confluence: 13, technical: 9, news: 6, options: 5, fundamental: 3, congress: 2 },
     '1Hour': DEFAULT_WEIGHTS,
 };
 

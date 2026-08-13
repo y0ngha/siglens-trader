@@ -1,3 +1,5 @@
+import { scoreConfluence } from './confluence.js';
+import type { ConfluenceSnapshot } from './confluence.js';
 import type { ScoreWeights, SignalDirection, SignalScore } from './types.js';
 
 // Pseudo-count for options score shrinkage — pulls small signal samples toward 50.
@@ -15,6 +17,11 @@ export interface ActionRecommendation {
 }
 
 export interface AnalysisInputs {
+    /**
+     * 지표 컨플루언스 스냅샷 (LLM이 아니라 규칙이 만든 축).
+     * 봉을 못 받았거나 계산에 실패하면 `null`이고, 그때는 이 축이 투표하지 않는다.
+     */
+    confluence?: ConfluenceSnapshot | null;
     technical: {
         trend?: string;
         riskLevel?: string;
@@ -46,6 +53,7 @@ export function scoreSignals(
     sellThreshold: number,
 ): SignalScore {
     const components = {
+        confluence: scoreConfluence(inputs.confluence ?? null),
         technical: scoreTechnical(inputs.technical),
         news: scoreSentiment(inputs.news),
         options: scoreOptions(inputs.options),
@@ -64,14 +72,25 @@ export function scoreSignals(
     // when null would instead let a single component clear the threshold on its own).
     const congressWeight = inputs.congress ? weights.congress : 0;
 
+    // congress와 같은 조건부 투표. 봉 조회가 실패한 심볼에서 중립 50이 최상위 가중치로
+    // 투표하면 다른 축의 신호를 12/38만큼 50 쪽으로 끌어내려, FMP 장애가 곧 "아무것도
+    // 사거나 팔지 않음"이 된다. 데이터가 없으면 말을 하지 않는 쪽이 옳다.
+    const confluenceWeight = inputs.confluence ? weights.confluence : 0;
+
     const totalWeight =
-        weights.technical + weights.news + weights.options + weights.fundamental + congressWeight;
+        confluenceWeight +
+        weights.technical +
+        weights.news +
+        weights.options +
+        weights.fundamental +
+        congressWeight;
 
     if (totalWeight === 0) {
         return { total: 50, components, signal: 'hold' as const };
     }
 
     const weightedSum =
+        components.confluence * confluenceWeight +
         components.technical * weights.technical +
         components.news * weights.news +
         components.options * weights.options +

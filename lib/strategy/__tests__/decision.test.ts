@@ -7,6 +7,7 @@ function createSignalScore(overrides: Partial<SignalScore> = {}): SignalScore {
     return {
         total: 75,
         components: {
+            confluence: 50,
             technical: 80,
             news: 70,
             options: 65,
@@ -182,6 +183,7 @@ describe('makeTradeDecision', () => {
                 signal: 'buy',
                 total: 82,
                 components: {
+                    confluence: 50,
                     technical: 90,
                     news: 75,
                     options: 80,
@@ -194,7 +196,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 82/100 — 매수 (기술:90, 뉴스:75, 옵션:80, 펀더멘털:70, 의회:50)',
+                '신호 82/100 — 매수 (컨플루언스:50, 기술:90, 뉴스:75, 옵션:80, 펀더멘털:70, 의회:50)',
             );
         });
 
@@ -203,6 +205,7 @@ describe('makeTradeDecision', () => {
                 signal: 'sell',
                 total: 18,
                 components: {
+                    confluence: 50,
                     technical: 10,
                     news: 20,
                     options: 15,
@@ -219,7 +222,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 18/100 — 매도 (기술:10, 뉴스:20, 옵션:15, 펀더멘털:25, 의회:50)',
+                '신호 18/100 — 매도 (컨플루언스:50, 기술:10, 뉴스:20, 옵션:15, 펀더멘털:25, 의회:50)',
             );
         });
 
@@ -228,6 +231,7 @@ describe('makeTradeDecision', () => {
                 signal: 'hold',
                 total: 50,
                 components: {
+                    confluence: 50,
                     technical: 50,
                     news: 50,
                     options: 50,
@@ -240,7 +244,7 @@ describe('makeTradeDecision', () => {
             const result = makeTradeDecision(ctx);
 
             expect(result.reason).toBe(
-                '신호 50/100 — 대기 (기술:50, 뉴스:50, 옵션:50, 펀더멘털:50, 의회:50)',
+                '신호 50/100 — 대기 (컨플루언스:50, 기술:50, 뉴스:50, 옵션:50, 펀더멘털:50, 의회:50)',
             );
         });
     });
@@ -313,5 +317,32 @@ describe('makeTradeDecision', () => {
             expect(result.action).toBe('buy');
             expect(result.score).toBe(100);
         });
+    });
+});
+
+describe('buildReason의 컨플루언스 표기', () => {
+    it('근거 문자열 맨 앞에 컨플루언스 점수가 온다', () => {
+        const decision = makeTradeDecision({
+            symbol: 'AAPL',
+            signalScore: {
+                total: 75,
+                components: {
+                    confluence: 92,
+                    technical: 70,
+                    news: 60,
+                    options: 55,
+                    fundamental: 50,
+                    congress: 50,
+                },
+                signal: 'buy',
+            },
+            hasOpenPosition: false,
+            positionQuantity: 0,
+            calculatedSize: 10,
+        });
+        expect(decision.reason).toContain('컨플루언스:92');
+        expect(decision.reason.indexOf('컨플루언스:92')).toBeLessThan(
+            decision.reason.indexOf('기술:70'),
+        );
     });
 });

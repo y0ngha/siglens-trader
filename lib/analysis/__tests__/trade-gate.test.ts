@@ -157,7 +157,14 @@ function baseInput(overrides: Partial<TradeGateInput> = {}): TradeGateInput {
             total: 78,
             signal: 'buy',
             components: { technical: 85, news: 60, options: 72, fundamental: 55, congress: 50 },
-            weights: { technical: 8, news: 6, options: 5, fundamental: 4, congress: 3 },
+            weights: {
+                confluence: 12,
+                technical: 8,
+                news: 6,
+                options: 5,
+                fundamental: 4,
+                congress: 3,
+            },
             buyThreshold: 70,
             sellThreshold: 30,
             sourceAnalyzedAt: new Date('2026-08-12T13:35:00.000Z'),
@@ -307,6 +314,7 @@ describe('buildTradeGatePrompt — 계좌 상태', () => {
                         congress: Number.NaN,
                     },
                     weights: {
+                        confluence: Number.NaN,
                         technical: Number.NaN,
                         news: Number.NaN,
                         options: Number.NaN,

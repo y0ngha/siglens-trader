@@ -68,5 +68,5 @@ function buildReason(score: SignalScore, action: string): string {
               : action === 'AVERAGE_IN'
                 ? '추가 매수'
                 : '대기';
-    return `신호 ${score.total}/100 — ${actionKo} (기술:${components.technical}, 뉴스:${components.news}, 옵션:${components.options}, 펀더멘털:${components.fundamental}, 의회:${components.congress})`;
+    return `신호 ${score.total}/100 — ${actionKo} (컨플루언스:${components.confluence}, 기술:${components.technical}, 뉴스:${components.news}, 옵션:${components.options}, 펀더멘털:${components.fundamental}, 의회:${components.congress})`;
 }
