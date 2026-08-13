@@ -6,6 +6,15 @@ export type TradingSignal = 'buy' | 'sell' | 'hold' | 'average_in';
 
 export interface SignalScore {
     total: number; // 0-100
+    /**
+     * 컨플루언스 축을 뺀 가중 평균.
+     *
+     * 컨플루언스는 매수를 막을 수 있어도 매도를 막지 못한다(`signal-scorer.ts` 참조).
+     * 그 보정이 걸리면 `total`은 매도 임계값을 한참 웃도는데 `signal`은 `sell`이 되어,
+     * 저장된 숫자만으로는 매도가 재현되지 않는다. 이 값이 그 판정의 실제 근거다.
+     * 컨플루언스가 투표하지 않을 때는 `total`과 같다.
+     */
+    totalWithoutConfluence: number;
     components: {
         confluence: number;
         technical: number;

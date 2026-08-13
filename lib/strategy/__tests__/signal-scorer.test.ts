@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { scoreSignals } from '../signal-scorer';
+import type { AnalysisInputs } from '../signal-scorer';
 import { DEFAULT_WEIGHTS, DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../types';
 import type { ScoreWeights } from '../types';
 import type { ConfluenceSnapshot } from '../confluence';
@@ -1138,6 +1139,11 @@ describe('confluence 축', () => {
         // 총점은 컨플루언스 때문에 올라가지만 신호는 매도로 남는다.
         expect(withBullishConfluence.total).toBeGreaterThan(withoutConfluence.total);
         expect(withBullishConfluence.signal).toBe('sell');
+        // 보정이 걸린 행은 total이 매도 임계값 위에 있고, 매도의 실제 근거는
+        // totalWithoutConfluence다 — 감사에서 이 둘을 대조해야 정상 보정임을 알 수 있다.
+        expect(withBullishConfluence.total).toBeGreaterThan(30);
+        expect(withBullishConfluence.totalWithoutConfluence).toBeLessThanOrEqual(30);
+        expect(withBullishConfluence.totalWithoutConfluence).toBe(withoutConfluence.total);
     });
 
     it('컨플루언스가 새로 매도를 만드는 것은 허용한다', () => {
@@ -1204,6 +1210,82 @@ describe('confluence 축', () => {
             30,
         );
         expect(score.total).toBe(50);
+        expect(score.totalWithoutConfluence).toBe(50);
         expect(score.signal).toBe('hold');
+    });
+
+    describe('totalWithoutConfluence', () => {
+        // 컨플루언스 축을 실제로 제거한 호출의 total과 정확히 일치해야 한다.
+        // 그게 아니면 감사에 남는 값이 판정 근거가 아니라 다른 숫자다.
+        const cases: Array<[string, Omit<AnalysisInputs, 'confluence'>]> = [
+            ['모든 축 중립', neutralInputs],
+            [
+                '강세 조합',
+                {
+                    technical: { trend: 'bullish' },
+                    news: { overallSentiment: 'bullish' },
+                    options: { signals: [{ kind: 'bullish' }, { kind: 'bullish' }] },
+                    fundamental: { overallSentiment: 'bullish' },
+                    congress: { overallSentiment: 'bullish' },
+                },
+            ],
+            [
+                '약세 조합',
+                {
+                    technical: { trend: 'bearish', riskLevel: 'high' },
+                    news: { overallSentiment: 'bearish' },
+                    options: { signals: [{ kind: 'bearish' }] },
+                    fundamental: { overallSentiment: 'bearish' },
+                    congress: null,
+                },
+            ],
+            [
+                '엇갈린 조합',
+                {
+                    technical: { trend: 'bullish' },
+                    news: { overallSentiment: 'bearish' },
+                    options: null,
+                    fundamental: { overallSentiment: 'neutral' },
+                    congress: { overallSentiment: 'bearish' },
+                },
+            ],
+        ];
+
+        it.each(cases)('%s — 컨플루언스 없는 호출의 total과 일치한다', (_name, inputs) => {
+            const snapshot = confluenceSnapshot({ bullish: ['a', 'b', 'c'], freshBullish: ['a'] });
+            const withAxis = scoreSignals(
+                { ...inputs, confluence: snapshot },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            const withoutAxis = scoreSignals(
+                { ...inputs, confluence: null },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            expect(withAxis.totalWithoutConfluence).toBe(withoutAxis.total);
+        });
+
+        it('컨플루언스가 투표하지 않으면 total과 같다', () => {
+            const score = scoreSignals(
+                { ...neutralInputs, technical: { trend: 'bullish' }, confluence: null },
+                DEFAULT_WEIGHTS,
+                70,
+                30,
+            );
+            expect(score.totalWithoutConfluence).toBe(score.total);
+        });
+
+        it('가중치가 0이면 투표하지 않으므로 total과 같다', () => {
+            const score = scoreSignals(
+                { ...neutralInputs, confluence: confluenceSnapshot({ bearish: ['a', 'b', 'c'] }) },
+                { ...DEFAULT_WEIGHTS, confluence: 0 },
+                70,
+                30,
+            );
+            expect(score.totalWithoutConfluence).toBe(score.total);
+        });
     });
 });

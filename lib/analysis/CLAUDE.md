@@ -123,6 +123,15 @@ separately so tests (and prompt audits) can assert on the exact strings.
   - *`## 판단 지침`* — two separate ordered lists. The header says earlier items win, so the
     entry list (budget/cash first, position sizing, average-in) must never appear on an exit;
     the exit list starts at trigger strength and contains no budget, cash, or average-in item.
+- **The guideline order is a priority contract — inserting into the middle demotes something.**
+  Both lists put the confluence item **last** (entry #8, exit #6) for that reason. Its first draft
+  sat at #4 in both, and both demotions went the wrong way: on exit, an item that *shrinks* the
+  fraction pushed the two risk-reducing items (`분석의 신선도` → enlarge, `당일 손익 여력` → cut
+  fast) below it; on entry, an item that *enlarges* sizing pushed `현재 위치와 키 레벨의 관계`
+  (risk:reward) and `당일 손익 여력과 남은 장 시간` (daily-loss headroom) below it. So: a guideline
+  that limits risk never sits below one that grows size, and on exit a guideline that shrinks the
+  fraction never sits above one that grows it. Last is not ignored — the header says earlier wins
+  on conflict, not "stop reading".
   - *`## 계좌 상태`, the output example, rule 4's `reason` example, and two analysis lines* —
     the buying-power line and the "cash unknown is itself a conservative factor" note are
     entry-only; the exit prompt states the broker balance is irrelevant instead. `진입 권고`
@@ -142,6 +151,12 @@ separately so tests (and prompt audits) can assert on the exact strings.
   belongs to the **entry** rule — that backtest exited on ATR SL/TP plus a 10-bar timeout, so the
   bearish inverse has never been validated as an exit rule, and it fires far more often in
   practice. A shared line would let `청산 트리거: 성립` on the very next row borrow the 70%.
+- **A corrected sell explains itself.** `scoreSignals`'s sell asymmetry can produce `total: 51`
+  with `signal: 'sell'` against a sell threshold of 30. `TradeGateSignal.totalWithoutConfluence`
+  (optional) renders one extra line **only when it differs from `total`** — system rule 2 says
+  everything printed is true, so an unexplained 21-point contradiction makes the model reconcile
+  it, and on an exit that reconciliation lands on a smaller fraction. Equal or absent → no line,
+  because a line printed every run is noise that invites hunting a contradiction that isn't there.
 - **`## 예산` fixes the denominator.** `fraction` is a share of `fullBudget` and nothing else —
   `## 계좌 상태` prints per-symbol and total-exposure headroom that diverge from it whenever
   `limitedBy` is `total`/`cash`. It also warns that a non-zero fraction can round **up** to one

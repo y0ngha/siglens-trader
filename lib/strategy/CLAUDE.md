@@ -6,7 +6,7 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | Type definitions (SignalScore, ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:3}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `types.ts` | Type definitions (SignalScore — including `totalWithoutConfluence`, the confluence-excluded weighted average that is the real basis of a corrected `sell` and equals `total` whenever confluence doesn't vote; ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:3}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
 | `confluence.ts` | `ConfluenceSnapshot` type + `scoreConfluence` / `isConfluenceExit`. Scores the backtest's rule (3+ bullish types, ≥1 fresh, close > SMA(50)) from a snapshot the analysis layer computed. Constants: `CONFLUENCE_MIN` 3, `CONFLUENCE_SPAN` 30, `CONFLUENCE_SHRINK` 1, `CONFLUENCE_TRIGGER_SCORE` 92, `CONFLUENCE_EXIT_SCORE` 8. |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |

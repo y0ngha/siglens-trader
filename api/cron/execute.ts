@@ -124,6 +124,9 @@ function scoreDecisionDetail(
             : null;
     return {
         components: signalScore.components,
+        // 컨플루언스 보정이 걸리면 `signal='sell'`인데 `total`이 매도 임계값을 크게 웃돈다.
+        // 이 값이 없으면 그 행은 저장된 숫자만으로 재현되지 않아 버그와 구분되지 않는다.
+        totalWithoutConfluence: signalScore.totalWithoutConfluence,
         signal: signalScore.signal,
         thresholds: { buy: buyThreshold, sell: sellThreshold },
         sourceAnalyzedAt: sourceIso,
@@ -1824,6 +1827,7 @@ async function handler(req: Request): Promise<Response> {
                     };
                     const gateSignal = {
                         total: signalScore.total,
+                        totalWithoutConfluence: signalScore.totalWithoutConfluence,
                         signal: signalScore.signal,
                         components: signalScore.components,
                         weights,

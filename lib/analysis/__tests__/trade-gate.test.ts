@@ -537,6 +537,37 @@ describe('buildTradeGatePrompt — 신호 스코어', () => {
 
         expect(user).toContain('기술 분석 기준시각: 미상');
     });
+
+    describe('컨플루언스 제외 총점', () => {
+        const LINE = '- 컨플루언스 제외 총점:';
+
+        it('total과 다르면 보정을 설명하는 줄이 붙는다', () => {
+            const signal = baseInput().signal!;
+            const { user } = buildTradeGatePrompt(
+                baseInput({
+                    signal: { ...signal, total: 51, signal: 'sell', totalWithoutConfluence: 28 },
+                }),
+            );
+
+            expect(user).toContain('- 컨플루언스 제외 총점: 28 (이 방향 판정의 근거.');
+            expect(user).toContain('컨플루언스는 매수를 막을 수 있어도 매도를 막지 못하므로');
+        });
+
+        it('total과 같으면 줄 자체가 없다 — 정상 케이스에 잡음을 만들지 않는다', () => {
+            const signal = baseInput().signal!;
+            const { user } = buildTradeGatePrompt(
+                baseInput({ signal: { ...signal, totalWithoutConfluence: signal.total } }),
+            );
+
+            expect(user).not.toContain(LINE);
+        });
+
+        it('값이 없으면(undefined) 줄 자체가 없다', () => {
+            const { user } = buildTradeGatePrompt(baseInput());
+
+            expect(user).not.toContain(LINE);
+        });
+    });
 });
 
 describe('buildTradeGatePrompt — 결정 시각과 ET 세션', () => {
@@ -1034,9 +1065,10 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         expect(user).toContain('1. **트리거의 강도.**');
         expect(user).toContain('2. **미실현 손익 구간.**');
         expect(user).toContain('3. **추세의 생존 여부.**');
-        expect(user).toContain('4. **지표 컨플루언스의 청산 트리거는');
-        expect(user).toContain('5. **분석의 신선도.**');
-        expect(user).toContain('6. **당일 손익 여력.**');
+        // 리스크를 줄이는 두 항목이 4·5번 — 청산 크기를 줄이는 컨플루언스 항목보다 위다.
+        expect(user).toContain('4. **분석의 신선도.**');
+        expect(user).toContain('5. **당일 손익 여력.**');
+        expect(user).toContain('6. **지표 컨플루언스의 청산 트리거는');
         expect(user).not.toContain('7. **');
     });
 
@@ -1047,11 +1079,14 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         expect(user).toContain('1. **예산과 현금이 먼저다.**');
         expect(user).toContain('2. **분석의 신선도.**');
         expect(user).toContain('3. **신호 구성요소의 일치도.**');
-        expect(user).toContain('4. **지표 컨플루언스는 LLM이 아닌');
-        expect(user).toContain('5. **현재 위치와 키 레벨의 관계.**');
-        expect(user).toContain('6. **기존 포지션.**');
-        expect(user).toContain('7. **당일 손익 여력과 남은 장 시간.**');
-        expect(user).toContain('8. **청산 판단은 이번 결정에 없다.**');
+        // 손익비·일일 손실 여력 등 리스크를 제한하는 항목이 사이징을 키우는 컨플루언스
+        // 항목보다 위에 있어야 한다 — 그래서 컨플루언스가 맨 마지막(8번)이다.
+        expect(user).toContain('4. **현재 위치와 키 레벨의 관계.**');
+        expect(user).toContain('5. **기존 포지션.**');
+        expect(user).toContain('6. **당일 손익 여력과 남은 장 시간.**');
+        expect(user).toContain('7. **청산 판단은 이번 결정에 없다.**');
+        expect(user).toContain('8. **지표 컨플루언스는 LLM이 아닌');
+        expect(user).not.toContain('9. **');
     });
 });
 

@@ -6,6 +6,7 @@ import type { SignalScore } from '../types';
 function createSignalScore(overrides: Partial<SignalScore> = {}): SignalScore {
     return {
         total: 75,
+        totalWithoutConfluence: 75,
         components: {
             confluence: 50,
             technical: 80,
@@ -326,6 +327,7 @@ describe('buildReason의 컨플루언스 표기', () => {
             symbol: 'AAPL',
             signalScore: {
                 total: 75,
+                totalWithoutConfluence: 75,
                 components: {
                     confluence: 92,
                     technical: 70,

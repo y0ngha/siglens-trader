@@ -86,7 +86,7 @@ export function scoreSignals(
         congressWeight;
 
     if (totalWeight === 0) {
-        return { total: 50, components, signal: 'hold' as const };
+        return { total: 50, totalWithoutConfluence: 50, components, signal: 'hold' as const };
     }
 
     const weightedSum =
@@ -116,24 +116,30 @@ export function scoreSignals(
     // 하락 트리거로 점수를 끌어내려 새로 매도가 서는 것은 그대로 허용한다 — 청산을
     // 쉽게 만드는 방향은 막을 이유가 없다.
     const signal = determineSignal(total, buyThreshold, sellThreshold);
-    const signalWithoutConfluence =
+
+    // 컨플루언스를 뺀 점수는 감사에도 남는다(`SignalScore.totalWithoutConfluence`). 보정이
+    // 걸린 행은 `total`이 매도 임계값을 크게 웃도는데 `signal='sell'`이라, 이 값이 없으면
+    // 나중에 그 행을 보는 사람이 정상 보정과 버그를 구분할 수 없다.
+    const totalWithoutConfluence =
         confluenceWeight > 0 && totalWeight > confluenceWeight
-            ? determineSignal(
-                  clamp(
-                      Math.round(
-                          (weightedSum - components.confluence * confluenceWeight) /
-                              (totalWeight - confluenceWeight),
-                      ),
-                      0,
-                      100,
+            ? clamp(
+                  Math.round(
+                      (weightedSum - components.confluence * confluenceWeight) /
+                          (totalWeight - confluenceWeight),
                   ),
-                  buyThreshold,
-                  sellThreshold,
+                  0,
+                  100,
               )
-            : signal;
+            : total;
+    const signalWithoutConfluence = determineSignal(
+        totalWithoutConfluence,
+        buyThreshold,
+        sellThreshold,
+    );
 
     return {
         total,
+        totalWithoutConfluence,
         components,
         signal: signalWithoutConfluence === 'sell' ? 'sell' : signal,
     };
