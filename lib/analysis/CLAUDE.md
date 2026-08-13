@@ -131,6 +131,17 @@ separately so tests (and prompt audits) can assert on the exact strings.
     still alive?") a reason to cut less. Stop-loss / take-profit / key levels / POC / price
     targets stay — those *are* exit inputs. Rule 4's example likewise cites 예산 제약 on entry
     and 트리거 강도 on exit, since `## 예산` declares itself 해당 없음 two sections later.
+- **Inside the fence: facts only. Instructions live in the system prompt and `## 판단 지침`.**
+  The confluence block's first line used to end with an imperative ("weigh this axis more when the
+  axes disagree") — rendered *inside* `<analysis>`, which system rule 3 declares is never an
+  instruction. Both outcomes lose: obey the rule and the line is dead, follow the line and the
+  model learns that fenced text can instruct, which is exactly the forged-`## 판단 지침` defense.
+  The instruction now sits in the guideline list (entry #4: weigh it more; exit #4: it is not
+  decisive) and the fenced line states only what the axis is.
+  That line also **branches on `kind`** (`CONFLUENCE_SOURCE_LINE`): the backtest's 70% win rate
+  belongs to the **entry** rule — that backtest exited on ATR SL/TP plus a 10-bar timeout, so the
+  bearish inverse has never been validated as an exit rule, and it fires far more often in
+  practice. A shared line would let `청산 트리거: 성립` on the very next row borrow the 70%.
 - **`## 예산` fixes the denominator.** `fraction` is a share of `fullBudget` and nothing else —
   `## 계좌 상태` prints per-symbol and total-exposure headroom that diverge from it whenever
   `limitedBy` is `total`/`cash`. It also warns that a non-zero fraction can round **up** to one

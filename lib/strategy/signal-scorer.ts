@@ -99,9 +99,44 @@ export function scoreSignals(
 
     const total = clamp(Math.round(weightedSum / totalWeight), 0, 100);
 
+    // 컨플루언스는 매수를 막을 수 있어도 매도를 막지 못한다.
+    //
+    // 축을 하나 더하면 분모가 커져 매수와 매도 양쪽 문턱이 대칭으로 올라간다. 매수가
+    // 어려워지는 건 이 축을 넣은 목적이지만(지표가 받쳐주지 않는 진입은 하지 않는다),
+    // 매도가 어려워지는 건 정반대다. 놓친 매수는 기회비용이고 놓친 매도는 실현 손실이다 —
+    // AI 사이징 게이트가 진입 fail-closed / 청산 fail-open으로 갈라놓은 그 비대칭이
+    // 점수 단계에도 그대로 적용돼야 한다.
+    //
+    // 구체적으로 위험한 조합: 뉴스·펀더멘털이 무너져 기존 축 합성이 매도인데 하락이 아직
+    // 가격에 반영되지 않아 단기 지표만 우호적인 종목. 이때 technicalTrend는 아직 bearish가
+    // 아니라 evaluateExistingPosition도 잡지 못하고, fixed_exit_enabled는 기본 off다.
+    // 신호 매도가 유일한 출구인데 컨플루언스가 그걸 hold로 덮으면 청산 경로가 통째로 사라진다.
+    //
+    // 그래서 컨플루언스를 뺀 점수가 매도였다면 매도를 유지한다. 반대로 컨플루언스가
+    // 하락 트리거로 점수를 끌어내려 새로 매도가 서는 것은 그대로 허용한다 — 청산을
+    // 쉽게 만드는 방향은 막을 이유가 없다.
     const signal = determineSignal(total, buyThreshold, sellThreshold);
+    const signalWithoutConfluence =
+        confluenceWeight > 0 && totalWeight > confluenceWeight
+            ? determineSignal(
+                  clamp(
+                      Math.round(
+                          (weightedSum - components.confluence * confluenceWeight) /
+                              (totalWeight - confluenceWeight),
+                      ),
+                      0,
+                      100,
+                  ),
+                  buyThreshold,
+                  sellThreshold,
+              )
+            : signal;
 
-    return { total, components, signal };
+    return {
+        total,
+        components,
+        signal: signalWithoutConfluence === 'sell' ? 'sell' : signal,
+    };
 }
 
 function scoreTechnical(

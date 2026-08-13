@@ -34,10 +34,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 type ScoreComponents = {
+    /** 컨플루언스·의회는 이 축이 생기기 전 레코드에 없다 → 없으면 그 항목만 빠진다. */
+    confluence: number | null;
     technical: number;
     news: number;
     options: number;
     fundamental: number;
+    congress: number | null;
 };
 
 const COMPONENT_KEYS = ['technical', 'news', 'options', 'fundamental'] as const;
@@ -48,10 +51,14 @@ function readScoreComponents(detail: unknown): ScoreComponents | null {
     const c = detail.components;
     if (!COMPONENT_KEYS.every((k) => typeof c[k] === 'number')) return null;
     return {
+        // 구 레코드에는 이 두 키가 없다. 필수로 올리면 과거 결정이 전부 raw JSON 폴백으로
+        // 떨어지므로, 있을 때만 렌더한다.
+        confluence: typeof c.confluence === 'number' ? c.confluence : null,
         technical: c.technical as number,
         news: c.news as number,
         options: c.options as number,
         fundamental: c.fundamental as number,
+        congress: typeof c.congress === 'number' ? c.congress : null,
     };
 }
 
@@ -452,9 +459,14 @@ function DecisionsList({ runId }: { runId: string }) {
                                 <>
                                     {components && (
                                         <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                            {/* 가중치 순 — 컨플루언스(12)가 가장 큰 축이다. */}
+                                            {components.confluence !== null &&
+                                                `컨플루언스 ${components.confluence} · `}
                                             기술 {components.technical} · 뉴스 {components.news} ·
                                             옵션 {components.options} · 펀더멘털{' '}
                                             {components.fundamental}
+                                            {components.congress !== null &&
+                                                ` · 의회 ${components.congress}`}
                                         </span>
                                     )}
                                     {gate && (

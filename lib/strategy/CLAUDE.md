@@ -56,6 +56,18 @@ Priority-weighted average of 6 analysis axes (weights sum to 38 on the default `
 - Fundamental (4): mean of `categoryAssessments` sentiments (continuous, 50 ± 30), falling back to overallSentiment when no categories exist
 - Congress (3): `overallSentiment` through the same `scoreSentiment` as news — the shape is identical
 
+**Confluence can block a buy but never a sell.** Adding a sixth axis widens the denominator, which
+raises the buy *and* sell thresholds symmetrically. The first half is the point; the second half is
+a defect — a missed buy is opportunity cost, a missed sell is a realized loss, the same asymmetry
+the AI sizing gate encodes as entry fail-closed / exit fail-open. Concretely: news and fundamentals
+collapse to a 25/100 composite (sell) while the drop is not in the price yet, so short-horizon
+indicators still read favorably (confluence 65) → 38.7 → hold. `evaluateExistingPosition` does not
+catch it (`technicalTrend` is not bearish yet), `fixed_exit_enabled` is off by default, and
+`confluenceExit` is false, so the signal sell was the only exit and confluence just closed it. So
+`scoreSignals` re-scores without confluence and keeps `sell` when that verdict was `sell`.
+Confluence dragging a score *down* into a new sell is still allowed — making exits easier needs no
+guard. See design §2.4-a.
+
 **Confluence and congress are conditional voters**: when the input is `null` their weight drops to
 0 and leaves the denominator entirely. Most symbols have no congressional disclosure, and a symbol
 whose bars FMP could not serve has no snapshot — in both cases a constant neutral 50 carrying real

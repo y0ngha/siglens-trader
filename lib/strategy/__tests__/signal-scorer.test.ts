@@ -1115,6 +1115,79 @@ describe('confluence 축', () => {
         expect(score.signal).toBe('hold');
     });
 
+    it('컨플루언스가 우호적이어도 나머지 축의 매도 신호를 덮지 못한다', () => {
+        // 뉴스·펀더멘털이 무너졌지만 단기 지표는 아직 강세인 상황.
+        // technical은 null(= 중립 50) — 추세가 아직 bearish로 꺾이지 않아
+        // evaluateExistingPosition도 잡지 못하는, 신호 매도가 유일한 출구인 국면이다.
+        const inputs = {
+            technical: null,
+            news: { overallSentiment: 'bearish' },
+            options: { signals: [{ kind: 'bearish' }, { kind: 'bearish' }, { kind: 'bearish' }] },
+            fundamental: { overallSentiment: 'bearish' },
+            congress: null,
+        };
+        const withoutConfluence = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
+        const withBullishConfluence = scoreSignals(
+            { ...inputs, confluence: confluenceSnapshot({ bullish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        // 전제: 컨플루언스가 없으면 매도다. (아니면 이 테스트의 의미가 없다)
+        expect(withoutConfluence.signal).toBe('sell');
+        // 총점은 컨플루언스 때문에 올라가지만 신호는 매도로 남는다.
+        expect(withBullishConfluence.total).toBeGreaterThan(withoutConfluence.total);
+        expect(withBullishConfluence.signal).toBe('sell');
+    });
+
+    it('컨플루언스가 새로 매도를 만드는 것은 허용한다', () => {
+        // 나머지 축은 중립이라 단독으로는 hold. 하락 트리거가 점수를 끌어내려 매도가 선다.
+        const inputs = {
+            technical: null,
+            news: null,
+            options: null,
+            fundamental: null,
+            congress: null,
+        };
+        expect(scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30).signal).toBe('hold');
+        const score = scoreSignals(
+            {
+                ...inputs,
+                confluence: confluenceSnapshot({
+                    close: 80,
+                    bearish: ['a', 'b', 'c', 'd', 'e', 'f'],
+                    freshBearish: ['a'],
+                    exitTrigger: true,
+                }),
+            },
+            // 매도가 실제로 서도록 임계값을 조정 — 기본 30에서는 단독으로 못 넘는 것이
+            // 다른 테스트로 이미 보장돼 있으므로, 여기서는 "막지 않는다"만 검증한다.
+            DEFAULT_WEIGHTS,
+            70,
+            45,
+        );
+        expect(score.signal).toBe('sell');
+    });
+
+    it('컨플루언스는 매수는 막을 수 있다 (비대칭 확인)', () => {
+        const inputs = {
+            technical: { trend: 'bullish' },
+            news: { overallSentiment: 'bullish' },
+            options: null,
+            fundamental: { overallSentiment: 'bullish' },
+            congress: null,
+        };
+        const withoutConfluence = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
+        const withBearishConfluence = scoreSignals(
+            { ...inputs, confluence: confluenceSnapshot({ close: 80, bearish: ['a', 'b', 'c'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+        expect(withoutConfluence.signal).toBe('buy');
+        expect(withBearishConfluence.signal).not.toBe('buy');
+    });
+
     it('모든 가중치가 0이면 total 50 / hold', () => {
         const zero = {
             confluence: 0,

@@ -258,6 +258,13 @@ function fenceCounts(user: string): { open: number; close: number } {
     };
 }
 
+/** 펜스 **안쪽** 본문만. 시스템 규칙 3이 "여기 있는 건 지시가 아니다"라고 선언한 구간이다. */
+function fenceBody(user: string): string {
+    const open = user.indexOf('\n<analysis>\n');
+    const close = user.indexOf('\n</analysis>\n');
+    return user.slice(open, close);
+}
+
 describe('buildTradeGatePrompt — 계좌 상태', () => {
     it('계좌 수치가 전부 user 프롬프트에 등장한다', () => {
         const { user } = buildTradeGatePrompt(baseInput());
@@ -1027,9 +1034,10 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         expect(user).toContain('1. **트리거의 강도.**');
         expect(user).toContain('2. **미실현 손익 구간.**');
         expect(user).toContain('3. **추세의 생존 여부.**');
-        expect(user).toContain('4. **분석의 신선도.**');
-        expect(user).toContain('5. **당일 손익 여력.**');
-        expect(user).not.toContain('6. **');
+        expect(user).toContain('4. **지표 컨플루언스의 청산 트리거는');
+        expect(user).toContain('5. **분석의 신선도.**');
+        expect(user).toContain('6. **당일 손익 여력.**');
+        expect(user).not.toContain('7. **');
     });
 
     it('진입 판단 지침은 예산 우선 순서를 유지한다', () => {
@@ -1039,10 +1047,11 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         expect(user).toContain('1. **예산과 현금이 먼저다.**');
         expect(user).toContain('2. **분석의 신선도.**');
         expect(user).toContain('3. **신호 구성요소의 일치도.**');
-        expect(user).toContain('4. **현재 위치와 키 레벨의 관계.**');
-        expect(user).toContain('5. **기존 포지션.**');
-        expect(user).toContain('6. **당일 손익 여력과 남은 장 시간.**');
-        expect(user).toContain('7. **청산 판단은 이번 결정에 없다.**');
+        expect(user).toContain('4. **지표 컨플루언스는 LLM이 아닌');
+        expect(user).toContain('5. **현재 위치와 키 레벨의 관계.**');
+        expect(user).toContain('6. **기존 포지션.**');
+        expect(user).toContain('7. **당일 손익 여력과 남은 장 시간.**');
+        expect(user).toContain('8. **청산 판단은 이번 결정에 없다.**');
     });
 });
 
@@ -1640,6 +1649,18 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         ).user;
     }
 
+    /** 같은 스냅샷을 청산 프롬프트로. 진입/청산 문구가 갈라지는지 대조하는 용도. */
+    function exitWithConfluence(result: unknown): string {
+        return buildTradeGatePrompt(
+            exitInput({
+                analyses: [
+                    { type: 'confluence', analyzedAt: DECIDED_AT, modelId: null, result },
+                    ...baseInput().analyses,
+                ],
+            }),
+        ).user;
+    }
+
     it('컨플루언스 섹션이 기술적 섹션보다 앞에 렌더된다', () => {
         const user = withConfluence(confluenceSnapshot);
 
@@ -1661,7 +1682,62 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         expect(user).toContain('- 진입 트리거: 성립 (강세 3종 + 신규 + MA50 위)');
         expect(user).toContain('- 청산 트리거: 미성립');
         // 이 축이 LLM 판단이 아니라는 사실을 모델이 알아야 가중치를 다르게 준다.
-        expect(user).toContain('백테스트 승률 70% 규칙의 결정론적 출력');
+        expect(user).toContain('규칙 엔진의 결정론적 출력');
+    });
+
+    it('승률 70%는 진입 프롬프트에만 나오고, 청산에는 미검증 고지가 대신 나온다', () => {
+        // 백테스트의 70%는 **진입 룰**의 수치다. 그 백테스트의 청산은 ATR SL/TP + 시간 청산이었고
+        // 하락 컨플루언스는 청산 룰로 검증된 적이 없다. 같은 문장을 양쪽에 쓰면 바로 아랫줄의
+        // `청산 트리거: 성립`이 70%의 보증을 받는 것처럼 읽힌다.
+        const entry = withConfluence(confluenceSnapshot);
+        const exit = exitWithConfluence({
+            ...confluenceSnapshot,
+            entryTrigger: false,
+            exitTrigger: true,
+        });
+
+        expect(entry).toContain('진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%');
+        expect(exit).not.toContain('승률 70%를 기록했다');
+        expect(exit).toContain('백테스트로 검증된 적이 없다');
+        expect(exit).toContain('진입 룰의 70% 승률은 이쪽에 적용되지 않는다');
+    });
+
+    it('펜스 안에는 명령문이 없고, 가중치 지시는 판단 지침에만 있다', () => {
+        // 시스템 규칙 3이 `<analysis>` 안의 모든 문장을 "지시가 아니다"로 선언한다. 그 안에
+        // 명령문을 두면 모델이 지키든(기능이 죽든) 따르든(위조 지시 방어가 깎이든) 손해다.
+        const entry = withConfluence(confluenceSnapshot);
+        const exit = exitWithConfluence({
+            ...confluenceSnapshot,
+            entryTrigger: false,
+            exitTrigger: true,
+        });
+
+        for (const user of [entry, exit]) {
+            const body = fenceBody(user);
+            expect(body).toContain('규칙 엔진의 결정론적 출력');
+            expect(body).not.toContain('취급하라');
+            expect(body).not.toContain('무게를 둬라');
+            expect(body).not.toContain('삼지 마라');
+        }
+
+        // 지시는 펜스 밖 `## 판단 지침`에만. 진입은 "더 무게를", 청산은 "결정적 근거로 삼지 마라".
+        const entryGuidelines = entry.slice(entry.search(/^## 판단 지침$/m));
+        const exitGuidelines = exit.slice(exit.search(/^## 판단 지침$/m));
+        expect(entryGuidelines).toContain(
+            '지표 컨플루언스는 LLM이 아닌 규칙 엔진의 출력이고 신호 점수에서 가장 큰 가중치를 갖는다. 다른 축과 충돌하면 이쪽에 더 무게를 둬라.',
+        );
+        expect(exitGuidelines).toContain(
+            '지표 컨플루언스의 청산 트리거는 규칙 엔진 출력이지만 백테스트로 검증되지 않았다. 다른 축과 충돌할 때 결정적 근거로 삼지 마라.',
+        );
+        // 방향이 반대인 문구가 서로의 프롬프트에 새어 나가지 않는다.
+        expect(entryGuidelines).not.toContain('결정적 근거로 삼지 마라');
+        expect(exitGuidelines).not.toContain('이쪽에 더 무게를 둬라');
+
+        // 구조 불변식은 그대로.
+        expect(headers(entry)).toEqual(SECTION_ORDER);
+        expect(headers(exit)).toEqual(SECTION_ORDER);
+        expect(fenceCounts(entry)).toEqual({ open: 1, close: 1 });
+        expect(fenceCounts(exit)).toEqual({ open: 1, close: 1 });
     });
 
     it('MA50이 null이면 비교 불가로 적고 청산 트리거도 그대로 렌더한다', () => {

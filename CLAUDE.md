@@ -144,8 +144,13 @@ LLM's 61.5% over the same window, which is what the weight of 12 is paying for. 
 - **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
   `(72×26 + 50×12)/38 = 65`, below the buy threshold, so fill count drops. That is the point —
   *no entry the indicators do not back* — not a regression to tune away.
-- **Turning it off** is `POST /api/config` with `score_weights.confluence = 0`. No redeploy, no
-  separate flag: the weight knob already existed.
+- **Confluence can block a buy but never a sell.** Adding an axis widens the denominator, which
+  raises *both* thresholds — intended for entries, backwards for exits. `scoreSignals` therefore
+  re-scores without confluence and keeps `sell` if that verdict was `sell`. Confluence may still
+  *create* a sell (its exit trigger dragging the score down); it just cannot cancel one.
+- **Turning it off** is `POST /api/config` with `score_weights.confluence = 0`. There is no
+  weight-editing UI — `src/` exposes thresholds and risk settings, not `score_weights`, so the
+  API call is the only path. No redeploy, no separate flag: the weight knob already existed.
 
 Design: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md).
 
