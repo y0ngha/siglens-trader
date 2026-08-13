@@ -1,5 +1,6 @@
 import { callAnalysisAi, getEtSessionStatus, type ActiveModelId } from '@y0ngha/siglens-core';
 import type { ScoreWeights } from '../strategy/types.js';
+import type { ConfluenceSnapshot } from '../strategy/confluence.js';
 import type { ExitTrigger } from '../strategy/trade-plan.js';
 import {
     safeActionRecommendation,
@@ -30,6 +31,7 @@ export interface TradeGateSignal {
     total: number;
     signal: 'buy' | 'sell' | 'hold';
     components: {
+        confluence: number;
         technical: number;
         news: number;
         options: number;
@@ -59,7 +61,7 @@ export interface TradeGateAccount {
 }
 
 export interface TradeGateAnalysisEntry {
-    type: 'technical' | 'news' | 'options' | 'fundamental' | 'congress';
+    type: 'confluence' | 'technical' | 'news' | 'options' | 'fundamental' | 'congress';
     analyzedAt: Date | null;
     modelId: string | null;
     /** siglens-core 원본 결과 (untyped). trade-gate가 safe-extract로 요약한다. */
@@ -434,6 +436,22 @@ function actionLevels(result: unknown): {
     };
 }
 
+/**
+ * 시그널 타입 배열을 프롬프트에 안전하게 실을 문자열 배열로 변환한다.
+ *
+ * 값 자체는 core가 만든 고정 유니온이라 인젝션 위험이 낮지만, DB(JSONB)를 거쳐 돌아온
+ * 값일 수도 있으므로 다른 보간과 동일하게 sanitize를 통과시킨다. 프롬프트가 비대해지지
+ * 않도록 12개에서 자른다 (전체 카탈로그가 36종이고 한 봉에 12종이 동시에 켜지는 일은 없다).
+ */
+function safeTypeList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((v): v is string => typeof v === 'string')
+        .slice(0, 12)
+        .map((v) => sanitize(v, 40))
+        .filter((v) => v.length > 0);
+}
+
 /** `priceTargets`의 한쪽 시나리오를 "가격들 (조건: …)" 한 줄로. */
 function priceScenarioLine(result: unknown, side: 'bullish' | 'bearish'): string {
     const scenario = safeAnalysisPriceScenario(result, side);
@@ -532,6 +550,7 @@ const TRIGGER_LABEL: Record<ExitTrigger, string> = {
 };
 
 const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {
+    confluence: '지표 컨플루언스 (규칙 기반)',
     technical: '기술적',
     news: '뉴스',
     options: '옵션',
@@ -539,7 +558,9 @@ const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {
     congress: '의회',
 };
 
+// 컨플루언스가 선두 — 신호 가중치가 가장 높은 축이므로 프롬프트에서도 먼저 읽혀야 한다.
 const ANALYSIS_ORDER: Array<TradeGateAnalysisEntry['type']> = [
+    'confluence',
     'technical',
     'news',
     'options',
@@ -585,6 +606,8 @@ function sectionSignal(input: TradeGateInput): string[] {
         `- 방향: ${sanitize(s.signal, 8) || '미상'}`,
         `- 매수 임계값: ${fmtNum(s.buyThreshold)} / 매도 임계값: ${fmtNum(s.sellThreshold)}`,
         '- 구성요소 점수 (가중치):',
+        // 컨플루언스가 맨 앞 — 가중치가 가장 크고 유일하게 규칙 기반인 축이다.
+        `  - 컨플루언스: ${fmtNum(s.components.confluence)} (가중치 ${fmtNum(w.confluence)})`,
         `  - 기술: ${fmtNum(s.components.technical)} (가중치 ${fmtNum(w.technical)})`,
         `  - 뉴스: ${fmtNum(s.components.news)} (가중치 ${fmtNum(w.news)})`,
         `  - 옵션: ${fmtNum(s.components.options)} (가중치 ${fmtNum(w.options)})`,
@@ -693,6 +716,33 @@ function sectionExit(input: TradeGateInput): string[] {
 function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind): string[] {
     const r = entry.result;
     switch (entry.type) {
+        case 'confluence': {
+            const s = r as Partial<ConfluenceSnapshot> | null;
+            if (!s || typeof s !== 'object') return [];
+            const bullish = safeTypeList(s.bullish);
+            const bearish = safeTypeList(s.bearish);
+            const freshBullish = safeTypeList(s.freshBullish);
+            const freshBearish = safeTypeList(s.freshBearish);
+            const ma50 = typeof s.ma50 === 'number' && Number.isFinite(s.ma50) ? s.ma50 : null;
+            const close = typeof s.close === 'number' && Number.isFinite(s.close) ? s.close : null;
+            return [
+                '- 출처: LLM 판단이 아니라 백테스트 승률 70% 규칙의 결정론적 출력이다. 다른 축과 충돌하면 이쪽을 더 무겁게 취급하라.',
+                `- 봉 주기: ${sanitize(s.timeframe, 8) || '미상'}`,
+                `- 강세 신호 ${bullish.length}종: ${bullish.length ? bullish.join(', ') : '없음'}`,
+                `- 약세 신호 ${bearish.length}종: ${bearish.length ? bearish.join(', ') : '없음'}`,
+                `- 신규 강세 신호: ${freshBullish.length ? freshBullish.join(', ') : '없음'}`,
+                `- 신규 약세 신호: ${freshBearish.length ? freshBearish.join(', ') : '없음'}`,
+                `- MA50: ${ma50 === null ? '미상' : fmtUsd(ma50)} / 종가 ${close === null ? '미상' : fmtUsd(close)} (${
+                    ma50 !== null && close !== null
+                        ? close > ma50
+                            ? 'MA50 위'
+                            : 'MA50 아래'
+                        : '비교 불가'
+                })`,
+                `- 진입 트리거: ${s.entryTrigger === true ? '성립 (강세 3종 + 신규 + MA50 위)' : '미성립'}`,
+                `- 청산 트리거: ${s.exitTrigger === true ? '성립 (약세 3종 + 신규 + MA50 아래)' : '미성립'}`,
+            ];
+        }
         case 'technical': {
             const support = keyLevelPrices(r, 'support');
             const resistance = keyLevelPrices(r, 'resistance');

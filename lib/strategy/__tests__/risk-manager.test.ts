@@ -751,3 +751,69 @@ describe('evaluateExistingPosition', () => {
         });
     });
 });
+
+describe('하락 컨플루언스 청산', () => {
+    const base = { avgPrice: 100, stopLossPercent: 5, takeProfitPercent: 10 };
+
+    it('수익 구간이면 익절로 나간다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 104,
+            confluenceExit: true,
+        });
+        expect(result.action).toBe('take_profit');
+        expect(result.reason).toContain('컨플루언스');
+        expect(result.hard).toBeUndefined();
+    });
+
+    it('손실 구간이면 손절로 나간다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 98,
+            confluenceExit: true,
+        });
+        expect(result.action).toBe('stop_loss');
+        expect(result.reason).toContain('컨플루언스');
+        expect(result.hard).toBeUndefined();
+    });
+
+    it('고정 손절선이 컨플루언스보다 우선한다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 94,
+            fixedExitEnabled: true,
+            confluenceExit: true,
+        });
+        expect(result.reason).toContain('고정 손절선');
+        expect(result.hard).toBe(true);
+    });
+
+    it('지지선 이탈이 컨플루언스보다 우선한다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 95,
+            supportLevel: 97,
+            confluenceExit: true,
+        });
+        expect(result.reason).toContain('지지선 이탈');
+    });
+
+    it('기술적 추세 반전이 컨플루언스보다 우선한다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 95,
+            technicalTrend: 'bearish',
+            confluenceExit: true,
+        });
+        expect(result.reason).toContain('기술적 추세 반전');
+    });
+
+    it('confluenceExit이 false면 기존 동작과 동일하다', () => {
+        const result = evaluateExistingPosition({
+            ...base,
+            currentPrice: 101,
+            confluenceExit: false,
+        });
+        expect(result.action).toBe('hold');
+    });
+});
