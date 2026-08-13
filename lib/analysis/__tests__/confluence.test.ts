@@ -120,6 +120,37 @@ describe('computeConfluence', () => {
         expect(await computeConfluence('AAPL', '1Hour')).toBeNull();
     });
 
+    it('provider가 배열이 아닌 값을 주면 null (로그 경로 포함)', async () => {
+        getBars.mockResolvedValue(undefined);
+        expect(await computeConfluence('AAPL', '1Hour')).toBeNull();
+        expect(detectSignals).not.toHaveBeenCalled();
+    });
+
+    it('MA 구간 안에 비정상 종가가 있으면 ma50은 null이고 트리거는 서지 않는다', async () => {
+        const rows = bars(MIN_BARS + 1);
+        // 마지막 봉은 멀쩡하지만 SMA(50) 창 안의 한 봉이 깨졌다 — 평균을 낼 수 없다.
+        rows[rows.length - 10]!.close = Number.NaN;
+        getBars.mockResolvedValue(rows);
+        detectSignals
+            .mockReturnValueOnce([sig('a', 'bullish'), sig('b', 'bullish'), sig('c', 'bullish')])
+            .mockReturnValueOnce([]);
+
+        const snap = await computeConfluence('AAPL', '1Hour');
+
+        expect(snap!.ma50).toBeNull();
+        expect(snap!.entryTrigger).toBe(false);
+    });
+
+    it('종가 합이 오버플로하면 ma50은 null', async () => {
+        const rows = bars(MIN_BARS + 1, Number.MAX_VALUE);
+        getBars.mockResolvedValue(rows);
+        detectSignals.mockReturnValue([]);
+
+        const snap = await computeConfluence('AAPL', '1Hour');
+
+        expect(snap!.ma50).toBeNull();
+    });
+
     it('타임프레임별 룩백 일수로 from을 계산한다', async () => {
         getBars.mockResolvedValue([]);
         await computeConfluence('AAPL', '15Min');

@@ -50,10 +50,24 @@ export async function computeConfluence(
         const from = isoDaysAgo(LOOKBACK_DAYS[timeframe]);
         const bars = await getMarketDataProvider().getBars({ symbol, timeframe, from });
 
-        if (!Array.isArray(bars) || bars.length <= MIN_BARS) return null;
+        if (!Array.isArray(bars) || bars.length <= MIN_BARS) {
+            // 조용한 기권은 "이 축이 영구히 꺼진 심볼"을 관측 불가능하게 만든다.
+            // 스냅샷이 null이면 `cron_decisions.detail.confluence`도 null이라 DB만 봐서는
+            // 봉이 모자란 것인지 FMP가 죽은 것인지 구분되지 않는다. 로그가 유일한 단서다.
+            console.warn(
+                '[confluence] 봉 부족으로 기권:',
+                symbol,
+                timeframe,
+                `${Array.isArray(bars) ? bars.length : 0}/${MIN_BARS + 1}`,
+            );
+            return null;
+        }
 
         const last = bars[bars.length - 1]!;
-        if (!isFinitePositive(last.close)) return null;
+        if (!isFinitePositive(last.close)) {
+            console.warn('[confluence] 마지막 봉 종가가 비정상이라 기권:', symbol, last.close);
+            return null;
+        }
 
         const current = detectSignals(bars, calculateIndicators(bars));
         const prevBars = bars.slice(0, -1);

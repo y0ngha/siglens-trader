@@ -13,9 +13,10 @@ Personal use only (Toss Securities Terms — trading data for personal use only)
 api/              → Web-standard (Request) => Response handlers (HTTP + cron + reconcile)
 server/           → Hono app: serves the built SPA, mounts api/ handlers, runs node-cron
 src/              → React SPA (Dashboard UI)
-lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense
-                    and trade-plan (sizing fraction → share count).
+lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense,
+                    trade-plan (sizing fraction → share count) and confluence (rule-based indicator score).
 lib/analysis/     → Application: siglens-core integration, incl. the AI sizing gate (trade-gate.ts)
+                    and confluence.ts (FMP bars → siglens-core indicators → confluence snapshot; no LLM)
 lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
@@ -114,13 +115,39 @@ useQuery({
 
 ## Signal Scoring
 
-Priority-weighted average (weights sum to 23):
+Priority-weighted average (weights sum to 38):
+- Confluence: 12
 - Technical: 8
 - News: 6
 - Options: 5
 - Fundamental: 4
+- Congress: 3
 
 Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
+`WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises
+confluence to 14 and technical to 10 while cutting fundamental/congress); `1Hour` is the default
+profile above. Stored `score_weights` overrides the profile key by key.
+
+### Indicator Confluence
+
+The only axis that never calls an LLM, and the heaviest one. The rule is siglens' backtest
+winner (2024.04–2026.04, 100 cases): **3+ distinct bullish signal types active at once, at least
+one of them newly lit versus the previous bar, and close > SMA(50)**. Its 70% win rate beat the
+LLM's 61.5% over the same window, which is what the weight of 12 is paying for. Inverted
+(bearish 3종 + close < MA50) it is also an exit trigger — see `evaluateExistingPosition` step 3.5.
+
+- **Conditional vote, like congress.** No snapshot (FMP down, fewer than 121 bars) → weight 0,
+  dropped from the denominator. An FMP outage leaves the system behaving exactly as it did
+  before this axis existed. That is the fail-safe, not an edge case.
+- **A trigger alone cannot buy.** Trigger (92) with every other axis neutral scores
+  `(92×12 + 50×26)/38 = 63` — hold. It takes the rest at a mild 60 to reach 70.
+- **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
+  `(72×26 + 50×12)/38 = 65`, below the buy threshold, so fill count drops. That is the point —
+  *no entry the indicators do not back* — not a regression to tune away.
+- **Turning it off** is `POST /api/config` with `score_weights.confluence = 0`. No redeploy, no
+  separate flag: the weight knob already existed.
+
+Design: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md).
 
 ---
 

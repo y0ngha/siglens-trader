@@ -81,7 +81,19 @@ Single-purpose routes can also export the method function directly
 
 The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitrary key writes. Numeric keys are bounds-checked (0 to 1,000,000).
 
-Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`, `analysis_timeframe`, `score_weights`.
+Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
+`stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
+`analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
+`max_daily_loss_usd`.
+
+`trading_enabled` / `fixed_exit_enabled` must be booleans; `trading_mode` is checked against
+`dry_run` / `semi_auto` / `auto`; `analysis_timeframe` against `15Min` / `30Min` / `1Hour`.
+`score_weights` requires `technical` / `news` / `options` / `fundamental` and accepts `congress` /
+`confluence` as optional — both were added after the endpoint shipped, so a caller posting only the
+original four must keep working, while an object that *does* include them must not trip the
+unknown-key check. Present weights are non-negative finite numbers summing above 0, which is what
+makes `score_weights.confluence = 0` the documented off-switch for the indicator confluence axis:
+it needs no flag of its own.
 
 ## Execute Cron Flow
 
@@ -93,6 +105,9 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
 5.5. Load the AI sizing gate config (`analysis_model_config['trade_gate']`, once per run) and
    set the gate cutoff at cron start + 600s
 6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
+   - `evaluateExistingPosition` also receives `confluenceExit` (`isConfluenceExit(snapshot)`) —
+     the bearish inverse of the entry rule, checked right after the technical trend reversal.
+     It leaves `hard` unset, so the exit sizing gate still decides how much to cut
    - Skip positions with a sell in-flight (`order_tracking`) **or** queued for approval
      (`pending_orders`, semi_auto)
    - Non-`hold` exits go through the **exit sizing gate** (see below) → `exitQty`; a partial
@@ -101,6 +116,11 @@ Allowed keys: `trading_mode`, `max_position_size`, `max_total_exposure`, `stop_l
      stop-loss blocks a same-run re-buy just like a full one
 7. Recalculate exposure after any closures (using market prices)
 8. Score signals for watchlist symbols
+   - The **confluence snapshot** (`computeConfluence`, FMP bars + local indicator math, no LLM) is
+     the heaviest axis (weight 12). It is memoized in a run-scoped `confluenceCache` shared by the
+     re-evaluation loop and the watchlist loop, so a held watchlist symbol costs one bar fetch per
+     run, not two. A `null` snapshot (FMP down, too few bars) drops the axis's weight to 0 rather
+     than voting neutral — unlike stale technical analysis it never blocks a trade
    - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
 9. Make trade decisions (buy/sell/hold/average_in)
    - `planEntry` (not `calculatePositionSize`) computes the budget ceiling from the per-symbol
@@ -151,6 +171,12 @@ The asymmetry is deliberate: a missed buy is a lost opportunity, a missed sell i
 loss. Missing analysis axes are passed to the gate as `result: null` rather than dropped — the
 prompt prints "데이터 없음" on purpose. In the re-evaluation loop the three extra axes
 (options/fundamental/congress) are read **only** when the gate is actually going to be called.
+
+The confluence snapshot is handed to the gate as an analysis axis too, **first** in `ANALYSIS_ORDER`
+(label `지표 컨플루언스 (규칙 기반)`), and its component score leads the `구성요소 점수` block. It
+carries `modelId: 'rule-engine'` and the bar time as `analyzedAt` — it is not LLM output, and the
+prompt says so, telling the model to weigh it more heavily when the axes disagree. It comes from the
+same run-scoped cache as the scoring path, so entering the gate costs no extra fetch.
 
 New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
 `exit_already_handled` (the re-evaluation loop already sold this symbol this tick),

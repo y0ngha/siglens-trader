@@ -11,15 +11,19 @@ Calls siglens-core's direct `run*` functions (no polling loop) with per-symbol A
 | `run-news.ts` | Fetches news from FMP → `runNewsAnalysis` |
 | `run-options.ts` | Fetches options from Yahoo → `runOptionsAnalysis` |
 | `run-fundamental.ts` | Injects `FmpFundamentalClient` → `runFundamentalAnalysis` |
+| `run-congress.ts` | Congressional disclosure trend analysis (`runCongressTrendAnalysis`) |
+| `confluence.ts` | **No LLM.** FMP bars → siglens-core `calculateIndicators`/`detectSignals` → `ConfluenceSnapshot` (see below) |
 | `enrich-news-cards.ts` | Per-symbol news card enrichment via fixed worker pool (see below) |
+| `cadence.ts` | Per-type clock windows the analysis crons use to skip an already-covered symbol |
 | `timeframe.ts` | `analysis_timeframe` contract + per-timeframe technical staleness limits |
 | `source-time.ts` | `extractSourceAnalyzedAt` / `getAnalysisReferenceTime` — freshness-time helpers |
 | `trade-gate.ts` | AI position-sizing gate: prompt build → `callAnalysisAi` → JSON parse/validate (see below) |
 
 ## Dependencies
 
-- `@y0ngha/siglens-core` — submit/poll functions, types
-- `lib/data/` — FMP and Yahoo data adapters
+- `@y0ngha/siglens-core` — submit/poll functions, types, and the pure indicator engine
+  (`calculateIndicators` / `detectSignals`) `confluence.ts` runs locally
+- `lib/data/` — FMP and Yahoo data adapters, including `getMarketDataProvider()` (OHLC bars)
 - `lib/strategy/` — **types and pure helpers only** (`safe-extract.ts`, `ScoreWeights`, `ExitTrigger`).
   Allowed because `lib/strategy/` is pure with no I/O; the arrow never points back.
 
@@ -65,6 +69,33 @@ cumulative failures (throw **or** unexpected non-done resolve) hit `ENRICH_TOTAL
 (6); cached cards are still returned. The deadline keeps a single symbol from blocking the cron's
 audit finalization inside `maxDuration` (800s); if time runs out the aggregate per-symbol news
 analysis is skipped.
+
+## Indicator Confluence (`confluence.ts`)
+
+The one file here that never calls an LLM. It fetches OHLC bars for the configured
+`analysis_timeframe`, runs siglens-core's indicator engine locally, and returns the
+`ConfluenceSnapshot` that `lib/strategy/confluence.ts` scores. The rule it detects is siglens'
+backtest winner: **3+ distinct bullish signal types active, ≥1 of them newly lit since the
+previous bar, close > SMA(50)** — and its bearish inverse as an exit trigger.
+
+- **`MIN_BARS = 120`** (the check is `length <= MIN_BARS`, so 121 bars is the real minimum, matching
+  the backtest). Below it the `bollinger_squeeze_*` detectors read a 120-bar bandwidth percentile
+  and structurally stay silent, so a "3 bearish types" count taken on 80 bars is not a weaker
+  reading — it is a differently-defined one. Short history abstains rather than scoring.
+- **`detectSignals` runs twice** — once on `bars`, once on `bars.slice(0, -1)`. Core evaluates only
+  the tail of the array it is given, so there is no "state at bar N−1" to read out of a single call;
+  recomputing on the truncated array is the only way to get it. That diff is what "fresh" means, and
+  freshness is what separates a new signal from one that has been on for twenty bars.
+- **SMA(50) is computed here, not by core** — core does not export `calculateMA` from its root and
+  50 is not in its `MA_DEFAULT_PERIODS`. Fifty closes and a loop is cheaper than either fork.
+- **Every failure is `null`, never a throw** — bad bars, too few bars, a non-finite close, an FMP
+  outage. `scoreSignals` reads `null` as weight 0, so the axis abstains and the system scores
+  exactly as it did before this file existed. Abstention paths `console.warn`: the snapshot is
+  `null` in `cron_decisions.detail` either way, so without a log a symbol permanently short on bars
+  is indistinguishable from a dead vendor.
+- **The last bar may still be forming.** FMP's intraday tail is the in-progress candle, so a trigger
+  can flicker before the bar closes. Kept on purpose — dropping it costs a full timeframe of
+  latency. Fix by truncating the last bar (and firing a tick late) only if flicker becomes real.
 
 ## Trade Gate (`trade-gate.ts`)
 
