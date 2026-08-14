@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.19.0](https://github.com/y0ngha/siglens-trader/compare/v0.18.0...v0.19.0) (2026-08-14)
+
+
+### Features
+
+* 신규 진입을 ET 시간 창으로 제한 (청산은 정규장 내내 유지) ([#41](https://github.com/y0ngha/siglens-trader/issues/41)) ([37d5b3a](https://github.com/y0ngha/siglens-trader/commit/37d5b3a95129a9cc6b1a17da37935147fbfffb5d))
+
 # [0.18.0](https://github.com/y0ngha/siglens-trader/compare/v0.17.0...v0.18.0) (2026-08-13)
 
 
