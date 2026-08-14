@@ -294,8 +294,13 @@ export function SettingsPage() {
     // 입력이 비어 있는 등 파싱 불가면 환산 문구 자체를 내지 않는다(깨진 값을 보여주느니 침묵).
     const summerKst = toKstRange(entryWindow.start, entryWindow.end, KST_OFFSET_SUMMER);
     const winterKst = toKstRange(entryWindow.start, entryWindow.end, KST_OFFSET_WINTER);
+    // `entryWindowValid`를 함께 보는 이유: start > end인 편집 중간 상태에서는 시작만 익일로
+    // 넘어가고 끝은 당일에 남아, `04:00–22:00`처럼 익일 표기가 하나도 없는 멀쩡한 범위로
+    // 읽힌다. 저장은 어차피 막혀 있으니, 잘못된 범위를 그럴듯하게 보여주느니 침묵한다.
     const entryWindowKst =
-        summerKst && winterKst ? `한국시간 여름 ${summerKst} / 겨울 ${winterKst}` : null;
+        entryWindowValid && summerKst && winterKst
+            ? `한국시간 여름 ${summerKst} / 겨울 ${winterKst}`
+            : null;
 
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,

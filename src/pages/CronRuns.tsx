@@ -171,7 +171,8 @@ function cronTypeChipClass(type: string): string {
 // 주황 warning으로 칠하면 진짜 손실 한도 트립이 같은 색에 묻힌다.
 // 나머지 outcome(market_status_unavailable, us_market_holiday, trading_disabled,
 // empty_watchlist, disabled, queue_empty, …)은 status 'skipped'하고만 짝을 이루고, 그건 이미
-// 초록이 아니라 중립으로 렌더된다.
+// 초록이 아니라 중립으로 렌더된다. 예외는 `timeout` 하나 — 스테일 파이널라이저가 status
+// 'error'로 쓰므로 그쪽 경로에서 이미 빨강으로 뜬다. 어느 쪽이든 이 Set이 필요 없다.
 const RISK_OUTCOMES = new Set(['daily_loss_limit', 'daily_trade_limit']);
 
 /** Effective visual state for a run — 'warning' overrides a misleadingly-green 'completed'. */
