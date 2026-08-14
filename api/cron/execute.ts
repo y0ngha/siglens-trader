@@ -35,6 +35,11 @@ import { computeConfluence } from '../../lib/analysis/confluence.js';
 import { isConfluenceExit } from '../../lib/strategy/confluence.js';
 import type { ConfluenceSnapshot } from '../../lib/strategy/confluence.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
+import {
+    formatEntryWindow,
+    isWithinEntryWindow,
+    parseEntryWindow,
+} from '../../lib/strategy/entry-window.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
 import { planEntry, planExit } from '../../lib/strategy/trade-plan.js';
@@ -319,10 +324,32 @@ async function handler(req: Request): Promise<Response> {
             // `hard` → full size, gate bypassed). The kill switch is the sole exception and
             // still stops everything: it is the operator's explicit "stop trading".
             let entryBlock: {
-                outcome: 'daily_trade_limit' | 'daily_loss_limit';
+                outcome: 'daily_trade_limit' | 'daily_loss_limit' | 'outside_entry_window';
                 body: unknown;
             } | null = null;
             let forceFullExit = false;
+
+            // 진입 시간 창: 개장 직후 변동성과 마감 임밸런스를 피해 조용한 구간에서만
+            // 신규 진입을 연다. **진입만** 막는다 — 창 밖에도 포지션 재평가·손절·청산은
+            // 그대로 돈다. cron 스케줄을 좁히는 대신 이 방식을 쓴 이유가 그것이다.
+            //
+            // 리스크 회로차단기보다 **앞에** 둔 이유: 아래 차단기들은 평범한 대입이라
+            // 둘 다 해당하면 나중 것이 이긴다. 창 밖인 것보다 손실 한도에 걸린 것이
+            // 운영자에게 훨씬 중요한 사실이므로 그쪽이 기록에 남아야 한다.
+            //
+            // 이메일은 보내지 않는다 — 정상 상태이고 시간당 여러 번 발생한다.
+            const entryWindow = parseEntryWindow(await getConfigValue<unknown>(db, 'entry_window'));
+            if (!isWithinEntryWindow(new Date(), entryWindow)) {
+                entryBlock = {
+                    outcome: 'outside_entry_window',
+                    body: {
+                        skipped: true,
+                        reason: 'outside_entry_window',
+                        entryWindow: formatEntryWindow(entryWindow),
+                        timezone: 'America/New_York',
+                    },
+                };
+            }
 
             // Circuit breaker: daily trade limit
             // Count both settled trades AND in-flight orders (submitted/pending/partial) so
@@ -1489,7 +1516,13 @@ async function handler(req: Request): Promise<Response> {
                             symbol: item.symbol,
                             action: 'entry_blocked',
                             score: signalScore.total,
-                            detail: { entriesBlockedBy: entryBlock.outcome },
+                            detail: {
+                                entriesBlockedBy: entryBlock.outcome,
+                                // 어떤 창이었는지 남겨야 사후에 "왜 그날 안 샀나"를 답할 수 있다.
+                                ...(entryBlock.outcome === 'outside_entry_window'
+                                    ? { entryWindow: formatEntryWindow(entryWindow) }
+                                    : {}),
+                            },
                         });
                         continue;
                     }

@@ -500,6 +500,100 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(400);
     });
 
+    it('accepts a valid entry_window', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'entry_window',
+                value: { start: '11:00', end: '15:00' },
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'entry_window', {
+            start: '11:00',
+            end: '15:00',
+        });
+    });
+
+    it('accepts an all-day entry_window (the documented off-switch)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'entry_window',
+                value: { start: '00:00', end: '24:00' },
+            }),
+        );
+        expect(res.status).toBe(200);
+    });
+
+    it('rejects a non-object entry_window', async () => {
+        for (const value of [null, 42, 'abc', ['11:00', '15:00'], true]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'entry_window',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error).toContain('entry_window must be an object');
+        }
+    });
+
+    it('rejects malformed entry_window times', async () => {
+        for (const value of [
+            { start: '11', end: '15:00' },
+            { start: '11:00', end: '25:00' },
+            { start: '11:00', end: '11:60' },
+            { start: 660, end: 900 },
+            { start: '11:00' },
+            { start: '11:00', end: null },
+        ]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'entry_window',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error).toContain('"HH:MM"');
+        }
+    });
+
+    it('rejects entry_window with start >= end', async () => {
+        for (const value of [
+            { start: '11:00', end: '11:00' },
+            { start: '15:00', end: '11:00' },
+        ]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'entry_window',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error).toContain('must be earlier than');
+        }
+    });
+
+    it('rejects entry_window with unknown keys', async () => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'entry_window',
+                value: { start: '11:00', end: '15:00', timezone: 'Asia/Seoul' },
+            }),
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('unknown key(s): timezone');
+    });
+
     it('handles watchlist add', async () => {
         mockGetAllWatchlist.mockResolvedValue([{ id: 1, symbol: 'NVDA' }]);
         mockAddToWatchlist.mockResolvedValue([{ id: 2, symbol: 'AAPL' }]);
