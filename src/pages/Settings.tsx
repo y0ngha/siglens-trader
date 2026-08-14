@@ -17,6 +17,46 @@ function normalizeAnalysisTimeframe(value: unknown): AnalysisTimeframe {
         : DEFAULT_ANALYSIS_TIMEFRAME;
 }
 
+// lib/strategy/entry-window.ts의 기본 창과 off-switch를 문자열로 다시 적는다.
+// src/는 lib/(서버 코드)를 import하지 않는다는 레이어 규칙 때문 — analysis_timeframe과 같은 방식.
+const DEFAULT_ENTRY_WINDOW = { start: '11:00', end: '15:00' } as const;
+const ENTRY_WINDOW_OFF = { start: '00:00', end: '24:00' } as const;
+
+interface EntryWindowForm {
+    start: string;
+    end: string;
+    enabled: boolean;
+}
+
+/**
+ * 저장된 entry_window를 폼 상태로 정규화한다.
+ *
+ * off-switch 값(00:00~24:00)이면 토글을 끈 것으로 보이되 시간 입력에는 기본 창을 채운다 —
+ * 다시 켰을 때 빈 칸이 아니라 합리적인 값이 보여야 하기 때문. `<input type="time">`은
+ * '24:00'을 표현할 수도 없다.
+ */
+function readEntryWindow(raw: unknown): EntryWindowForm {
+    const v = raw as { start?: unknown; end?: unknown } | null | undefined;
+    const start = typeof v?.start === 'string' ? v.start : DEFAULT_ENTRY_WINDOW.start;
+    const end = typeof v?.end === 'string' ? v.end : DEFAULT_ENTRY_WINDOW.end;
+    if (start === ENTRY_WINDOW_OFF.start && end === ENTRY_WINDOW_OFF.end) {
+        return { ...DEFAULT_ENTRY_WINDOW, enabled: false };
+    }
+    return { start, end, enabled: true };
+}
+
+// ET → KST 오프셋. 여름은 EDT(UTC-4), 겨울은 EST(UTC-5), KST는 UTC+9.
+// 특정 날짜 없이 Intl/Date로 오프셋을 뽑으려 하면 오히려 틀린 답이 나오므로 순수 산술로 둔다.
+const KST_OFFSET_SUMMER = 13;
+const KST_OFFSET_WINTER = 14;
+
+function toKst(hhmm: string, offsetHours: number): string {
+    const [h, m] = hhmm.split(':');
+    const hour = Number(h);
+    if (!Number.isFinite(hour)) return '--:--';
+    return `${String((hour + offsetHours) % 24).padStart(2, '0')}:${m}`;
+}
+
 // MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다. lib/db/queries.ts DEFAULT_ANALYSIS_MODEL과 동기화 유지.
 const MODELS = [
     'deepseek-v4-flash',
@@ -206,6 +246,9 @@ export function SettingsPage() {
     // Local state for risk inputs (to allow typing without immediate API calls)
     const [riskOverrides, setRiskOverrides] = useState<Record<string, string>>({});
 
+    // 진입 시간 창 초안. null이면 편집 전 = 서버 값 그대로 표시.
+    const [entryWindowDraft, setEntryWindowDraft] = useState<EntryWindowForm | null>(null);
+
     if (isLoading) return <LoadingSkeleton />;
     if (error) return <ErrorMessage error={error as Error} />;
     if (!data) return null;
@@ -223,6 +266,19 @@ export function SettingsPage() {
 
     const fixedExitEnabled =
         getConfigValue(configData.config, 'fixed_exit_enabled', false) === true;
+
+    const entryWindow =
+        entryWindowDraft ??
+        readEntryWindow(getConfigValue(configData.config, 'entry_window', undefined));
+    // 서버도 start >= end를 400으로 거부한다. 왕복하기 전에 여기서 먼저 막는다.
+    const entryWindowValid = entryWindow.start !== '' && entryWindow.start < entryWindow.end;
+    const entryWindowKst = `한국시간 여름 ${toKst(entryWindow.start, KST_OFFSET_SUMMER)}–${toKst(
+        entryWindow.end,
+        KST_OFFSET_SUMMER,
+    )} / 겨울 ${toKst(entryWindow.start, KST_OFFSET_WINTER)}–${toKst(
+        entryWindow.end,
+        KST_OFFSET_WINTER,
+    )}`;
 
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
@@ -411,6 +467,92 @@ export function SettingsPage() {
                         </div>
                     )}
                 </div>
+            </section>
+
+            {/* Entry Window — 진입만 막는 시간 게이트. 청산 경로는 건드리지 않는다. */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h2 className="text-sm font-semibold">진입 시간 창</h2>
+                        <p className="mt-0.5 text-[10px] text-neutral-600">
+                            신규 진입을 허용할 동부시간(ET) 구간
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() =>
+                            setEntryWindowDraft({ ...entryWindow, enabled: !entryWindow.enabled })
+                        }
+                        className={`min-h-[44px] min-w-[44px] rounded border px-2 py-1 text-xs ${
+                            entryWindow.enabled
+                                ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                : 'border-[#262626] bg-[#0a0a0a] text-neutral-500'
+                        }`}
+                        aria-label={`진입 시간 제한 ${entryWindow.enabled ? '비활성화' : '활성화'}`}
+                    >
+                        {entryWindow.enabled ? 'ON' : 'OFF'}
+                    </button>
+                </div>
+                <div
+                    className={`mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 ${!entryWindow.enabled ? 'opacity-40' : ''}`}
+                >
+                    {(
+                        [
+                            ['entry-window-start', '진입 시작 (ET)', 'start'],
+                            ['entry-window-end', '진입 종료 (ET)', 'end'],
+                        ] as const
+                    ).map(([id, label, field]) => (
+                        <div key={id}>
+                            <label htmlFor={id} className="text-xs text-neutral-400">
+                                {label}
+                            </label>
+                            <input
+                                id={id}
+                                type="time"
+                                disabled={!entryWindow.enabled}
+                                className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                                value={entryWindow[field]}
+                                onChange={(e) =>
+                                    setEntryWindowDraft({
+                                        ...entryWindow,
+                                        [field]: e.target.value,
+                                    })
+                                }
+                            />
+                        </div>
+                    ))}
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
+                    ET {entryWindow.start}–{entryWindow.end} = {entryWindowKst}
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+                    청산·손절은 정규장 내내 그대로 실행됩니다 — 이 창은 신규 진입만 제한합니다.
+                </p>
+                {entryWindow.enabled && !entryWindowValid && (
+                    <p className="mt-2 text-[11px] text-red-400">
+                        시작 시각은 종료 시각보다 빨라야 합니다
+                    </p>
+                )}
+                {entryWindowDraft !== null && (
+                    <button
+                        type="button"
+                        disabled={entryWindow.enabled && !entryWindowValid}
+                        onClick={() => {
+                            mutate({
+                                type: 'config',
+                                key: 'entry_window',
+                                value: entryWindow.enabled
+                                    ? { start: entryWindow.start, end: entryWindow.end }
+                                    : ENTRY_WINDOW_OFF,
+                            });
+                            setEntryWindowDraft(null);
+                        }}
+                        aria-label="진입 시간 창 저장"
+                        className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        저장
+                    </button>
+                )}
             </section>
 
             {/* Watchlist */}

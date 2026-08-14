@@ -16,7 +16,7 @@ src/
 │   ├── Trades.tsx     # Trade history with reasons (includes skipped trades)
 │   ├── Analysis.tsx   # Latest analysis results per symbol (with trigger)
 │   ├── Pending.tsx    # Order approval queue (approve/reject)
-│   └── Settings.tsx   # Configuration (mode, watchlist, models, risk, notifications)
+│   └── Settings.tsx   # Configuration (mode, entry window, watchlist, models, risk, notifications)
 ├── components/        # Shared UI primitives
 │   ├── Card.tsx
 │   ├── Badge.tsx

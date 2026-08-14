@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -46,6 +46,11 @@ const mockConfig = {
         { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_daily_loss_usd', value: 500, updatedAt: '2026-01-01T00:00:00Z' },
+        {
+            key: 'entry_window',
+            value: { start: '11:00', end: '15:00' },
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
     ],
     watchlist: [
         {
@@ -1216,5 +1221,136 @@ describe('SettingsPage', () => {
 
         const positionSizeInput = screen.getByDisplayValue('5000');
         expect(positionSizeInput).not.toHaveAttribute('max', '100');
+    });
+
+    // -----------------------------------------------------------------------
+    // Entry window (entry_window) — ET 기준 신규 진입 허용 구간
+    // -----------------------------------------------------------------------
+
+    function withEntryWindow(value: unknown) {
+        return {
+            ...mockConfig,
+            config: mockConfig.config.map((c) => (c.key === 'entry_window' ? { ...c, value } : c)),
+        };
+    }
+
+    async function findEntryWindowInputs() {
+        const start = await screen.findByLabelText('진입 시작 (ET)');
+        const end = screen.getByLabelText('진입 종료 (ET)');
+        return { start, end };
+    }
+
+    it('reflects the saved entry window in the time inputs', async () => {
+        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '12:30', end: '14:45' }));
+
+        renderWithQuery(<SettingsPage />);
+
+        const { start, end } = await findEntryWindowInputs();
+        expect(start).toHaveValue('12:30');
+        expect(end).toHaveValue('14:45');
+        expect(screen.getByLabelText('진입 시간 제한 비활성화')).toHaveTextContent('ON');
+    });
+
+    it('falls back to the default entry window when the config key is absent', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.filter((c) => c.key !== 'entry_window'),
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        const { start, end } = await findEntryWindowInputs();
+        expect(start).toHaveValue('11:00');
+        expect(end).toHaveValue('15:00');
+        expect(screen.getByLabelText('진입 시간 제한 비활성화')).toHaveTextContent('ON');
+    });
+
+    it('shows the all-day entry window as OFF with disabled inputs holding the default', async () => {
+        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '00:00', end: '24:00' }));
+
+        renderWithQuery(<SettingsPage />);
+
+        const { start, end } = await findEntryWindowInputs();
+        expect(screen.getByLabelText('진입 시간 제한 활성화')).toHaveTextContent('OFF');
+        expect(start).toBeDisabled();
+        expect(end).toBeDisabled();
+        // 다시 켰을 때 빈 칸이 아니라 기본 창이 보여야 한다.
+        expect(start).toHaveValue('11:00');
+        expect(end).toHaveValue('15:00');
+    });
+
+    it('saves the edited entry window as { start, end }', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const { start, end } = await findEntryWindowInputs();
+        fireEvent.change(start, { target: { value: '10:30' } });
+        fireEvent.change(end, { target: { value: '14:00' } });
+
+        await user.click(screen.getByRole('button', { name: '진입 시간 창 저장' }));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'entry_window',
+            value: { start: '10:30', end: '14:00' },
+        });
+    });
+
+    it('saves the all-day off-switch when the entry window toggle is turned off', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await user.click(await screen.findByLabelText('진입 시간 제한 비활성화'));
+        await user.click(screen.getByRole('button', { name: '진입 시간 창 저장' }));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'entry_window',
+            value: { start: '00:00', end: '24:00' },
+        });
+    });
+
+    it('blocks saving an entry window whose start is not before its end', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const { start } = await findEntryWindowInputs();
+        fireEvent.change(start, { target: { value: '15:00' } });
+
+        expect(screen.getByRole('button', { name: '진입 시간 창 저장' })).toBeDisabled();
+        expect(screen.getByText('시작 시각은 종료 시각보다 빨라야 합니다')).toBeInTheDocument();
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('shows both the summer and winter KST translation of the entry window', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(
+            await screen.findByText(
+                /ET 11:00–15:00 = 한국시간 여름 00:00–04:00 \/ 겨울 01:00–05:00/,
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it('states that exits are not restricted by the entry window', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(
+            await screen.findByText(
+                '청산·손절은 정규장 내내 그대로 실행됩니다 — 이 창은 신규 진입만 제한합니다.',
+            ),
+        ).toBeInTheDocument();
     });
 });

@@ -100,7 +100,9 @@ it needs no flag of its own.
 `start < end` (no midnight wrap). `{ start: '00:00', end: '24:00' }` is the off-switch.
 The endpoint **rejects** bad values rather than calling `parseEntryWindow`, which silently falls
 back to the default window — that fallback is runtime defense against a corrupt row, and using it
-here would hide the operator's typo.
+here would hide the operator's typo. The dashboard posts this key from 설정 > 진입 시간 창 (two
+`<input type="time">` fields plus an ON/OFF toggle that sends the off-switch), and it pre-checks
+`start < end` client-side, so a 400 from here now means a hand-rolled request.
 
 ## Execute Cron Flow
 
