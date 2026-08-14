@@ -1330,16 +1330,43 @@ describe('SettingsPage', () => {
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
-    it('shows both the summer and winter KST translation of the entry window', async () => {
+    it('shows both the summer and winter KST translation of the entry window, marked as next-day', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
 
         renderWithQuery(<SettingsPage />);
 
+        // ET 11:00–15:00은 여름·겨울 모두 KST 익일이다 — 표기가 없으면 24시간을 오해한다.
         expect(
             await screen.findByText(
-                /ET 11:00–15:00 = 한국시간 여름 00:00–04:00 \/ 겨울 01:00–05:00/,
+                /ET 11:00–15:00 = 한국시간 여름 익일 00:00–04:00 \/ 겨울 익일 01:00–05:00/,
             ),
         ).toBeInTheDocument();
+    });
+
+    it('omits the next-day marker for a window that stays on the same KST day', async () => {
+        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '09:00', end: '10:00' }));
+
+        renderWithQuery(<SettingsPage />);
+
+        // ET 09:00–10:00 → 여름 KST 22:00–23:00(당일), 겨울 23:00–익일 00:00(끝만 넘어감).
+        expect(
+            await screen.findByText(
+                /ET 09:00–10:00 = 한국시간 여름 22:00–23:00 \/ 겨울 23:00–익일 00:00/,
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it('renders no KST translation while a time input is empty', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        const { end } = await findEntryWindowInputs();
+        fireEvent.change(end, { target: { value: '' } });
+
+        // '13:undefined' / NaN 같은 깨진 값을 보여주느니 환산 문구를 아예 내지 않는다.
+        expect(screen.queryByText(/한국시간/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/undefined|NaN/)).not.toBeInTheDocument();
     });
 
     it('states that exits are not restricted by the entry window', async () => {

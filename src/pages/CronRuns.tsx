@@ -160,14 +160,18 @@ function cronTypeChipClass(type: string): string {
     }
 }
 
-// `execute` outcomes where a circuit breaker tripped but the run still finished normally
+// `execute` outcomes where a **risk** circuit breaker tripped but the run still finished normally
 // (exit-only mode — see api/cron/execute.ts risk-breaker docs). `cron_runs.status` for these
 // is 'completed', same as a routine run, so color must be decided from `outcome`, not `status`
-// alone, or a breaker trip reads as a normal green completion. Verified against `CronOutcome`
-// (lib/db/queries.ts) and api/cron/execute.ts: these two are the only outcomes that can pair
-// with status 'completed' — every other non-'completed' outcome (market_status_unavailable,
-// us_market_holiday, trading_disabled, empty_watchlist, disabled, queue_empty, …) only ever
-// pairs with status 'skipped', which already renders neutral, not green.
+// alone, or a breaker trip reads as a normal green completion.
+//
+// `outside_entry_window`도 'completed'와 짝을 이룬다(창 밖이어도 보유 포지션이 있으면 실행이
+// 완주한다). 그래도 이 Set에는 **넣지 않는다** — 진입 시간 창은 리스크 사건이 아니라 정상
+// 운영 상태이고, 기본 창 기준으로 포지션을 들고 있으면 매 거래일 반복해서 발생한다. 그걸
+// 주황 warning으로 칠하면 진짜 손실 한도 트립이 같은 색에 묻힌다.
+// 나머지 outcome(market_status_unavailable, us_market_holiday, trading_disabled,
+// empty_watchlist, disabled, queue_empty, …)은 status 'skipped'하고만 짝을 이루고, 그건 이미
+// 초록이 아니라 중립으로 렌더된다.
 const RISK_OUTCOMES = new Set(['daily_loss_limit', 'daily_trade_limit']);
 
 /** Effective visual state for a run — 'warning' overrides a misleadingly-green 'completed'. */
@@ -245,9 +249,17 @@ function actionChipClass(action: string): string {
 
 // ─── summary parsing ──────────────────────────────────────────────────────────
 
+/** 진입이 리스크 차단기가 아니라 시간 창 때문에 막혔는가. */
+function isWindowBlock(entriesBlockedBy: unknown): boolean {
+    return entriesBlockedBy === 'outside_entry_window';
+}
+
 function breakerLabel(outcome: unknown): string {
     if (outcome === 'daily_loss_limit') return '일일 손실 한도';
     if (outcome === 'daily_trade_limit') return '일일 체결 한도';
+    // 한글 UI에 영문 snake_case가 그대로 노출되면 운영자가 원인을 읽지 못한다. 창은 리스크
+    // 차단기가 아니라 정상 운영 상태이므로 '한도'가 아닌 중립적인 문구를 쓴다.
+    if (outcome === 'outside_entry_window') return '진입 시간 창 밖';
     return typeof outcome === 'string' ? outcome : '알 수 없음';
 }
 
@@ -260,7 +272,9 @@ function parseSummary(cronType: string, summary: unknown): string {
             const parts: string[] = [];
             if (s.exitOnly === true) {
                 const forced = s.exitsForcedFull === true ? ' · 전량청산' : '';
-                parts.push(`⚠ 청산전용 (${breakerLabel(s.entriesBlockedBy)})${forced}`);
+                // ⚠는 회로차단기 발동 전용이다. 창 밖 진입 차단은 정상 상태라 붙이지 않는다.
+                const mark = isWindowBlock(s.entriesBlockedBy) ? '' : '⚠ ';
+                parts.push(`${mark}청산전용 (${breakerLabel(s.entriesBlockedBy)})${forced}`);
             }
             if (typeof s.symbolsEvaluated === 'number') {
                 parts.push(`${s.symbolsEvaluated}종목`);
@@ -323,7 +337,10 @@ function summaryHasAlert(cronType: string, summary: unknown): boolean {
             return typeof s.byStatus.error === 'number' && s.byStatus.error > 0;
         }
         if (cronType === 'execute') {
-            return s.exitOnly === true;
+            // 청산전용 자체가 경보는 아니다. 리스크 차단기(일일 손실/체결 한도)로 막힌 실행만
+            // 빨간 요약으로 남긴다 — 진입 시간 창은 정상 운영 상태이고 기본 창 기준 매 거래일
+            // 반복 발생하므로, 그것까지 경보 색으로 칠하면 진짜 한도 트립이 묻힌다.
+            return s.exitOnly === true && !isWindowBlock(s.entriesBlockedBy);
         }
         if (cronType !== 'reconcile') return false;
         const alerts =

@@ -233,6 +233,12 @@ the narrative quality feeds the decision.
 **설정 > 진입 시간 창**에서 조정한다. 시간 입력 두 개(ET)와 ON/OFF 토글이며, OFF가 곧
 `{ start: '00:00', end: '24:00' }`(= 제한 없음)이다. 재배포도 API 직접 호출도 필요 없다.
 
+`semi_auto` 승인은 창을 다시 보지 않는다 — 대기 주문 TTL(15분)만큼 창을 넘겨 체결될 수 있고,
+운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스러우므로 의도적으로 둔다.
+또한 기본 창은 하루 6개의 `execute` 틱 중 4개만 덮으므로, AI 사이징 게이트의 분할 진입과
+겹치면 하루에 도달 가능한 포지션 크기가 약 1/3 줄어든다 — `auto` 전환 시
+`max_trades_per_day`와 함께 확인할 것.
+
 설계 근거: [`docs/specs/2026-08-15-entry-window-design.md`](docs/specs/2026-08-15-entry-window-design.md).
 
 ### Quiet hours

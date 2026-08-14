@@ -50,11 +50,30 @@ function readEntryWindow(raw: unknown): EntryWindowForm {
 const KST_OFFSET_SUMMER = 13;
 const KST_OFFSET_WINTER = 14;
 
-function toKst(hhmm: string, offsetHours: number): string {
-    const [h, m] = hhmm.split(':');
-    const hour = Number(h);
-    if (!Number.isFinite(hour)) return '--:--';
-    return `${String((hour + offsetHours) % 24).padStart(2, '0')}:${m}`;
+/**
+ * 'HH:MM'(ET) → KST 시각 + 날짜 넘김 여부. 파싱 불가면 null.
+ *
+ * 빈 입력('')은 `Number('')`이 0이라 유한 검사를 통과하고 분이 undefined가 되어 '13:undefined'를
+ * 렌더했다. 그래서 숫자 변환이 아니라 형식 자체를 검사한다.
+ */
+function toKst(hhmm: string, offsetHours: number): { time: string; nextDay: boolean } | null {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
+    if (!match) return null;
+    const hour = Number(match[1]) + offsetHours;
+    return { time: `${String(hour % 24).padStart(2, '0')}:${match[2]}`, nextDay: hour >= 24 };
+}
+
+/**
+ * ET 창 하나를 KST 문구로. ET 오후는 KST 익일이 되므로 넘어가는 쪽에 '익일'을 붙인다 —
+ * 표기가 없으면 운영자가 24시간을 통째로 오해할 수 있다.
+ */
+function toKstRange(start: string, end: string, offsetHours: number): string | null {
+    const s = toKst(start, offsetHours);
+    const e = toKst(end, offsetHours);
+    if (!s || !e) return null;
+    // 둘 다 넘어가면 앞에 한 번만 붙이는 편이 읽기 쉽다.
+    if (s.nextDay && e.nextDay) return `익일 ${s.time}–${e.time}`;
+    return `${s.time}–${e.nextDay ? `익일 ${e.time}` : e.time}`;
 }
 
 // MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다. lib/db/queries.ts DEFAULT_ANALYSIS_MODEL과 동기화 유지.
@@ -272,13 +291,11 @@ export function SettingsPage() {
         readEntryWindow(getConfigValue(configData.config, 'entry_window', undefined));
     // 서버도 start >= end를 400으로 거부한다. 왕복하기 전에 여기서 먼저 막는다.
     const entryWindowValid = entryWindow.start !== '' && entryWindow.start < entryWindow.end;
-    const entryWindowKst = `한국시간 여름 ${toKst(entryWindow.start, KST_OFFSET_SUMMER)}–${toKst(
-        entryWindow.end,
-        KST_OFFSET_SUMMER,
-    )} / 겨울 ${toKst(entryWindow.start, KST_OFFSET_WINTER)}–${toKst(
-        entryWindow.end,
-        KST_OFFSET_WINTER,
-    )}`;
+    // 입력이 비어 있는 등 파싱 불가면 환산 문구 자체를 내지 않는다(깨진 값을 보여주느니 침묵).
+    const summerKst = toKstRange(entryWindow.start, entryWindow.end, KST_OFFSET_SUMMER);
+    const winterKst = toKstRange(entryWindow.start, entryWindow.end, KST_OFFSET_WINTER);
+    const entryWindowKst =
+        summerKst && winterKst ? `한국시간 여름 ${summerKst} / 겨울 ${winterKst}` : null;
 
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
@@ -523,7 +540,8 @@ export function SettingsPage() {
                     ))}
                 </div>
                 <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
-                    ET {entryWindow.start}–{entryWindow.end} = {entryWindowKst}
+                    ET {entryWindow.start}–{entryWindow.end}
+                    {entryWindowKst && ` = ${entryWindowKst}`}
                 </p>
                 <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
                     청산·손절은 정규장 내내 그대로 실행됩니다 — 이 창은 신규 진입만 제한합니다.
