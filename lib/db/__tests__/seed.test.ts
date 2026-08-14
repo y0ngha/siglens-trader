@@ -45,7 +45,7 @@ describe('seed', () => {
         await expect(seed()).rejects.toThrow('DATABASE_URL is required');
     });
 
-    it('inserts default config values (13 entries)', async () => {
+    it('inserts default config values (14 entries)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -54,7 +54,7 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(13);
+        expect(configValueCalls.length).toBe(14);
     });
 
     it('inserts analysis model configs (5 types)', async () => {

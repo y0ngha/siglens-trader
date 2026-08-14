@@ -84,7 +84,7 @@ The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitra
 Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
-`max_daily_loss_usd`.
+`max_daily_loss_usd`, `entry_window`.
 
 `trading_enabled` / `fixed_exit_enabled` must be booleans; `trading_mode` is checked against
 `dry_run` / `semi_auto` / `auto`; `analysis_timeframe` against `15Min` / `30Min` / `1Hour`.
@@ -95,10 +95,19 @@ unknown-key check. Present weights are non-negative finite numbers summing above
 makes `score_weights.confluence = 0` the documented off-switch for the indicator confluence axis:
 it needs no flag of its own.
 
+`entry_window` must be `{ start: 'HH:MM', end: 'HH:MM' }` — exactly those two keys, both parsed by
+`lib/strategy/entry-window.ts`'s `parseTimeOfDay` (00:00–24:00, `'24:00'` meaning end of day), with
+`start < end` (no midnight wrap). `{ start: '00:00', end: '24:00' }` is the off-switch.
+The endpoint **rejects** bad values rather than calling `parseEntryWindow`, which silently falls
+back to the default window — that fallback is runtime defense against a corrupt row, and using it
+here would hide the operator's typo. The dashboard posts this key from 설정 > 진입 시간 창 (two
+`<input type="time">` fields plus an ON/OFF toggle that sends the off-switch), and it pre-checks
+`start < end` client-side, so a 400 from here now means a hand-rolled request.
+
 ## Execute Cron Flow
 
 1. Acquire distributed lock (`cron:execute:lock`, 15min TTL)
-2. Circuit breaker checks: kill switch → daily trade limit → daily loss limit (realized + unrealized)
+2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
 3. Expire old pending orders
 4. Fetch live prices for all symbols (FMP quote API, cached per run)
 5. Fetch pending submitted orders (for sell-guard checks)
@@ -221,6 +230,7 @@ $1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchange
 
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
+| Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
 | Daily trade limit | `max_trades_per_day` | `20` | Blocks entries only — `entry_blocked`. Position exits and watchlist **sell** signals still run, gate-sized |
 | Daily loss limit | `max_daily_loss_usd` | `500` | Realized + unrealized (live prices). Blocks entries **and forces every exit to full size** (gate bypassed, `source: 'risk_halt'`) |

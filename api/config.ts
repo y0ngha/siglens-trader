@@ -14,6 +14,7 @@ import {
     updateNotificationConfig,
 } from '../lib/db/queries.js';
 import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
+import { parseTimeOfDay } from '../lib/strategy/entry-window.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -64,6 +65,7 @@ async function handler(req: Request): Promise<Response> {
             'fixed_exit_enabled',
             'max_trades_per_day',
             'max_daily_loss_usd',
+            'entry_window',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -161,6 +163,48 @@ async function handler(req: Request): Promise<Response> {
                     if (weightSum <= 0) {
                         return Response.json(
                             { error: 'score_weights sum must be greater than 0' },
+                            { status: 400 },
+                        );
+                    }
+                }
+                // `parseEntryWindow`를 여기 쓰지 않는 이유: 그건 잘못된 값을 조용히 기본 창으로
+                // 되돌리는 런타임 방어다. API는 거부해야 운영자가 오타를 안다. 'HH:MM' 파싱만
+                // 공유해서 대시보드가 받아준 값을 런타임이 다르게 읽는 일이 없게 한다.
+                if (key === 'entry_window') {
+                    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                        return Response.json(
+                            { error: 'entry_window must be an object' },
+                            { status: 400 },
+                        );
+                    }
+                    const w = value as Record<string, unknown>;
+                    const extraKeys = Object.keys(w).filter((k) => k !== 'start' && k !== 'end');
+                    if (extraKeys.length > 0) {
+                        return Response.json(
+                            {
+                                error: `entry_window contains unknown key(s): ${extraKeys.join(', ')}`,
+                            },
+                            { status: 400 },
+                        );
+                    }
+                    const startMinute = parseTimeOfDay(w.start);
+                    const endMinute = parseTimeOfDay(w.end);
+                    for (const [k, m] of [
+                        ['start', startMinute],
+                        ['end', endMinute],
+                    ] as const) {
+                        if (m === null) {
+                            return Response.json(
+                                {
+                                    error: `entry_window.${k} must be a "HH:MM" string between 00:00 and 24:00`,
+                                },
+                                { status: 400 },
+                            );
+                        }
+                    }
+                    if ((startMinute as number) >= (endMinute as number)) {
+                        return Response.json(
+                            { error: 'entry_window.start must be earlier than entry_window.end' },
                             { status: 400 },
                         );
                     }

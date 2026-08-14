@@ -43,6 +43,8 @@ export async function seed() {
         { key: 'trading_enabled', value: true },
         { key: 'max_trades_per_day', value: 20 },
         { key: 'max_daily_loss_usd', value: 500 },
+        // 신규 진입 허용 시간 창 (ET). `{ start: '00:00', end: '24:00' }`이면 제한 없음.
+        { key: 'entry_window', value: { start: '11:00', end: '15:00' } },
     ];
     for (const d of defaults) {
         await db

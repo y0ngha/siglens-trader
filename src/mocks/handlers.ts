@@ -9,7 +9,8 @@ function genId() {
 
 interface ConfigEntry {
     key: string;
-    value: string | number | boolean;
+    // entry_window처럼 객체 값을 갖는 키가 있어 unknown이다 (API도 JSON을 그대로 저장한다).
+    value: unknown;
     updatedAt: string;
 }
 
@@ -26,6 +27,11 @@ const configEntries: ConfigEntry[] = [
     { key: 'trading_enabled', value: true, updatedAt: new Date().toISOString() },
     { key: 'max_trades_per_day', value: 20, updatedAt: new Date().toISOString() },
     { key: 'max_daily_loss_usd', value: 500, updatedAt: new Date().toISOString() },
+    {
+        key: 'entry_window',
+        value: { start: '11:00', end: '15:00' },
+        updatedAt: new Date().toISOString(),
+    },
 ];
 
 let watchlist = [

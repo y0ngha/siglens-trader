@@ -263,6 +263,76 @@ describe('CronRunsPage', () => {
         expect(screen.getByText(/청산전용/)).toHaveClass('text-red-400');
     });
 
+    it('renders an entry-window exit-only run in Korean without alert coloring', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 13,
+                    runId: 'run-window-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'outside_entry_window',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5000,
+                    summary: {
+                        exitOnly: true,
+                        entriesBlockedBy: 'outside_entry_window',
+                        exitsForcedFull: false,
+                        symbolsEvaluated: 2,
+                    },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        // 영문 snake_case가 아니라 한글 라벨로 뜬다.
+        const summaryEl = await screen.findByText(/진입 시간 창 밖/);
+        expect(summaryEl).toHaveTextContent('청산전용');
+        expect(summaryEl).not.toHaveTextContent('⚠');
+        // 창은 정상 운영 상태 — 경보(빨강)로 칠하면 진짜 한도 트립이 묻힌다.
+        expect(summaryEl).not.toHaveClass('text-red-400');
+        expect(summaryEl).toHaveClass('text-neutral-400');
+        // 리스크 사건이 아니므로 주황 warning 상태로도 승격되지 않는다.
+        const row = summaryEl.closest('li');
+        expect(row).toHaveClass('border-l-green-500');
+        expect(row).not.toHaveClass('border-l-orange-500');
+    });
+
+    it('keeps a risk-breaker exit-only run in alert color (regression guard for the window carve-out)', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 14,
+                    runId: 'run-risk-2',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'daily_loss_limit',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5000,
+                    summary: {
+                        exitOnly: true,
+                        entriesBlockedBy: 'daily_loss_limit',
+                        exitsForcedFull: true,
+                        symbolsEvaluated: 2,
+                    },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        const summaryEl = await screen.findByText(/일일 손실 한도/);
+        expect(summaryEl).toHaveTextContent('⚠ 청산전용');
+        expect(summaryEl).toHaveClass('text-red-400');
+    });
+
     // ─── type filter ────────────────────────────────────────────────────────
 
     it('renders cron type filter group', async () => {

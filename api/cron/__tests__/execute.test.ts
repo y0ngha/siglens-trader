@@ -322,7 +322,10 @@ function setupDefaults() {
 describe('execute cron handler', () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-05-24T14:30:00.000Z'));
+        // 15:30Z = 11:30 EDT — 기본 진입 창(ET 11:00–15:00) 안. 창 밖이면 모든 진입 테스트가
+        // `entry_blocked`로 죽으므로, 파일 전체의 고정 시각을 창 안으로 잡는다. 상대적 시간
+        // 관계(분석 신선도·게이트 컷오프)는 다른 고정 시각도 함께 +1h 이동해 그대로 보존했다.
+        vi.setSystemTime(new Date('2026-05-24T15:30:00.000Z'));
         setupDefaults();
     });
 
@@ -859,6 +862,248 @@ describe('execute cron handler', () => {
                 // This test verifies the happy path instead.
                 expect(mockExpireOldPendingOrders).not.toHaveBeenCalled();
             });
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Entry window (ET) — 진입만 막고 청산은 계속 돈다
+    // -----------------------------------------------------------------------
+
+    describe('entry window', () => {
+        const heldPosition = {
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        };
+
+        /** 파일 기본 시각(15:30Z = 11:30 EDT)에서 창 밖으로 옮긴다: 14:00Z = 10:00 EDT. */
+        function outsideWindow() {
+            vi.setSystemTime(new Date('2026-05-24T14:00:00.000Z'));
+        }
+
+        /** AAPL 한 종목: 보유 포지션 $95, 워치리스트 매수 신호. */
+        function setup(config: Record<string, unknown> = {}, positions = [heldPosition]) {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key in config ? config[key] : null),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue(positions);
+            mockGetOpenPositionBySymbol.mockResolvedValue(positions[0] ?? null);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 95 } } }
+                            : null,
+                    ),
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockClosePosition.mockResolvedValue(true);
+        }
+
+        function auditRows() {
+            const call = mockInsertCronDecisions.mock.calls.at(-1);
+            return (call?.[3] ?? []) as Array<{
+                symbol?: string;
+                action: string;
+                detail?: Record<string, unknown>;
+            }>;
+        }
+
+        it('진입 창 안이면 매수가 그대로 나간다', async () => {
+            // 파일 기본 시각 15:30Z = 11:30 EDT — 기본 창(11:00–15:00) 안.
+            setup({ trading_mode: 'dry_run' }, []);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.entriesBlockedBy).toBeUndefined();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ symbol: 'AAPL', side: 'buy' }),
+            );
+        });
+
+        it('창 밖 + 보유 포지션 없음 → 창 정보를 담아 skip한다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'dry_run' }, []);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body).toEqual({
+                skipped: true,
+                reason: 'outside_entry_window',
+                entryWindow: { start: '11:00', end: '15:00' },
+                timezone: 'America/New_York',
+            });
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ status: 'skipped', outcome: 'outside_entry_window' }),
+            );
+        });
+
+        // 이 기능의 핵심 계약: 창은 진입만 막는다.
+        it('창 밖 + 보유 포지션 있음 → 청산은 정상 동작한다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'dry_run' });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'stop_loss',
+                reason: '지지선 이탈',
+            });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 95);
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ symbol: 'AAPL', side: 'sell', quantity: 10 }),
+            );
+            expect(body.exitOnly).toBe(true);
+            expect(body.entriesBlockedBy).toBe('outside_entry_window');
+        });
+
+        // 창은 리스크 사건이 아니므로 forceFullExit를 켜서는 안 된다 — 게이트가 그대로 사이징한다.
+        it('창 밖이어도 청산 사이징 게이트는 우회되지 않는다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'dry_run' });
+            mockEvaluateExistingPosition.mockReturnValue({
+                action: 'take_profit',
+                reason: '목표가 근접',
+            });
+            mockRunTradeGate.mockResolvedValue({
+                status: 'ok',
+                fraction: 0.5,
+                confidence: 70,
+                reason: '게이트 판단',
+                model: 'deepseek-v4-flash',
+            });
+
+            await handler(makeRequest(true));
+
+            expect(mockRunTradeGate).toHaveBeenCalled();
+            expect(mockReducePositionQuantity).toHaveBeenCalledWith(fakeDb, 1, 5);
+            expect(mockClosePosition).not.toHaveBeenCalled();
+        });
+
+        it('창 밖 + 매수 신호 → entry_blocked로 기록되고 주문이 나가지 않는다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'auto' });
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'entry_blocked',
+                score: 80,
+            });
+            expect(auditRows()).toContainEqual(
+                expect.objectContaining({
+                    action: 'entry_blocked',
+                    detail: expect.objectContaining({
+                        entriesBlockedBy: 'outside_entry_window',
+                        entryWindow: { start: '11:00', end: '15:00' },
+                    }),
+                }),
+            );
+        });
+
+        it('창 밖이어도 신호 매도는 통과한다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'auto' }, []);
+            mockGetOpenPositionBySymbol.mockResolvedValue(heldPosition);
+            // preCheckPositions가 비어 있으면 창 차단만으로 조기 반환되므로 한 번은 보유로 준다.
+            mockGetOpenPositions.mockResolvedValueOnce([heldPosition]).mockResolvedValue([]);
+            mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'sell',
+                symbol: 'AAPL',
+                score: 20,
+                reason: 'Score 20/100 — SELL',
+                quantity: 10,
+            });
+            mockExecuteSellOrder.mockImplementation(async (_s: string, quantity: number) => ({
+                orderId: 'ord-2',
+                status: 'filled',
+                avgFilledPrice: 95,
+                filledQuantity: quantity,
+            }));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockExecuteSellOrder).toHaveBeenCalledWith('AAPL', 10, expect.any(String));
+            expect(body.decisions).not.toContainEqual(
+                expect.objectContaining({ action: 'entry_blocked' }),
+            );
+        });
+
+        // 창보다 리스크 사유가 이겨야 한다 — 운영자에게 훨씬 중요한 사실이다.
+        it('창 밖 + 일일 손실 한도 동시 발동 → 기록되는 사유는 손실 한도다', async () => {
+            outsideWindow();
+            setup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 }, []);
+            mockGetTodayRealizedPnl.mockResolvedValue(-600);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.reason).toBe('daily_loss_limit_reached');
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({ outcome: 'daily_loss_limit' }),
+            );
+        });
+
+        it('설정된 창을 따른다 (하루 전체면 기능이 꺼진다)', async () => {
+            outsideWindow(); // 10:00 EDT — 기본 창 밖
+            setup({ trading_mode: 'dry_run', entry_window: { start: '00:00', end: '24:00' } }, []);
+            mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지' });
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.entriesBlockedBy).toBeUndefined();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ symbol: 'AAPL', side: 'buy' }),
+            );
+        });
+
+        it('설정이 없으면 기본 창(ET 11:00–15:00)이 적용된다', async () => {
+            // 14:59Z = 10:59 EDT — 기본 창 시작 1분 전.
+            vi.setSystemTime(new Date('2026-05-24T14:59:00.000Z'));
+            setup({ trading_mode: 'dry_run' }, []);
+
+            const res = await handler(makeRequest(true));
+            expect((await res.json()).reason).toBe('outside_entry_window');
+
+            // 15:00Z = 11:00 EDT — 시작 경계는 포함.
+            vi.setSystemTime(new Date('2026-05-24T15:00:00.000Z'));
+            mockInsertTrade.mockClear();
+            const res2 = await handler(makeRequest(true));
+
+            expect((await res2.json()).entriesBlockedBy).toBeUndefined();
+            expect(mockInsertTrade).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ side: 'buy' }),
+            );
         });
     });
 
@@ -2126,8 +2371,8 @@ describe('execute cron handler', () => {
                     if (type === 'technical') {
                         return Promise.resolve({
                             result: { trend: 'neutral', keyLevels: { currentPrice: 150 } },
-                            analyzedAt: '2026-05-24T14:25:00.000Z',
-                            sourceAnalyzedAt: '2026-05-24T14:25:00.000Z',
+                            analyzedAt: '2026-05-24T15:25:00.000Z',
+                            sourceAnalyzedAt: '2026-05-24T15:25:00.000Z',
                         });
                     }
                     return Promise.resolve(null);
@@ -5816,7 +6061,7 @@ describe('execute cron handler', () => {
                 if (key === 'trading_mode') return Promise.resolve('auto');
                 if (key === 'max_position_size') return Promise.resolve(1500);
                 if (key === 'trading_enabled') {
-                    vi.setSystemTime(new Date('2026-05-24T14:41:00.000Z')); // start + 660s
+                    vi.setSystemTime(new Date('2026-05-24T15:41:00.000Z')); // start + 660s
                     return Promise.resolve(true);
                 }
                 return Promise.resolve(null);
@@ -6081,7 +6326,7 @@ describe('execute cron handler', () => {
             gateOk(0.5);
             mockClosePosition.mockResolvedValue(true);
             mockEvaluateExistingPosition.mockImplementation(() => {
-                vi.setSystemTime(new Date('2026-05-24T14:41:00.000Z')); // start + 660s
+                vi.setSystemTime(new Date('2026-05-24T15:41:00.000Z')); // start + 660s
                 return { action: 'take_profit', reason: '목표가 근접' };
             });
 
@@ -6894,7 +7139,7 @@ describe('execute cron handler', () => {
             signalSellSetup('auto');
             gateOk(0.5);
             mockMakeTradeDecision.mockImplementation(() => {
-                vi.setSystemTime(new Date('2026-05-24T14:41:00.000Z')); // start + 660s
+                vi.setSystemTime(new Date('2026-05-24T15:41:00.000Z')); // start + 660s
                 return {
                     action: 'sell',
                     symbol: 'AAPL',
@@ -7354,7 +7599,7 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('지표 컨플루언스', () => {
-        const barTime = Math.floor(Date.parse('2026-05-24T14:00:00.000Z') / 1000);
+        const barTime = Math.floor(Date.parse('2026-05-24T15:00:00.000Z') / 1000);
 
         const bullishSnapshot = {
             timeframe: '1Hour',

@@ -581,6 +581,7 @@ export type CronOutcome =
     | 'market_status_unavailable'
     | 'daily_trade_limit'
     | 'daily_loss_limit'
+    | 'outside_entry_window'
     | 'timeout'
     | 'queue_empty';
 

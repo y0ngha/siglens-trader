@@ -216,6 +216,31 @@ so a 4-symbol pass exceeded the 690s cron cutoff and symbols went without a sign
 fundamental and congress keep it on — they run hourly or daily, so the latency is affordable and
 the narrative quality feeds the decision.
 
+### Entry window (신규 진입 시간 창)
+
+신규 진입은 `config.entry_window`(기본 **ET 11:00–15:00**) 안에서만 열린다. **위 스케줄 표는
+바뀌지 않는다** — 창은 스케줄이 아니라 진입 게이트다. `execute` cron은 정규장 내내 그대로 돌고,
+창 밖에도 포지션 재평가·손절·청산·신호 매도는 전부 정상 동작한다. cron 창을 좁히면 마감 전
+손절 경로까지 같이 죽으므로, 원칙 7에 따라 진입만 막는다.
+
+창은 **ET에 고정**한다. 회피 대상(개장 갭, 첫 30분 변동성, 마감 MOC 임밸런스)이 전부 ET 기준
+현상이라, UTC/KST에 고정하면 서머타임마다 창이 한 시간씩 밀려 목적이 반년마다 깨진다.
+
+일일 손실/거래 한도가 쓰는 `entryBlock` 메커니즘을 그대로 재사용하되, 창은 리스크 사건이
+아니므로 이메일도 `forceFullExit`도 없다. 두 사유가 동시에 성립하면 감사 로그에는 리스크 쪽이
+남는다.
+
+**설정 > 진입 시간 창**에서 조정한다. 시간 입력 두 개(ET)와 ON/OFF 토글이며, OFF가 곧
+`{ start: '00:00', end: '24:00' }`(= 제한 없음)이다. 재배포도 API 직접 호출도 필요 없다.
+
+`semi_auto` 승인은 창을 다시 보지 않는다 — 대기 주문 TTL(15분)만큼 창을 넘겨 체결될 수 있고,
+운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스러우므로 의도적으로 둔다.
+또한 기본 창은 하루 6개의 `execute` 틱 중 4개만 덮으므로, AI 사이징 게이트의 분할 진입과
+겹치면 하루에 도달 가능한 포지션 크기가 약 1/3 줄어든다 — `auto` 전환 시
+`max_trades_per_day`와 함께 확인할 것.
+
+설계 근거: [`docs/specs/2026-08-15-entry-window-design.md`](docs/specs/2026-08-15-entry-window-design.md).
+
 ### Quiet hours
 
 No email is sent between **00:00–09:59 KST**; anything raised in that window is queued
