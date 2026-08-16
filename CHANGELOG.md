@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.20.0](https://github.com/y0ngha/siglens-trader/compare/v0.19.0...v0.20.0) (2026-08-16)
+
+
+### Features
+
+* 매매 실행 주기 설정화 + 진입 품질 가드 + 분석 손절/익절가 트리거 ([#42](https://github.com/y0ngha/siglens-trader/issues/42)) ([1c5a502](https://github.com/y0ngha/siglens-trader/commit/1c5a5026927e5577a72803511b703d2e887e2e5e))
+
 # [0.19.0](https://github.com/y0ngha/siglens-trader/compare/v0.18.0...v0.19.0) (2026-08-14)
 
 
