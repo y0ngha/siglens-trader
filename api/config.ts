@@ -15,6 +15,7 @@ import {
 } from '../lib/db/queries.js';
 import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
 import { parseTimeOfDay } from '../lib/strategy/entry-window.js';
+import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -66,6 +67,8 @@ async function handler(req: Request): Promise<Response> {
             'max_trades_per_day',
             'max_daily_loss_usd',
             'entry_window',
+            'execute_interval_min',
+            'entry_cooldown_min',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -77,6 +80,7 @@ async function handler(req: Request): Promise<Response> {
             'sell_threshold',
             'max_trades_per_day',
             'max_daily_loss_usd',
+            'entry_cooldown_min',
         ]);
 
         const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
@@ -209,6 +213,18 @@ async function handler(req: Request): Promise<Response> {
                         );
                     }
                 }
+                // 실행 간격은 열거값이다 — 60의 약수만 허용한다. 임의의 분을 받으면
+                // `isExecuteTick`의 모듈로가 시(hour) 경계에서 어긋나 실행이 불규칙해진다.
+                // `parseExecuteInterval`(손상된 행을 조용히 기본값으로 되돌리는 런타임 방어)을
+                // 여기 쓰지 않는 이유는 entry_window와 같다 — API는 거부해야 오타가 드러난다.
+                if (key === 'execute_interval_min' && !isExecuteInterval(value)) {
+                    return Response.json(
+                        {
+                            error: `execute_interval_min must be one of: ${EXECUTE_INTERVALS.join(', ')}`,
+                        },
+                        { status: 400 },
+                    );
+                }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
                     const MAX_VALUE = 1_000_000;
                     if (
@@ -226,6 +242,14 @@ async function handler(req: Request): Promise<Response> {
                     }
                 }
                 // Logical validation: minimum thresholds for risk parameters
+                // 재진입 쿨다운 상한은 하루(1440분) — 그보다 길면 "오늘은 이 종목 재진입
+                // 없음"이고, 그건 워치리스트에서 빼는 게 맞다.
+                if (key === 'entry_cooldown_min' && (value as number) > 1440) {
+                    return Response.json(
+                        { error: 'entry_cooldown_min must be between 0 and 1440' },
+                        { status: 400 },
+                    );
+                }
                 if (key === 'stop_loss_percent' && (value as number) < 1) {
                     return Response.json(
                         { error: 'stop_loss_percent must be at least 1' },

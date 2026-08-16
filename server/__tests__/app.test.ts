@@ -10,7 +10,10 @@ describe('CRON_JOBS', () => {
             ['options', '*/15 13-21 * * 1-5'],
             ['fundamental', '0 15 * * 1-5'],
             ['congress', '0 16 * * 1-5'],
-            ['execute', '7 13-21 * * 1-5'],
+            // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가
+            // 정한다. :07 오프셋은 종전 `7 13-21`에서 그대로 이어받았다 — 간격 60분이면
+            // 실행 시각이 종전과 같다.
+            ['execute', '7-59/5 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
             // Daily, not weekday-only: Friday-night events must reach the operator on
             // Saturday morning. 01:00 UTC = 10:00 KST, just after quiet hours end.
@@ -20,6 +23,12 @@ describe('CRON_JOBS', () => {
 
     it('wires a handler function for each job', () => {
         for (const j of CRON_JOBS) expect(typeof j.handler).toBe('function');
+    });
+
+    it('node-cron이 파싱할 수 있는 표현식만 등록한다', async () => {
+        // `7-59/5` 같은 step 표현식은 스케줄러가 받아주지 않으면 등록 시점에 터진다.
+        const cron = (await import('node-cron')).default;
+        for (const j of CRON_JOBS) expect(cron.validate(j.schedule)).toBe(true);
     });
 });
 

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ActionRecommendation } from '@y0ngha/siglens-core';
 import {
     safeRecord,
     safeString,
@@ -10,6 +11,9 @@ import {
     safeAnalysisTargetPrice,
     safeAnalysisPriceScenario,
     safeActionRecommendation,
+    safeAnalysisEntryPrices,
+    safeAnalysisStopLoss,
+    safeAnalysisTakeProfit,
     safeAnalysisIndicators,
     safeFundamentalCategories,
     safeArray,
@@ -645,5 +649,134 @@ describe('safeString', () => {
 
     it('returns empty string for empty string input', () => {
         expect(safeString('')).toBe('');
+    });
+});
+
+/**
+ * 픽스처는 core의 `ActionRecommendation`으로 타입을 고정한다. 이 저장소에서 `keyLevels`와
+ * `priceTargets` 추출 버그가 릴리스 하나를 통째로 살아남은 이유가, core가 내지 않는 모양으로
+ * 쓰인 픽스처였다.
+ */
+function withAction(action: ActionRecommendation): { actionRecommendation: ActionRecommendation } {
+    return { actionRecommendation: action };
+}
+
+const baseAction = {
+    positionAnalysis: '현재가는 지지선 위입니다.',
+    entry: '$148~$152 분할 진입.',
+    exit: '$140 손절, $170 익절.',
+    riskReward: '1:2',
+} satisfies ActionRecommendation;
+
+describe('safeAnalysisEntryPrices', () => {
+    it('권장 진입 구간을 그대로 읽는다', () => {
+        expect(
+            safeAnalysisEntryPrices(withAction({ ...baseAction, entryPrices: [148, 152] })),
+        ).toEqual([148, 152]);
+    });
+
+    it('`{ price }` 객체 배열도 받는다', () => {
+        expect(
+            safeAnalysisEntryPrices({
+                actionRecommendation: { ...baseAction, entryPrices: [{ price: 150 }] },
+            }),
+        ).toEqual([150]);
+    });
+
+    it('비정상 값은 걸러낸다', () => {
+        expect(
+            safeAnalysisEntryPrices({
+                actionRecommendation: { ...baseAction, entryPrices: [0, -5, 'x', null, 150] },
+            }),
+        ).toEqual([150]);
+    });
+
+    it('없거나 모양이 어긋나면 빈 배열 — 게이트가 통과로 읽는다', () => {
+        expect(safeAnalysisEntryPrices(withAction(baseAction))).toEqual([]);
+        expect(safeAnalysisEntryPrices({ actionRecommendation: null })).toEqual([]);
+        expect(safeAnalysisEntryPrices(null)).toEqual([]);
+        expect(safeAnalysisEntryPrices({})).toEqual([]);
+        expect(safeAnalysisEntryPrices({ actionRecommendation: { entryPrices: 150 } })).toEqual([]);
+    });
+});
+
+describe('safeAnalysisStopLoss', () => {
+    it('AI 손절가를 읽는다', () => {
+        expect(safeAnalysisStopLoss(withAction({ ...baseAction, stopLoss: 140 }))).toBe(140);
+    });
+
+    it('보정값이 있으면 보정값이 이긴다 — core가 못 쓴다고 판정한 값으로 청산하지 않는다', () => {
+        expect(
+            safeAnalysisStopLoss(
+                withAction({
+                    ...baseAction,
+                    stopLoss: 205, // 현재가 위 = 유효하지 않음
+                    reconciledLevels: {
+                        stopLoss: 140,
+                        exit: '',
+                        riskReward: '',
+                        reason: 'AI 손절가가 현재가 위였습니다',
+                    },
+                }),
+            ),
+        ).toBe(140);
+    });
+
+    it('보정값이 비정상이면 원본으로 떨어진다', () => {
+        expect(
+            safeAnalysisStopLoss({
+                actionRecommendation: {
+                    ...baseAction,
+                    stopLoss: 140,
+                    reconciledLevels: { stopLoss: 0, exit: '', riskReward: '', reason: '' },
+                },
+            }),
+        ).toBe(140);
+    });
+
+    it('없거나 비정상이면 undefined', () => {
+        expect(safeAnalysisStopLoss(withAction(baseAction))).toBeUndefined();
+        expect(
+            safeAnalysisStopLoss({ actionRecommendation: { ...baseAction, stopLoss: -1 } }),
+        ).toBeUndefined();
+        expect(safeAnalysisStopLoss(null)).toBeUndefined();
+        expect(safeAnalysisStopLoss({})).toBeUndefined();
+    });
+});
+
+describe('safeAnalysisTakeProfit', () => {
+    it('가장 가까운 익절가(첫 칸)를 읽는다', () => {
+        expect(
+            safeAnalysisTakeProfit(
+                withAction({ ...baseAction, takeProfitPrices: [170, 185, 200] }),
+            ),
+        ).toBe(170);
+    });
+
+    it('보정값 배열이 있으면 보정값이 이긴다', () => {
+        expect(
+            safeAnalysisTakeProfit(
+                withAction({
+                    ...baseAction,
+                    takeProfitPrices: [90],
+                    reconciledLevels: {
+                        takeProfitPrices: [170],
+                        exit: '',
+                        riskReward: '',
+                        reason: 'AI 익절가가 현재가 아래였습니다',
+                    },
+                }),
+            ),
+        ).toBe(170);
+    });
+
+    it('없거나 전부 비정상이면 undefined', () => {
+        expect(safeAnalysisTakeProfit(withAction(baseAction))).toBeUndefined();
+        expect(
+            safeAnalysisTakeProfit({
+                actionRecommendation: { ...baseAction, takeProfitPrices: [0, -3] },
+            }),
+        ).toBeUndefined();
+        expect(safeAnalysisTakeProfit(null)).toBeUndefined();
     });
 });

@@ -32,6 +32,8 @@ const configEntries: ConfigEntry[] = [
         value: { start: '11:00', end: '15:00' },
         updatedAt: new Date().toISOString(),
     },
+    { key: 'execute_interval_min', value: 10, updatedAt: new Date().toISOString() },
+    { key: 'entry_cooldown_min', value: 60, updatedAt: new Date().toISOString() },
 ];
 
 let watchlist = [

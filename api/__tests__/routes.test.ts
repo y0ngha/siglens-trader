@@ -594,6 +594,63 @@ describe('POST /api/config', () => {
         expect((await res.json()).error).toContain('unknown key(s): timezone');
     });
 
+    it('accepts a valid execute_interval_min', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'execute_interval_min',
+                value: 5,
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'execute_interval_min', 5);
+    });
+
+    it('rejects an execute_interval_min outside the allowed set', async () => {
+        // 60의 약수가 아니면 시(hour) 경계에서 주기가 어긋난다. 7·12는 그래서 거부다.
+        for (const value of [7, 12, 0, -5, 90, '10', null, 10.5]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'execute_interval_min',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error).toContain('execute_interval_min must be one of');
+        }
+    });
+
+    it('accepts entry_cooldown_min within range, including 0 (off)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        for (const value of [0, 60, 1440]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'entry_cooldown_min',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+    });
+
+    it('rejects entry_cooldown_min above one day or non-numeric', async () => {
+        for (const value of [1441, -1, 'soon', null]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'entry_cooldown_min',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+        }
+    });
+
     it('handles watchlist add', async () => {
         mockGetAllWatchlist.mockResolvedValue([{ id: 1, symbol: 'NVDA' }]);
         mockAddToWatchlist.mockResolvedValue([{ id: 2, symbol: 'AAPL' }]);

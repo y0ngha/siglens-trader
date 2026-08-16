@@ -51,7 +51,12 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
     // Congressional disclosures lag the actual trade by weeks, so once per weekday is plenty —
     // hourly would just burn LLM calls on data that won't have changed since the last run.
     { name: 'congress', schedule: '0 16 * * 1-5', handler: cronCongress },
-    { name: 'execute', schedule: '7 13-21 * * 1-5', handler: cronExecute },
+    // 5분마다 호출하고, 실제 실행 여부는 핸들러 안의 `execute_interval_min` 게이트가 정한다
+    // (`lib/strategy/execute-interval.ts`). 스케줄 문자열을 설정으로 바꾸려면 태스크 재등록
+    // = 재시작이 필요한데, 게이트는 대시보드에서 바꾼 즉시 다음 틱부터 먹는다.
+    // `7-59/5`의 :07 오프셋은 정각에 시작하는 분석 cron 결과가 저장될 시간을 준다 — 간격을
+    // 60분으로 두면 종전 `7 13-21` 스케줄과 실행 시각이 분 단위로 같다.
+    { name: 'execute', schedule: '7-59/5 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
     // 01:00 UTC = 10:00 KST. Runs daily (including weekends) — there are no day-of-week
     // restrictions because quiet-hours notifications can be queued any day US market trades.

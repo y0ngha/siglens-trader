@@ -19,6 +19,16 @@ export interface EvaluatePositionParams {
     takeProfitPercent: number;
     /** When true, fixed stop-loss and take-profit checks are active. Default: false. */
     fixedExitEnabled?: boolean;
+    /**
+     * 분석이 제시한 손절가 (`actionRecommendation.stopLoss`, core 보정값 우선).
+     *
+     * 고정 손절 %(`fixedExitEnabled`)는 기본 꺼져 있고, 나머지 손절 경로(지지선 이탈·추세
+     * 반전·하락 컨플루언스)는 전부 **간접** 신호다. 이 값만이 "여기서 자른다"고 분석이
+     * 명시한 가격인데 여태 규칙에서 읽히지 않고 사이징 게이트 프롬프트에만 들어갔다.
+     */
+    aiStopLoss?: number;
+    /** 분석이 제시한 익절가 중 가장 가까운 것 (`actionRecommendation.takeProfitPrices[0]`). */
+    aiTakeProfit?: number;
     /** from keyLevels.support[0] */
     supportLevel?: number;
     /** from keyLevels.resistance[0] */
@@ -80,10 +90,12 @@ export function shouldTakeProfit(
  *
  * Priority order:
  * 1. Fixed stop loss (only when fixedExitEnabled)
+ * 1.5. 분석 손절가 이탈 (`aiStopLoss`) — always active
  * 2. Dynamic stop loss (support level break) — always active
  * 3. Technical trend reversal (bearish) — always active
  * 3.5. 하락 지표 컨플루언스 — always active
  * 4. Fixed take profit (only when fixedExitEnabled)
+ * 4.5. 분석 익절가 도달 (`aiTakeProfit`) — always active
  * 5. Dynamic take profit (resistance / target approach) — always active
  * 6. News-driven preemptive exit (bearish news + profit zone) — always active
  */
@@ -108,6 +120,29 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             action: 'stop_loss',
             reason: `고정 손절선 도달 (-${stopLossPercent}%)`,
             hard: true,
+        };
+    }
+
+    // 1.5. 분석이 명시한 손절가 이탈.
+    // 고정 손절선(1번) 바로 뒤 — 운영자가 직접 그은 선이 우선이고, 그다음이 분석이 그은
+    // 선이며, 지지선 이탈 같은 간접 신호(2번 이하)는 그 뒤다.
+    // `hard`를 세우지 않는 이유는 지지선 이탈과 같다 — 분석에서 파생된 판단이지 절대
+    // 리스크 한계가 아니므로 사이징 게이트가 얼마나 자를지 정한다.
+    if (params.aiStopLoss && currentPrice < params.aiStopLoss) {
+        // 수익 구간이면 익절로 라벨링한다 — 지지선 이탈(2번)·추세 반전(3번)과 같은 처리다.
+        // 분석 손절가는 우리 매수가와 무관한 절대 가격이라, $100에 산 포지션이 $145까지
+        // 오른 뒤 손절선 $140을 건드리는 일이 흔하다. 그걸 stop_loss로 기록하면 실현 수익이
+        // 손절 이력으로 남고, `recentStopLossSymbols` 쿨다운까지 걸려 재진입이 막힌다.
+        const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+        if (gainPercent >= 0) {
+            return {
+                action: 'take_profit',
+                reason: `분석 손절가 이탈이나 수익 구간 — 익절 (손절: $${params.aiStopLoss})`,
+            };
+        }
+        return {
+            action: 'stop_loss',
+            reason: `분석 손절가 이탈 (손절: $${params.aiStopLoss}, 현재: $${currentPrice})`,
         };
     }
 
@@ -150,6 +185,16 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     // 4. Fixed take profit check (only when enabled)
     if (params.fixedExitEnabled && shouldTakeProfit(avgPrice, currentPrice, takeProfitPercent)) {
         return { action: 'take_profit', reason: `고정 익절선 도달 (+${takeProfitPercent}%)` };
+    }
+
+    // 4.5. 분석이 명시한 익절가 도달. 손절 쪽(1.5)과 같은 자리 — 고정선 다음이 분석선이다.
+    // 저항선/목표가 근접(5번)이 98%·95% 근사인 것과 달리 이건 명시 가격이라 근사를 쓰지
+    // 않는다. 이 값이 없을 때 5번이 그대로 받는다.
+    if (params.aiTakeProfit && currentPrice >= params.aiTakeProfit) {
+        return {
+            action: 'take_profit',
+            reason: `분석 익절가 도달 (익절: $${params.aiTakeProfit})`,
+        };
     }
 
     // 5. Dynamic take profit: approaching resistance or target
