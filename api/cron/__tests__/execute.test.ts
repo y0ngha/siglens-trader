@@ -182,8 +182,54 @@ const fakeWatchlist = [
     { symbol: 'TSLA', companyName: 'Tesla Inc.', enabled: true },
 ];
 
+// core의 `KeyLevels`에는 `currentPrice`가 없다 — 이 픽스처가 그 모양을 흉내내는 바람에
+// `safeAnalysisPrice`가 프로덕션에서 항상 0을 반환하는 버그가 릴리스를 넘겨 살아남았다.
+// 이제 분석 폴백 가격은 컨플루언스 스냅샷의 종가에서 온다.
 const fakeTechResult = {
-    result: { trend: 'bullish', riskLevel: 'low', keyLevels: { currentPrice: 150 } },
+    result: {
+        trend: 'bullish',
+        riskLevel: 'low',
+        keyLevels: { support: [{ price: 140, reason: '직전 저점' }], resistance: [] },
+    },
+};
+
+/**
+ * 기본 컨플루언스 스냅샷 — 트리거 없는 중립, 종가 150.
+ *
+ * 종가가 곧 **분석 폴백 가격**이라, 이 값이 없으면 FMP 호가가 없는 테스트에서 모든 심볼이
+ * `skipped_no_price`로 빠진다. 기권(null)을 검증하는 테스트는 개별적으로 덮어쓴다.
+ */
+const DEFAULT_TEST_PRICE = 150;
+
+/** 호가와 스냅샷을 모두 비운다 — "가격을 구할 수 없음" 상태. */
+function noPriceAnywhere() {
+    mockFetchLivePrice.mockResolvedValue(null);
+    mockFetchLivePriceDetail.mockResolvedValue({
+        source: 'fmp_quote',
+        price: null,
+        reason: 'request_failed',
+        error: 'mock no live price',
+    });
+    computeConfluenceMock.mockResolvedValue(null);
+}
+
+/** 이 실행에서 모든 심볼의 현재가를 `price`로 만든다(호가 경로). */
+function setLivePrice(price: number) {
+    mockFetchLivePrice.mockResolvedValue(price);
+    mockFetchLivePriceDetail.mockResolvedValue({ source: 'fmp_quote', price });
+}
+
+const fakeConfluenceSnapshot = {
+    timeframe: '1Hour' as const,
+    barTime: Math.floor(new Date('2026-05-24T15:00:00.000Z').getTime() / 1000),
+    close: 150,
+    ma50: 145,
+    bullish: ['macd_bullish_cross'],
+    bearish: [],
+    freshBullish: [],
+    freshBearish: [],
+    entryTrigger: false,
+    exitTrigger: false,
 };
 const fakeNewsResult = { result: { overallSentiment: 'bullish' } };
 const fakeOptionsResult = { result: { signals: [{ kind: 'bullish' }] } };
@@ -242,8 +288,9 @@ function setupDefaults() {
     mockOpenPosition.mockResolvedValue([]);
     mockClosePosition.mockResolvedValue([]);
     mockScoreSignals.mockReturnValue(fakeHoldSignalScore);
-    // 기본은 기권(null) — 컨플루언스 도입 이전과 동일하게 동작해야 한다.
-    computeConfluenceMock.mockResolvedValue(null);
+    // 기본은 중립 스냅샷이다. 이 스냅샷의 `close`가 분석 폴백 가격이므로, 기권(null)을
+    // 기본값으로 두면 FMP 호가가 없는 모든 테스트가 `skipped_no_price`로 빠진다.
+    computeConfluenceMock.mockResolvedValue(fakeConfluenceSnapshot);
     mockCalculatePositionSize.mockReturnValue(5);
     // Gate defaults: ON (getAnalysisConfig fails open when no row exists) and always
     // answering "full size", so every pre-gate test keeps its original quantities.
@@ -302,12 +349,13 @@ function setupDefaults() {
     mockAverageIntoPosition.mockResolvedValue(undefined);
     mockReducePositionQuantity.mockResolvedValue(true);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
-    mockFetchLivePrice.mockResolvedValue(null);
+    // 기본은 **정상 호가**다. 프로덕션에서 FMP quote가 1차 가격원이고, 종전 기본값(null)은
+    // 폴백이 분석 결과에서 왔기 때문에 성립했다. 폴백은 이제 컨플루언스 종가이므로,
+    // 가격 없음을 검증하는 테스트는 호가와 스냅샷을 **둘 다** 비워야 한다.
+    mockFetchLivePrice.mockResolvedValue(DEFAULT_TEST_PRICE);
     mockFetchLivePriceDetail.mockResolvedValue({
         source: 'fmp_quote',
-        price: null,
-        reason: 'request_failed',
-        error: 'mock no live price',
+        price: DEFAULT_TEST_PRICE,
     });
     mockStartCronRun.mockResolvedValue(undefined);
     mockFinishCronRun.mockResolvedValue(undefined);
@@ -912,10 +960,12 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) =>
                     Promise.resolve(
                         type === 'technical'
-                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 95 } } }
+                            ? { result: { trend: 'bearish', keyLevels: {} } }
                             : null,
                     ),
             );
+            // 교차검증의 "스냅샷" 쪽은 이제 컨플루언스 종가다 ($95).
+            computeConfluenceMock.mockResolvedValue({ ...fakeConfluenceSnapshot, close: 95 });
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
                 action: 'buy',
@@ -974,6 +1024,7 @@ describe('execute cron handler', () => {
 
         // 이 기능의 핵심 계약: 창은 진입만 막는다.
         it('창 밖 + 보유 포지션 있음 → 청산은 정상 동작한다', async () => {
+            setLivePrice(95);
             outsideWindow();
             setup({ trading_mode: 'dry_run' });
             mockEvaluateExistingPosition.mockReturnValue({
@@ -2036,13 +2087,14 @@ describe('execute cron handler', () => {
 
             expect(mockScoreSignals).toHaveBeenCalledWith(
                 {
-                    // 기본 mock은 null — 스코어러가 가중치를 0으로 떨어뜨린다.
-                    confluence: null,
+                    confluence: fakeConfluenceSnapshot,
                     technical: {
                         trend: 'bullish',
                         riskLevel: 'low',
                         actionRecommendation: undefined,
                         indicators: [],
+                        // patternSummaries + strategyResults + candlePatterns (픽스처엔 없음)
+                        patterns: [],
                     },
                     news: { overallSentiment: 'bullish' },
                     options: { signals: [{ kind: 'bullish' }] },
@@ -2387,7 +2439,7 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') {
                         return Promise.resolve({
-                            result: { trend: 'neutral', keyLevels: { currentPrice: 150 } },
+                            result: { trend: 'neutral', keyLevels: {} },
                             analyzedAt: '2026-05-24T15:25:00.000Z',
                             sourceAnalyzedAt: '2026-05-24T15:25:00.000Z',
                         });
@@ -2433,7 +2485,7 @@ describe('execute cron handler', () => {
                             signal: 'hold',
                             thresholds: { buy: 70, sell: 30 },
                             sourceAnalyzedAt: expect.any(String),
-                            confluence: null,
+                            confluence: fakeConfluenceSnapshot,
                         },
                     }),
                 ]),
@@ -2521,7 +2573,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'bearish',
                 riskLevel: 'high',
-                keyLevels: { currentPrice: 95, support: [90], resistance: [110] },
+                keyLevels: { support: [90], resistance: [110] },
                 priceTargets: { bullish: { target: 120 } },
             },
         };
@@ -2530,7 +2582,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'neutral',
                 riskLevel: 'medium',
-                keyLevels: { currentPrice: 88, support: [90], resistance: [110] },
+                keyLevels: { support: [90], resistance: [110] },
             },
         };
 
@@ -2538,7 +2590,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'bullish',
                 riskLevel: 'low',
-                keyLevels: { currentPrice: 115, support: [100], resistance: [120] },
+                keyLevels: { support: [100], resistance: [120] },
                 priceTargets: { bullish: { target: 116 } },
             },
         };
@@ -2547,7 +2599,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'bullish',
                 riskLevel: 'low',
-                keyLevels: { currentPrice: 105, support: [95], resistance: [120] },
+                keyLevels: { support: [95], resistance: [120] },
                 priceTargets: { bullish: { target: 130 } },
             },
         };
@@ -2652,6 +2704,7 @@ describe('execute cron handler', () => {
         });
 
         it('sells position in dry_run when trend is bearish', async () => {
+            setLivePrice(95);
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
@@ -2670,7 +2723,6 @@ describe('execute cron handler', () => {
             expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
                 expect.objectContaining({
                     avgPrice: 100,
-                    currentPrice: 95,
                     technicalTrend: 'bearish',
                 }),
             );
@@ -2697,6 +2749,7 @@ describe('execute cron handler', () => {
         });
 
         it('sells position when price is below support', async () => {
+            setLivePrice(88);
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
@@ -2730,6 +2783,7 @@ describe('execute cron handler', () => {
         });
 
         it('takes profit when price is near target', async () => {
+            setLivePrice(115);
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) => {
@@ -2788,6 +2842,7 @@ describe('execute cron handler', () => {
         });
 
         it('skips position when no currentPrice available', async () => {
+            noPriceAnywhere();
             mockGetOpenPositions.mockResolvedValue([fakeOpenPosition]);
             mockGetLatestAnalysisResult.mockResolvedValue({ result: {} }); // no keyLevels
 
@@ -3352,7 +3407,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'bearish',
                 riskLevel: 'high',
-                keyLevels: { currentPrice: 95, support: [90], resistance: [110] },
+                keyLevels: { support: [90], resistance: [110] },
                 priceTargets: { bullish: { target: 120 } },
             },
         };
@@ -3413,6 +3468,7 @@ describe('execute cron handler', () => {
 
     describe('price=0 position alert', () => {
         it('sends error email when position price is 0', async () => {
+            noPriceAnywhere();
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 return Promise.resolve(null);
@@ -3510,7 +3566,7 @@ describe('execute cron handler', () => {
                         return Promise.resolve({
                             result: {
                                 trend: 'bearish',
-                                keyLevels: { currentPrice: 95 },
+                                keyLevels: {},
                             },
                         });
                     }
@@ -3749,7 +3805,7 @@ describe('execute cron handler', () => {
                         return Promise.resolve({
                             result: {
                                 trend: 'bearish',
-                                keyLevels: { currentPrice: 95 },
+                                keyLevels: {},
                             },
                         });
                     }
@@ -3820,9 +3876,8 @@ describe('execute cron handler', () => {
                 { symbol: 'AAPL', quantity: 10, avgPrice: '150', status: 'open' },
             ]);
             // Current price = 115, unrealized = (115 - 150) * 10 = -350
-            mockGetLatestAnalysisResult.mockResolvedValue({
-                result: { keyLevels: { currentPrice: 115 } },
-            });
+            setLivePrice(115);
+            mockGetLatestAnalysisResult.mockResolvedValue({ result: { keyLevels: {} } });
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
@@ -3856,7 +3911,7 @@ describe('execute cron handler', () => {
             // Current price = 150, unrealized = (150 - 200) * 5 = -250
             // total = -100 + (-250) = -350 < -300 limit -> halts
             mockGetLatestAnalysisResult.mockResolvedValue({
-                result: { keyLevels: { currentPrice: 150 } },
+                result: { keyLevels: {} },
             });
 
             await handler(makeRequest(true));
@@ -3890,7 +3945,7 @@ describe('execute cron handler', () => {
                 if (sym === 'AAPL') return Promise.reject(new Error('API error'));
                 // TSLA at 210, unrealized = (210 - 200) * 5 = +50
                 return Promise.resolve({
-                    result: { keyLevels: { currentPrice: 210 } },
+                    result: { keyLevels: {} },
                 });
             });
             mockGetEnabledWatchlist.mockResolvedValue([]);
@@ -4166,6 +4221,7 @@ describe('execute cron handler', () => {
 
     describe('currentPrice negative guard', () => {
         it('skips position when currentPrice is negative', async () => {
+            noPriceAnywhere();
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 return Promise.resolve(null);
@@ -4178,7 +4234,7 @@ describe('execute cron handler', () => {
                 ])
                 .mockResolvedValueOnce([]); // recalc
             mockGetLatestAnalysisResult.mockResolvedValue({
-                result: { keyLevels: { currentPrice: -5 } },
+                result: { keyLevels: {} },
             });
 
             const res = await handler(makeRequest(true));
@@ -4198,13 +4254,14 @@ describe('execute cron handler', () => {
         });
 
         it('skips watchlist symbol when currentPrice is negative', async () => {
+            noPriceAnywhere();
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue({
-                result: { keyLevels: { currentPrice: -10 } },
+                result: { keyLevels: {} },
             });
 
             const res = await handler(makeRequest(true));
@@ -4288,7 +4345,7 @@ describe('execute cron handler', () => {
                         return Promise.resolve({
                             result: {
                                 trend: 'bearish',
-                                keyLevels: { currentPrice: 95 },
+                                keyLevels: {},
                             },
                         });
                     }
@@ -4340,7 +4397,7 @@ describe('execute cron handler', () => {
                 .mockResolvedValueOnce([]); // recalc
             const sourceAnalyzedAt = new Date(Date.now() - 46 * 60_000).toISOString();
             mockGetLatestAnalysisResult.mockResolvedValue({
-                result: { keyLevels: { currentPrice: 95 }, trend: 'bearish' },
+                result: { keyLevels: {}, trend: 'bearish' },
                 analyzedAt: new Date().toISOString(),
                 sourceAnalyzedAt,
             });
@@ -4402,7 +4459,7 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') {
                         return Promise.resolve({
-                            result: { trend: 'bearish', keyLevels: { currentPrice: 95 } },
+                            result: { trend: 'bearish', keyLevels: {} },
                         });
                     }
                     return Promise.resolve(null);
@@ -4457,7 +4514,7 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) => {
                     if (type === 'technical') {
                         return Promise.resolve({
-                            result: { trend: 'bearish', keyLevels: { currentPrice: 95 } },
+                            result: { trend: 'bearish', keyLevels: {} },
                         });
                     }
                     return Promise.resolve(null);
@@ -4819,7 +4876,7 @@ describe('execute cron handler', () => {
                         return Promise.resolve({
                             result: {
                                 trend: 'bearish',
-                                keyLevels: { currentPrice: 95 },
+                                keyLevels: {},
                             },
                         });
                     }
@@ -4963,7 +5020,7 @@ describe('execute cron handler', () => {
                 ...fakeTechResult,
                 result: {
                     ...fakeTechResult.result,
-                    keyLevels: { currentPrice: 100 }, // analysis price
+                    keyLevels: {}, // analysis price
                 },
             });
             // Live price is different
@@ -5030,6 +5087,8 @@ describe('execute cron handler', () => {
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue({ result: { trend: 'bullish' } });
+            // 호가와 스냅샷을 모두 비워야 "가격 없음"이 된다.
+            noPriceAnywhere();
             mockFetchLivePriceDetail.mockResolvedValue({
                 source: 'fmp_quote',
                 price: null,
@@ -5919,7 +5978,7 @@ describe('execute cron handler', () => {
                             result: {
                                 trend: 'bearish',
                                 riskLevel: 'high',
-                                keyLevels: { currentPrice: 95, support: [90], resistance: [110] },
+                                keyLevels: { support: [90], resistance: [110] },
                             },
                         });
                     }
@@ -5989,7 +6048,9 @@ describe('execute cron handler', () => {
                     symbol: 'AAPL',
                     companyName: 'Apple Inc.',
                     price: 150,
-                    priceSource: 'analysis_fallback',
+                    // 기본 시세 mock이 정상 호가를 주므로 'live'다. 폴백(컨플루언스 종가)은
+                    // 호가가 없을 때만 쓰인다.
+                    priceSource: 'live',
                     budget: { fullBudget: 1500, limitedBy: 'symbol', maxQuantity: 10 },
                     exit: null,
                     signal: expect.objectContaining({ total: 80, buyThreshold: 70 }),
@@ -6214,6 +6275,7 @@ describe('execute cron handler', () => {
         // -------------------------------------------------------------------
 
         it('dry_run: a partial exit reduces the position instead of closing it', async () => {
+            setLivePrice(95);
             exitSetup('dry_run');
             gateOk(0.5);
 
@@ -6228,6 +6290,7 @@ describe('execute cron handler', () => {
         });
 
         it('dry_run: a full exit closes the position', async () => {
+            setLivePrice(95);
             exitSetup('dry_run');
             gateOk(1);
             mockClosePosition.mockResolvedValue(true);
@@ -6603,7 +6666,7 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) =>
                     Promise.resolve(
                         type === 'technical'
-                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 95 } } }
+                            ? { result: { trend: 'bearish', keyLevels: {} } }
                             : null,
                     ),
             );
@@ -6616,6 +6679,10 @@ describe('execute cron handler', () => {
                 quantity: 5,
             });
             mockClosePosition.mockResolvedValue(true);
+            // 헬퍼 이름이 말하는 대로 "$95에 보유 중"을 두 가격원 모두에 반영한다.
+            // 호가와 스냅샷이 어긋나면 25% 교차검증이 걸려 엉뚱한 메일이 나간다.
+            setLivePrice(95);
+            computeConfluenceMock.mockResolvedValue({ ...fakeConfluenceSnapshot, close: 95 });
         }
 
         function gateOk(fraction: number, confidence = 70) {
@@ -6671,6 +6738,7 @@ describe('execute cron handler', () => {
         // -------------------------------------------------------------------
 
         it('C1 daily loss limit: the re-evaluation loop still runs and exits in full', async () => {
+            setLivePrice(95);
             breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
             mockGetTodayRealizedPnl.mockResolvedValue(-600);
             mockEvaluateExistingPosition.mockReturnValue({
@@ -7229,7 +7297,7 @@ describe('execute cron handler', () => {
                     Promise.resolve(
                         type === 'technical'
                             ? {
-                                  result: { keyLevels: { currentPrice: 95 } },
+                                  result: { keyLevels: {} },
                                   analyzedAt: new Date('2026-05-14T14:30:00.000Z'),
                               }
                             : null,
@@ -7260,7 +7328,7 @@ describe('execute cron handler', () => {
                     Promise.resolve(
                         type === 'technical'
                             ? {
-                                  result: { keyLevels: { currentPrice: 95 } },
+                                  result: { keyLevels: {} },
                                   analyzedAt: new Date('2026-05-14T14:30:00.000Z'),
                               }
                             : null,
@@ -7299,6 +7367,7 @@ describe('execute cron handler', () => {
             mockGetEnabledWatchlist.mockResolvedValue([]);
             mockGetTodayRealizedPnl.mockResolvedValue(-600);
             mockGetLatestAnalysisResult.mockResolvedValue(null);
+            noPriceAnywhere();
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
@@ -7445,7 +7514,8 @@ describe('execute cron handler', () => {
             breakerSetup({ trading_mode: 'dry_run', max_daily_loss_usd: 500 });
             mockGetEnabledWatchlist.mockResolvedValue([]);
             mockGetTodayRealizedPnl.mockResolvedValue(0);
-            mockGetLatestAnalysisResult.mockResolvedValue(null); // no snapshot anywhere
+            computeConfluenceMock.mockResolvedValue(null); // no snapshot anywhere
+            mockGetLatestAnalysisResult.mockResolvedValue(null);
             mockFetchLivePrice.mockResolvedValue(20); // -$800 unrealized
 
             const res = await handler(makeRequest(true));
@@ -7469,11 +7539,13 @@ describe('execute cron handler', () => {
                 (_db: unknown, _sym: string, type: string) =>
                     Promise.resolve(
                         type === 'technical'
-                            ? { result: { trend: 'bearish', keyLevels: { currentPrice: 30 } } }
+                            ? { result: { trend: 'bearish', keyLevels: {} } }
                             : null,
                     ),
             );
-            mockFetchLivePrice.mockResolvedValue(30); // both sources agree at -70%
+            // 두 소스가 -70%에서 일치한다 (호가 30, 스냅샷 종가 30).
+            computeConfluenceMock.mockResolvedValue({ ...fakeConfluenceSnapshot, close: 30 });
+            mockFetchLivePrice.mockResolvedValue(30);
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
@@ -7649,7 +7721,7 @@ describe('execute cron handler', () => {
             result: {
                 trend: 'neutral',
                 riskLevel: 'medium',
-                keyLevels: { currentPrice: 105, support: [90], resistance: [200] },
+                keyLevels: { support: [90], resistance: [200] },
             },
         };
 
@@ -7821,6 +7893,77 @@ describe('execute cron handler', () => {
     });
 
     // -----------------------------------------------------------------------
+    // 감사 대응 — 알림 공백과 동시 실행 방어
+    // -----------------------------------------------------------------------
+
+    describe('감사 대응 가드', () => {
+        it('분석이 낡아 평가를 못 하면 실행당 한 통으로 알린다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([]);
+            mockGetOpenPositions.mockResolvedValue([
+                { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+            ]);
+            // 10일 묵은 기술분석 → stale_analysis
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(
+                        type === 'technical'
+                            ? {
+                                  result: { trend: 'bullish', keyLevels: {} },
+                                  analyzedAt: new Date('2026-05-14T14:30:00.000Z'),
+                              }
+                            : null,
+                    ),
+            );
+
+            const body = await (await handler(makeRequest(true))).json();
+
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({ symbol: 'AAPL', action: 'stale_analysis' }),
+            );
+            // 이 경로는 손절·익절 판정을 통째로 멈춘다. 조용하면 운영자가 알 방법이 없다.
+            expect(mockSendErrorEmail).toHaveBeenCalledWith(
+                expect.stringContaining('분석 지연으로 포지션 평가 중단'),
+                expect.stringContaining('AAPL'),
+                'test@example.com',
+            );
+        });
+
+        it('semi_auto 승인 대기 매수도 노출로 센다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? 'semi_auto' : null),
+            );
+            // 워치리스트가 비고 포지션도 없으면 실행이 조기 종료되므로 한 종목은 남긴다.
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetPendingOrders.mockResolvedValue([
+                {
+                    id: 7,
+                    symbol: 'TSLA',
+                    side: 'buy',
+                    status: 'pending',
+                    quantity: 4,
+                    priceLimit: '250',
+                },
+            ]);
+
+            await handler(makeRequest(true));
+
+            // 4 × $250 = $1000. 종전에는 order_tracking에만 의존해 다음 실행에서 0이 됐고,
+            // 매 틱 새 종목에 승인 요청이 쌓여 max_total_exposure를 초과할 수 있었다.
+            expect(mockFinishCronRun).toHaveBeenCalledWith(
+                fakeDb,
+                expect.any(String),
+                expect.objectContaining({
+                    summary: expect.objectContaining({ pendingBuyExposure: 1000 }),
+                }),
+            );
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // 실행 간격 게이트 (execute_interval_min)
     // -----------------------------------------------------------------------
 
@@ -7940,6 +8083,8 @@ describe('execute cron handler', () => {
         });
 
         function buySetup(currentPrice: number, extraConfig: Record<string, unknown> = {}) {
+            // 가격은 이제 호가(또는 컨플루언스 종가)에서 온다 — 분석 결과에는 현재가가 없다.
+            setLivePrice(currentPrice);
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 if (key in extraConfig) return Promise.resolve(extraConfig[key]);
@@ -8021,7 +8166,7 @@ describe('execute cron handler', () => {
                     (_db: unknown, _sym: string, type: string) =>
                         Promise.resolve(
                             type === 'technical'
-                                ? { result: { trend: 'bullish', keyLevels: { currentPrice: 180 } } }
+                                ? { result: { trend: 'bullish', keyLevels: {} } }
                                 : null,
                         ),
                 );
@@ -8189,7 +8334,7 @@ describe('execute cron handler', () => {
                 );
             });
 
-            it('매도 이력은 재진입을 막지 않는다', async () => {
+            it('매도 이력도 쿨다운을 건다 — 손절 직후 재매수를 막기 위해서다', async () => {
                 buySetup(150);
                 mockGetRecentTrades.mockResolvedValue([
                     {
@@ -8203,8 +8348,119 @@ describe('execute cron handler', () => {
 
                 const body = await (await handler(makeRequest(true))).json();
 
+                // 종전에는 매수 체결만 봐서, 손절이 마지막 매수보다 쿨다운 뒤에 일어나면
+                // 손절 10분 뒤 같은 분석으로 재매수가 가능했다.
                 expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_cooldown' }),
+                );
+            });
+        });
+
+        describe('avoid / 물타기 / 매도 직후 재매수 가드', () => {
+            const techAvoid = (extra: Record<string, unknown> = {}) => ({
+                result: {
+                    trend: 'bullish',
+                    riskLevel: 'low',
+                    keyLevels: { support: [], resistance: [] },
+                    actionRecommendation: {
+                        positionAnalysis: '',
+                        entry: '',
+                        exit: '',
+                        riskReward: '',
+                        entryRecommendation: 'avoid',
+                        // core는 avoid에서도 "돌파 시 진입" 조건부 구간을 채운다 — 현재가
+                        // 위쪽이라 진입 구간 상단 검사만으로는 걸러지지 않는다.
+                        entryPrices: [205, 210],
+                        ...extra,
+                    },
+                },
+            });
+
+            it('분석이 avoid면 점수와 무관하게 매수하지 않는다', async () => {
+                buySetup(180);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) =>
+                        Promise.resolve(type === 'technical' ? techAvoid() : null),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_not_recommended' }),
+                );
+                expect(mockRunTradeGate).not.toHaveBeenCalled();
+            });
+
+            it('평단 아래 추가매수는 기본적으로 막힌다', async () => {
+                buySetup(80);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '100',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'average_in',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'AVERAGE_IN',
+                    quantity: 3,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'average_down_blocked' }),
+                );
+                expect(mockAverageIntoPosition).not.toHaveBeenCalled();
+            });
+
+            it('average_down_enabled면 평단 아래에서도 추가매수한다', async () => {
+                buySetup(80, { average_down_enabled: true });
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '100',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'average_in',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'AVERAGE_IN',
+                    quantity: 3,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).not.toContainEqual(
+                    expect.objectContaining({ action: 'average_down_blocked' }),
+                );
+            });
+
+            it('평단 위 추가매수(불타기)는 막지 않는다', async () => {
+                buySetup(120);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '100',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'average_in',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'AVERAGE_IN',
+                    quantity: 3,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).not.toContainEqual(
+                    expect.objectContaining({ action: 'average_down_blocked' }),
                 );
             });
         });

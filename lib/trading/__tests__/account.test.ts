@@ -100,10 +100,12 @@ describe('account', () => {
         });
     });
 
-    it('worst: getSellableQuantity 값 누락 시 0', async () => {
+    it('worst: getSellableQuantity 값 누락 시 null — 0("못 판다")과 구분한다', async () => {
         mockTossFetch.mockResolvedValueOnce({});
         const { getSellableQuantity } = await import('../account');
-        expect(await getSellableQuantity('AAPL')).toBe(0);
+        // 0을 돌려주면 호출부가 "매도 가능 수량 0"으로 읽어 청산을 조용히 건너뛴다.
+        // 읽을 수 없다는 사실은 null로 말해야 가드가 꺼진다(청산 fail-open).
+        expect(await getSellableQuantity('AAPL')).toBeNull();
     });
 
     it('cancelOrder: POST cancel 경로 호출', async () => {

@@ -286,6 +286,9 @@ export function SettingsPage() {
     const fixedExitEnabled =
         getConfigValue(configData.config, 'fixed_exit_enabled', false) === true;
 
+    const averageDownEnabled =
+        getConfigValue(configData.config, 'average_down_enabled', false) === true;
+
     const entryWindow =
         entryWindowDraft ??
         readEntryWindow(getConfigValue(configData.config, 'entry_window', undefined));
@@ -776,6 +779,41 @@ export function SettingsPage() {
                         </li>
                     ))}
                 </ul>
+            </section>
+
+            {/* 물타기 허용 여부 — 기본 OFF */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h2 className="text-sm font-semibold">평단 아래 추가매수</h2>
+                        <p className="mt-0.5 text-[10px] text-neutral-600">
+                            OFF 시 평단보다 낮은 가격에서는 추가매수하지 않습니다
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            mutate({
+                                type: 'config',
+                                key: 'average_down_enabled',
+                                value: !averageDownEnabled,
+                            });
+                        }}
+                        className={`min-h-[44px] min-w-[44px] rounded border px-2 py-1 text-xs ${
+                            averageDownEnabled
+                                ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                : 'border-[#262626] bg-[#0a0a0a] text-neutral-500'
+                        }`}
+                        aria-label={`평단 아래 추가매수 ${averageDownEnabled ? '비활성화' : '활성화'}`}
+                    >
+                        {averageDownEnabled ? 'ON' : 'OFF'}
+                    </button>
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
+                    종목당 예산은 <span className="font-medium">현재가 기준</span>이라 가격이
+                    내릴수록 추가매수 여력이 커지고, 고정 손절선은 평단 기준이라 물타기를 하면
+                    손절선도 함께 내려갑니다. 신규 진입에는 영향이 없습니다.
+                </p>
             </section>
 
             {/* Fixed Stop-Loss / Take-Profit */}

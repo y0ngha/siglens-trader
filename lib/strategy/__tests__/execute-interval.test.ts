@@ -4,6 +4,7 @@ import {
     EXECUTE_BASE_MINUTE,
     EXECUTE_INTERVALS,
     isExecuteInterval,
+    hasTickInWindow,
     isExecuteTick,
     parseExecuteInterval,
 } from '../execute-interval.js';
@@ -84,5 +85,52 @@ describe('isExecuteTick', () => {
 
     it('초·밀리초는 판정에 영향을 주지 않는다', () => {
         expect(isExecuteTick(new Date(Date.UTC(2026, 7, 17, 15, 7, 59, 999)), 60)).toBe(true);
+    });
+});
+
+describe('hasTickInWindow', () => {
+    // ET와 UTC는 정시 오프셋만 다르므로 분(minute)이 같다 — 시를 몰라도 판정된다.
+    const window = (startHH: number, startMM: number, endHH: number, endMM: number) => ({
+        startMinute: startHH * 60 + startMM,
+        endMinute: endHH * 60 + endMM,
+    });
+
+    it('창이 간격보다 길면 어떤 위치에서도 틱이 들어간다', () => {
+        for (const interval of EXECUTE_INTERVALS) {
+            expect(hasTickInWindow(interval, window(11, 0, 15, 0))).toBe(true);
+        }
+    });
+
+    it('60분 간격 + :07을 비켜간 좁은 창은 매수가 영구히 0이 된다', () => {
+        // 실행은 매시 :07 하나뿐인데 창이 11:10–11:50이면 그 안에 틱이 없다.
+        // 로그에는 매 실행 `outside_entry_window`만 남아 설정 오류와 정상 상태가 구분되지 않는다.
+        expect(hasTickInWindow(60, window(11, 10, 11, 50))).toBe(false);
+    });
+
+    it('같은 창이라도 간격이 짧으면 성립한다', () => {
+        expect(hasTickInWindow(10, window(11, 10, 11, 50))).toBe(true);
+    });
+
+    it('창이 여러 시(hour)에 걸치면 60분 간격에서도 :07들이 들어간다', () => {
+        expect(hasTickInWindow(60, window(11, 10, 14, 50))).toBe(true);
+    });
+
+    it('창 길이가 0 이하이면 거부한다', () => {
+        expect(hasTickInWindow(10, window(11, 0, 11, 0))).toBe(false);
+        expect(hasTickInWindow(10, window(15, 0, 11, 0))).toBe(false);
+    });
+
+    it('간격 값이 손상돼 있으면 기본값으로 판정한다', () => {
+        expect(hasTickInWindow(7, window(11, 0, 15, 0))).toBe(true);
+    });
+});
+
+describe('isExecuteTick — 지각 허용', () => {
+    it('1분 늦게 진입한 틱도 실행한다 — 감사 흔적 없이 사라지면 안 된다', () => {
+        expect(isExecuteTick(new Date(Date.UTC(2026, 7, 17, 15, 8)), 10)).toBe(true);
+    });
+
+    it('2분 이상 벗어나면 실행하지 않는다', () => {
+        expect(isExecuteTick(new Date(Date.UTC(2026, 7, 17, 15, 9)), 10)).toBe(false);
     });
 });

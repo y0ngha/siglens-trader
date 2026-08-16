@@ -44,7 +44,15 @@ vi.mock('../../../lib/db/queries', () => ({
     averageIntoPosition: (...args: unknown[]) => mockAverageIntoPosition(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
     enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
+    getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
+    getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
+    getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
 }));
+
+// 승인 시점 리스크 차단기 재확인용. 기본값은 "여유 있음".
+const mockGetTodayRealizedPnl = vi.fn().mockResolvedValue(0);
+const mockGetTodayTradeCount = vi.fn().mockResolvedValue(0);
+const mockGetTodayInflightOrderCount = vi.fn().mockResolvedValue(0);
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();

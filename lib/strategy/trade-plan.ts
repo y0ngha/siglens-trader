@@ -13,7 +13,16 @@ import { safeNumber } from '../validation.js';
 
 /** Rule-engine trigger label, useful to callers for the gate prompt and audit log —
  *  `planExit` itself does not read it (see design doc §5.2: no per-trigger floor). */
-export type ExitTrigger = 'stop_loss' | 'take_profit' | 'signal_sell';
+/**
+ * `structural`은 "구조가 깨져서 나간다"이지 "목표를 달성해서 나간다"가 아니다.
+ *
+ * 지지선 이탈·추세 반전·하락 컨플루언스·분석 손절가 이탈은 **수익 구간이면 `take_profit`으로
+ * 라벨링**된다(손절 이력과 재진입 쿨다운을 오염시키지 않기 위한 의도적 선택). 그런데 그
+ * 라벨을 그대로 게이트 트리거로 넘기면 프롬프트가 `트리거 종류: 익절`을 읽고 "목표 달성형이니
+ * 일부만 덜어내고 나머지는 태운다"로 판단한다 — 구조가 깨진 포지션에 정확히 반대되는 결론이다.
+ * 그래서 게이트에 넘길 때만 이 값을 쓴다.
+ */
+export type ExitTrigger = 'stop_loss' | 'take_profit' | 'signal_sell' | 'structural';
 
 /**
  * Normalizes an arbitrary value into a 0~1 fraction.

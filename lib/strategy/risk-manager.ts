@@ -10,6 +10,15 @@ export interface PositionEvaluation {
      * so they leave `hard` unset and let the gate decide how much to sell.
      */
     hard?: boolean;
+    /**
+     * 구조 훼손으로 나가는 청산인가 (지지선 이탈·추세 반전·하락 컨플루언스·분석 손절가 이탈).
+     *
+     * 이 넷은 수익 구간이면 `action: 'take_profit'`으로 라벨링되는데, 그 라벨은 손절 이력과
+     * 재진입 쿨다운을 오염시키지 않기 위한 것이지 "목표를 달성했다"는 뜻이 아니다.
+     * 사이징 게이트에는 이 값을 봐서 `structural` 트리거로 넘긴다 — 그러지 않으면 프롬프트가
+     * '익절'을 읽고 구조가 깨진 포지션을 "일부만 덜어내고 나머지 태우기"로 판단한다.
+     */
+    structural?: boolean;
 }
 
 export interface EvaluatePositionParams {
@@ -138,11 +147,13 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             return {
                 action: 'take_profit',
                 reason: `분석 손절가 이탈이나 수익 구간 — 익절 (손절: $${params.aiStopLoss})`,
+                structural: true,
             };
         }
         return {
             action: 'stop_loss',
             reason: `분석 손절가 이탈 (손절: $${params.aiStopLoss}, 현재: $${currentPrice})`,
+            structural: true,
         };
     }
 
@@ -153,11 +164,13 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
             return {
                 action: 'take_profit',
                 reason: `지지선 이탈이나 수익 구간 — 익절 (지지: $${params.supportLevel})`,
+                structural: true,
             };
         }
         return {
             action: 'stop_loss',
             reason: `지지선 이탈 (지지: $${params.supportLevel}, 현재: $${currentPrice})`,
+            structural: true,
         };
     }
 
@@ -165,9 +178,13 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     if (params.technicalTrend === 'bearish') {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
         if (gainPercent >= 0) {
-            return { action: 'take_profit', reason: '기술적 추세 반전 — 수익 구간 익절' };
+            return {
+                action: 'take_profit',
+                reason: '기술적 추세 반전 — 수익 구간 익절',
+                structural: true,
+            };
         }
-        return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)' };
+        return { action: 'stop_loss', reason: '기술적 추세 반전 (bearish)', structural: true };
     }
 
     // 3.5. 하락 지표 컨플루언스: 진입 근거였던 룰이 반대 방향으로 성립했다.
@@ -177,9 +194,17 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     if (params.confluenceExit) {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
         if (gainPercent >= 0) {
-            return { action: 'take_profit', reason: '하락 지표 컨플루언스 — 수익 구간 익절' };
+            return {
+                action: 'take_profit',
+                reason: '하락 지표 컨플루언스 — 수익 구간 익절',
+                structural: true,
+            };
         }
-        return { action: 'stop_loss', reason: '하락 지표 컨플루언스 (약세 3종 + MA50 이탈)' };
+        return {
+            action: 'stop_loss',
+            reason: '하락 지표 컨플루언스 (약세 3종 + MA50 이탈)',
+            structural: true,
+        };
     }
 
     // 4. Fixed take profit check (only when enabled)
@@ -216,9 +241,13 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     if (params.newsSentiment === 'bearish' && params.technicalTrend !== 'bullish') {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
         if (gainPercent >= 0) {
-            return { action: 'take_profit', reason: '뉴스 악재 + 수익 구간 — 선제 익절' };
+            return {
+                action: 'take_profit',
+                reason: '뉴스 악재 + 수익 구간 — 선제 익절',
+                structural: true,
+            };
         }
-        return { action: 'stop_loss', reason: '뉴스 악재 + 손실 구간 — 손절' };
+        return { action: 'stop_loss', reason: '뉴스 악재 + 손실 구간 — 손절', structural: true };
     }
 
     return { action: 'hold', reason: '유지 (조건 미충족)' };

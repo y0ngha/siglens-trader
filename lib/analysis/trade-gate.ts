@@ -576,6 +576,9 @@ const TRIGGER_LABEL: Record<ExitTrigger, string> = {
     stop_loss: '손절',
     take_profit: '익절',
     signal_sell: '신호 매도',
+    // 라벨이 '익절'이면 청산 지침 1번이 "목표 달성형이니 일부만"으로 읽는다. 구조 훼손은
+    // 수익 구간에서도 목표 달성이 아니므로 별도 라벨을 준다.
+    structural: '구조 훼손 (지지선 이탈·추세 반전·지표 반전 — 수익 구간이어도 목표 달성이 아님)',
 };
 
 const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {

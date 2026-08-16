@@ -41,6 +41,9 @@ const mockOpenPosition = vi.mocked(openPosition);
 const mockClosePosition = vi.mocked(closePosition);
 const mockReducePositionQuantity = vi.mocked(reducePositionQuantity);
 const mockAverageIntoPosition = vi.mocked(averageIntoPosition);
+// `averageIntoPosition`은 이제 행이 실제로 갱신됐는지를 boolean으로 돌려준다 —
+// false면 그 사이 포지션이 닫힌 것이라 복구가 롤백된다.
+mockAverageIntoPosition.mockResolvedValue(true);
 const mockGetOpenPositionBySymbol = vi.mocked(getOpenPositionBySymbol);
 const mockUpdateOrderTracking = vi.mocked(updateOrderTracking);
 

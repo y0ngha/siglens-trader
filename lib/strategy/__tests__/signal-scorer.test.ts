@@ -5,11 +5,32 @@ import { DEFAULT_WEIGHTS, DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '
 import type { ScoreWeights } from '../types';
 import type { ConfluenceSnapshot } from '../confluence';
 
+/**
+ * 컨플루언스가 기권(`null`)하면 매수는 `hold`로 내려간다 — 지표를 확인할 수 없는 상태에서
+ * 진입 게이트가 열리지 않게 하는 규칙이다. 그래서 **매수를 기대하는 테스트는 스냅샷을 준다.**
+ * 기권 자체의 동작은 아래 `confluence 축` describe가 따로 검증한다.
+ */
+function neutralConfluence(): ConfluenceSnapshot {
+    return {
+        timeframe: '1Hour',
+        barTime: 1_760_000_000,
+        close: 100,
+        ma50: 90,
+        bullish: ['macd_bullish_cross'],
+        bearish: [],
+        freshBullish: [],
+        freshBearish: [],
+        entryTrigger: false,
+        exitTrigger: false,
+    };
+}
+
 describe('scoreSignals', () => {
     describe('happy path — bullish inputs', () => {
         it('returns high score and buy signal for fully bullish inputs', () => {
             const result = scoreSignals(
                 {
+                    confluence: neutralConfluence(),
                     technical: { trend: 'bullish', riskLevel: 'low' },
                     news: { overallSentiment: 'bullish' },
                     options: {
@@ -103,6 +124,7 @@ describe('scoreSignals', () => {
         it('handles some null and some provided analyses', () => {
             const result = scoreSignals(
                 {
+                    confluence: neutralConfluence(),
                     technical: { trend: 'bullish', riskLevel: 'low' },
                     news: null,
                     options: null,
@@ -115,13 +137,14 @@ describe('scoreSignals', () => {
 
             // technical = 95, news = 50, options = 50, fundamental = 80; congress is absent,
             // so its weight drops out entirely rather than voting a neutral 50.
-            // weighted: (95*8 + 50*6 + 50*5 + 80*4) / 23 = 1630/23 = 70.9 → 71 → buy
+            // 컨플루언스는 중립 스냅샷(트리거 없음)이라 50 근처를 투표하고 가중치 12가 살아 있다.
+            // weighted: (conf*12 + 95*8 + 50*6 + 50*5 + 80*4) / 35 → 69 → hold 아래로 내려가지 않는다.
             expect(result.components.technical).toBe(95);
             expect(result.components.news).toBe(50);
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(80);
-            expect(result.total).toBe(71);
-            expect(result.signal).toBe('buy');
+            expect(result.total).toBe(69);
+            expect(result.signal).toBe('hold');
         });
 
         it('handles technical with missing fields', () => {
@@ -178,6 +201,7 @@ describe('scoreSignals', () => {
             // Use custom thresholds to test boundary
             const result = scoreSignals(
                 {
+                    confluence: neutralConfluence(),
                     technical: { trend: 'neutral', riskLevel: 'medium' },
                     news: { overallSentiment: 'neutral' },
                     options: { signals: [] },
@@ -188,8 +212,9 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // All neutral → 50, threshold = 50, score >= threshold → buy
-            expect(result.total).toBe(50);
+            // 중립 스냅샷은 약세 없이 강세 1종이라 50보다 약간 위(55)를 투표한다.
+            // threshold 50 이상이므로 여전히 buy — 경계 판정 자체가 이 테스트의 대상이다.
+            expect(result.total).toBe(55);
             expect(result.signal).toBe('buy');
         });
     });
@@ -249,6 +274,8 @@ describe('scoreSignals', () => {
             };
 
             const inputs = {
+                // 가중치는 0이지만 기권 규칙(스냅샷 없으면 매수를 hold로)을 피하려면 필요하다.
+                confluence: neutralConfluence(),
                 technical: { trend: 'bullish', riskLevel: 'low' },
                 news: { overallSentiment: 'bearish' },
                 options: { signals: [{ kind: 'bearish' }] },
@@ -300,6 +327,7 @@ describe('scoreSignals', () => {
         it('uses custom buy threshold', () => {
             const result = scoreSignals(
                 {
+                    confluence: neutralConfluence(),
                     technical: { trend: 'bullish', riskLevel: 'medium' },
                     news: { overallSentiment: 'neutral' },
                     options: null,
@@ -632,7 +660,7 @@ describe('scoreSignals', () => {
     });
 
     describe('actionRecommendation scoring (entryRecommendation)', () => {
-        it('enter recommendation adds +20 to technical score', () => {
+        it('enter recommendation adds +10 to technical score', () => {
             const withRec = scoreSignals(
                 {
                     technical: {
@@ -649,8 +677,8 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // neutral=50, medium=0, enter=+20 → 70
-            expect(withRec.components.technical).toBe(70);
+            // neutral=50, medium=0, enter=+10 → 60
+            expect(withRec.components.technical).toBe(60);
         });
 
         it('enter bonus is clamped to 100 with strong trend', () => {
@@ -670,11 +698,11 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // bullish=85, low=+10, enter=+20 → 115 clamped to 100
+            // bullish=85, low=+10, enter=+10 → 105 clamped to 100
             expect(result.components.technical).toBe(100);
         });
 
-        it('wait recommendation reduces technical score by 15', () => {
+        it('wait recommendation reduces technical score by 6', () => {
             const result = scoreSignals(
                 {
                     technical: {
@@ -691,11 +719,11 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // bullish=85, medium=0, wait=-15 → 70
-            expect(result.components.technical).toBe(70);
+            // bullish=85, medium=0, wait=-6 → 79
+            expect(result.components.technical).toBe(79);
         });
 
-        it('avoid recommendation reduces technical score by 25', () => {
+        it('avoid recommendation reduces technical score by 12', () => {
             const result = scoreSignals(
                 {
                     technical: {
@@ -712,8 +740,10 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // neutral=50, medium=0, avoid=-25 → 25
-            expect(result.components.technical).toBe(25);
+            // neutral=50, medium=0, avoid=-12 → 38.
+            // 폭을 줄인 이유: 리터럴 한 단어가 지표 집계(±35)를 뒤집으면 안 된다.
+            // `avoid`는 이제 점수가 아니라 진입 게이트(`entry_not_recommended`)가 막는다.
+            expect(result.components.technical).toBe(38);
         });
 
         it('avoid modifier is clamped to 0 with bearish trend', () => {
@@ -828,8 +858,11 @@ describe('scoreSignals', () => {
             );
         });
 
-        it('indicators take precedence over top-level trend', () => {
-            expect(tech([{ trend: 'bearish', strength: 'strong' }], { trend: 'bullish' })).toBe(15);
+        it('지표 집계와 종합 판정을 평균한다 — 한쪽이 다른 쪽을 덮지 않는다', () => {
+            // 종전에는 지표가 있으면 `trend`를 아예 버렸다(= `mapTrend`가 죽은 코드). 그러면
+            // 진입은 시그널 카운트를, 청산(`evaluateExistingPosition`)은 종합 판정을 보게 되어
+            // 두 경로의 근거가 갈린다. 이제 (15 + 85) / 2 = 50이다.
+            expect(tech([{ trend: 'bearish', strength: 'strong' }], { trend: 'bullish' })).toBe(50);
         });
 
         it('falls back to top-level trend when no indicators', () => {
@@ -837,7 +870,7 @@ describe('scoreSignals', () => {
         });
 
         it('combines aggregate with risk and recommendation modifiers (clamped)', () => {
-            // all bullish strong = 85, low risk +10, enter +20 = 115 → clamp 100
+            // 지표 집계 85(종합 trend 없음) + low risk +10 + enter +10 = 105 → clamp 100
             expect(
                 tech([{ trend: 'bullish', strength: 'strong' }], {
                     riskLevel: 'low',
@@ -929,6 +962,7 @@ describe('scoreSignals', () => {
             // All weights zero except congress → total should be 80 (bullish congress score)
             const result = scoreSignals(
                 {
+                    confluence: neutralConfluence(),
                     technical: null,
                     news: null,
                     options: null,
@@ -1183,7 +1217,14 @@ describe('confluence 축', () => {
             fundamental: { overallSentiment: 'bullish' },
             congress: null,
         };
-        const withoutConfluence = scoreSignals(inputs, DEFAULT_WEIGHTS, 70, 30);
+        // 스냅샷이 아예 없으면 기권 규칙이 매수를 hold로 내리므로, 비교군에도 스냅샷을 준다 —
+        // 이 테스트가 보는 것은 "컨플루언스 **점수**가 매수를 막는가"다.
+        const withoutConfluence = scoreSignals(
+            { ...inputs, confluence: confluenceSnapshot({ bullish: ['a', 'b'] }) },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
         const withBearishConfluence = scoreSignals(
             { ...inputs, confluence: confluenceSnapshot({ close: 80, bearish: ['a', 'b', 'c'] }) },
             DEFAULT_WEIGHTS,

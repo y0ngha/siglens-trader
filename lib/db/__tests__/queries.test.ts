@@ -54,7 +54,9 @@ import type { Db } from '../index';
  * Creates a mock Drizzle db instance with chainable builder pattern.
  * Each chain terminates differently depending on the query type:
  * - select chains end at .limit() or .from()/.where()/.orderBy() (returns array)
- * - insert chains end at .returning() or .onConflictDoUpdate()/.onConflictDoNothing()
+ * - insert chains end at .returning(), or at .onConflictDoUpdate()/.onConflictDoNothing()
+ *   when the caller awaits them directly. upsert + returning도 가능하므로 두 충돌 핸들러는
+ *   체인을 이어가면서 동시에 thenable이다.
  * - update chains end at .where()
  * - delete chains end at .where()
  */
@@ -67,8 +69,8 @@ function createMockDb(resolvedValue: unknown = []) {
         values: vi.fn().mockReturnThis(),
         set: vi.fn().mockReturnThis(),
         returning: vi.fn().mockResolvedValue(resolvedValue),
-        onConflictDoNothing: vi.fn().mockResolvedValue(resolvedValue),
-        onConflictDoUpdate: vi.fn().mockResolvedValue(resolvedValue),
+        onConflictDoNothing: vi.fn().mockReturnThis(),
+        onConflictDoUpdate: vi.fn().mockReturnThis(),
     };
 
     // For queries that don't call .limit() or .returning(), the chain itself
@@ -1226,11 +1228,14 @@ describe('Order tracking queries', () => {
     });
 
     describe('getPendingSubmittedOrders', () => {
-        it('returns all in-flight orders (submitted/pending/partial) ordered by submittedAt', async () => {
+        it('returns all in-flight orders (submitted/pending/partial/error) ordered by submittedAt', async () => {
             const mockRows = [
                 { id: 1, status: 'submitted', symbol: 'AAPL' },
                 { id: 2, status: 'pending', symbol: 'TSLA' },
                 { id: 3, status: 'partial', symbol: 'MSFT' },
+                // `error`도 in-flight다 — POST 타임아웃·멱등키 충돌은 "브로커가 주문을 받지
+                // 않았다"는 뜻이 아니라서, 확정 전까지 중복 주문을 막아야 한다.
+                { id: 4, status: 'error', symbol: 'NVDA' },
             ];
             const db = createMockDb(mockRows);
 
@@ -1243,6 +1248,7 @@ describe('Order tracking queries', () => {
                 'submitted',
                 'pending',
                 'partial',
+                'error',
             ]);
             expect(db._chain.where).toHaveBeenCalledWith(expectedWhere);
             expect(db._chain.orderBy).toHaveBeenCalled();
@@ -1391,8 +1397,9 @@ describe('Cron audit log queries', () => {
     });
 
     describe('finalizeStaleCronRuns', () => {
-        it('exposes a 15-minute stale threshold constant', () => {
-            expect(CRON_STALE_AFTER_MS).toBe(15 * 60_000);
+        it('exposes a 30-minute stale threshold constant', () => {
+            // 실행 시간 상한(execute 최악 ~20분)보다 커야 한다.
+            expect(CRON_STALE_AFTER_MS).toBe(30 * 60_000);
         });
 
         it('executes a single atomic UPDATE marking running rows older than the cutoff as error/timeout', async () => {

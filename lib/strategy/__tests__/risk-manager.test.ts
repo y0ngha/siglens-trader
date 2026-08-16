@@ -945,3 +945,39 @@ describe('하락 컨플루언스 청산', () => {
         expect(result.action).toBe('hold');
     });
 });
+
+describe('구조 훼손 표시 (structural)', () => {
+    const base: EvaluatePositionParams = {
+        avgPrice: 100,
+        currentPrice: 100,
+        stopLossPercent: 5,
+        takeProfitPercent: 10,
+    };
+
+    it('지지선 이탈·추세 반전·컨플루언스·분석 손절가는 수익 구간에서도 structural이다', () => {
+        // 라벨은 `take_profit`이지만 목표 달성이 아니다. 이 표시가 없으면 사이징 게이트가
+        // "익절이니 일부만 덜어내고 나머지는 태운다"로 읽는다.
+        const cases: EvaluatePositionParams[] = [
+            { ...base, currentPrice: 120, supportLevel: 130 },
+            { ...base, currentPrice: 120, technicalTrend: 'bearish' },
+            { ...base, currentPrice: 120, confluenceExit: true },
+            { ...base, currentPrice: 120, aiStopLoss: 130 },
+            { ...base, currentPrice: 120, newsSentiment: 'bearish' },
+        ];
+        for (const params of cases) {
+            const result = evaluateExistingPosition(params);
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBe(true);
+        }
+    });
+
+    it('목표 달성형 익절에는 structural이 붙지 않는다', () => {
+        expect(
+            evaluateExistingPosition({ ...base, currentPrice: 120, aiTakeProfit: 115 }).structural,
+        ).toBeUndefined();
+        expect(
+            evaluateExistingPosition({ ...base, currentPrice: 120, resistanceLevel: 121 })
+                .structural,
+        ).toBeUndefined();
+    });
+});

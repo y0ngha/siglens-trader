@@ -33,6 +33,13 @@ export async function issueOrder(req: IssueOrderRequest): Promise<{ orderId: str
     return { orderId: res.orderId };
 }
 
+/** 유한한 양수로 파싱되는 값만 통과시킨다. 그 외(없음/빈 문자열/0/음수)는 `null`. */
+function positiveOrNull(value: unknown): number | null {
+    if (value == null) return null;
+    const parsed = parseDecimal(value, NaN);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 interface OrderRaw {
     orderId: string;
     status: TossOrderStatus;
@@ -46,10 +53,10 @@ export async function getOrder(orderId: string): Promise<OrderDetail> {
         orderId: o.orderId,
         status: o.status,
         filledQuantity: parseDecimal(o.execution?.filledQuantity, 0),
-        avgFilledPrice:
-            o.execution?.averageFilledPrice != null
-                ? parseDecimal(o.execution.averageFilledPrice, 0)
-                : null,
+        // 파싱 실패는 `0`이 아니라 `null`이다. 0은 "체결가가 0원"으로 읽혀 호출부의
+        // clean-fill 판정을 통과하고, 그대로 기록되면 매도 전량이 손실로 잡혀 다음 틱에
+        // 일일 손실 한도가 터진다(= 전 종목 강제청산). 값이 없으면 없다고 말해야 한다.
+        avgFilledPrice: positiveOrNull(o.execution?.averageFilledPrice),
         canceledAt: o.canceledAt ?? null,
     };
 }

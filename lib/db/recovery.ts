@@ -106,6 +106,13 @@ async function markNeedsReview(db: Db, idempotencyKey: string) {
  * Orders without a valid filledPrice are skipped and flagged for manual review.
  * Successfully recovered orders are marked with status 'recovered' in order_tracking.
  */
+/**
+ * 포지션 경합으로 실패한 복구를 재시도하는 유예 구간 (1시간).
+ *
+ * reconcile은 10분마다 도므로 최대 6회 재시도한 뒤 사람에게 넘어간다.
+ */
+const RECOVERY_RETRY_WINDOW_MS = 60 * 60_000;
+
 export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResult> {
     const details: string[] = [];
     let recovered = 0;
@@ -176,7 +183,15 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                 // Update position
                 if (order.side === 'buy') {
                     if (existingPosition) {
-                        await averageIntoPosition(tx, existingPosition.id, quantity, price);
+                        // 매도 쪽과 같은 이유로 rowCount를 본다 — 조회는 트랜잭션 밖이라
+                        // 그 사이 포지션이 닫혔으면 trade만 남고 포지션이 없는 상태가 된다.
+                        const merged = await averageIntoPosition(
+                            tx,
+                            existingPosition.id,
+                            quantity,
+                            price,
+                        );
+                        if (!merged) throw new Error('POSITION_ALREADY_CLOSED');
                     } else {
                         await openPosition(tx, {
                             symbol: order.symbol,
@@ -216,10 +231,23 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
         } catch (err) {
             failed++;
             details.push(`${order.symbol} ${order.side}: 자동 복구 실패 — ${String(err)}`);
-            // Park it for a human. Left at 'filled' this order is re-attempted every
-            // reconcile tick for 24h and mails the operator each time (up to 144 mails /
-            // queued rows); 'needs_review' drops it out of the 'filled' query that feeds
-            // this function, so the alert fires once.
+            // `POSITION_ALREADY_CLOSED`는 **일시적 경합**이다 — 조회와 UPDATE 사이에 execute나
+            // 수동 청산이 포지션을 건드렸다는 뜻이고, 주석이 말하는 대로 "롤백하고 재시도"가
+            // 의도다. 그런데 무조건 `needs_review`로 넘기면 이 주문이 `filled` 조회 집합에서
+            // 빠져 **재시도가 영영 일어나지 않고**, 체결된 매도가 장부에서 사라진다
+            // (= 실현 손익이 일일 손실 차단기 입력에서 누락).
+            //
+            // 그렇다고 계속 `filled`로 두면 24시간 동안 10분마다 재시도하며 매번 메일이 나간다.
+            // 그래서 시간으로 가른다: 경합은 보통 다음 실행에서 풀리므로 짧은 유예 동안만
+            // 재시도하고, 그 뒤에도 실패하면 사람에게 넘긴다.
+            const isRace = err instanceof Error && err.message === 'POSITION_ALREADY_CLOSED';
+            const age = Date.now() - new Date(order.submittedAt).getTime();
+            if (isRace && age < RECOVERY_RETRY_WINDOW_MS) {
+                details.push(
+                    `${order.symbol} ${order.side}: 포지션 경합 — 다음 실행에서 재시도합니다`,
+                );
+                continue;
+            }
             await markNeedsReview(db, order.idempotencyKey);
         }
     }

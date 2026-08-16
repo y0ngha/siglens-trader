@@ -84,7 +84,13 @@ The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitra
 Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
-`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`.
+`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
+`average_down_enabled`.
+
+`execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
+does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
+11:10–11:50 window) makes entries permanently impossible, and the logs would show only
+`outside_entry_window`, which is indistinguishable from normal operation.
 
 `execute_interval_min` is an **enum** (`EXECUTE_INTERVALS` = 5/10/15/20/30/60), not a free
 number: the runtime gate is `(minute − 7) mod interval === 0`, so a value that does not divide
@@ -113,12 +119,17 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
 
 ## Execute Cron Flow
 
-0. **Interval gate** — node-cron fires every 5 minutes (`7-59/5`); `execute_interval_min`
+0. **Interval gate** — node-cron fires every 5 minutes (`2-59/5`, which covers every minute the
+   gate accepts; `7-59/5` missed the `:02` slot and left a 10-minute hole at a 5-minute setting); `execute_interval_min`
    (5/10/15/20/30/60, default 10) decides whether this tick actually runs
    (`lib/strategy/execute-interval.ts`). Runs **before** `startCronRun` so skipped ticks leave
    no audit row, and before the lock. A failed config read falls through to the default rather
    than dropping the tick. `?force=1` bypasses it for manual triggering
-1. Acquire distributed lock (`cron:execute:lock`, 15min TTL)
+1. Acquire distributed lock (`cron:execute:lock`, **30min TTL**) — the TTL must exceed the longest
+   possible run, or the next tick acquires the lock while this one is still alive and two runs
+   place orders against independent exposure/cash snapshots. A **900s hard run deadline**
+   (`run_deadline` decisions) bounds the run, and `noOverlap: true` on the node-cron task blocks
+   in-process overlap as a second layer
 2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
 3. Expire old pending orders
 4. Fetch live prices for all symbols (FMP quote API, cached per run)
@@ -166,9 +177,15 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
        past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
      - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
        (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
-     - `entry_cooldown`: this symbol had a real buy fill inside `entry_cooldown_min`
-       (default 60). Reads `getRecentTrades(db, 100)` once per run and folds it in memory
-       instead of adding a query; `mode: 'skipped'` rows are not fills
+     - `entry_not_recommended`: the analysis says `entryRecommendation: 'avoid'`. Enforced here
+       rather than as a score penalty, and `entry_out_of_zone` cannot substitute — core fills a
+       *contingent* `entryPrices` range even on `avoid`, usually **above** the current price
+     - `entry_cooldown`: this symbol had any real fill (buy **or sell**) inside
+       `entry_cooldown_min` (default 60). Counting sells is what stops a re-buy minutes after a
+       stop-loss — `recentStopLossSymbols` is run-scoped and resets on the next tick. Reads
+       `getRecentTrades(db, 200)` once per run; `mode: 'skipped'` rows are not fills
+     - `average_down_blocked`: `average_in` below avgPrice while `average_down_enabled` is off
+     - `entry_after_exit_blocked`: this run already reduced the position
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade
    - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
@@ -308,15 +325,22 @@ That is one rule, not an asymmetry: **평가 가능하면 평가를 따르고, �
   two, so it is closed out.
 
 The price feeding the unrealized-PnL breaker is **cross-checked against the technical
-snapshot** (`safeAnalysisPrice`): if the live FMP quote diverges from it by more than **25%**,
+snapshot** (the confluence snapshot's last-bar `close`): if the live FMP quote diverges from it by more than **25%**,
 the snapshot price is summed instead, and one batched `시세 출처 불일치` mail per run lists every
 affected symbol (per-symbol mails would arrive ~8×/day for the whole duration of a real gap).
 `fetchLivePrice` only checks "finite positive", and a wrong tick now liquidates the whole book
 rather than merely halting trading.
 
+**This guard did not run at all until 2026-08-17.** Its snapshot side read
+`keyLevels.currentPrice`, a field siglens-core does not have (`KeyLevels` is
+`{ support, resistance, poc }`, and `normalizeKeyLevels` rebuilds the object from exactly those
+three keys), so `snapshotPrice > 0` was never true. The source is now the confluence snapshot's
+`close` — FMP OHLC, which is the comparison this paragraph always described. It also restores the
+analysis fallback price: before, a failed FMP quote meant `skipped_no_price` for that symbol with
+no second source.
+
 **What this guard does and does not buy — the two sources are not independent.** Both come from
-FMP (quote endpoint vs OHLC through `getMarketDataProvider`), and the snapshot value is
-`keyLevels.currentPrice` — a number the LLM copied into its own JSON, not a raw feed reading. It
+FMP (quote endpoint vs OHLC through `getMarketDataProvider`). It
 therefore catches the dominant failure, a single bad quote tick, and catches **nothing**
 vendor-wide: a symbol-mapping error, an unadjusted split or a currency mixup corrupts both values
 together and sails through. A genuinely independent check would use the Yahoo provider already in
