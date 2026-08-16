@@ -1279,6 +1279,39 @@ describe('SettingsPage', () => {
         expect(end).toHaveValue('15:00');
     });
 
+    it('실행 주기는 저장된 값을 보여주고, 바꾸면 즉시 저장한다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: [
+                ...mockConfig.config,
+                { key: 'execute_interval_min', value: 30, updatedAt: '2026-01-01T00:00:00Z' },
+            ],
+        });
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const select = await screen.findByLabelText('매매 실행 주기');
+        expect(select).toHaveValue('30');
+
+        await user.selectOptions(select, '5');
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'execute_interval_min',
+            value: 5,
+        });
+    });
+
+    it('실행 주기 설정이 없으면 기본 10분을 보여준다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByLabelText('매매 실행 주기')).toHaveValue('10');
+    });
+
     it('saves the edited entry window as { start, end }', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);

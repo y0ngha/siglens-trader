@@ -12,8 +12,10 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |
 | `trade-plan.ts` | Fraction (0~1) → order quantity for split entries/exits. `clampFraction` (built on `safeNumber`) normalizes any value to 0~1 without ever producing NaN, and also clamps its own `fallback`. `planEntry` sanitizes every budget input with `safeNumber` before the min/max chain (a NaN budget must never silently disable the per-symbol/total-exposure circuit breaker), clamps a tranche against symbol/total/cash budgets (with a high-price 1-share correction that also realigns `trancheBudget`), and refuses to return a non-`Number.isSafeInteger` quantity. `planExit` turns a liquidation fraction into a share count, `hard: true` bypassing it for absolute risk exits. `fallbackEntryFraction` is a deterministic 3-rung sizing ladder, exported and tested but not currently wired into any caller — see its docstring. |
 | `entry-window.ts` | 신규 진입 허용 시간 창 (ET 고정). `parseEntryWindow` / `formatEntryWindow` / `isWithinEntryWindow` / `parseTimeOfDay`, `DEFAULT_ENTRY_WINDOW` (ET 11:00–15:00) / `ENTRY_WINDOW_ALL_DAY` (제한 없음). 진입만 막고 청산은 건드리지 않는다. 창 밖·시각 판독 실패는 둘 다 **차단**(fail-closed). ET 환산에 `Intl.DateTimeFormat`을 쓴다 — JS 표준 빌트인이고 결정론적이므로 I/O 금지 규칙에 걸리지 않는다. |
+| `entry-zone.ts` | 권장 진입 구간 상단 게이트. `exceedsEntryZone` / `formatEntryZone`, `ENTRY_ZONE_TOLERANCE` 1%. **상단만** 본다 (구간 아래는 매수에 불리하지 않다), 구간 정보가 없으면 통과(fail-open). 추격 매수 차단 전용 — 매도에는 쓰지 않는다. |
+| `execute-interval.ts` | execute cron 실행 간격. `EXECUTE_INTERVALS` (5·10·15·20·30·60, 전부 60의 약수), `DEFAULT_EXECUTE_INTERVAL_MIN` 10, `EXECUTE_BASE_MINUTE` 7, `isExecuteInterval` / `parseExecuteInterval` / `isExecuteTick`. 게이트는 `(분 − 7) mod 간격 === 0` — 60분이면 종전 `7 13-21` 스케줄과 실행 시각이 같다. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
-| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
+| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisEntryPrices` / `safeAnalysisStopLoss` / `safeAnalysisTakeProfit` (the three `actionRecommendation` prices the rule engine reads; the latter two prefer core's `reconciledLevels`), `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
 
 ### `priceTargets` extraction — same bug class as `keyLevels`
 
@@ -79,6 +81,7 @@ and exits. The other four always produce a number, so they always vote.
 
 When evaluating an existing position, checks fire in this order:
 1. Fixed stop loss % breach → stop_loss (**only when `fixedExitEnabled` is true**) — `hard: true`
+1.5. 분석 손절가 이탈 (`aiStopLoss`) → stop_loss (always active)
 2. Price below key support level → stop_loss (always active)
 3. Technical trend reversal (bearish) → take_profit if in profit, stop_loss if in loss (always active)
 4. Bearish indicator confluence (`confluenceExit`: 3+ bearish types, ≥1 fresh, close < MA50) →
@@ -86,9 +89,19 @@ When evaluating an existing position, checks fire in this order:
    this is an indicator judgment, not an absolute risk limit, so the sizing gate decides how much to
    cut. It sits *behind* the trend reversal so it never re-handles a case step 3 already caught.
 5. Fixed take profit % reached → take_profit (**only when `fixedExitEnabled` is true**)
+5.5. 분석 익절가 도달 (`aiTakeProfit`) → take_profit (always active)
 6. Approaching resistance (98%) or target price (95%) → take_profit (always active)
 7. Bearish news + non-bullish trend + profit zone → take_profit (always active)
 8. None of the above → hold
+
+`aiStopLoss` / `aiTakeProfit` come from `actionRecommendation.stopLoss` / `takeProfitPrices[0]`
+(`safeAnalysisStopLoss` / `safeAnalysisTakeProfit`, core's `reconciledLevels` winning when
+present — a value core judged invalid must not liquidate a position). They sit directly behind
+their fixed counterparts: **운영자가 그은 선 → 분석이 그은 선 → 간접 신호**. Being explicit prices
+they use no 95%/98% approximation, and they leave `hard` unset like every other
+analysis-derived branch. Until they were wired in, `fixed_exit_enabled` defaulting off meant
+every active stop path was indirect (support break, trend reversal, bearish confluence) even
+when the analysis had named a stop price.
 
 The two invalid-price guards ahead of step 1 (bad `avgPrice` / `currentPrice`) also return
 `hard: true`. `hard` marks exits an upstream AI sizing gate (see

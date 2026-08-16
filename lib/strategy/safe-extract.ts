@@ -127,6 +127,59 @@ export function safeAnalysisTargetPrice(result: unknown): number | undefined {
     return safeAnalysisPriceScenario(result, 'bullish')?.targets[0];
 }
 
+/**
+ * `actionRecommendation`에서 가격 세 개를 읽는다 — 권장 진입 구간, 손절가, 익절가.
+ *
+ * `safeActionRecommendation`은 `entryRecommendation` 하나만 돌려주고 그 값이 유효하지
+ * 않으면 통째로 `undefined`가 되므로, 가격은 여기서 따로 읽는다.
+ *
+ * **`reconciledLevels`가 있으면 그쪽이 이긴다.** core는 AI가 낸 손절/익절이 유효하지 않을
+ * 때(예: 손절가가 현재가 위) 원본을 그대로 두고 도메인 보정값을 `reconciledLevels`에 따로
+ * 붙인다. 원본을 그대로 트리거로 쓰면 core가 "이 값은 못 쓴다"고 판정한 숫자로 청산하게
+ * 되므로, 보정값이 있으면 그 자리를 대체한다. `lib/analysis/trade-gate.ts`의 프롬프트가
+ * 같은 규칙으로 렌더한다.
+ */
+function actionRecommendationRecords(result: unknown): {
+    rec: Record<string, unknown> | null;
+    reconciled: Record<string, unknown> | null;
+} {
+    const rec = safeRecord(safeRecord(result)?.actionRecommendation);
+    return { rec, reconciled: safeRecord(rec?.reconciledLevels) };
+}
+
+/**
+ * 권장 진입 구간. 없으면 빈 배열 — `exceedsEntryZone`이 빈 배열을 "판단 불가 → 통과"로 읽는다.
+ *
+ * 여기만 보정값을 보지 않는다: core의 `ReconciledActionLevels`에는 `stopLoss`와
+ * `takeProfitPrices`만 있고 진입 구간은 보정 대상이 아니다.
+ */
+export function safeAnalysisEntryPrices(result: unknown): number[] {
+    return safePriceLevelArray(actionRecommendationRecords(result).rec?.entryPrices) ?? [];
+}
+
+/** AI가 제시한 손절가 (보정값 우선). `evaluateExistingPosition`의 손절 트리거. */
+export function safeAnalysisStopLoss(result: unknown): number | undefined {
+    const { rec, reconciled } = actionRecommendationRecords(result);
+    for (const candidate of [reconciled?.stopLoss, rec?.stopLoss]) {
+        if (isFinitePositive(candidate)) return candidate;
+    }
+    return undefined;
+}
+
+/**
+ * AI가 제시한 익절가 중 **가장 가까운 것** (보정값 우선).
+ *
+ * 사다리 전체가 아니라 첫 칸만 쓰는 이유는 `safeAnalysisTargetPrice`와 같다 — 트리거는
+ * "여기 닿으면 판다"는 단일 숫자여야 하고, 먼저 닿는 것은 첫 칸이다.
+ */
+export function safeAnalysisTakeProfit(result: unknown): number | undefined {
+    const { rec, reconciled } = actionRecommendationRecords(result);
+    const levels =
+        safePriceLevelArray(reconciled?.takeProfitPrices) ??
+        safePriceLevelArray(rec?.takeProfitPrices);
+    return levels?.[0];
+}
+
 export function safeArray(obj: unknown, key: string): unknown[] | undefined {
     const r = safeRecord(obj);
     if (!r) return undefined;

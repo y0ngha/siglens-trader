@@ -16,6 +16,7 @@ import {
     getTodayTradeCount,
     getTodayInflightOrderCount,
     getTodayRealizedPnl,
+    getRecentTrades,
     expireOldPendingOrders,
     createOrderTracking,
     updateOrderTracking,
@@ -40,6 +41,12 @@ import {
     isWithinEntryWindow,
     parseEntryWindow,
 } from '../../lib/strategy/entry-window.js';
+import { exceedsEntryZone, formatEntryZone } from '../../lib/strategy/entry-zone.js';
+import {
+    DEFAULT_EXECUTE_INTERVAL_MIN,
+    isExecuteTick,
+    parseExecuteInterval,
+} from '../../lib/strategy/execute-interval.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
 import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
 import { planEntry, planExit } from '../../lib/strategy/trade-plan.js';
@@ -79,6 +86,9 @@ import {
     safeArray,
     safeActionRecommendation,
     safeAnalysisIndicators,
+    safeAnalysisEntryPrices,
+    safeAnalysisStopLoss,
+    safeAnalysisTakeProfit,
     safeFundamentalCategories,
 } from '../../lib/strategy/safe-extract.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
@@ -253,6 +263,23 @@ async function handler(req: Request): Promise<Response> {
     const db = getDb();
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
+
+    // 실행 간격 게이트. node-cron은 5분마다 이 핸들러를 부르고, 실제로 돌지 여부는
+    // `execute_interval_min` 설정이 정한다 (`lib/strategy/execute-interval.ts`).
+    //
+    // 감사 행(startCronRun)보다 **앞**에 둔다: 건너뛴 틱까지 cron_runs에 남기면 60분
+    // 설정에서 하루 78행 중 6행만 실제 실행이 되어 감사 로그가 잡음으로 덮인다.
+    //
+    // 설정 조회가 실패하면 기본값으로 진행한다 — DB 일시 장애 때문에 매매 틱이 통째로
+    // 사라지는 쪽이 더 나쁘고, 실제 실행에 들어가면 아래 감사 경로가 오류를 제대로 남긴다.
+    // `?force=1`은 수동 트리거용 우회다 (커트오버·디버깅에서 간격과 무관하게 실행).
+    const executeInterval = await getConfigValue<unknown>(db, 'execute_interval_min')
+        .then(parseExecuteInterval)
+        .catch(() => DEFAULT_EXECUTE_INTERVAL_MIN);
+    const forceRun = new URL(req.url).searchParams.get('force') === '1';
+    if (!forceRun && !isExecuteTick(startedAt, executeInterval)) {
+        return Response.json({ skipped: true, reason: 'off_interval', executeInterval });
+    }
 
     // Finalize any audit rows stuck in 'running' past the stale threshold (a
     // prior invocation that timed out before writing its finish row). Best-effort.
@@ -528,6 +555,14 @@ async function handler(req: Request): Promise<Response> {
             );
             const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
 
+            // 같은 심볼 재진입 최소 간격. 기본 60분 = 실행 간격이 60분이던 시절의 동작.
+            //
+            // 실행 간격을 10분으로 줄이면 매수 신호가 살아 있는 한 틱마다 분할 진입이
+            // 나가므로, 이 쿨다운이 없으면 한 종목이 `max_trades_per_day`를 하루치 통째로
+            // 먹는다. 진입 간격을 실행 간격에서 분리하는 게 목적이고, 0이면 꺼진다.
+            const entryCooldownMs =
+                ((await getConfigValue<number>(db, 'entry_cooldown_min')) ?? 60) * 60_000;
+
             /**
              * 실행 스코프 컨플루언스 캐시.
              *
@@ -652,6 +687,30 @@ async function handler(req: Request): Promise<Response> {
             // a position behind, so a low overall score would otherwise open a *second* sell
             // for the same symbol — same bearish data, two orders, colliding idempotency keys.
             const exitedSymbols = new Set<string>();
+
+            // 심볼별 마지막 실체결 매수 시각 (재진입 쿨다운용).
+            //
+            // 전용 쿼리 대신 기존 `getRecentTrades`를 한 번 읽어 메모리에서 접는다 — 쿨다운이
+            // 보는 범위는 길어야 몇 시간이고, `max_trades_per_day` 기본값 20이면 100행은
+            // 며칠치다. `mode: 'skipped'` 행(잔고 부족 기록, 수량 0)은 체결이 아니므로 뺀다.
+            // 조회 실패는 삼킨다. 쿨다운은 체결 빈도 제한이지 리스크 통제가 아니라서,
+            // 이 쿼리 하나 때문에 실행 전체가 죽으면 **청산 경로까지** 같이 죽는다 —
+            // 원칙 7이 막으라는 바로 그 형태다. 이력이 없으면 쿨다운 없이 진행한다.
+            const lastBuyAtBySymbol = new Map<string, number>();
+            if (entryCooldownMs > 0) {
+                const recentTrades = await getRecentTrades(db, 100).catch((err) => {
+                    console.error('[execute] 최근 체결 조회 실패 — 재진입 쿨다운 미적용', err);
+                    return [];
+                });
+                for (const t of recentTrades) {
+                    if (t.side !== 'buy' || t.mode === 'skipped' || t.quantity <= 0) continue;
+                    const at = new Date(t.executedAt).getTime();
+                    if (!Number.isFinite(at)) continue;
+                    if (at > (lastBuyAtBySymbol.get(t.symbol) ?? 0)) {
+                        lastBuyAtBySymbol.set(t.symbol, at);
+                    }
+                }
+            }
 
             // --- Price cache: batch fetch all needed symbols once ---
             const priceCache = new Map<string, number>();
@@ -828,6 +887,12 @@ async function handler(req: Request): Promise<Response> {
                               stopLossPercent,
                               takeProfitPercent,
                               fixedExitEnabled,
+                              // 분석이 명시한 손절/익절가. 여태 사이징 게이트 프롬프트에만
+                              // 들어가고 규칙에서는 읽히지 않았다 — `fixed_exit_enabled`가
+                              // 기본 꺼짐이라, 명시 손절가가 있는데도 지지선 이탈 같은 간접
+                              // 신호가 걸릴 때까지 기다리고 있었다.
+                              aiStopLoss: safeAnalysisStopLoss(techResult),
+                              aiTakeProfit: safeAnalysisTakeProfit(techResult),
                               supportLevel: safeAnalysisSupport(techResult),
                               resistanceLevel: safeAnalysisResistance(techResult),
                               targetPrice: safeAnalysisTargetPrice(techResult),
@@ -1666,20 +1731,63 @@ async function handler(req: Request): Promise<Response> {
                         calculatedSize: maxPlan.quantity,
                     });
 
+                    // 아래 세 가드가 공통으로 보는 조건 — "이 틱이 신규 위험을 여는가".
+                    // `unfundedBuy`가 포함되는 이유: 예산이 0이면 결정이 'hold'로 나오는데,
+                    // 그대로 통과시키면 어차피 사지 않을 심볼에 대해 잔고 부족 이메일이 나간다.
+                    const isEntryDecision =
+                        decision.action === 'buy' ||
+                        decision.action === 'average_in' ||
+                        unfundedBuy;
+
                     // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in
-                    // this run. `unfundedBuy` is included because a zero budget makes the
-                    // decision 'hold', which would otherwise slip past this guard and mail a
-                    // 잔고 부족 alert about a symbol we refuse to buy anyway.
-                    if (
-                        (decision.action === 'buy' ||
-                            decision.action === 'average_in' ||
-                            unfundedBuy) &&
-                        recentStopLossSymbols.has(item.symbol)
-                    ) {
+                    // this run.
+                    if (isEntryDecision && recentStopLossSymbols.has(item.symbol)) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'cooldown_after_stop_loss',
                             score: decision.score,
+                        });
+                        continue;
+                    }
+
+                    // 권장 진입 구간 이탈 — 추격 매수 차단.
+                    //
+                    // 점수는 분석 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석을 계속 쓴다.
+                    // 그래서 분석이 "$150 부근 진입"이라 한 뒤 가격이 $180이 돼도 매수 신호는
+                    // 그대로 살아 있고, 시장가로 사면 손절선·목표가만 $150 기준인 포지션이
+                    // 생긴다. 상단만 본다 — 구간 아래는 매수에 불리한 방향이 아니다.
+                    const entryPrices = safeAnalysisEntryPrices(tech?.result);
+                    if (isEntryDecision && exceedsEntryZone(currentPrice, entryPrices)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_out_of_zone',
+                            score: decision.score,
+                            detail: {
+                                price: currentPrice,
+                                entryZone: formatEntryZone(entryPrices),
+                                entryPrices,
+                            },
+                        });
+                        continue;
+                    }
+
+                    // 재진입 쿨다운 — 실행 간격을 좁혔을 때 한 종목이 하루치 체결 한도를
+                    // 통째로 먹는 것을 막는다. 매도에는 걸지 않는다 (원칙 7).
+                    const lastBuyAt = lastBuyAtBySymbol.get(item.symbol);
+                    if (
+                        isEntryDecision &&
+                        entryCooldownMs > 0 &&
+                        lastBuyAt !== undefined &&
+                        Date.now() - lastBuyAt < entryCooldownMs
+                    ) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_cooldown',
+                            score: decision.score,
+                            detail: {
+                                lastBuyAt: new Date(lastBuyAt).toISOString(),
+                                cooldownMs: entryCooldownMs,
+                            },
                         });
                         continue;
                     }

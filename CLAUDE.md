@@ -178,7 +178,8 @@ gate reads all of it and answers one question.
 - **Turning the gate OFF** restores `fraction = 1` — AI sizing off, no redeploy. It does *not*
   restore the pre-gate code path: `planEntry`'s cash clamp applies unconditionally.
 - **Split entries multiply fill count** (one 20-share target can take ~9 fills). Review
-  `max_trades_per_day` before switching to `auto`.
+  `max_trades_per_day` before switching to `auto`. `entry_cooldown_min` (기본 60분) is what
+  actually bounds how many tranches one symbol can take per day.
 
 Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/specs/2026-08-12-ai-trade-gate-design.md).
 
@@ -205,7 +206,7 @@ long a run takes.
 | news          | `0 13-21 * * 1-5`       | 60 minutes        | Event-driven; major catalysts surface within ~60 min of publication. FMP news endpoint is heavily rate-limited. |
 | fundamental   | `0 15 * * 1-5`          | 24 hours          | Quarterly filings and earnings do not move intraday; daily is more than sufficient. |
 | congress      | `0 16 * * 1-5`          | 24 hours          | Congressional disclosures lag the actual trade by weeks; once per weekday is plenty. |
-| execute       | `7 13-21 * * 1-5`       | hourly            | Offset 7 min after the top of the hour so analysis results are ready before signal scoring. |
+| execute       | `7-59/5 13-21 * * 1-5`  | `execute_interval_min` (기본 10분) | Cron fires every 5 min; the handler's interval gate decides whether this tick runs. The `:07` offset gives the top-of-hour analysis crons time to save, so a 60-min setting fires at exactly the old times. |
 | reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
 | digest        | `0 1 * * *`             | daily             | Flushes the quiet-hours notification queue at 10:00 KST. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. Deliberately not wrapped in the analysis-cron helper, whose US-session gate would suppress it entirely (01:00 UTC is outside the session). |
 
@@ -215,6 +216,46 @@ single technical symbol to ~7 minutes (a 148s call truncated to zero output, the
 so a 4-symbol pass exceeded the 690s cron cutoff and symbols went without a signal. news,
 fundamental and congress keep it on — they run hourly or daily, so the latency is affordable and
 the narrative quality feeds the decision.
+
+### 매매 실행 주기 (execute_interval_min)
+
+가격 조건 — 진입 구간, 손절선, 익절선 — 은 전부 `execute` 틱 안에서만 판정된다. 그래서 이 간격이
+곧 **반응 지연의 상한**이다. 종전 `7 13-21` 스케줄은 하루 6틱(진입 창 안은 4틱), 즉 최소 60분
+간격이었고, 손절선이 뚫려도 최대 60분 방치됐다.
+
+cron은 `7-59/5`로 5분마다 핸들러를 부르고, 실제 실행 여부는 `lib/strategy/execute-interval.ts`의
+게이트가 `config.execute_interval_min`(5·10·15·20·30·60, 기본 **10**)으로 정한다. 스케줄 문자열을
+설정으로 만들지 않은 이유는 node-cron 태스크가 등록 시점에 고정되기 때문 — 게이트는 대시보드에서
+바꾼 즉시 다음 틱부터 먹는다. **설정 > 매매 실행 주기**.
+
+- 허용값이 60의 약수뿐인 이유: 게이트는 `(분 − 7) mod 간격 === 0`이라, 약수가 아니면 시(hour)
+  경계에서 주기가 어긋난다. 60분 설정은 종전 스케줄과 실행 시각이 분 단위로 같다.
+- 게이트는 `startCronRun`보다 **앞**이다 — 건너뛴 틱까지 감사 행을 남기면 하루 78행 중 6행만
+  실제 실행이라 `cron_runs`가 잡음으로 덮인다. `?force=1`은 수동 트리거용 우회.
+- 설정 조회 실패는 기본값으로 **진행**한다. DB 일시 장애로 매매 틱이 사라지는 쪽이 더 나쁘다.
+- 한 틱은 심볼당 FMP 호출 2회(quote + 컨플루언스 봉). 5분으로 줄이면 호출량이 두 배가 된다.
+
+### 진입 품질 가드
+
+실행 주기를 좁히는 것만으로는 **추격 매수**가 남는다. 분석이 "$150 진입"이라 한 뒤 가격이
+$180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석이 그대로 쓰여 매수 신호가 살아
+있기 때문이다. 손절선·목표가만 $150 기준인 포지션이 생긴다.
+
+- **`entry_out_of_zone`** — 현재가가 `actionRecommendation.entryPrices` 최대값 + 1%를 넘으면
+  매수/추가매수를 건너뛴다(`lib/strategy/entry-zone.ts`). **상단만** 본다 — 구간 아래는 매수에
+  불리하지 않다. `entryPrices`가 없으면 통과(fail-open). 사이징 게이트보다 앞이라 어차피 사지
+  않을 주문에 LLM 호출을 태우지 않는다. 매도에는 걸지 않는다.
+- **`entry_cooldown`** — 같은 심볼 재진입 최소 간격(`config.entry_cooldown_min`, 기본 60분,
+  0이면 off). 실행 주기 단축의 필수 동반: 10분 틱에서는 매수 신호가 살아 있는 한 틱마다 분할
+  진입이 나가 한 종목이 `max_trades_per_day`를 하루치 통째로 먹는다. **설정 > 투자 관리**.
+
+청산 쪽에는 대칭 게이트를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
+대신 빠져 있던 트리거를 채웠다: `actionRecommendation.stopLoss` / `takeProfitPrices`(core의
+`reconciledLevels` 보정값 우선)가 `evaluateExistingPosition`의 우선순위 1.5 / 4.5로 들어간다.
+`fixed_exit_enabled`가 기본 꺼짐이라, 그전까지 활성 손절 경로는 지지선 이탈·추세 반전·하락
+컨플루언스 같은 **간접** 신호뿐이었다.
+
+설계 근거: [`docs/specs/2026-08-16-execution-cadence-design.md`](docs/specs/2026-08-16-execution-cadence-design.md).
 
 ### Entry window (신규 진입 시간 창)
 
@@ -235,9 +276,10 @@ the narrative quality feeds the decision.
 
 `semi_auto` 승인은 창을 다시 보지 않는다 — 대기 주문 TTL(15분)만큼 창을 넘겨 체결될 수 있고,
 운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스러우므로 의도적으로 둔다.
-또한 기본 창은 하루 6개의 `execute` 틱 중 4개만 덮으므로, AI 사이징 게이트의 분할 진입과
-겹치면 하루에 도달 가능한 포지션 크기가 약 1/3 줄어든다 — `auto` 전환 시
-`max_trades_per_day`와 함께 확인할 것.
+또한 기본 창(ET 4시간)은 실행 주기 10분 기준 하루 39틱 중 24틱만 덮으므로, AI 사이징 게이트의
+분할 진입과 겹치면 하루에 도달 가능한 포지션 크기가 줄어든다. 다만 실제 상한을 정하는 것은
+`entry_cooldown_min`(기본 60분)이라 심볼당 창 안에서 4회 — 실행 주기 도입 전과 같은 숫자다.
+`auto` 전환 시 `max_trades_per_day`와 함께 확인할 것.
 
 설계 근거: [`docs/specs/2026-08-15-entry-window-design.md`](docs/specs/2026-08-15-entry-window-design.md).
 

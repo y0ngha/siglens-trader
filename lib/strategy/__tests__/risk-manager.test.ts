@@ -400,6 +400,134 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
+    describe('분석 손절가 (aiStopLoss)', () => {
+        it('현재가가 분석 손절가 아래로 내려가면 stop_loss', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 94,
+                aiStopLoss: 96,
+            });
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('분석 손절가 이탈');
+            expect(result.reason).toContain('96');
+            // 분석에서 파생된 판단이므로 사이징 게이트가 얼마나 자를지 정한다.
+            expect(result.hard).toBeUndefined();
+        });
+
+        it('수익 구간이면 익절로 라벨링한다 — 손절 이력·재진입 쿨다운이 잘못 걸리면 안 된다', () => {
+            // $100에 산 포지션이 $145까지 오른 뒤 분석 손절선 $150을 건드린 경우.
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 145,
+                aiStopLoss: 150,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('수익 구간');
+        });
+
+        it('손절가와 같으면 아직 이탈이 아니다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 96,
+                aiStopLoss: 96,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('고정 손절선이 먼저다 — 운영자가 그은 선이 분석보다 우선', () => {
+            const result = evaluateExistingPosition({
+                ...enabledParams,
+                currentPrice: 94, // -6%, 고정 손절선(-5%)도 분석 손절가(96)도 성립
+                aiStopLoss: 96,
+            });
+            expect(result.reason).toContain('고정 손절선');
+            expect(result.hard).toBe(true);
+        });
+
+        it('지지선 이탈보다 먼저다 — 명시 손절가가 간접 신호보다 우선', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 94,
+                aiStopLoss: 96,
+                supportLevel: 99,
+            });
+            expect(result.reason).toContain('분석 손절가 이탈');
+        });
+
+        it('값이 없거나 0이면 아무것도 하지 않는다', () => {
+            for (const aiStopLoss of [undefined, 0]) {
+                const result = evaluateExistingPosition({
+                    ...baseParams,
+                    currentPrice: 94,
+                    aiStopLoss,
+                });
+                expect(result.action).toBe('hold');
+            }
+        });
+    });
+
+    describe('분석 익절가 (aiTakeProfit)', () => {
+        it('현재가가 분석 익절가에 닿으면 take_profit', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 110,
+                aiTakeProfit: 110, // 명시 가격이므로 근사(95%/98%)를 쓰지 않는다
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('분석 익절가 도달');
+            expect(result.hard).toBeUndefined();
+        });
+
+        it('익절가 아래면 아무것도 하지 않는다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 109.99,
+                aiTakeProfit: 110,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('고정 익절선이 먼저다', () => {
+            const result = evaluateExistingPosition({
+                ...enabledParams,
+                currentPrice: 112, // 고정 익절선(+10%)도 분석 익절가(105)도 성립
+                aiTakeProfit: 105,
+            });
+            expect(result.reason).toContain('고정 익절선');
+        });
+
+        it('저항선 근접보다 먼저다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 105,
+                aiTakeProfit: 105,
+                resistanceLevel: 100, // 98% 근접 조건도 성립
+            });
+            expect(result.reason).toContain('분석 익절가 도달');
+        });
+
+        it('추세 반전이 먼저다 — 손실 방향 신호가 익절보다 위', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                currentPrice: 112,
+                aiTakeProfit: 105,
+                technicalTrend: 'bearish',
+            });
+            expect(result.reason).toContain('기술적 추세 반전');
+        });
+
+        it('값이 없거나 0이면 아무것도 하지 않는다', () => {
+            for (const aiTakeProfit of [undefined, 0]) {
+                const result = evaluateExistingPosition({
+                    ...baseParams,
+                    currentPrice: 500,
+                    aiTakeProfit,
+                });
+                expect(result.action).toBe('hold');
+            }
+        });
+    });
+
     describe('support level break', () => {
         it('returns stop_loss when price is below support level and in loss (not hard — analysis-derived)', () => {
             const result = evaluateExistingPosition({

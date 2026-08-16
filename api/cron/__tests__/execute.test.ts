@@ -28,6 +28,7 @@ const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockGetTodayRealizedPnl = vi.fn();
+const mockGetRecentTrades = vi.fn();
 const mockExpireOldPendingOrders = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
@@ -57,6 +58,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
     getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
+    getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
     expireOldPendingOrders: (...args: unknown[]) => mockExpireOldPendingOrders(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
@@ -208,12 +210,18 @@ const fakeHoldSignalScore = {
     signal: 'hold' as const,
 };
 
-function makeRequest(authorized: boolean): Request {
+/**
+ * `?force=1`을 기본으로 붙이는 이유 — 이 파일의 테스트는 매매 로직을 검증하지 스케줄을
+ * 검증하지 않는다. 실행 간격 게이트(`execute_interval_min`)는 고정 시각의 분(minute)에
+ * 걸리므로, 붙이지 않으면 시각을 옮기는 테스트마다 `off_interval`로 빠진다. 게이트 자체는
+ * `실행 간격 게이트` describe에서 force 없는 요청으로 따로 검증한다.
+ */
+function makeRequest(authorized: boolean, query = '?force=1'): Request {
     const headers = new Headers();
     if (authorized) {
         headers.set('authorization', 'Bearer test-secret');
     }
-    return new Request('https://example.com/api/cron/execute', { headers });
+    return new Request(`https://example.com/api/cron/execute${query}`, { headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +274,8 @@ function setupDefaults() {
     mockGetTodayTradeCount.mockResolvedValue(0);
     mockGetTodayInflightOrderCount.mockResolvedValue(0);
     mockGetTodayRealizedPnl.mockResolvedValue(0);
+    // 재진입 쿨다운이 보는 최근 체결 이력. 기본은 비어 있음 = 쿨다운 미적용.
+    mockGetRecentTrades.mockResolvedValue([]);
     mockExpireOldPendingOrders.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
@@ -363,7 +373,10 @@ describe('execute cron handler', () => {
 
             expect(body).toEqual({ skipped: true, reason: 'market_closed' });
             expect(mockAcquireLock).not.toHaveBeenCalled();
-            expect(mockGetConfigValue).not.toHaveBeenCalled();
+            // 실행 간격 게이트만 예외 — 장 상태 판정보다 앞이다.
+            expect(mockGetConfigValue.mock.calls.map(([, key]) => key)).toEqual([
+                'execute_interval_min',
+            ]);
         });
     });
 
@@ -379,7 +392,11 @@ describe('execute cron handler', () => {
             const body = await res.json();
 
             expect(body).toEqual({ skipped: true, reason: 'another_execution_in_progress' });
-            expect(mockGetConfigValue).not.toHaveBeenCalled();
+            // 락을 못 잡았으면 설정은 하나도 읽지 않는다. 예외는 실행 간격 게이트 —
+            // 그건 락보다 앞에서 이 틱이 실행 대상인지부터 정한다.
+            expect(mockGetConfigValue.mock.calls.map(([, key]) => key)).toEqual([
+                'execute_interval_min',
+            ]);
         });
 
         it('releases lock after successful execution', async () => {
@@ -7800,6 +7817,418 @@ describe('execute cron handler', () => {
             await handler(makeRequest(true));
 
             expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', '15Min');
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // 실행 간격 게이트 (execute_interval_min)
+    // -----------------------------------------------------------------------
+
+    describe('실행 간격 게이트', () => {
+        /** 이 describe만 force 없이 호출한다 — 게이트 자체가 검증 대상이다. */
+        const scheduled = () => handler(makeRequest(true, ''));
+
+        function configWith(extra: Record<string, unknown> = {}) {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key in extra) return Promise.resolve(extra[key]);
+                return Promise.resolve(null);
+            });
+        }
+
+        it('간격에 걸리지 않는 틱은 감사 행도 락도 없이 건너뛴다', async () => {
+            // 파일 기본 시각 15:30Z, 기본 간격 10분 → 실행 분은 :07/:17/:27/:37/:47/:57
+            const res = await scheduled();
+
+            expect(await res.json()).toEqual({
+                skipped: true,
+                reason: 'off_interval',
+                executeInterval: 10,
+            });
+            // 건너뛴 틱까지 cron_runs에 남으면 감사 로그가 잡음으로 덮인다.
+            expect(mockStartCronRun).not.toHaveBeenCalled();
+            expect(mockAcquireLock).not.toHaveBeenCalled();
+        });
+
+        it('간격에 걸리는 틱은 실행된다', async () => {
+            vi.setSystemTime(new Date('2026-05-24T15:37:00.000Z'));
+
+            await scheduled();
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('60분 설정은 종전 스케줄과 같이 :07에만 실행된다', async () => {
+            configWith({ execute_interval_min: 60 });
+
+            vi.setSystemTime(new Date('2026-05-24T15:37:00.000Z'));
+            expect((await (await scheduled()).json()).reason).toBe('off_interval');
+
+            vi.setSystemTime(new Date('2026-05-24T15:07:00.000Z'));
+            await scheduled();
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('5분 설정은 cron이 부르는 모든 틱에서 실행된다', async () => {
+            configWith({ execute_interval_min: 5 });
+            vi.setSystemTime(new Date('2026-05-24T15:32:00.000Z'));
+
+            await scheduled();
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('설정이 손상돼 있으면 기본 간격으로 판정한다', async () => {
+            configWith({ execute_interval_min: 'every 3 minutes' });
+            vi.setSystemTime(new Date('2026-05-24T15:37:00.000Z'));
+
+            await scheduled();
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('설정 조회가 실패해도 기본 간격으로 진행한다 — DB 장애로 매매 틱이 사라지면 안 된다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'execute_interval_min') return Promise.reject(new Error('db down'));
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                return Promise.resolve(null);
+            });
+            vi.setSystemTime(new Date('2026-05-24T15:37:00.000Z'));
+
+            await scheduled();
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('?force=1은 간격과 무관하게 실행한다 (수동 트리거)', async () => {
+            await handler(makeRequest(true));
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+        });
+
+        it('인증 실패가 간격 판정보다 먼저다', async () => {
+            mockVerifyCronSecret.mockReturnValue(false);
+
+            const res = await handler(makeRequest(false, ''));
+
+            expect(res.status).toBe(401);
+            expect(mockGetConfigValue).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // 진입가 게이트 + 재진입 쿨다운
+    // -----------------------------------------------------------------------
+
+    describe('진입 품질 가드', () => {
+        /** 권장 진입 구간 $148~$152를 실은 기술 분석 결과. */
+        const techWithZone = (currentPrice: number) => ({
+            result: {
+                trend: 'bullish',
+                riskLevel: 'low',
+                keyLevels: { currentPrice, support: [140], resistance: [200] },
+                actionRecommendation: {
+                    positionAnalysis: '',
+                    entry: '',
+                    exit: '',
+                    riskReward: '',
+                    entryPrices: [148, 152],
+                    stopLoss: 140,
+                    takeProfitPrices: [170, 185],
+                },
+            },
+        });
+
+        function buySetup(currentPrice: number, extraConfig: Record<string, unknown> = {}) {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                if (key === 'trading_mode') return Promise.resolve('dry_run');
+                if (key in extraConfig) return Promise.resolve(extraConfig[key]);
+                return Promise.resolve(null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+            mockGetLatestAnalysisResult.mockImplementation(
+                (_db: unknown, _sym: string, type: string) =>
+                    Promise.resolve(type === 'technical' ? techWithZone(currentPrice) : null),
+            );
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+        }
+
+        describe('권장 진입 구간 이탈 (entry_out_of_zone)', () => {
+            it('구간 위로 달아난 가격은 매수하지 않는다', async () => {
+                buySetup(180);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_out_of_zone' }),
+                );
+                expect(mockInsertTrade).not.toHaveBeenCalled();
+                // 게이트보다 앞이어야 한다 — 어차피 안 살 주문에 LLM 호출을 태우지 않는다.
+                expect(mockRunTradeGate).not.toHaveBeenCalled();
+            });
+
+            it('감사 로그에 가격과 구간을 남긴다 — "왜 안 샀나"에 답할 수 있어야 한다', async () => {
+                buySetup(180);
+
+                await handler(makeRequest(true));
+
+                expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                    fakeDb,
+                    expect.any(String),
+                    'execute',
+                    expect.arrayContaining([
+                        expect.objectContaining({
+                            action: 'entry_out_of_zone',
+                            detail: expect.objectContaining({
+                                price: 180,
+                                entryZone: '$148 ~ $152',
+                            }),
+                        }),
+                    ]),
+                );
+            });
+
+            it('구간 안이면 그대로 매수한다', async () => {
+                buySetup(150);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('구간 아래는 막지 않는다 — 상단만 본다', async () => {
+                buySetup(120);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('구간 정보가 없으면 통과시킨다 (fail-open)', async () => {
+                buySetup(180);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) =>
+                        Promise.resolve(
+                            type === 'technical'
+                                ? { result: { trend: 'bullish', keyLevels: { currentPrice: 180 } } }
+                                : null,
+                        ),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('추가 매수(average_in)도 막는다 — 구간 위에서 물타기는 더 나쁘다', async () => {
+                buySetup(180);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '150',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'average_in',
+                    symbol: 'AAPL',
+                    score: 80,
+                    reason: 'Score 80/100 — AVERAGE_IN',
+                    quantity: 3,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_out_of_zone' }),
+                );
+                expect(mockAverageIntoPosition).not.toHaveBeenCalled();
+            });
+
+            it('매도는 막지 않는다 — 이 게이트는 진입 전용', async () => {
+                buySetup(180);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 10,
+                    avgPrice: '100',
+                    status: 'open',
+                });
+                mockGetOpenPositions.mockResolvedValue([]);
+                mockScoreSignals.mockReturnValue(fakeSellSignalScore);
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'sell',
+                    symbol: 'AAPL',
+                    score: 20,
+                    reason: 'Score 20/100 — SELL',
+                    quantity: 10,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).not.toContainEqual(
+                    expect.objectContaining({ action: 'entry_out_of_zone' }),
+                );
+            });
+        });
+
+        describe('재진입 쿨다운 (entry_cooldown)', () => {
+            const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+            it('기본 60분 안에 매수한 종목은 다시 매수하지 않는다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockResolvedValue([
+                    {
+                        symbol: 'AAPL',
+                        side: 'buy',
+                        mode: 'dry_run',
+                        quantity: 5,
+                        executedAt: minutesAgo(20),
+                    },
+                ]);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_cooldown' }),
+                );
+                expect(mockInsertTrade).not.toHaveBeenCalled();
+            });
+
+            it('쿨다운이 지났으면 매수한다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockResolvedValue([
+                    {
+                        symbol: 'AAPL',
+                        side: 'buy',
+                        mode: 'dry_run',
+                        quantity: 5,
+                        executedAt: minutesAgo(61),
+                    },
+                ]);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('0이면 꺼진다 — 이력 조회 자체를 하지 않는다', async () => {
+                buySetup(150, { entry_cooldown_min: 0 });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(mockGetRecentTrades).not.toHaveBeenCalled();
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('잔고 부족으로 기록된 행(mode: skipped)은 체결이 아니므로 쿨다운을 걸지 않는다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockResolvedValue([
+                    {
+                        symbol: 'AAPL',
+                        side: 'buy',
+                        mode: 'skipped',
+                        quantity: 0,
+                        executedAt: minutesAgo(5),
+                    },
+                ]);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('이력 조회가 실패해도 실행을 멈추지 않는다 — 쿼리 하나가 청산 경로까지 죽이면 안 된다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockRejectedValue(new Error('db down'));
+
+                const res = await handler(makeRequest(true));
+                const body = await res.json();
+
+                expect(res.status).toBe(200);
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('다른 종목의 최근 매수는 영향을 주지 않는다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockResolvedValue([
+                    {
+                        symbol: 'TSLA',
+                        side: 'buy',
+                        mode: 'dry_run',
+                        quantity: 5,
+                        executedAt: minutesAgo(5),
+                    },
+                ]);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('매도 이력은 재진입을 막지 않는다', async () => {
+                buySetup(150);
+                mockGetRecentTrades.mockResolvedValue([
+                    {
+                        symbol: 'AAPL',
+                        side: 'sell',
+                        mode: 'dry_run',
+                        quantity: 5,
+                        executedAt: minutesAgo(5),
+                    },
+                ]);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+        });
+
+        describe('분석 손절가·익절가 배선', () => {
+            it('포지션 재평가에 분석 손절/익절가를 넘긴다', async () => {
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                    Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+                );
+                mockGetEnabledWatchlist.mockResolvedValue([]);
+                mockGetOpenPositions.mockResolvedValue([
+                    { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+                ]);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) =>
+                        Promise.resolve(type === 'technical' ? techWithZone(150) : null),
+                );
+
+                await handler(makeRequest(true));
+
+                expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                    expect.objectContaining({ aiStopLoss: 140, aiTakeProfit: 170 }),
+                );
+            });
         });
     });
 });

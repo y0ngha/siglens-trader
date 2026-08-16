@@ -84,7 +84,14 @@ The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitra
 Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
-`max_daily_loss_usd`, `entry_window`.
+`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`.
+
+`execute_interval_min` is an **enum** (`EXECUTE_INTERVALS` = 5/10/15/20/30/60), not a free
+number: the runtime gate is `(minute − 7) mod interval === 0`, so a value that does not divide
+60 makes the cadence break at every hour boundary. Rejected rather than coerced through
+`parseExecuteInterval` — that fallback is runtime defense against a corrupt row, and using it
+here would hide the operator's typo (same reasoning as `entry_window`). `entry_cooldown_min` is
+a normal numeric key capped at 1440 (one day); 0 turns the cooldown off.
 
 `trading_enabled` / `fixed_exit_enabled` must be booleans; `trading_mode` is checked against
 `dry_run` / `semi_auto` / `auto`; `analysis_timeframe` against `15Min` / `30Min` / `1Hour`.
@@ -106,6 +113,11 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
 
 ## Execute Cron Flow
 
+0. **Interval gate** — node-cron fires every 5 minutes (`7-59/5`); `execute_interval_min`
+   (5/10/15/20/30/60, default 10) decides whether this tick actually runs
+   (`lib/strategy/execute-interval.ts`). Runs **before** `startCronRun` so skipped ticks leave
+   no audit row, and before the lock. A failed config read falls through to the default rather
+   than dropping the tick. `?force=1` bypasses it for manual triggering
 1. Acquire distributed lock (`cron:execute:lock`, 15min TTL)
 2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
 3. Expire old pending orders
@@ -114,7 +126,12 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
 5.5. Load the AI sizing gate config (`analysis_model_config['trade_gate']`, once per run) and
    set the gate cutoff at cron start + 600s
 6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
-   - `evaluateExistingPosition` also receives `confluenceExit` (`isConfluenceExit(snapshot)`) —
+   - `evaluateExistingPosition` receives `aiStopLoss` / `aiTakeProfit`
+     (`actionRecommendation.stopLoss` / `takeProfitPrices[0]`, core's `reconciledLevels`
+     winning when present) as priorities 1.5 / 4.5 — the only *explicit* exit prices the
+     analysis produces. They were prompt-only until now, so with `fixed_exit_enabled` off the
+     active stop paths were all indirect (support break, trend reversal, confluence)
+   - It also receives `confluenceExit` (`isConfluenceExit(snapshot)`) —
      the bearish inverse of the entry rule, checked right after the technical trend reversal.
      It leaves `hard` unset, so the exit sizing gate still decides how much to cut
    - Skip positions with a sell in-flight (`order_tracking`) **or** queued for approval
@@ -143,9 +160,15 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
      about an unfunded buy on a run that could not have placed an order anyway
    - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
      with an unanswered approval burned a 25s LLM call whose answer was discarded
-   - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols — and the
-     zero-budget buy case with it, which decides as 'hold' and used to slip past the guard and
-     mail a 잔고 부족 alert for a symbol we refuse to buy anyway
+   - Three entry guards share one `isEntryDecision` condition (buy / average_in / unfunded buy):
+     - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols — the
+       zero-budget buy case is included because it decides as 'hold' and would otherwise slip
+       past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
+     - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
+       (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
+     - `entry_cooldown`: this symbol had a real buy fill inside `entry_cooldown_min`
+       (default 60). Reads `getRecentTrades(db, 100)` once per run and folds it in memory
+       instead of adding a query; `mode: 'skipped'` rows are not fills
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade
    - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
@@ -187,7 +210,9 @@ carries `modelId: 'rule-engine'` and the bar time as `analyzedAt` — it is not 
 prompt says so, telling the model to weigh it more heavily when the axes disagree. It comes from the
 same run-scoped cache as the scoring path, so entering the gate costs no extra fetch.
 
-New decision actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
+Decision actions from the entry guards: `entry_out_of_zone`, `entry_cooldown` (both carry a
+`detail` block naming the price/zone or the last fill time, so "why didn't it buy" is
+answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
 `exit_already_handled` (the re-evaluation loop already sold this symbol this tick),
 `entry_blocked` (a risk breaker is up and this symbol's signal is not a sell).
 Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
@@ -230,6 +255,8 @@ $1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchange
 
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
+| Entry zone | — (analysis-driven) | +1% over `entryPrices` max | Blocks buy/average_in only — `entry_out_of_zone`. Not a breaker row in the audit: it is per-symbol, so it decides inside the watchlist loop rather than setting `entryBlock` |
+| Re-entry cooldown | `entry_cooldown_min` | 60 min | Blocks buy/average_in only — `entry_cooldown`. Per-symbol, same as above. 0 disables |
 | Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
 | Daily trade limit | `max_trades_per_day` | `20` | Blocks entries only — `entry_blocked`. Position exits and watchlist **sell** signals still run, gate-sized |

@@ -302,6 +302,12 @@ export function SettingsPage() {
             ? `한국시간 여름 ${summerKst} / 겨울 ${winterKst}`
             : null;
 
+    const executeIntervalMin = getConfigValue(
+        configData.config,
+        'execute_interval_min',
+        10,
+    ) as number;
+
     const riskDefaults: Record<string, number> = {
         max_position_size: 5000,
         max_total_exposure: 25000,
@@ -311,6 +317,7 @@ export function SettingsPage() {
         sell_threshold: 30,
         max_trades_per_day: 20,
         max_daily_loss_usd: 500,
+        entry_cooldown_min: 60,
     };
 
     function getRiskValue(key: string): string {
@@ -489,6 +496,38 @@ export function SettingsPage() {
                         </div>
                     )}
                 </div>
+            </section>
+
+            {/* 매매 실행 주기 — 가격 조건(진입가·손절가·익절가)을 얼마나 자주 보는가.
+                선택지는 lib/strategy/execute-interval.ts의 EXECUTE_INTERVALS와 같아야 한다
+                (src/는 lib/를 import하지 않는 것이 이 저장소 규칙이라 값을 복제한다). */}
+            <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
+                <h2 className="text-sm font-semibold">매매 실행 주기</h2>
+                <p className="mt-0.5 text-[10px] text-neutral-600">
+                    가격 조건을 다시 판정하는 간격 — 손절 반응 지연의 상한
+                </p>
+                <select
+                    aria-label="매매 실행 주기"
+                    className="mt-3 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                    value={String(executeIntervalMin)}
+                    onChange={(e) =>
+                        mutate({
+                            type: 'config',
+                            key: 'execute_interval_min',
+                            value: Number(e.target.value),
+                        })
+                    }
+                >
+                    {[5, 10, 15, 20, 30, 60].map((min) => (
+                        <option key={min} value={min}>
+                            {min}분
+                        </option>
+                    ))}
+                </select>
+                <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
+                    짧을수록 진입 기회와 손절선에 빨리 반응하지만, 종목당 시세 조회가 그만큼
+                    늘어납니다. 분할 진입이 과도해지면 재진입 최소 간격(투자 관리)을 함께 올리세요.
+                </p>
             </section>
 
             {/* Entry Window — 진입만 막는 시간 게이트. 청산 경로는 건드리지 않는다. */}
@@ -829,6 +868,11 @@ export function SettingsPage() {
                                 'max_daily_loss_usd',
                                 '일일 최대 손실 한도 ($)',
                                 '오늘 실현 손실이 이 금액을 초과하면 매매 중지',
+                            ],
+                            [
+                                'entry_cooldown_min',
+                                '재진입 최소 간격 (분)',
+                                '같은 종목을 다시 매수하기까지 기다릴 시간 (0이면 제한 없음)',
                             ],
                         ] as const
                     ).map(([key, label, helper]) => (
