@@ -25,6 +25,18 @@ describe('fetchLivePrice', () => {
         expect(mockFmpGet).toHaveBeenCalledWith('quote', { symbol: 'AAPL' });
     });
 
+    it('다른 심볼의 시세가 오면 거절한다 — A의 가격으로 B를 손절할 수 없다', async () => {
+        mockFmpGet.mockResolvedValue([{ symbol: 'MSFT', price: 400 }]);
+
+        expect(await fetchLivePrice('AAPL')).toBeNull();
+    });
+
+    it('심볼 필드가 없으면 그대로 쓴다 — 응답 형태 변화에 fail-open', async () => {
+        mockFmpGet.mockResolvedValue([{ price: 185.5 }]);
+
+        expect(await fetchLivePrice('AAPL')).toBe(185.5);
+    });
+
     it('returns null when response array is empty', async () => {
         mockFmpGet.mockResolvedValue([]);
 

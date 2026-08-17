@@ -131,7 +131,14 @@ export class FmpMarketProvider implements MarketDataProvider {
             buildBarsQuery(symbol, fromDate, endDate),
         );
         if (!Array.isArray(raw)) return [];
-        return [...raw.filter(isValidOhlcv).map((r) => toFmpBar(r))].reverse();
+        // 벤더 정렬을 가정하지 않는다. FMP `historical-chart`는 최신순으로 내려오지만,
+        // 그 전제가 깨지면 `.reverse()`가 조용히 **내림차순**을 만든다 — core의
+        // `detectSignals`는 "오래된 것부터"를 계약으로 요구하고 검증하지 않으므로,
+        // 마지막 봉이 가장 오래된 봉이 되고 "직전 봉 대비 신규" 판정이 통째로 뒤집힌다.
+        return raw
+            .filter(isValidOhlcv)
+            .map((r) => toFmpBar(r))
+            .sort((a, b) => a.time - b.time);
     }
     private async getDailyBars(
         symbol: string,

@@ -425,13 +425,15 @@ describe('evaluateExistingPosition', () => {
             expect(result.reason).toContain('수익 구간');
         });
 
-        it('손절가와 같으면 아직 이탈이 아니다', () => {
+        it('손절가와 같으면 트리거된다 — 익절(>=)과 대칭', () => {
+            // 종전 `<`는 손절선에 정확히 닿았을 때만 빠져나가, 익절보다 리스크를
+            // 더 오래 들고 갔다.
             const result = evaluateExistingPosition({
                 ...baseParams,
                 currentPrice: 96,
                 aiStopLoss: 96,
             });
-            expect(result.action).toBe('hold');
+            expect(result.action).toBe('stop_loss');
         });
 
         it('고정 손절선이 먼저다 — 운영자가 그은 선이 분석보다 우선', () => {

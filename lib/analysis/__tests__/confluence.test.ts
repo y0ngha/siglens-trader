@@ -15,10 +15,27 @@ vi.mock('@y0ngha/siglens-core', () => ({
 
 const { computeConfluence, MIN_BARS } = await import('../confluence.js');
 
-/** 종가가 모두 `close`인 n개 봉. */
+/**
+ * 종가가 모두 `close`인 n개 봉. 마지막 봉은 **방금** 닫힌 것으로 만든다 —
+ * `computeConfluence`가 낡은 봉을 기권 처리하기 때문이다.
+ */
 function bars(n: number, close = 100) {
+    const lastTime = Math.floor(Date.now() / 1000);
     return Array.from({ length: n }, (_, i) => ({
-        time: 1_760_000_000 + i * 3600,
+        time: lastTime - (n - 1 - i) * 3600,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: 1000,
+    }));
+}
+
+/** 마지막 봉이 `ageHours` 시간 전인 n개 봉. */
+function staleBars(n: number, ageHours: number, close = 100) {
+    const lastTime = Math.floor(Date.now() / 1000) - ageHours * 3600;
+    return Array.from({ length: n }, (_, i) => ({
+        time: lastTime - (n - 1 - i) * 3600,
         open: close,
         high: close,
         low: close,
@@ -37,6 +54,22 @@ beforeEach(() => {
 });
 
 describe('computeConfluence', () => {
+    it('마지막 봉이 낡았으면 기권한다 — 전 세션 종가로 진입 트리거가 서면 안 된다', async () => {
+        getBars.mockResolvedValue(staleBars(MIN_BARS + 1, 24));
+        detectSignals.mockReturnValue([]);
+
+        expect(await computeConfluence('AAPL', '1Hour')).toBeNull();
+        // 봉이 낡으면 지표 계산 자체를 하지 않는다.
+        expect(detectSignals).not.toHaveBeenCalled();
+    });
+
+    it('타임프레임 × 3 안이면 기권하지 않는다', async () => {
+        getBars.mockResolvedValue(staleBars(MIN_BARS + 1, 2));
+        detectSignals.mockReturnValue([]);
+
+        expect(await computeConfluence('AAPL', '1Hour')).not.toBeNull();
+    });
+
     it('봉이 충분하면 스냅샷을 만든다', async () => {
         getBars.mockResolvedValue(bars(MIN_BARS + 1));
         detectSignals

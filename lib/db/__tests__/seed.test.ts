@@ -45,7 +45,7 @@ describe('seed', () => {
         await expect(seed()).rejects.toThrow('DATABASE_URL is required');
     });
 
-    it('inserts default config values (14 entries)', async () => {
+    it('inserts default config values (13 entries)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -54,7 +54,12 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(14);
+        expect(configValueCalls.length).toBe(13);
+        // `score_weights`는 심지 않는다 — 심으면 `WEIGHTS_BY_TIMEFRAME` 프로파일이
+        // 통째로 덮여 타임프레임을 바꿔도 1Hour 가중치로 매매한다.
+        expect(configValueCalls.map((call) => (call[0] as { key: string }).key)).not.toContain(
+            'score_weights',
+        );
     });
 
     it('inserts analysis model configs (5 types)', async () => {

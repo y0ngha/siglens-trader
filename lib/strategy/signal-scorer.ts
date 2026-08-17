@@ -62,10 +62,17 @@ export interface AnalysisInputs {
  */
 export function scoreSignals(
     inputs: AnalysisInputs,
-    weights: ScoreWeights,
+    rawWeights: ScoreWeights,
     buyThreshold: number,
     sellThreshold: number,
 ): SignalScore {
+    // 가중치를 유한한 음이 아닌 수로 강제한다. `config.score_weights`는 JSONB라 API를
+    // 거치지 않는 경로(마이그레이션, 수동 수정)로 문자열이 들어올 수 있고, 그러면
+    // `12 + '8'`이 `'128'`이 되어 `totalWeight`가 문자열 연결이 된다 — `=== 0` 가드를
+    // 통과하고 나눗셈이 0에 수렴해 **전 종목이 sell**로 떨어졌다. 음수는 분모를 뒤집어
+    // 신호의 부호를 반대로 만든다.
+    const weights = sanitizeWeights(rawWeights);
+
     const components = {
         confluence: scoreConfluence(inputs.confluence ?? null),
         technical: scoreTechnical(inputs.technical),
@@ -99,7 +106,7 @@ export function scoreSignals(
         weights.fundamental +
         congressWeight;
 
-    if (totalWeight === 0) {
+    if (!(totalWeight > 0)) {
         return { total: 50, totalWithoutConfluence: 50, components, signal: 'hold' as const };
     }
 
@@ -161,8 +168,10 @@ export function scoreSignals(
     //
     // 그래서 매수만 hold로 내린다. 매도·청산은 건드리지 않는다 — 놓친 매수는 기회비용,
     // 놓친 매도는 실현 손실이라는 이 저장소의 비대칭(원칙 7, 게이트 설계 §8)과 같은 방향이다.
+    // 축을 **꺼 둔** 경우(`score_weights.confluence = 0`, 문서화된 off 스위치)에는 강등하지
+    // 않는다. 끄고도 FMP 봉 실패가 모든 신규 진입을 막으면 그 스위치가 스위치가 아니다.
     const corrected = signalWithoutConfluence === 'sell' ? 'sell' : signal;
-    const confluenceAbstained = inputs.confluence == null;
+    const confluenceAbstained = inputs.confluence == null && weights.confluence > 0;
 
     return {
         total,
@@ -223,7 +232,9 @@ function technicalTrendScore(input: {
         // 미검출 항목은 방향을 주장하지 않는다 — 분모에 넣으면 카탈로그 크기가 곧 희석이 된다.
         (input.patterns ?? []).filter((p) => p.detected !== false),
         (p) => directionOf(p.trend),
-        (p) => (isFinitePositiveNumber(p.confidenceWeight) ? p.confidenceWeight : 1),
+        // 상한 1로 클램프한다 — 손상된 한 항목의 `confidenceWeight`가 크면 나머지 전부를
+        // 덮어 그 한 패턴이 기술 점수를 단독으로 정한다.
+        (p) => (isFinitePositiveNumber(p.confidenceWeight) ? Math.min(p.confidenceWeight, 1) : 1),
     );
     if (patternAgg !== null) parts.push(50 + patternAgg * TREND_SPAN);
 
@@ -232,6 +243,25 @@ function technicalTrendScore(input: {
 
     if (parts.length === 0) return 50;
     return parts.reduce((sum, v) => sum + v, 0) / parts.length;
+}
+
+/**
+ * 가중치를 유한한 양수로 좁힌다. 숫자 문자열(`"8"`)은 그 의도대로 8로 읽고,
+ * 나머지(NaN·음수·객체)는 0 — 즉 그 축은 투표하지 않는다.
+ */
+function sanitizeWeights(weights: ScoreWeights): ScoreWeights {
+    const clean = (value: unknown): number => {
+        const n = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    return {
+        confluence: clean(weights?.confluence),
+        technical: clean(weights?.technical),
+        news: clean(weights?.news),
+        options: clean(weights?.options),
+        fundamental: clean(weights?.fundamental),
+        congress: clean(weights?.congress),
+    };
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -373,6 +403,9 @@ function scoreOptions(input: { signals?: Array<{ kind?: string }> } | null): num
     let bearishCount = 0;
 
     for (const signal of signals) {
+        // 이 축만 `safeArray(...) as ...` 캐스트로 원소를 검사 없이 받는다(execute.ts).
+        // `[null]` 하나면 `signal.kind`가 던져 그 심볼의 그 틱 신호가 통째로 사라진다.
+        if (!signal || typeof signal !== 'object') continue;
         if (signal.kind === 'bullish') bullishCount++;
         else if (signal.kind === 'bearish') bearishCount++;
     }
