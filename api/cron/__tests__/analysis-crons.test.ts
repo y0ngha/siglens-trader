@@ -161,8 +161,8 @@ describe('createAnalysisCronHandler', () => {
 
         await handler(makeRequest(true));
 
-        // TTL(1800s)은 컷오프(1200s) + 진행 중이던 심볼 하나(~7분)보다 커야 한다.
-        // 짧으면 실행 도중 락이 만료돼 다음 틱이 같은 심볼을 동시에 분석한다.
+        // 심볼을 병렬로 돌리므로 실행 상한은 가장 느린 심볼 하나(~7분)다. TTL은 그보다
+        // 커야 한다 — 짧으면 실행 도중 락이 만료돼 다음 틱이 같은 심볼을 동시에 분석한다.
         expect(mockAcquireLock).toHaveBeenCalledWith('cron:technical:lock', 1800);
     });
 
@@ -250,6 +250,54 @@ describe('createAnalysisCronHandler', () => {
             sourceAnalyzedAt: new Date('2026-05-24T10:00:00.000Z'),
             cronRunId: expect.stringMatching(/^technical-/),
         });
+    });
+
+    it('runs every symbol in parallel', async () => {
+        // 각 runner는 "모든 심볼이 시작했다"는 배리어를 기다린다. 직렬이면 첫 심볼이
+        // 영원히 풀리지 않아 이 테스트는 타임아웃으로 실패한다.
+        let started = 0;
+        let allStarted!: () => void;
+        const barrier = new Promise<void>((resolve) => {
+            allStarted = resolve;
+        });
+        mockRunner.mockImplementation(async () => {
+            started += 1;
+            if (started === fakeWatchlist.length) allStarted();
+            await barrier;
+            return { status: 'done', result: {} };
+        });
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(started).toBe(fakeWatchlist.length);
+        expect(body.results).toEqual([
+            { symbol: 'AAPL', status: 'done' },
+            { symbol: 'TSLA', status: 'done' },
+        ]);
+    });
+
+    it('keeps the other symbols when one symbol throws', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+        mockSaveAnalysisResult.mockImplementation((_db: unknown, row: { symbol: string }) =>
+            row.symbol === 'AAPL'
+                ? Promise.reject(new Error('DB write failed'))
+                : Promise.resolve([]),
+        );
+
+        const res = await handler(makeRequest(true));
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.results).toEqual([
+            { symbol: 'AAPL', status: 'error', error: 'DB write failed' },
+            { symbol: 'TSLA', status: 'done' },
+        ]);
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.any(String),
+            expect.objectContaining({ status: 'completed' }),
+        );
     });
 
     it('does not save result when analysis returns error status', async () => {

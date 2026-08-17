@@ -65,11 +65,10 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 return Response.json({ skipped: true, reason: 'market_closed' });
             }
 
-            // TTL 780s < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap).
             // TTL은 **한 실행이 걸릴 수 있는 최대 시간보다 커야 한다.** 짧으면 실행 도중
             // 락이 만료돼 다음 틱이 새로 잡고 같은 심볼을 동시에 분석한다(execute에서 같은
-            // 버그를 고쳤다). 위 컷오프 1200초 + 진행 중이던 심볼 하나(~7분) = 약 27분이
-            // 상한이므로 30분으로 잡는다.
+            // 버그를 고쳤다). 심볼을 병렬로 돌리므로 상한은 종목 수와 무관하게 가장 느린
+            // 심볼 하나(최악 ~7분) + 저장이다. 30분은 넉넉한 여유.
             const lockToken = await acquireLock(LOCK_KEY, 1800);
             if (!lockToken) {
                 finishState = {
@@ -111,18 +110,11 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     await getConfigValue<string>(db, 'analysis_timeframe'),
                 );
 
-                // 새 LLM 작업 컷오프. 이 시각을 넘기면 남은 심볼의 LLM 호출을 시작하지 않는다.
-                //
-                // 종전 690초는 Vercel `maxDuration`(800초)에서 역산한 값인데, EC2에는 실행
-                // 시간 상한이 없으므로 그 근거가 사라졌다. technical에 추론을 켜면 심볼당
-                // 수 분이 걸려 690초에서는 두 번째 심볼부터 잘린다 — 잘린 종목은 다음 틱에
-                // 재시도되지만, 매 패스마다 로테이션하면 갱신 간격이 필요 이상으로 벌어진다.
-                //
-                // 1200초로 잡은 근거: 심볼 3개 기준 마지막 심볼이 약 14분에 시작하므로 전부
-                // 들어간다. 컷오프 직전에 시작한 심볼 하나(최악 ~7분)를 더해도 실행 상한이
-                // 약 27분이라 **cadence 창 30분 안에 머문다** — 마지막 종목의 분석이 다음
-                // 창으로 넘어가 그 창을 소비하는 경우를 정상 상황에서는 피한다.
-                // 종목이 늘면 컷오프가 뒤쪽 심볼을 다음 틱으로 넘긴다(의도된 degrade).
+                // 실행 전체의 시간 상한. 심볼이 병렬로 시작하므로 이 값은 더 이상 "뒤쪽
+                // 심볼을 자르는 컷오프"가 아니라 **심볼당 타임아웃의 천장**이다 — 각 runner는
+                // `min(남은 시간, PER_SYMBOL_MAX_MS=150초)`로 AbortSignal을 건다. 실제 상한을
+                // 정하는 것은 150초 쪽이고, 1200초는 news 카드 보강처럼 deadline을 직접 예산
+                // 으로 쓰는 경로의 상한으로 남는다(가장 짧은 cadence 창 30분 안).
                 const analysisDeadlineMs = startedMs + 1_200_000;
 
                 // Port 구현체: analysis 레이어가 db 직접 의존하지 않도록 cron 레이어에서 주입.
@@ -139,60 +131,89 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     timeframe as AnalysisTimeframe,
                 );
 
-                // TODO: Consider Promise.allSettled for parallel processing (risk: DB write conflicts)
-                for (const item of watchlistItems) {
-                    // Cadence guard: skip this symbol when its clock window already has an
-                    // analysis. This is what makes a faster cron tick safe — technical and
-                    // options fire every 15 minutes, and on a longer horizon the surplus
-                    // ticks land in a window that is already covered and collapse, so the
-                    // schedule can be tighter than the policy without burning provider quota.
-                    if (cadenceWindowMs > 0) {
-                        const latest = await getLatestAnalysisResult(db, item.symbol, analysisType);
-                        if (
-                            latest &&
-                            isWithinCadenceWindow(
-                                latest.analyzedAt.getTime(),
-                                startedMs,
-                                cadenceWindowMs,
-                            )
-                        ) {
-                            results.push({ symbol: item.symbol, status: 'skipped' });
-                            continue;
+                // 심볼은 서로 독립이라 전부 병렬로 돈다. 직렬일 때는 종목 수 × 심볼당
+                // 소요시간이 그대로 실행시간이었고, 컷오프(아래)에 걸린 뒤쪽 종목은 다음
+                // 틱으로 밀려 갱신 간격이 벌어졌다. 병렬이면 실행시간 ≈ 가장 느린 심볼
+                // 하나이므로 컷오프에 걸릴 일이 사실상 없다. DB 쓰기는 심볼별로 다른 행이라
+                // 충돌하지 않는다.
+                //
+                // 실패를 한 곳에서 삼키지 않는다 — 한 심볼의 예외가 나머지 심볼의 결과까지
+                // 버리면 안 되므로 심볼 단위로 잡아 error 상태로 기록한다(직렬 때는 예외가
+                // 루프를 끊고 cron 전체를 error로 만들었다).
+                const settled = await Promise.all(
+                    watchlistItems.map(async (item) => {
+                        try {
+                            // Cadence guard: skip this symbol when its clock window already has an
+                            // analysis. This is what makes a faster cron tick safe — technical and
+                            // options fire every 15 minutes, and on a longer horizon the surplus
+                            // ticks land in a window that is already covered and collapse, so the
+                            // schedule can be tighter than the policy without burning provider
+                            // quota.
+                            if (cadenceWindowMs > 0) {
+                                const latest = await getLatestAnalysisResult(
+                                    db,
+                                    item.symbol,
+                                    analysisType,
+                                );
+                                if (
+                                    latest &&
+                                    isWithinCadenceWindow(
+                                        latest.analyzedAt.getTime(),
+                                        startedMs,
+                                        cadenceWindowMs,
+                                    )
+                                ) {
+                                    return { symbol: item.symbol, status: 'skipped' as const };
+                                }
+                            }
+
+                            const result = await runner({
+                                symbol: item.symbol,
+                                companyName: item.companyName,
+                                modelId: config.modelId as RunAnalysisOptions['modelId'],
+                                userApiKey: config.useByok
+                                    ? resolveApiKey(config.modelId)
+                                    : undefined,
+                                timeframe,
+                                cardStore,
+                                deadlineMs: analysisDeadlineMs,
+                                // 분석 타입별 reasoning 정책(짧은 주기 축은 OFF). 대시보드에
+                                // 스위치가 생기면 이 값을 config에서 흘려보낸다.
+                                reasoning: getAnalysisReasoning(analysisType),
+                            });
+
+                            if (result.status === 'done' || result.status === 'cached') {
+                                const savedAt = new Date();
+                                await saveAnalysisResult(db, {
+                                    symbol: item.symbol,
+                                    analysisType,
+                                    result: result.result,
+                                    modelId: config.modelId,
+                                    analyzedAt: savedAt,
+                                    sourceAnalyzedAt: extractSourceAnalyzedAt(
+                                        result.result,
+                                        savedAt,
+                                    ),
+                                    cronRunId,
+                                });
+                            }
+
+                            return {
+                                symbol: item.symbol,
+                                status: result.status,
+                                error: result.error,
+                            };
+                        } catch (e) {
+                            console.error('[analysis-cron]', analysisType, item.symbol, e);
+                            return {
+                                symbol: item.symbol,
+                                status: 'error' as const,
+                                error: e instanceof Error ? e.message : String(e),
+                            };
                         }
-                    }
-
-                    const result = await runner({
-                        symbol: item.symbol,
-                        companyName: item.companyName,
-                        modelId: config.modelId as RunAnalysisOptions['modelId'],
-                        userApiKey: config.useByok ? resolveApiKey(config.modelId) : undefined,
-                        timeframe,
-                        cardStore,
-                        deadlineMs: analysisDeadlineMs,
-                        // 분석 타입별 reasoning 정책(짧은 주기 축은 OFF). 대시보드에 스위치가
-                        // 생기면 이 값을 config에서 흘려보낸다.
-                        reasoning: getAnalysisReasoning(analysisType),
-                    });
-
-                    if (result.status === 'done' || result.status === 'cached') {
-                        const savedAt = new Date();
-                        await saveAnalysisResult(db, {
-                            symbol: item.symbol,
-                            analysisType,
-                            result: result.result,
-                            modelId: config.modelId,
-                            analyzedAt: savedAt,
-                            sourceAnalyzedAt: extractSourceAnalyzedAt(result.result, savedAt),
-                            cronRunId,
-                        });
-                    }
-
-                    results.push({
-                        symbol: item.symbol,
-                        status: result.status,
-                        error: result.error,
-                    });
-                }
+                    }),
+                );
+                results.push(...settled);
 
                 finishState = {
                     status: 'completed',
