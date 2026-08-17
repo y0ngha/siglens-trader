@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/y0ngha/siglens-trader/compare/v0.22.0...v0.22.1) (2026-08-17)
+
+
+### Performance Improvements
+
+* 분석 cron의 종목 루프를 병렬화한다 ([#44](https://github.com/y0ngha/siglens-trader/issues/44)) ([2d9595b](https://github.com/y0ngha/siglens-trader/commit/2d9595b7c3fce4b5fe48191ceba920abe47f8e6a))
+
 # [0.22.0](https://github.com/y0ngha/siglens-trader/compare/v0.21.1...v0.22.0) (2026-08-17)
 
 
