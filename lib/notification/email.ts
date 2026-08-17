@@ -15,6 +15,29 @@ function getResend() {
     return new Resend(apiKey);
 }
 
+/**
+ * 전송 대기 상한. resend SDK는 `fetch`에 타임아웃도 signal도 걸지 않는다.
+ *
+ * 이 함수들은 매매 루프 안에서 `await`된다(체결 알림, 주문 실패 경보). Resend가 응답을
+ * 안 주면 실행이 마감(900초)도 락 TTL(1800초)도 넘겨 살아 있고, 그 프로세스에서
+ * execute는 다시 돌지 않는다 — 손절 평가가 통째로 멈춘다. 알림 하나가 매매를 멈추게
+ * 두지 않는다.
+ */
+const SEND_TIMEOUT_MS = 10_000;
+
+async function withSendTimeout<T>(promise: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    return Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`email send timed out after ${SEND_TIMEOUT_MS}ms`)),
+                SEND_TIMEOUT_MS,
+            );
+        }),
+    ]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 const FROM = () => process.env.NOTIFICATION_EMAIL_FROM ?? 'noreply@siglens.io';
 const DEFAULT_TO = 'dev.y0ngha@gmail.com';
 
@@ -106,7 +129,7 @@ export async function sendTradeExecutedEmail(trade: TradeNotification, to?: stri
     const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     const { subject, html } = buildTradeExecutedEmail(trade);
-    await resend.emails.send({ from: FROM(), to: recipient, subject, html });
+    await withSendTimeout(resend.emails.send({ from: FROM(), to: recipient, subject, html }));
 }
 
 export async function sendApprovalRequestEmail(
@@ -116,21 +139,23 @@ export async function sendApprovalRequestEmail(
     const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     const { subject, html } = buildApprovalRequestEmail(order);
-    await resend.emails.send({ from: FROM(), to: recipient, subject, html });
+    await withSendTimeout(resend.emails.send({ from: FROM(), to: recipient, subject, html }));
 }
 
 export async function sendErrorEmail(subject: string, error: string, to?: string): Promise<void> {
     const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     const { subject: emailSubject, html } = buildErrorEmail(subject, error);
-    await resend.emails.send({ from: FROM(), to: recipient, subject: emailSubject, html });
+    await withSendTimeout(
+        resend.emails.send({ from: FROM(), to: recipient, subject: emailSubject, html }),
+    );
 }
 
 export async function sendCronHealthEmail(lines: readonly string[], to?: string): Promise<void> {
     const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     const { subject, html } = buildCronHealthEmail(lines);
-    await resend.emails.send({ from: FROM(), to: recipient, subject, html });
+    await withSendTimeout(resend.emails.send({ from: FROM(), to: recipient, subject, html }));
 }
 
 // ---------------------------------------------------------------------------
@@ -168,5 +193,5 @@ export async function sendDigestEmail(rows: DigestRow[], to?: string): Promise<v
     const recipient = to ?? DEFAULT_TO;
     const resend = getResend();
     const { subject, html } = buildDigestEmail(rows);
-    await resend.emails.send({ from: FROM(), to: recipient, subject, html });
+    await withSendTimeout(resend.emails.send({ from: FROM(), to: recipient, subject, html }));
 }

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
-import { acquireLock, releaseLock } from '../../lib/lock.js';
+import { acquireLockDetailed, releaseLock } from '../../lib/lock.js';
 import {
     getPendingSubmittedOrders,
     updateOrderTracking,
@@ -25,6 +25,16 @@ import { isUsTradingDay } from '@y0ngha/siglens-core';
 
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * 취소가 계속 실패하는 주문을 사람에게 넘기는 나이 상한 (6시간).
+ *
+ * 취소 성공을 확인하기 전에는 종료 상태로 넘기지 않는 것이 원칙이지만, 브로커 조회와
+ * 취소가 **같은 이유로** 계속 실패하면(엔드포인트 변경, 계정 잠금) 그 행은 영원히
+ * in-flight로 남아 그 심볼의 신규 매수를 무기한 막고 10분마다 메일을 보낸다.
+ * 한 세션(6.5시간)에 못 풀면 자동화가 할 수 있는 일은 없다.
+ */
+const CANCEL_RETRY_LIMIT_MS = 6 * 60 * 60 * 1000;
 
 /** Quantity comparison tolerance for holdings reconciliation (fractional US shares). */
 const HOLDINGS_QTY_EPSILON = 0.01;
@@ -59,11 +69,21 @@ async function handler(req: Request): Promise<Response> {
 
     const LOCK_KEY = 'cron:reconcile:lock';
     // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-    const lockToken = await acquireLock(LOCK_KEY, 780);
+    const lock = await acquireLockDetailed(LOCK_KEY, 780);
+    const lockToken = lock.token;
 
     try {
         if (!lockToken) {
-            finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
+            // 경합과 Redis 장애를 가른다 — 후자는 감시망에 걸려야 한다.
+            finishState =
+                lock.reason === 'unavailable'
+                    ? {
+                          status: 'error',
+                          outcome: 'locked',
+                          error: 'lock backend unavailable',
+                          ...elapsed(),
+                      }
+                    : { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'locked' });
         }
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
@@ -105,6 +125,33 @@ async function handler(req: Request): Promise<Response> {
 
             await notifyError(subject, body);
             results.push({ id: order.id, symbol: order.symbol, action: 'timeout', detail });
+        };
+
+        /**
+         * 취소 실패 처리. 기본은 **상태 유지 + 다음 실행 재시도** — 살아 있을지 모르는
+         * 주문을 종료 상태로 넘기지 않는다. 다만 `CANCEL_RETRY_LIMIT_MS`를 넘기면
+         * `needs_review`로 종결한다: 그때까지 안 풀린 것은 자동화가 풀 수 없고, 영원히
+         * in-flight로 두면 그 심볼의 신규 매수가 무기한 막히고 메일이 10분마다 나간다.
+         */
+        const handleCancelFailure = async (order: (typeof submitted)[number], age: number) => {
+            const giveUp = age > CANCEL_RETRY_LIMIT_MS;
+            if (giveUp) {
+                await updateOrderTracking(db, order.idempotencyKey, {
+                    status: 'needs_review',
+                    resolvedAt: new Date(),
+                });
+            }
+            await notifyError(
+                `주문 취소 실패: ${order.symbol}`,
+                giveUp
+                    ? `${order.side} 주문 ${order.tossOrderId} 취소가 ${Math.round(age / 3_600_000)}시간째 실패해 수동 확인(needs_review)으로 넘깁니다. 브로커 계좌를 직접 확인하세요.`
+                    : `${order.side} 주문 ${order.tossOrderId} 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다.`,
+            );
+            results.push({
+                id: order.id,
+                symbol: order.symbol,
+                action: giveUp ? 'needs_review' : 'cancel_failed',
+            });
         };
 
         let brokerPollFailures = 0;
@@ -303,15 +350,7 @@ async function handler(req: Request): Promise<Response> {
                                 return false;
                             });
                         if (!canceled) {
-                            await notifyError(
-                                `주문 취소 실패: ${order.symbol}`,
-                                `${order.side} 주문 ${order.tossOrderId} 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다.`,
-                            );
-                            results.push({
-                                id: order.id,
-                                symbol: order.symbol,
-                                action: 'cancel_failed',
-                            });
+                            await handleCancelFailure(order, age);
                             continue;
                         }
                         await timeoutOrder(order, age);
@@ -325,6 +364,24 @@ async function handler(req: Request): Promise<Response> {
 
             // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.
             if (isTimedOut) {
+                // 조회가 실패했을 뿐 브로커에는 주문이 **살아 있을 수 있다.** 취소를 확인하지
+                // 않고 `timeout`(종료 상태)으로 확정하면 그 주문은 in-flight 집합에서 빠져
+                // 다시 조회되지 않고, 나중에 체결되면 장부에 영영 안 잡힌다. 그리고 다음
+                // execute 틱은 in-flight가 없다고 보고 같은 심볼에 두 번째 주문을 낸다.
+                // PENDING 분기가 이미 지키는 규칙(취소 성공 확인 후에만 종료 상태)을
+                // 브로커 조회 실패 경로에도 적용한다.
+                if (order.tossOrderId && tradingMode !== 'dry_run') {
+                    const canceled = await cancelOrder(order.tossOrderId)
+                        .then(() => true)
+                        .catch((e) => {
+                            console.error('[cancel]', e);
+                            return false;
+                        });
+                    if (!canceled) {
+                        await handleCancelFailure(order, age);
+                        continue;
+                    }
+                }
                 await timeoutOrder(
                     order,
                     age,
@@ -398,7 +455,10 @@ async function handler(req: Request): Promise<Response> {
         // 불일치를 만들 사건 자체가 없다. 반대로 주문이 남아 있거나 이번 실행이 무언가를
         // 복구했다면 잔고가 움직였을 수 있으므로 그때는 비교한다.
         const marketClosedToday = !isUsTradingDay(startedAt);
-        const nothingToReconcile = submitted.length === 0 && recovery.recovered === 0;
+        // 복구가 **실패**했다는 것은 장부가 이미 어긋나 있다는 뜻이므로, 그때는 조용한
+        // 휴장일이어도 보유를 대조한다.
+        const nothingToReconcile =
+            submitted.length === 0 && recovery.recovered === 0 && recovery.failed === 0;
         const skipHoldingsCheck = marketClosedToday && nothingToReconcile;
 
         let holdingsMismatchCount = 0;

@@ -46,10 +46,17 @@ vi.mock('../../../lib/analysis/cadence', async (importOriginal) => ({
     getCadenceWindowMs: (...args: [string, string]) => mockGetCadenceWindowMs(...args),
 }));
 
+const mockAcquireLockDetailed = vi.fn(async (...args: unknown[]) => {
+    const token = await mockAcquireLock(...(args as []));
+    return token ? { token } : { token: null, reason: 'contended' };
+});
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    // 경합/장애 구분 버전. 기본 구현은 기존 mock을 재사용하고 null이면 경합으로 본다.
+    // 장애(Redis down) 경로는 이 mock을 직접 덮는 테스트가 검증한다.
+    acquireLockDetailed: (...args: unknown[]) => mockAcquireLockDetailed(...(args as [])),
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
@@ -143,6 +150,57 @@ describe('createAnalysisCronHandler', () => {
 
         expect(body).toEqual({ skipped: true, reason: 'another_execution_in_progress' });
         expect(mockGetAnalysisConfig).not.toHaveBeenCalled();
+    });
+
+    it('경합으로 못 잡으면 skipped로 기록한다', async () => {
+        mockAcquireLock.mockResolvedValue(null);
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'skipped', outcome: 'locked' }),
+        );
+    });
+
+    it('락 백엔드 장애는 error로 기록한다 — skipped면 침묵 감시에 걸리지 않는다', async () => {
+        mockAcquireLockDetailed.mockResolvedValue({ token: null, reason: 'unavailable' });
+
+        const res = await handler(makeRequest(true));
+
+        expect(res.status).toBe(200);
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'error' }),
+        );
+    });
+
+    it('모든 심볼이 실패하면 런을 error로 기록한다 — 병렬화로 사라졌던 신호', async () => {
+        mockRunner.mockResolvedValue({ status: 'error', error: 'provider down' });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'error' }),
+        );
+    });
+
+    it('일부만 실패하면 completed를 유지한다', async () => {
+        mockRunner
+            .mockResolvedValueOnce({ status: 'error', error: 'provider down' })
+            .mockResolvedValue({ status: 'done', result: { ok: true } });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'completed' }),
+        );
     });
 
     it('skips before acquiring the lock when the U.S. regular session is closed', async () => {

@@ -28,17 +28,11 @@ export async function seed() {
         { key: 'buy_threshold', value: 70 },
         { key: 'sell_threshold', value: 30 },
         { key: 'analysis_timeframe', value: '1Hour' },
-        {
-            key: 'score_weights',
-            value: {
-                confluence: 12,
-                technical: 8,
-                news: 6,
-                options: 5,
-                fundamental: 4,
-                congress: 3,
-            },
-        },
+        // `score_weights`는 심지 않는다. 이 행이 있으면 `WEIGHTS_BY_TIMEFRAME`이 통째로
+        // 무력화된다 — execute는 `{ ...weightsForTimeframe(tf), ...stored }`로 병합하므로
+        // 6키가 다 찬 행은 프로파일을 한 키도 남기지 않는다. 그러면 `15Min`으로 바꿔도
+        // 1Hour 가중치로 매매한다(문서가 약속한 "짧은 타임프레임은 가격 행동에 무게").
+        // 운영자가 대시보드/API로 명시 저장한 값만 프로파일을 이겨야 한다.
         { key: 'fixed_exit_enabled', value: false },
         { key: 'trading_enabled', value: true },
         { key: 'max_trades_per_day', value: 20 },
@@ -100,7 +94,7 @@ export async function seed() {
             channel: 'email',
             enabled: true,
             target: 'dev.y0ngha@gmail.com',
-            events: ['trade_executed', 'order_pending', 'stop_loss', 'error'],
+            events: ['trade_executed', 'order_pending', 'stop_loss', 'error', 'cron_health'],
         })
         .onConflictDoNothing();
 

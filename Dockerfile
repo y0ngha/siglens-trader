@@ -28,8 +28,12 @@ RUN --mount=type=secret,id=SIGLENS_GITHUB_TOKEN,required=true \
 FROM node:22-alpine AS runner
 RUN apk add --no-cache tini
 WORKDIR /app
+# 배포된 이미지 태그. `/api/health`가 이 값을 돌려주므로 "어떤 빌드가 도는지"를
+# 배포 후 확인할 수 있다 — 종전 헬스 응답의 버전은 하드코딩된 '0.1.0'이었다.
+ARG APP_VERSION=unknown
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=3000 \
+    APP_VERSION=${APP_VERSION}
 # The server runs TypeScript directly via tsx (no server build step), so the runtime
 # needs the sources it imports, not a compiled bundle.
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules

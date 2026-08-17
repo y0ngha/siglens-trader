@@ -1206,7 +1206,8 @@ describe('POST /api/approve/[id]', () => {
             expect.objectContaining({
                 symbol: 'AAPL',
                 side: 'buy',
-                mode: 'semi_auto',
+                // dry_run 승인은 dry_run으로 기록된다 (실계좌 차단기 오염 방지).
+                mode: 'dry_run',
             }),
         );
         expect(mockOpenPosition).toHaveBeenCalledWith(
@@ -1314,12 +1315,12 @@ describe('POST /api/approve/[id]', () => {
         );
         expect(res.status).toBe(502);
         const data = await res.json();
-        expect(data.error).toContain('Toss API 주문 실행 실패');
+        expect(data.error).toContain('결과 미확정');
         // No phantom trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
-        // Order should be reverted for retry
-        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 52);
+        // 결말 미확정이므로 되살리지 않는다 (재승인 = 두 번째 실주문 위험).
+        expect(mockRevertPendingOrder).not.toHaveBeenCalled();
     });
 
     it('averages into existing position for duplicate buy', async () => {
@@ -1534,12 +1535,14 @@ describe('POST /api/approve/[id]', () => {
             makeRequest('https://example.com/api/approve/85', 'POST', { action: 'approve' }),
         );
         expect(res.status).toBe(200);
+        // dry_run 승인은 dry_run으로 기록된다 — 종전에는 'semi_auto' 하드코딩이라
+        // 시뮬레이션 손익이 실계좌 일일 손실 차단기에 섞였다.
         expect(mockInsertTrade).toHaveBeenCalledWith(
             fakeDb,
             expect.objectContaining({
                 symbol: 'NVDA',
                 side: 'sell',
-                mode: 'semi_auto',
+                mode: 'dry_run',
             }),
         );
         expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 99, 900);
@@ -1547,7 +1550,7 @@ describe('POST /api/approve/[id]', () => {
         expect(mockExecuteSellOrder).not.toHaveBeenCalled();
     });
 
-    it('returns 502 and reverts order to pending when Toss API throws', async () => {
+    it('returns 502 and does NOT revert the order when the Toss call outcome is unknown', async () => {
         mockGetPendingOrderById.mockResolvedValue({
             id: 86,
             symbol: 'META',
@@ -1569,12 +1572,12 @@ describe('POST /api/approve/[id]', () => {
         );
         expect(res.status).toBe(502);
         const data = await res.json();
-        expect(data.error).toContain('Toss API 주문 실행 실패');
+        expect(data.error).toContain('결과 미확정');
         // No trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
-        // Order should be reverted to pending for retry
-        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 86);
+        // 되살리지 않는다 — 재승인은 토스 멱등키(10분) 밖에서 두 번째 실주문이 된다.
+        expect(mockRevertPendingOrder).not.toHaveBeenCalled();
     });
 
     it('rejects a pending order', async () => {
@@ -1608,13 +1611,53 @@ describe('GET /api/health', () => {
 
         const data = await res.json();
         expect(data.status).toBe('ok');
-        expect(data.version).toBe('0.1.0');
         expect(typeof data.timestamp).toBe('string');
+    });
+
+    it('version은 이미지 태그(APP_VERSION)를 그대로 낸다', async () => {
+        // 하드코딩된 '0.1.0'은 실제 배포 버전과 무관해 "어떤 빌드가 도는지"를 말해주지
+        // 못했다 — 배포 검증이 "포트가 열렸다" 이상을 확인하지 못한 이유의 절반.
+        const original = process.env.APP_VERSION;
+        process.env.APP_VERSION = 'v9.9.9-test';
+        try {
+            const res = await handler(makeRequest('https://example.com/api/health'));
+            expect((await res.json()).version).toBe('v9.9.9-test');
+        } finally {
+            if (original === undefined) delete process.env.APP_VERSION;
+            else process.env.APP_VERSION = original;
+        }
+    });
+
+    it('APP_VERSION이 없으면 unknown', async () => {
+        const original = process.env.APP_VERSION;
+        delete process.env.APP_VERSION;
+        try {
+            const res = await handler(makeRequest('https://example.com/api/health'));
+            expect((await res.json()).version).toBe('unknown');
+        } finally {
+            if (original !== undefined) process.env.APP_VERSION = original;
+        }
     });
 
     it('rejects non-GET methods', async () => {
         const res = await handler(makeRequest('https://example.com/api/health', 'POST'));
         expect(res.status).toBe(405);
+    });
+
+    it('deep 검사는 인증을 요구한다 — 정합성 알림에 심볼·주문키가 들어간다', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+
+        const res = await handler(makeRequest('https://example.com/api/health?deep=true'));
+
+        expect(res.status).toBe(403);
+    });
+
+    it('얕은 헬스체크는 인증 없이 통과한다 — 업타임 모니터링용', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+
+        const res = await handler(makeRequest('https://example.com/api/health'));
+
+        expect(res.status).toBe(200);
     });
 });
 

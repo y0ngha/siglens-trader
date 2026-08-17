@@ -59,7 +59,9 @@ async function issueToken(): Promise<{ token: string; ttl: number }> {
     const expiresIn =
         typeof json.expires_in === 'number' && Number.isFinite(json.expires_in)
             ? json.expires_in
-            : 86400; // 누락/비정상 시 24h 기본값
+            : 3600; // 누락/비정상 시 1h — 24h로 잡으면 이미 죽은 토큰을 종일 캐시한다
+    // (매 호출이 401 → forceRefreshToken으로 자가치유되지만, 그 사이
+    //  모든 주문이 한 번씩 실패 경로를 탄다)
     return { token: json.access_token, ttl: Math.max(1, expiresIn - EXPIRY_MARGIN_S) };
 }
 

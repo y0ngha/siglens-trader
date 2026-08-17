@@ -33,6 +33,18 @@ const MS_PER_DAY = 86_400_000;
 const ISO_DATE_LENGTH = 10;
 
 /**
+ * 마지막 봉이 이보다 낡으면 기권한다 (타임프레임 × 3).
+ *
+ * 마지막 봉은 형성 중일 수 있고 FMP가 한두 틱 밀리는 것은 정상이라 여유를 둔다.
+ * 하루 지연 같은 실제 피드 장애만 걸러내는 것이 목적이다.
+ */
+const STALE_BAR_LIMIT_MS: Record<AnalysisTimeframe, number> = {
+    '15Min': 45 * 60_000,
+    '30Min': 90 * 60_000,
+    '1Hour': 180 * 60_000,
+};
+
+/**
  * 심볼의 현재 지표 컨플루언스 상태를 계산한다.
  *
  * 실패는 전부 `null`이다 — 이 축은 추가 정보이지 매매의 전제조건이 아니고,
@@ -66,6 +78,22 @@ export async function computeConfluence(
         const last = bars[bars.length - 1]!;
         if (!isFinitePositive(last.close)) {
             console.warn('[confluence] 마지막 봉 종가가 비정상이라 기권:', symbol, last.close);
+            return null;
+        }
+
+        // 봉이 낡았으면 기권한다. LLM 5축은 전부 신선도 검사를 지나는데(케이던스 창 ×3,
+        // technical은 `getTechnicalMaxAgeMs`) 최상위 가중치인 이 축만 지나지 않았다.
+        // FMP 인트라데이 피드가 밀리면 **전 세션 종가**로 진입 트리거가 서고, 같은
+        // 스냅샷의 `close`가 execute의 시세 폴백(`snapshotPriceOf`)으로도 쓰여
+        // 손절 판정가·dry_run 체결가가 된다.
+        const barAgeMs = Date.now() - last.time * 1000;
+        if (barAgeMs > STALE_BAR_LIMIT_MS[timeframe]) {
+            console.warn(
+                '[confluence] 봉이 낡아 기권:',
+                symbol,
+                timeframe,
+                `${Math.round(barAgeMs / 60_000)}분 전`,
+            );
             return null;
         }
 

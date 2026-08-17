@@ -155,6 +155,24 @@ describe('FmpMarketProvider', () => {
             expect(bars[0]!.time).toBe(utcSeconds('2025-01-15T14:00:00Z'));
         });
 
+        it('벤더가 오래된 것부터 내려줘도 시간 오름차순으로 정렬한다', async () => {
+            // 종전에는 무조건 `.reverse()`라, 벤더 정렬이 바뀌는 순간 마지막 봉이
+            // **가장 오래된 봉**이 되어 "직전 봉 대비 신규" 판정이 통째로 뒤집혔다.
+            const raw = [
+                { date: '2025-06-13 09:00:00', open: 8, high: 11, low: 7, close: 10, volume: 90 },
+                { date: '2025-06-13 10:00:00', open: 10, high: 12, low: 9, close: 11, volume: 100 },
+            ];
+            mockedFmpGet.mockResolvedValueOnce(raw as never);
+
+            const provider = new FmpMarketProvider();
+            const bars = await provider.getBars({ symbol: 'AAPL', timeframe: '1Hour' });
+
+            expect(bars.map((b) => b.time)).toEqual([
+                utcSeconds('2025-06-13T13:00:00Z'),
+                utcSeconds('2025-06-13T14:00:00Z'),
+            ]);
+        });
+
         it('returns [] when FMP returns a non-array intraday response', async () => {
             mockedFmpGet.mockResolvedValueOnce({ error: 'rate limit' } as never);
 

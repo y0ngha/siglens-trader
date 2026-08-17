@@ -1330,3 +1330,186 @@ describe('confluence 축', () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// 기권 강등 + 가중치 위생
+// ---------------------------------------------------------------------------
+
+describe('컨플루언스 기권 강등', () => {
+    const bullishFive = {
+        technical: { trend: 'bullish', riskLevel: 'low' },
+        news: { overallSentiment: 'bullish' },
+        options: { signals: [{ kind: 'bullish' }, { kind: 'bullish' }, { kind: 'bullish' }] },
+        fundamental: { overallSentiment: 'bullish' },
+        congress: { overallSentiment: 'bullish' },
+    } satisfies Omit<AnalysisInputs, 'confluence'>;
+
+    it('스냅샷이 없으면 매수를 hold로 내린다 — 지표를 확인할 수 없을 때 진입 게이트가 열리면 안 된다', () => {
+        const abstained = scoreSignals(
+            { ...bullishFive, confluence: null },
+            DEFAULT_WEIGHTS,
+            DEFAULT_BUY_THRESHOLD,
+            DEFAULT_SELL_THRESHOLD,
+        );
+
+        expect(abstained.total).toBeGreaterThanOrEqual(DEFAULT_BUY_THRESHOLD);
+        expect(abstained.signal).toBe('hold');
+    });
+
+    it('축을 껐으면(가중치 0) 스냅샷이 없어도 매수를 막지 않는다 — off 스위치가 스위치여야 한다', () => {
+        const weights: ScoreWeights = { ...DEFAULT_WEIGHTS, confluence: 0 };
+
+        const withSnapshot = scoreSignals(
+            {
+                ...bullishFive,
+                confluence: {
+                    timeframe: '1Hour',
+                    barTime: 1_760_000_000,
+                    close: 100,
+                    ma50: 90,
+                    bullish: [],
+                    bearish: [],
+                    freshBullish: [],
+                    freshBearish: [],
+                    entryTrigger: false,
+                    exitTrigger: false,
+                },
+            },
+            weights,
+            DEFAULT_BUY_THRESHOLD,
+            DEFAULT_SELL_THRESHOLD,
+        );
+        const withoutSnapshot = scoreSignals(
+            { ...bullishFive, confluence: null },
+            weights,
+            DEFAULT_BUY_THRESHOLD,
+            DEFAULT_SELL_THRESHOLD,
+        );
+
+        // FMP 봉 실패가 신호를 바꾸면 안 된다 — 그 축은 애초에 투표하지 않는다.
+        expect(withSnapshot.signal).toBe('buy');
+        expect(withoutSnapshot.signal).toBe('buy');
+        expect(withoutSnapshot.total).toBe(withSnapshot.total);
+    });
+
+    it('기권해도 매도는 그대로 나간다', () => {
+        const bearish = scoreSignals(
+            {
+                confluence: null,
+                technical: { trend: 'bearish', riskLevel: 'high' },
+                news: { overallSentiment: 'bearish' },
+                options: { signals: [{ kind: 'bearish' }, { kind: 'bearish' }] },
+                fundamental: { overallSentiment: 'bearish' },
+                congress: { overallSentiment: 'bearish' },
+            },
+            DEFAULT_WEIGHTS,
+            DEFAULT_BUY_THRESHOLD,
+            DEFAULT_SELL_THRESHOLD,
+        );
+
+        expect(bearish.signal).toBe('sell');
+    });
+});
+
+describe('가중치 위생', () => {
+    const bullish = {
+        confluence: null,
+        technical: { trend: 'bullish', riskLevel: 'low' },
+        news: { overallSentiment: 'bullish' },
+        options: { signals: [{ kind: 'bullish' }] },
+        fundamental: { overallSentiment: 'bullish' },
+        congress: null,
+    } satisfies AnalysisInputs;
+
+    it('문자열 가중치를 숫자로 강제한다 — 문자열 연결이 되면 전 종목이 sell로 떨어진다', () => {
+        const stringWeights = {
+            confluence: 12,
+            technical: '8',
+            news: '6',
+            options: '5',
+            fundamental: '4',
+            congress: '3',
+        } as unknown as ScoreWeights;
+
+        const result = scoreSignals(bullish, stringWeights, 70, 30);
+
+        // 종전에는 `12 + '8'`이 `'128'`이 되어 `totalWeight`가 문자열이었고,
+        // `weightedSum / '1286543'` ≈ 0 → total 0 / sell.
+        const numeric = scoreSignals(bullish, DEFAULT_WEIGHTS, 70, 30);
+        expect(result.total).toBe(numeric.total);
+        expect(result.signal).not.toBe('sell');
+    });
+
+    it('음수 가중치는 0으로 본다 — 분모가 음수면 신호 부호가 뒤집힌다', () => {
+        const negative = { ...DEFAULT_WEIGHTS, technical: -8 } as ScoreWeights;
+
+        const result = scoreSignals(bullish, negative, 70, 30);
+
+        expect(result.total).toBeGreaterThanOrEqual(0);
+        expect(result.total).toBeLessThanOrEqual(100);
+        expect(result.signal).not.toBe('sell');
+    });
+
+    it('모든 가중치가 비정상이면 중립 hold', () => {
+        const broken = {
+            confluence: NaN,
+            technical: 'x',
+            news: null,
+            options: undefined,
+            fundamental: -1,
+            congress: 0,
+        } as unknown as ScoreWeights;
+
+        const result = scoreSignals(bullish, broken, 70, 30);
+
+        expect(result.total).toBe(50);
+        expect(result.signal).toBe('hold');
+    });
+});
+
+describe('손상 입력 방어', () => {
+    it('옵션 signals에 null 원소가 있어도 던지지 않는다', () => {
+        const result = scoreSignals(
+            {
+                confluence: null,
+                technical: null,
+                news: null,
+                options: { signals: [null, undefined, { kind: 'bullish' }] as never },
+                fundamental: null,
+                congress: null,
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+
+        expect(result.components.options).toBeGreaterThan(50);
+    });
+
+    it('confidenceWeight가 비정상적으로 크면 상한 1로 클램프한다', () => {
+        const skewed = scoreSignals(
+            {
+                confluence: null,
+                technical: {
+                    patterns: [
+                        { trend: 'bearish', confidenceWeight: 1e9 },
+                        ...Array.from({ length: 20 }, () => ({
+                            trend: 'bullish' as const,
+                            confidenceWeight: 1,
+                        })),
+                    ],
+                },
+                news: null,
+                options: null,
+                fundamental: null,
+                congress: null,
+            },
+            DEFAULT_WEIGHTS,
+            70,
+            30,
+        );
+
+        // 20:1 강세 우위가 유지돼야 한다 — 클램프가 없으면 한 항목이 전체를 뒤집는다.
+        expect(skewed.components.technical).toBeGreaterThan(50);
+    });
+});

@@ -45,12 +45,17 @@ const fwd = (h: WebHandler) => (c: { req: { raw: Request } }) => h(c.req.raw);
  */
 export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler: WebHandler }> = [
     { name: 'technical', schedule: '*/15 13-21 * * 1-5', handler: cronTechnical },
-    { name: 'news', schedule: '0 13-21 * * 1-5', handler: cronNews },
+    // 창(60분)당 틱이 하나뿐이면 그 한 번을 놓칠 때 그 시간대 뉴스 분석이 통째로 없다
+    // (락 경합·재시작·DB 일시 오류). 케이던스 가드가 runner **호출 전에** 스킵하므로
+    // 잉여 틱의 비용은 심볼당 DB 조회 한 번이고 LLM/FMP 쿼터는 0이다.
+    { name: 'news', schedule: '*/15 13-21 * * 1-5', handler: cronNews },
     { name: 'options', schedule: '*/15 13-21 * * 1-5', handler: cronOptions },
-    { name: 'fundamental', schedule: '0 15 * * 1-5', handler: cronFundamental },
+    // 하루 1틱이면 그 틱을 놓친 날은 펀더멘털이 없다. 케이던스 창이 24시간이라
+    // 그날 첫 성공 이후의 틱은 전부 스킵된다 — 여유 틱은 재시도 창일 뿐이다.
+    { name: 'fundamental', schedule: '0 15-21 * * 1-5', handler: cronFundamental },
     // Congressional disclosures lag the actual trade by weeks, so once per weekday is plenty —
     // hourly would just burn LLM calls on data that won't have changed since the last run.
-    { name: 'congress', schedule: '0 16 * * 1-5', handler: cronCongress },
+    { name: 'congress', schedule: '0 16-21 * * 1-5', handler: cronCongress },
     // 5분마다 호출하고, 실제 실행 여부는 핸들러 안의 `execute_interval_min` 게이트가 정한다
     // (`lib/strategy/execute-interval.ts`). 스케줄 문자열을 설정으로 바꾸려면 태스크 재등록
     // = 재시작이 필요한데, 게이트는 대시보드에서 바꾼 즉시 다음 틱부터 먹는다.
@@ -107,9 +112,39 @@ app.get('/*', serveStatic({ path: './dist/index.html' }));
  * CRON_SECRET-bearing Request so the handler's own auth + logic run unchanged. Returns the
  * tasks so the caller can stop them on shutdown. No-op (warns) if CRON_SECRET is unset.
  */
+/**
+ * 진행 중인 크론 틱. 종료 시 이것들을 기다린다 — `task.stop()`은 **다음 틱만** 막고
+ * 실행 중인 콜백은 그대로 둔다. 배포(systemctl restart)가 장중에 걸리면 브로커 주문은
+ * 나갔는데 booking 트랜잭션 전에 프로세스가 죽어, 브로커엔 체결·DB엔 `submitted`만
+ * 남는다(복구는 reconcile 30분 뒤 + 수동).
+ */
+const inFlightCronTicks = new Set<Promise<unknown>>();
+
+/** 진행 중인 크론 틱이 끝날 때까지 기다린다(상한 `timeoutMs`). */
+export async function drainCron(timeoutMs = 20_000): Promise<void> {
+    if (inFlightCronTicks.size === 0) return;
+    console.log(`[cron] draining ${inFlightCronTicks.size} in-flight tick(s)`);
+    let timer: ReturnType<typeof setTimeout>;
+    await Promise.race([
+        Promise.allSettled([...inFlightCronTicks]),
+        new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, timeoutMs);
+        }),
+    ]).finally(() => clearTimeout(timer));
+}
+
 export function startCron(): ScheduledTask[] {
     const secret = process.env.CRON_SECRET;
     if (!secret) {
+        // 프로덕션에서 이건 경고가 아니라 **전면 정지**다: 매매·정산·분석 크론이 하나도
+        // 돌지 않는데 헬스체크는 200을 내므로 배포는 성공으로 기록되고, 침묵을 감시하는
+        // cron-health조차 digest 크론이 돌아야 동작한다. 부팅을 실패시켜 배포가 실패하게
+        // 한다. 개발 환경은 종전대로 경고 후 진행.
+        if (process.env.NODE_ENV === 'production') {
+            throw new Error(
+                '[cron] CRON_SECRET unset in production — refusing to start with the scheduler disabled',
+            );
+        }
         console.warn('[cron] CRON_SECRET unset — scheduler disabled');
         return [];
     }
@@ -117,14 +152,22 @@ export function startCron(): ScheduledTask[] {
         cron.schedule(
             schedule,
             async () => {
+                const work = (async () => {
+                    try {
+                        const req = new Request(`http://localhost/api/cron/${name}`, {
+                            headers: { authorization: `Bearer ${secret}` },
+                        });
+                        const res = await handler(req);
+                        console.log(`[cron:${name}] ${res.status}`);
+                    } catch (err) {
+                        console.error(`[cron:${name}] failed`, err);
+                    }
+                })();
+                inFlightCronTicks.add(work);
                 try {
-                    const req = new Request(`http://localhost/api/cron/${name}`, {
-                        headers: { authorization: `Bearer ${secret}` },
-                    });
-                    const res = await handler(req);
-                    console.log(`[cron:${name}] ${res.status}`);
-                } catch (err) {
-                    console.error(`[cron:${name}] failed`, err);
+                    await work;
+                } finally {
+                    inFlightCronTicks.delete(work);
                 }
             },
             // 겹침 금지. 락(Redis)은 프로세스 간 방어이고 이건 같은 프로세스 안에서 이전

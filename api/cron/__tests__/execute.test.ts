@@ -28,7 +28,8 @@ const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockGetTodayRealizedPnl = vi.fn();
-const mockGetRecentTrades = vi.fn();
+const mockGetLastFillTimeBySymbol = vi.fn();
+const mockGetNeedsReviewSymbols = vi.fn();
 const mockExpireOldPendingOrders = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
@@ -58,7 +59,9 @@ vi.mock('../../../lib/db/queries', () => ({
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
     getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
-    getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
+    getLastFillTimeBySymbol: (...args: unknown[]) => mockGetLastFillTimeBySymbol(...args),
+    getNeedsReviewSymbols: (...args: unknown[]) => mockGetNeedsReviewSymbols(...args),
+    INFLIGHT_ORDER_STATUSES: ['submitted', 'pending', 'partial', 'error'],
     expireOldPendingOrders: (...args: unknown[]) => mockExpireOldPendingOrders(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
@@ -156,10 +159,17 @@ vi.mock('../../../lib/data/live-price', () => ({
     fetchLivePriceDetail: (...args: [string]) => mockFetchLivePriceDetail(...args),
 }));
 
+const mockAcquireLockDetailed = vi.fn(async (...args: unknown[]) => {
+    const token = await mockAcquireLock(...(args as []));
+    return token ? { token } : { token: null, reason: 'contended' };
+});
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    // 경합/장애 구분 버전. 기본 구현은 기존 mock을 재사용하고 null이면 경합으로 본다.
+    // 장애(Redis down) 경로는 이 mock을 직접 덮는 테스트가 검증한다.
+    acquireLockDetailed: (...args: unknown[]) => mockAcquireLockDetailed(...(args as [])),
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
@@ -322,7 +332,8 @@ function setupDefaults() {
     mockGetTodayInflightOrderCount.mockResolvedValue(0);
     mockGetTodayRealizedPnl.mockResolvedValue(0);
     // 재진입 쿨다운이 보는 최근 체결 이력. 기본은 비어 있음 = 쿨다운 미적용.
-    mockGetRecentTrades.mockResolvedValue([]);
+    mockGetLastFillTimeBySymbol.mockResolvedValue(new Map<string, number>());
+    mockGetNeedsReviewSymbols.mockResolvedValue([]);
     mockExpireOldPendingOrders.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
@@ -5584,6 +5595,84 @@ describe('execute cron handler', () => {
             expect(mockCreateOrderTracking).not.toHaveBeenCalled();
         });
 
+        it('결말 미확정(error) 매수도 in-flight로 본다 — 두 번째 매수를 내지 않는다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            // POST 타임아웃·멱등키 충돌은 "브로커가 안 받았다"가 아니라 "결말을 모른다"다.
+            // 종전에는 이 행을 없는 셈 치고 새 clientOrderId로 두 번째 매수를 냈다.
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'buy', status: 'error' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_order_in_progress',
+                score: 80,
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+        });
+
+        it('needs_review가 남은 심볼은 신규 매수를 막는다 — 미기록 보유분에 예산이 다시 열린다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([]);
+            mockGetNeedsReviewSymbols.mockResolvedValue(['AAPL']);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    action: 'pending_order_in_progress',
+                }),
+            );
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            // 사유는 감사 행에 남는다 — 응답은 `publicDecision`이 detail을 떼고 낸다.
+            const auditRows = mockInsertCronDecisions.mock.calls.at(-1)?.[3] as Array<{
+                action: string;
+                detail?: unknown;
+            }>;
+            expect(auditRows).toContainEqual(
+                expect.objectContaining({
+                    action: 'pending_order_in_progress',
+                    detail: { needsReview: true },
+                }),
+            );
+        });
+
+        it('needs_review 조회가 실패해도 실행은 계속된다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([]);
+            mockGetNeedsReviewSymbols.mockRejectedValue(new Error('db down'));
+
+            const res = await handler(makeRequest(true));
+
+            expect(res.status).toBe(200);
+        });
+
         it('skips watchlist BUY when a partial buy order is in flight', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
@@ -8230,19 +8319,11 @@ describe('execute cron handler', () => {
         });
 
         describe('재진입 쿨다운 (entry_cooldown)', () => {
-            const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+            const minutesAgo = (m: number) => Date.now() - m * 60_000;
 
-            it('기본 60분 안에 매수한 종목은 다시 매수하지 않는다', async () => {
+            it('쿨다운 창 안에 체결이 있으면 다시 매수하지 않는다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(20),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['AAPL', minutesAgo(20)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
@@ -8254,21 +8335,28 @@ describe('execute cron handler', () => {
 
             it('쿨다운이 지났으면 매수한다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(61),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['AAPL', minutesAgo(61)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
                 );
+            });
+
+            it('조회 창은 쿨다운 길이만큼만 본다 — skipped 감사 행이 실체결을 밀어내지 못한다', async () => {
+                buySetup(150);
+
+                await handler(makeRequest(true));
+
+                // 종전에는 `getRecentTrades(db, 200)` 최신 200행을 읽고 메모리에서 걸렀다.
+                // `recordUnfundedBuy`가 매 틱 종목마다 남기는 `mode:'skipped'` 행이 그 200
+                // 슬롯을 차지해, 종목이 여럿이면 한 시간도 안 돼 진짜 체결이 창 밖으로 밀리고
+                // 쿨다운이 조용히 꺼졌다.
+                const since = mockGetLastFillTimeBySymbol.mock.calls[0]![1] as Date;
+                const windowMs = Date.now() - since.getTime();
+                expect(windowMs).toBeGreaterThan(59 * 60_000);
+                expect(windowMs).toBeLessThan(61 * 60_000);
             });
 
             it('0이면 꺼진다 — 이력 조회 자체를 하지 않는다', async () => {
@@ -8276,26 +8364,7 @@ describe('execute cron handler', () => {
 
                 const body = await (await handler(makeRequest(true))).json();
 
-                expect(mockGetRecentTrades).not.toHaveBeenCalled();
-                expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
-                );
-            });
-
-            it('잔고 부족으로 기록된 행(mode: skipped)은 체결이 아니므로 쿨다운을 걸지 않는다', async () => {
-                buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'skipped',
-                        quantity: 0,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
-
-                const body = await (await handler(makeRequest(true))).json();
-
+                expect(mockGetLastFillTimeBySymbol).not.toHaveBeenCalled();
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
                 );
@@ -8303,7 +8372,7 @@ describe('execute cron handler', () => {
 
             it('이력 조회가 실패해도 실행을 멈추지 않는다 — 쿼리 하나가 청산 경로까지 죽이면 안 된다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockRejectedValue(new Error('db down'));
+                mockGetLastFillTimeBySymbol.mockRejectedValue(new Error('db down'));
 
                 const res = await handler(makeRequest(true));
                 const body = await res.json();
@@ -8314,43 +8383,14 @@ describe('execute cron handler', () => {
                 );
             });
 
-            it('다른 종목의 최근 매수는 영향을 주지 않는다', async () => {
+            it('다른 종목의 최근 체결은 영향을 주지 않는다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'TSLA',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['TSLA', minutesAgo(5)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
-                );
-            });
-
-            it('매도 이력도 쿨다운을 건다 — 손절 직후 재매수를 막기 위해서다', async () => {
-                buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'sell',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
-
-                const body = await (await handler(makeRequest(true))).json();
-
-                // 종전에는 매수 체결만 봐서, 손절이 마지막 매수보다 쿨다운 뒤에 일어나면
-                // 손절 10분 뒤 같은 분석으로 재매수가 가능했다.
-                expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_cooldown' }),
                 );
             });
         });

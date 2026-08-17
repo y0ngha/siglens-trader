@@ -223,8 +223,14 @@ export async function closePosition(db: DbOrTx, id: number, closePrice: number) 
 
 /**
  * Reduce an open position's quantity after a partial sell.
- * Only updates if the position is open and has more shares than `soldQuantity`.
+ * Only updates if the position is open and has **strictly more** shares than `soldQuantity`.
  * Returns true if the update matched a row, false otherwise.
+ *
+ * 동수량(`quantity === soldQuantity`)을 일부러 매칭하지 않는다. 종전 `>=`는 수량 0짜리
+ * `open` 행을 남겼고, 그 행은 `planExit`이 항상 0을 돌려줘 `exit_deferred`가 영구
+ * 반복되는 데다 `idx_positions_symbol_open` 때문에 그 심볼의 새 포지션도 열 수 없었다.
+ * 호출부는 전부 동수량을 `closePosition`으로 보내며, 경합으로 그 사이 동수량이 된
+ * 경우는 0행 → `POSITION_ALREADY_CLOSED` 롤백·재시도 경로가 받는다.
  */
 export async function reducePositionQuantity(
     db: DbOrTx,
@@ -234,7 +240,7 @@ export async function reducePositionQuantity(
     const result = await db.execute(sql`
         UPDATE positions
         SET quantity = quantity - ${soldQuantity}
-        WHERE id = ${id} AND status = 'open' AND quantity >= ${soldQuantity}
+        WHERE id = ${id} AND status = 'open' AND quantity > ${soldQuantity}
         RETURNING id
     `);
     return ((result as { rowCount?: number } | null)?.rowCount ?? 0) > 0;
@@ -305,6 +311,35 @@ export async function insertTrade(
 
 export async function getRecentTrades(db: Db, limit = 50) {
     return db.select().from(trades).orderBy(desc(trades.executedAt)).limit(limit);
+}
+
+/**
+ * 심볼별 마지막 **실제 체결** 시각 (`since` 이후). 재진입 쿨다운 전용.
+ *
+ * 종전에는 `getRecentTrades(db, 200)`를 받아 `mode='skipped'` 행을 코드에서 걸렀다.
+ * 그런데 그 감사 행들은 200 슬롯을 그대로 차지한다 — 예산 0인 매수 신호는 종목마다
+ * 매 틱 `quantity:0, mode:'skipped'` 행을 남기므로, 종목이 여럿이면 한 시간도 안 돼
+ * 진짜 체결이 조회 창 밖으로 밀리고 쿨다운이 **조용히 꺼진다.** 집계를 DB로 내려
+ * 슬롯 경쟁 자체를 없앤다.
+ */
+export async function getLastFillTimeBySymbol(db: Db, since: Date): Promise<Map<string, number>> {
+    const rows = await db
+        .select({
+            symbol: trades.symbol,
+            lastAt: sql<string>`max(${trades.executedAt})`,
+        })
+        .from(trades)
+        .where(
+            sql`${trades.mode} != 'skipped' AND ${trades.quantity} > 0 AND ${trades.executedAt} >= ${since}`,
+        )
+        .groupBy(trades.symbol);
+
+    const map = new Map<string, number>();
+    for (const row of rows) {
+        const at = new Date(row.lastAt).getTime();
+        if (Number.isFinite(at)) map.set(row.symbol, at);
+    }
+    return map;
 }
 
 export async function dismissTrade(db: Db, id: number) {
@@ -497,7 +532,15 @@ export async function getNotificationConfig(db: Db) {
 // deploy where the seed never ran). Keep event keys in sync with the dashboard
 // (src/pages/Settings.tsx NOTIFICATION_EVENTS).
 const DEFAULT_NOTIFICATION_TARGET = 'dev.y0ngha@gmail.com';
-const DEFAULT_NOTIFICATION_EVENTS = ['trade_executed', 'order_pending', 'stop_loss', 'error'];
+// `cron_health`(크론 침묵·실패 감지)가 빠져 있으면 "시스템이 죽었다"는 유일한 경보가
+// 기본 OFF다. 조용한 날과 전면 장애를 구분하려고 만든 기능이므로 기본에 넣는다.
+const DEFAULT_NOTIFICATION_EVENTS = [
+    'trade_executed',
+    'order_pending',
+    'stop_loss',
+    'error',
+    'cron_health',
+];
 
 export async function updateNotificationConfig(
     db: Db,
@@ -606,6 +649,25 @@ export async function updateOrderTracking(
  */
 export const INFLIGHT_ORDER_STATUSES = ['submitted', 'pending', 'partial', 'error'] as const;
 
+/**
+ * 최근 `needs_review`로 종결된 주문의 심볼 목록.
+ *
+ * `needs_review`는 "브로커와 장부가 어긋났고 자동으로는 못 맞춘다"는 뜻이다 — 부분 체결
+ * 타임아웃, 체결가 없는 복구 실패 등. 이 상태는 in-flight가 아니므로 다음 execute 틱은
+ * 그 심볼을 **아무 주문도 없었던 것처럼** 본다: `existingSymbolExposure`가 0이고 체결 행이
+ * 없어 `entry_cooldown`도 걸리지 않아, 이미 브로커에 주식이 있는 종목에 종목 예산 전액으로
+ * 다시 매수한다. 사람이 정리할 때까지 신규 진입만 막는다(청산은 막지 않는다).
+ */
+export async function getNeedsReviewSymbols(db: Db, since: Date): Promise<string[]> {
+    const rows = await db
+        .selectDistinct({ symbol: orderTracking.symbol })
+        .from(orderTracking)
+        .where(
+            sql`${orderTracking.status} = 'needs_review' AND ${orderTracking.submittedAt} >= ${since}`,
+        );
+    return rows.map((r) => r.symbol);
+}
+
 export async function getPendingSubmittedOrders(db: Db) {
     // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.
     return db
@@ -655,12 +717,17 @@ export type CronOutcome =
  * otherwise a live, still-running invocation could be swept mid-execution.
  */
 /**
- * 30분인 이유: 이 값은 **가장 오래 걸릴 수 있는 크론 실행보다 커야 한다.** execute 한 번은
+ * 45분인 이유: 이 값은 **가장 오래 걸릴 수 있는 크론 실행보다 커야 한다.** execute 한 번은
  * FMP가 429를 지속하면(호출당 최악 50초) 20분을 넘길 수 있다. 15분이던 시절에는 아직
  * 살아 있는 실행의 감사 행을 다음 크론이 `error/timeout`으로 덮어썼고, 그 실행이 끝나면
  * `finishCronRun`이 다시 `completed`로 덮어 `timeout` 값 자체가 신뢰할 수 없게 됐다.
+ *
+ * 30분은 분석 크론의 락 TTL(1800초)과 **같은 값**이라 그 버그가 되살아났다: 30분을 넘긴
+ * 분석 실행은 락이 만료되는 바로 그 시점에 다른 크론(execute는 5분마다 이 함수를 부른다)이
+ * 자기 행을 `error/timeout`으로 덮는다. 이 UPDATE에는 `cron_type` 필터가 없다. 두 값을
+ * 벌려 둔다.
  */
-export const CRON_STALE_AFTER_MS = 30 * 60_000;
+export const CRON_STALE_AFTER_MS = 45 * 60_000;
 
 /**
  * Atomically finalize any `running` cron audit rows whose `started_at` is older
@@ -721,7 +788,8 @@ export type CronRunFinish =
     | {
           status: 'error';
           error: string;
-          outcome?: 'timeout';
+          /** `timeout`(스톨 종료) 외에 `locked`(락 백엔드 장애)도 실패로 기록된다. */
+          outcome?: CronOutcome;
           durationMs?: number;
           finishedAt: Date;
       };

@@ -137,9 +137,10 @@ one of them newly lit versus the previous bar, and close > SMA(50)**. Its 70% wi
 LLM's 61.5% over the same window, which is what the weight of 12 is paying for. Inverted
 (bearish 3종 + close < MA50) it is also an exit trigger — see `evaluateExistingPosition` step 3.5.
 
-- **Conditional vote, like congress.** No snapshot (FMP down, fewer than 121 bars) → weight 0,
-  dropped from the denominator. An FMP outage leaves the system behaving exactly as it did
-  before this axis existed. That is the fail-safe, not an edge case.
+- **Conditional vote, like congress.** No snapshot (FMP down, fewer than 121 bars, or a last bar
+  older than 3× the timeframe) → weight 0, dropped from the denominator. An FMP outage leaves
+  **sells and holds** behaving exactly as they did before this axis existed; new entries are
+  blocked (see the abstention bullet below), which is the intended asymmetry, not a regression.
 - **A trigger alone cannot buy.** Trigger (92) with every other axis neutral scores
   `(92×12 + 50×26)/38 = 63` — hold. It takes the rest at a mild 60 to reach 70.
 - **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
@@ -150,7 +151,9 @@ LLM's 61.5% over the same window, which is what the weight of 12 is paying for. 
   genuinely neutral confluence and **72 (buy)** when FMP simply failed to serve bars. An axis
   added to stop entries the indicators don't back was opening the gate exactly when the
   indicators were unreadable. So a `buy` verdict is downgraded to `hold` when the snapshot is
-  absent; sells are untouched.
+  absent; sells are untouched. The downgrade is scoped to a **live** axis: with
+  `score_weights.confluence = 0` the axis does not vote at all, so a missing snapshot changes
+  nothing — otherwise the documented off-switch would not actually switch it off.
 - **Confluence can block a buy but never a sell.** Adding an axis widens the denominator, which
   raises *both* thresholds — intended for entries, backwards for exits. `scoreSignals` therefore
   re-scores without confluence and keeps `sell` if that verdict was `sell`. Confluence may still
@@ -158,6 +161,11 @@ LLM's 61.5% over the same window, which is what the weight of 12 is paying for. 
 - **Turning it off** is `POST /api/config` with `score_weights.confluence = 0`. There is no
   weight-editing UI — `src/` exposes thresholds and risk settings, not `score_weights`, so the
   API call is the only path. No redeploy, no separate flag: the weight knob already existed.
+- **Stored `score_weights` overrides the timeframe profile key by key**, so a row carrying all
+  six keys pins the weights regardless of `analysis_timeframe`. `db:seed` therefore does **not**
+  seed that row — a seeded default is indistinguishable from an operator's explicit choice and
+  silently cancelled `WEIGHTS_BY_TIMEFRAME`. An existing deployment that never edited weights
+  should `DELETE FROM config WHERE key = 'score_weights'` to get the profile back.
 
 Design: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md).
 

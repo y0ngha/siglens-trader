@@ -146,7 +146,9 @@ describe('token manager', () => {
         expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it('worst: expires_in 누락 시 기본값 86400 - 60 = 86340으로 캐싱', async () => {
+    // 기본값이 24h이면 실제 수명이 1h인 토큰을 23시간 동안 캐시한다. 매 호출이 401 →
+    // `forceRefreshToken`으로 자가치유되지만 그 사이 모든 주문이 실패 경로를 한 번씩 탄다.
+    it('worst: expires_in 누락 시 기본값 3600 - 60 = 3540으로 캐싱', async () => {
         mockFetch.mockResolvedValueOnce(
             tokenResponse({ access_token: 'tok-noexp', token_type: 'Bearer' }),
         );
@@ -156,11 +158,11 @@ describe('token manager', () => {
         expect(mockSet).toHaveBeenCalledWith(
             'toss:oauth:token',
             'tok-noexp',
-            expect.objectContaining({ ex: 86340 }),
+            expect.objectContaining({ ex: 3540 }),
         );
     });
 
-    it('worst: expires_in이 비정상값(NaN)일 때 기본값 86340으로 캐싱', async () => {
+    it('worst: expires_in이 비정상값(NaN)일 때 기본값 3540으로 캐싱', async () => {
         mockFetch.mockResolvedValueOnce(
             tokenResponse({ access_token: 'tok-nan', token_type: 'Bearer', expires_in: NaN }),
         );
@@ -170,7 +172,7 @@ describe('token manager', () => {
         expect(mockSet).toHaveBeenCalledWith(
             'toss:oauth:token',
             'tok-nan',
-            expect.objectContaining({ ex: 86340 }),
+            expect.objectContaining({ ex: 3540 }),
         );
     });
 

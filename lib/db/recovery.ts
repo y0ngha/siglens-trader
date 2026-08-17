@@ -201,6 +201,26 @@ export async function autoRecoverFilledOrders(db: Db): Promise<AutoRecoveryResul
                         });
                     }
                 } else if (order.side === 'sell') {
+                    // 이 주문이 나간 **뒤에** 열린 포지션은 그 주문이 판 주식이 아니다.
+                    //
+                    // 조회는 "그 심볼의 현재 열린 포지션"이라 재진입이 끼어들 수 있다:
+                    // 오전에 10주를 팔았는데 기록이 실패하고, 오후에 5주를 새로 샀다면
+                    // 여기서 `10 >= 5`로 그 **새 포지션**을 닫아 버린다. 브로커에는 5주가
+                    // 그대로 남고 장부에서만 사라진다. 조회 창이 24시간이라 재진입과
+                    // 겹칠 시간은 충분하다.
+                    const positionIsNewer =
+                        existingPosition != null &&
+                        order.submittedAt != null &&
+                        new Date(existingPosition.openedAt).getTime() >
+                            new Date(order.submittedAt).getTime();
+                    // 아래 catch가 `needs_review`로 넘긴다 — 사람이 어느 쪽 수량이
+                    // 맞는지 확인해야 한다.
+                    if (positionIsNewer) {
+                        details.push(
+                            `${order.symbol} sell: 주문(${new Date(order.submittedAt!).toISOString()}) 이후 새로 열린 포지션이라 자동 반영 불가`,
+                        );
+                        throw new Error('POSITION_NEWER_THAN_ORDER');
+                    }
                     if (existingPosition) {
                         // The position was looked up outside the transaction. If it was
                         // closed or shrunk in between (execute cron, manual close), the

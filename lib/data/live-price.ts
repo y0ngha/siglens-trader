@@ -56,6 +56,19 @@ export async function fetchLivePriceDetail(
         if (!quote) {
             return unavailable(symbol, 'empty_response', 'FMP quote response was empty', log);
         }
+        // 응답이 요청한 심볼인지 확인한다. 이 가격은 손절 판정가·dry_run 체결가로 쓰이므로,
+        // 매핑이 어긋나면 A의 가격으로 B를 손절한다.
+        if (
+            typeof quote.symbol === 'string' &&
+            quote.symbol.toUpperCase() !== symbol.toUpperCase()
+        ) {
+            return unavailable(
+                symbol,
+                'malformed_response',
+                `FMP quote returned a different symbol: ${quote.symbol}`,
+                log,
+            );
+        }
         if (typeof quote.price !== 'number' || !Number.isFinite(quote.price) || quote.price <= 0) {
             return unavailable(
                 symbol,

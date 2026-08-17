@@ -28,6 +28,26 @@ export async function acquireLock(
     key: string,
     ttlSeconds = DEFAULT_LOCK_TTL_SECONDS,
 ): Promise<string | null> {
+    return (await acquireLockDetailed(key, ttlSeconds)).token;
+}
+
+/**
+ * 락 획득 결과. **경합과 장애를 구분한다.**
+ *
+ * 둘 다 `null`을 돌려주면 크론은 양쪽 모두 `skipped`/`locked`로 기록하는데, 그 둘은
+ * 전혀 다른 사건이다: 경합은 정상(다른 실행이 돌고 있다)이고, Redis 장애는 **모든
+ * 크론이 한 틱도 돌지 않는 전면 정지**다. 후자를 `skipped`로 남기면 침묵을 감시하는
+ * `assessCronHealth`(status === 'error'만 실패로 센다)가 아무 경보도 내지 않아,
+ * 장중 내내 분석도 청산도 없이 지나갈 수 있다.
+ */
+export type LockAcquisition =
+    | { token: string; reason?: undefined }
+    | { token: null; reason: 'contended' | 'unavailable' };
+
+export async function acquireLockDetailed(
+    key: string,
+    ttlSeconds = DEFAULT_LOCK_TTL_SECONDS,
+): Promise<LockAcquisition> {
     const r = getRedis();
     if (!r) {
         const isProd =
@@ -36,22 +56,23 @@ export async function acquireLock(
             console.error(
                 '[lock] Redis not configured in production — failing CLOSED (refusing lock) to prevent unlocked concurrent execution',
             );
-            return null;
+            return { token: null, reason: 'unavailable' };
         }
         console.warn('[lock] Redis not configured — lock disabled (dev mode)');
         // In dev mode return a synthetic token so callers can proceed without Redis.
-        return `dev-${crypto.randomUUID()}`;
+        return { token: `dev-${crypto.randomUUID()}` };
     }
     try {
         const value = crypto.randomUUID();
         const result = await r.set(key, value, { nx: true, ex: ttlSeconds });
         if (result === 'OK') {
-            return value;
+            return { token: value };
         }
-        return null;
+        return { token: null, reason: 'contended' };
     } catch (err) {
         console.error('[lock] Redis error during acquireLock:', err);
-        return null; // Fail closed — don't execute without lock
+        // Fail closed — don't execute without lock
+        return { token: null, reason: 'unavailable' };
     }
 }
 

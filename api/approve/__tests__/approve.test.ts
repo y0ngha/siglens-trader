@@ -61,6 +61,11 @@ vi.mock('../../../lib/trading/orders', () => ({
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
 }));
 
+const mockGetSellableQuantity = vi.fn();
+vi.mock('../../../lib/trading/account', () => ({
+    getSellableQuantity: (...args: unknown[]) => mockGetSellableQuantity(...args),
+}));
+
 const mockSendErrorEmail = vi.fn();
 const mockSendTradeExecutedEmail = vi.fn();
 const mockBuildTradeExecutedEmail = vi.fn(() => ({ subject: 's', html: '<p>h</p>' }));
@@ -143,6 +148,8 @@ function setupDefaults() {
     mockAverageIntoPosition.mockResolvedValue(undefined);
     mockReducePositionQuantity.mockResolvedValue(true);
     mockSendErrorEmail.mockResolvedValue(undefined);
+    // 브로커 매도가능 수량은 기본적으로 읽히지 않음(가드 비활성).
+    mockGetSellableQuantity.mockResolvedValue(null);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
         clientOrderId: 'approve-1',
@@ -596,7 +603,9 @@ describe('approve handler', () => {
                     resolvedAt: expect.any(Date),
                 }),
             );
-            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+            // 결말 미확정이므로 **되살리지 않는다** — 되살리면 운영자가 재승인할 수 있고,
+            // 토스 멱등키는 10분만 유효해 그 뒤의 재승인이 실주문 2건이 된다.
+            expect(mockRevertPendingOrder).not.toHaveBeenCalled();
         });
     });
 

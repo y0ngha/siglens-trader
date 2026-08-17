@@ -15,10 +15,17 @@ vi.mock('../../_lib/db', () => ({
     getDb: () => mockGetDb(),
 }));
 
+const mockAcquireLockDetailed = vi.fn(async (...args: unknown[]) => {
+    const token = await mockAcquireLock(...(args as []));
+    return token ? { token } : { token: null, reason: 'contended' };
+});
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    // 경합/장애 구분 버전. 기본 구현은 기존 mock을 재사용하고 null이면 경합으로 본다.
+    // 장애(Redis down) 경로는 이 mock을 직접 덮는 테스트가 검증한다.
+    acquireLockDetailed: (...args: unknown[]) => mockAcquireLockDetailed(...(args as [])),
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
@@ -771,13 +778,48 @@ describe('reconcile cron handler', () => {
             expect(body.results).toEqual([{ id: 2, symbol: 'AAPL', action: 'waiting' }]);
         });
 
-        it('getOrder throws (null) → falls back to age-based timeout', async () => {
+        it('조회도 취소도 실패하면 상태를 유지한다 — 살아 있는 주문을 종료 처리하지 않는다', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockRejectedValue(new Error('broker down'));
+            mockCancelOrder.mockRejectedValue(new Error('cancel failed'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'cancel_failed' }]);
+        });
+
+        it('취소 실패가 6시간을 넘으면 needs_review로 종결한다 — 영구 in-flight를 만들지 않는다', async () => {
+            // 계속 in-flight로 두면 그 심볼의 신규 매수가 무기한 막히고 10분마다 메일이 나간다.
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                oldOrderWith({ submittedAt: new Date(Date.now() - 7 * 60 * 60 * 1000) }),
+            ]);
+            mockGetOrder.mockRejectedValue(new Error('broker down'));
+            mockCancelOrder.mockRejectedValue(new Error('cancel failed'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
+        it('getOrder throws (null) → 취소를 확인한 뒤에만 age-based timeout으로 확정한다', async () => {
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
             mockGetOrder.mockRejectedValue(new Error('broker down'));
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
+            // 조회가 실패했을 뿐 브로커에는 주문이 살아 있을 수 있다. 취소 없이
+            // `timeout`(종료 상태)으로 확정하면 다시 조회되지 않고, 나중에 체결되면
+            // 장부에 영영 안 잡힌다.
+            expect(mockCancelOrder).toHaveBeenCalledWith('toss-1');
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
                 status: 'timeout',
                 resolvedAt: expect.any(Date),

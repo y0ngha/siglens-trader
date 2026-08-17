@@ -137,7 +137,9 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     // 선이며, 지지선 이탈 같은 간접 신호(2번 이하)는 그 뒤다.
     // `hard`를 세우지 않는 이유는 지지선 이탈과 같다 — 분석에서 파생된 판단이지 절대
     // 리스크 한계가 아니므로 사이징 게이트가 얼마나 자를지 정한다.
-    if (params.aiStopLoss && currentPrice < params.aiStopLoss) {
+    // 익절(4.5)이 `>=`이므로 손절도 `<=`다 — `<`면 손절선에 정확히 닿았을 때만 트리거가
+    // 빠져 리스크를 더 오래 들고 간다.
+    if (params.aiStopLoss && currentPrice <= params.aiStopLoss) {
         // 수익 구간이면 익절로 라벨링한다 — 지지선 이탈(2번)·추세 반전(3번)과 같은 처리다.
         // 분석 손절가는 우리 매수가와 무관한 절대 가격이라, $100에 산 포지션이 $145까지
         // 오른 뒤 손절선 $140을 건드리는 일이 흔하다. 그걸 stop_loss로 기록하면 실현 수익이
