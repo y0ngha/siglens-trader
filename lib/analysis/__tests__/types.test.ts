@@ -40,12 +40,16 @@ describe('toErrStr', () => {
 });
 
 describe('getAnalysisReasoning', () => {
-    it('turns reasoning off for the short-cadence axes', () => {
-        // These run every 30 minutes at most. Measured in production: with reasoning on,
-        // one technical symbol cost ~7 minutes (a 148s call truncated to zero output, then
-        // a 269s retry), so a 4-symbol pass blew past the 690s cron cutoff and symbols
-        // silently went without a signal.
-        expect(getAnalysisReasoning('technical')).toBe(false);
+    it('technical은 추론을 켠다 — 주기 저하가 매매를 멈추지 않기 때문', () => {
+        // 2026-08-10 측정에서 심볼당 ~7분이 나와 껐지만, 그 결론("신호가 사라진다")이
+        // 과장이었다. 패스가 창(30분)을 넘겨도 마지막 종목의 갱신이 30→60분이 될 뿐이고,
+        // 60분은 30Min 신선도 한도(90분) 안이라 매매는 계속 돈다.
+        expect(getAnalysisReasoning('technical')).toBe(true);
+    });
+
+    it('options는 추론을 끈 채로 둔다', () => {
+        // 옵션 체인 요약은 만기별 OI/IV 집계라 장문 추론이 결론을 바꾸기 어렵고,
+        // 한 번에 둘 다 바꾸면 어느 쪽이 원인인지 가릴 수 없다.
         expect(getAnalysisReasoning('options')).toBe(false);
     });
 

@@ -66,7 +66,11 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             }
 
             // TTL 780s < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap).
-            const lockToken = await acquireLock(LOCK_KEY, 780);
+            // TTL은 **한 실행이 걸릴 수 있는 최대 시간보다 커야 한다.** 짧으면 실행 도중
+            // 락이 만료돼 다음 틱이 새로 잡고 같은 심볼을 동시에 분석한다(execute에서 같은
+            // 버그를 고쳤다). 위 컷오프 1200초 + 진행 중이던 심볼 하나(~7분) = 약 27분이
+            // 상한이므로 30분으로 잡는다.
+            const lockToken = await acquireLock(LOCK_KEY, 1800);
             if (!lockToken) {
                 finishState = {
                     status: 'skipped',
@@ -107,9 +111,19 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     await getConfigValue<string>(db, 'analysis_timeframe'),
                 );
 
-                // 새 LLM 작업 컷오프: cron 시작 + 690s. maxDuration(800s) 안에서 한 심볼이
-                // 전체 cron의 audit 마감을 막지 못하도록 runner에 deadline을 전달한다.
-                const analysisDeadlineMs = startedMs + 690_000;
+                // 새 LLM 작업 컷오프. 이 시각을 넘기면 남은 심볼의 LLM 호출을 시작하지 않는다.
+                //
+                // 종전 690초는 Vercel `maxDuration`(800초)에서 역산한 값인데, EC2에는 실행
+                // 시간 상한이 없으므로 그 근거가 사라졌다. technical에 추론을 켜면 심볼당
+                // 수 분이 걸려 690초에서는 두 번째 심볼부터 잘린다 — 잘린 종목은 다음 틱에
+                // 재시도되지만, 매 패스마다 로테이션하면 갱신 간격이 필요 이상으로 벌어진다.
+                //
+                // 1200초로 잡은 근거: 심볼 3개 기준 마지막 심볼이 약 14분에 시작하므로 전부
+                // 들어간다. 컷오프 직전에 시작한 심볼 하나(최악 ~7분)를 더해도 실행 상한이
+                // 약 27분이라 **cadence 창 30분 안에 머문다** — 마지막 종목의 분석이 다음
+                // 창으로 넘어가 그 창을 소비하는 경우를 정상 상황에서는 피한다.
+                // 종목이 늘면 컷오프가 뒤쪽 심볼을 다음 틱으로 넘긴다(의도된 degrade).
+                const analysisDeadlineMs = startedMs + 1_200_000;
 
                 // Port 구현체: analysis 레이어가 db 직접 의존하지 않도록 cron 레이어에서 주입.
                 const cardStore: NewsCardStore = {

@@ -208,8 +208,11 @@ Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cad
 type a window size, and `_run-analysis-cron.ts` skips a symbol whose newest analysis already falls
 in the current window. Elapsed-time checks drift, because an analysis is stamped when it is *saved*
 — a 5-minute run starting at :00 is stamped :05, so the :30 tick would see only 25 minutes and skip,
-silently turning a 30-minute cadence into a 45-minute one. Windows make the guard indifferent to how
-long a run takes.
+silently turning a 30-minute cadence into a 45-minute one. Windows make the guard indifferent to run
+duration **as long as the run finishes inside its own window**. A run that crosses the boundary
+stamps its last symbols into the *next* window and so consumes it — that symbol then refreshes at
+2× the window. That is the accepted cost of reasoning on technical (below), not a defect, and it is
+why the run cutoff is sized to keep a normal pass inside one window.
 
 | Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
 |---------------|-------------------------|-------------------|-----------|

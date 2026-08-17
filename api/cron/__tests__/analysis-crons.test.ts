@@ -156,12 +156,14 @@ describe('createAnalysisCronHandler', () => {
         expect(mockGetAnalysisConfig).not.toHaveBeenCalled();
     });
 
-    it('uses per-type lock key with 780s TTL (< maxDuration 800s)', async () => {
+    it('uses per-type lock key with a TTL longer than the run cutoff', async () => {
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
         await handler(makeRequest(true));
 
-        expect(mockAcquireLock).toHaveBeenCalledWith('cron:technical:lock', 780);
+        // TTL(1800s)은 컷오프(1200s) + 진행 중이던 심볼 하나(~7분)보다 커야 한다.
+        // 짧으면 실행 도중 락이 만료돼 다음 틱이 같은 심볼을 동시에 분석한다.
+        expect(mockAcquireLock).toHaveBeenCalledWith('cron:technical:lock', 1800);
     });
 
     it('releases lock after successful execution', async () => {
@@ -336,27 +338,27 @@ describe('createAnalysisCronHandler', () => {
     });
 
     it('passes the per-type reasoning policy to the runner', async () => {
-        // Short-cadence axes run with reasoning off: measured in production, reasoning on
-        // cost ~7 minutes per technical symbol and blew past the 690s cron cutoff.
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
+        // technical: ON (핸들러가 'technical'로 만들어져 있다)
         await handler(makeRequest(true));
-        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
-
-        mockRunner.mockClear();
-        const newsHandler = createAnalysisCronHandler('news', mockRunner);
-        await newsHandler(makeRequest(true));
         expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
+
+        // options: OFF — 축마다 정책이 다르다는 것이 이 테스트의 대상이다.
+        mockRunner.mockClear();
+        const optionsHandler = createAnalysisCronHandler('options', mockRunner);
+        await optionsHandler(makeRequest(true));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
     });
 
-    it('passes a deadlineMs of start + 690s to the runner', async () => {
+    it('passes a deadlineMs of start + 1200s to the runner', async () => {
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
         await handler(makeRequest(true));
 
         const startMs = new Date('2026-05-24T10:00:00.000Z').getTime();
         expect(mockRunner).toHaveBeenCalledWith(
-            expect.objectContaining({ deadlineMs: startMs + 690_000 }),
+            expect.objectContaining({ deadlineMs: startMs + 1_200_000 }),
         );
     });
 
