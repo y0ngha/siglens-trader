@@ -211,8 +211,12 @@ in the current window. Elapsed-time checks drift, because an analysis is stamped
 silently turning a 30-minute cadence into a 45-minute one. Windows make the guard indifferent to run
 duration **as long as the run finishes inside its own window**. A run that crosses the boundary
 stamps its last symbols into the *next* window and so consumes it — that symbol then refreshes at
-2× the window. That is the accepted cost of reasoning on technical (below), not a defect, and it is
-why the run cutoff is sized to keep a normal pass inside one window.
+2× the window.
+
+**심볼은 병렬로 돈다** (`_run-analysis-cron.ts`의 `Promise.all`). 실행 시간이 종목 수에
+비례하지 않고 **가장 느린 심볼 하나**로 수렴하므로, 위의 창 넘어감은 종목을 늘려도 다시
+나타나지 않는다. 심볼당 상한은 여전히 `PER_SYMBOL_MAX_MS`(150초)이고, 한 심볼의 예외는
+그 심볼만 `error`로 기록되고 나머지 결과를 버리지 않는다.
 
 | Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
 |---------------|-------------------------|-------------------|-----------|
