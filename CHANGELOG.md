@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.23.0](https://github.com/y0ngha/siglens-trader/compare/v0.22.1...v0.23.0) (2026-08-18)
+
+
+### Bug Fixes
+
+* 자동 매매 전 경로 감사 — 유령 보유·중복 주문·크론 정지 경로를 막는다 ([#45](https://github.com/y0ngha/siglens-trader/issues/45)) ([aaf279b](https://github.com/y0ngha/siglens-trader/commit/aaf279b9a21b4a70b711264e16a96161354e4036))
+
+
+### Documentation
+
+* README를 현재 기능 상태로 재작성 + siglens-core 0.47.0 ([d62554c](https://github.com/y0ngha/siglens-trader/commit/d62554c))
+
 ## [0.22.1](https://github.com/y0ngha/siglens-trader/compare/v0.22.0...v0.22.1) (2026-08-17)
 
 
