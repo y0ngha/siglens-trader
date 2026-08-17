@@ -129,6 +129,19 @@ Those cannot be derived from rules and reach core's literal list only when someo
 the live-order path asks the broker directly. Analysis crons accept the residual risk — a missing
 entry costs one day of wasted quota, not a bad trade.
 
+**`reconcile` deliberately has no session gate.** Its job is order aftercare, not market activity:
+an order placed Friday afternoon and left unfilled needs its 30-minute timeout processed over a
+long weekend, and this cron is the only thing that does it. Gating it on the session would take
+the safety net down exactly when it has the most to do.
+
+What it *does* skip on a closed day is the **broker holdings comparison** — and only when there is
+nothing to reconcile (no in-flight orders, nothing recovered this run). Broker holdings move on
+fills, and a closed market has none, so the same question asked 39 times in a day has the same
+answer 39 times; each one is a broker API call. The previous session's runs already compared and
+the next session's will again, so the skip delays nothing that could have changed. The audit row
+records `summary.holdingsCheckSkipped: 'market_closed'` so a quiet day is distinguishable from a
+broken check.
+
 ## Execute Cron Flow
 
 0. **Interval gate** — node-cron fires every 5 minutes (`2-59/5`, which covers every minute the

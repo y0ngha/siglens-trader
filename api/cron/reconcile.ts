@@ -21,6 +21,7 @@ import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery
 import { getOrder } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
 import { isFinitePositive } from '../../lib/validation.js';
+import { isUsTradingDay } from '@y0ngha/siglens-core';
 
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
@@ -381,8 +382,27 @@ async function handler(req: Request): Promise<Response> {
         // broker account would produce constant false-positive alerts.
         // Filter to US-only: the system trades only US equities; Korean/manual holdings
         // would cause constant false-positive "broker holding without DB position" alerts.
+        //
+        // **휴장일에는 처리할 주문이 있을 때만 비교한다.**
+        //
+        // reconcile은 세션 게이트를 두지 않는다 — 다른 cron과 달리 이 잡의 일은 시장 활동이
+        // 아니라 주문 사후 처리이고, 금요일 오후에 낸 주문이 연휴 내내 미체결로 떠 있으면
+        // 그 타임아웃을 처리할 주체가 여기밖에 없다. 그래서 휴장일에도 10분마다 돈다.
+        //
+        // 그런데 **보유 비교만은 시장이 닫힌 날 반복할 이유가 없다.** 브로커 잔고는 체결로만
+        // 바뀌는데 휴장일에는 체결이 없으므로, 처리할 주문도 복구할 체결도 없으면 39번을
+        // 돌아도 답이 같다. 그 39번이 전부 브로커 API 호출이다.
+        //
+        // 안전성: 직전 세션의 reconcile 실행들이 이미 같은 비교를 했고 다음 개장일에 다시
+        // 한다. 이 스킵이 늦추는 것은 "휴장 구간 동안의 불일치 통지"뿐인데, 그 구간에는
+        // 불일치를 만들 사건 자체가 없다. 반대로 주문이 남아 있거나 이번 실행이 무언가를
+        // 복구했다면 잔고가 움직였을 수 있으므로 그때는 비교한다.
+        const marketClosedToday = !isUsTradingDay(startedAt);
+        const nothingToReconcile = submitted.length === 0 && recovery.recovered === 0;
+        const skipHoldingsCheck = marketClosedToday && nothingToReconcile;
+
         let holdingsMismatchCount = 0;
-        if (tradingMode !== 'dry_run') {
+        if (tradingMode !== 'dry_run' && !skipHoldingsCheck) {
             const holdings = await getHoldings().catch((err) => {
                 holdingsCheckFailed = 1;
                 holdingsError = err instanceof Error ? err.message : String(err);
@@ -441,6 +461,7 @@ async function handler(req: Request): Promise<Response> {
                 recoveryFailed: recovery.failed,
                 consistencyAlerts: consistency.alerts.length,
                 holdingsMismatches: holdingsMismatchCount,
+                ...(skipHoldingsCheck ? { holdingsCheckSkipped: 'market_closed' } : {}),
                 brokerPollFailures,
                 holdingsCheckFailed,
                 ...(holdingsError ? { holdingsError } : {}),

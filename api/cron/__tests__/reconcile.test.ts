@@ -136,7 +136,7 @@ function oldOrderWith(overrides: Record<string, unknown> = {}) {
         side: 'buy',
         quantity: 10,
         tossOrderId: 'toss-1',
-        submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+        submittedAt: new Date('2026-05-26T13:00:00.000Z'),
         ...overrides,
     };
 }
@@ -150,7 +150,7 @@ function recentOrderWith(overrides: Record<string, unknown> = {}) {
         side: 'buy',
         quantity: 10,
         tossOrderId: 'toss-2',
-        submittedAt: new Date('2026-05-24T14:20:00.000Z'),
+        submittedAt: new Date('2026-05-26T14:20:00.000Z'),
         ...overrides,
     };
 }
@@ -162,7 +162,9 @@ function recentOrderWith(overrides: Record<string, unknown> = {}) {
 describe('reconcile cron handler', () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-05-24T14:30:00.000Z'));
+        // 2026-05-26(화)는 거래일이다. 종전 픽스처의 2026-05-24는 **일요일**이라,
+        // 보유 비교가 "휴장일 + 처리할 주문 없음"에 걸려 건너뛰어진다.
+        vi.setSystemTime(new Date('2026-05-26T14:30:00.000Z'));
         setupDefaults();
     });
 
@@ -250,7 +252,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'AAPL',
                 side: 'buy',
                 quantity: 10,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'), // 90 min ago
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'), // 90 min ago
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrder]);
 
@@ -271,7 +273,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'AAPL',
                 side: 'buy',
                 quantity: 5,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'),
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldBuyOrder]);
 
@@ -291,7 +293,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'TSLA',
                 side: 'sell',
                 quantity: 10,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'),
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldSellOrder]);
 
@@ -314,7 +316,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'TSLA',
                 side: 'sell',
                 quantity: 10,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'),
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldSellOrder]);
 
@@ -339,7 +341,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'TSLA',
                 side: 'sell',
                 quantity: 10,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'),
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldSellOrder]);
 
@@ -361,7 +363,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'MSFT',
                 side: 'buy',
                 quantity: 3,
-                submittedAt: new Date('2026-05-24T14:20:00.000Z'), // 10 min ago
+                submittedAt: new Date('2026-05-26T14:20:00.000Z'), // 10 min ago
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([recentOrder]);
 
@@ -386,7 +388,7 @@ describe('reconcile cron handler', () => {
                 symbol: 'AAPL',
                 side: 'buy',
                 quantity: 10,
-                submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                submittedAt: new Date('2026-05-26T13:00:00.000Z'),
             };
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrder]);
             mockSendErrorEmail.mockRejectedValue(new Error('Email service down'));
@@ -463,7 +465,7 @@ describe('reconcile cron handler', () => {
                     symbol: 'AAPL',
                     side: 'buy',
                     quantity: 5,
-                    submittedAt: new Date('2026-05-24T12:00:00.000Z'), // 150 min ago
+                    submittedAt: new Date('2026-05-26T12:00:00.000Z'), // 150 min ago
                 },
                 {
                     id: 2,
@@ -471,7 +473,7 @@ describe('reconcile cron handler', () => {
                     symbol: 'TSLA',
                     side: 'buy',
                     quantity: 3,
-                    submittedAt: new Date('2026-05-24T14:25:00.000Z'), // 5 min ago
+                    submittedAt: new Date('2026-05-26T14:25:00.000Z'), // 5 min ago
                 },
             ];
             mockGetPendingSubmittedOrders.mockResolvedValue(orders);
@@ -636,7 +638,7 @@ describe('reconcile cron handler', () => {
                 status: 'CANCELED',
                 filledQuantity: 0,
                 avgFilledPrice: null,
-                canceledAt: '2026-05-24T13:05:00.000Z',
+                canceledAt: '2026-05-26T13:05:00.000Z',
             });
 
             const res = await handler(makeRequest(true));
@@ -657,7 +659,7 @@ describe('reconcile cron handler', () => {
                 status: 'CANCELED',
                 filledQuantity: 4,
                 avgFilledPrice: 190.25,
-                canceledAt: '2026-05-24T13:05:00.000Z',
+                canceledAt: '2026-05-26T13:05:00.000Z',
             });
 
             const res = await handler(makeRequest(true));
@@ -1131,7 +1133,7 @@ describe('reconcile cron handler', () => {
                     symbol: 'AAPL',
                     side: 'buy',
                     quantity: 10,
-                    submittedAt: new Date('2026-05-24T13:00:00.000Z'), // timed out
+                    submittedAt: new Date('2026-05-26T13:00:00.000Z'), // timed out
                 },
             ];
             mockGetPendingSubmittedOrders.mockResolvedValue(orders);
@@ -1203,7 +1205,7 @@ describe('reconcile cron handler', () => {
                     symbol: 'AAPL',
                     side: 'buy',
                     quantity: 10,
-                    submittedAt: new Date('2026-05-24T13:00:00.000Z'),
+                    submittedAt: new Date('2026-05-26T13:00:00.000Z'),
                 },
                 {
                     id: 2,
@@ -1211,7 +1213,7 @@ describe('reconcile cron handler', () => {
                     symbol: 'TSLA',
                     side: 'buy',
                     quantity: 5,
-                    submittedAt: new Date('2026-05-24T14:20:00.000Z'), // recent → waiting
+                    submittedAt: new Date('2026-05-26T14:20:00.000Z'), // recent → waiting
                 },
             ];
             mockGetPendingSubmittedOrders.mockResolvedValue(orders);
@@ -1324,5 +1326,78 @@ describe('reconcile cron handler', () => {
             );
             expect(mockSendTradeExecutedEmail).not.toHaveBeenCalled();
         });
+    });
+});
+
+describe('reconcile cron handler — 휴장일 보유 비교', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.useFakeTimers();
+        setupDefaults();
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'auto' : null),
+        );
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('휴장일에 처리할 주문이 없으면 브로커 보유 조회를 건너뛴다', async () => {
+        // 2026-11-26 추수감사절 12:00 ET. 브로커 잔고는 체결로만 바뀌는데 그날은 체결이
+        // 없으므로, 10분마다 39번 물어도 답이 같다.
+        vi.setSystemTime(new Date('2026-11-26T17:00:00.000Z'));
+        mockGetPendingSubmittedOrders.mockResolvedValue([]);
+
+        const res = await handler(makeRequest(true));
+
+        expect(res.status).toBe(200);
+        expect(mockGetHoldings).not.toHaveBeenCalled();
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            fakeDb,
+            expect.any(String),
+            expect.objectContaining({
+                summary: expect.objectContaining({ holdingsCheckSkipped: 'market_closed' }),
+            }),
+        );
+    });
+
+    it('휴장일이어도 미체결 주문이 남아 있으면 비교한다', async () => {
+        // 연휴 직전에 낸 주문이 그대로면 잔고가 움직였을 수 있다.
+        vi.setSystemTime(new Date('2026-11-26T17:00:00.000Z'));
+        mockGetPendingSubmittedOrders.mockResolvedValue([
+            {
+                id: 1,
+                idempotencyKey: 'exec-abc-AAPL-buy',
+                symbol: 'AAPL',
+                side: 'buy',
+                quantity: 5,
+                status: 'submitted',
+                tossOrderId: null,
+                submittedAt: new Date('2026-11-25T20:00:00.000Z'),
+            },
+        ]);
+
+        await handler(makeRequest(true));
+
+        expect(mockGetHoldings).toHaveBeenCalled();
+    });
+
+    it('거래일에는 처리할 주문이 없어도 비교한다', async () => {
+        vi.setSystemTime(new Date('2026-11-25T17:00:00.000Z')); // 수요일, 정규일
+        mockGetPendingSubmittedOrders.mockResolvedValue([]);
+
+        await handler(makeRequest(true));
+
+        expect(mockGetHoldings).toHaveBeenCalled();
+    });
+
+    it('주말에도 같은 규칙이 적용된다 — 스케줄이 평일이라 실제로는 거의 안 걸린다', async () => {
+        vi.setSystemTime(new Date('2026-11-28T17:00:00.000Z')); // 토요일
+        mockGetPendingSubmittedOrders.mockResolvedValue([]);
+
+        await handler(makeRequest(true));
+
+        expect(mockGetHoldings).not.toHaveBeenCalled();
     });
 });
