@@ -15,7 +15,7 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 | `entry-zone.ts` | 권장 진입 구간 상단 게이트. `exceedsEntryZone` / `formatEntryZone`, `ENTRY_ZONE_TOLERANCE` 1%. **상단만** 본다 (구간 아래는 매수에 불리하지 않다), 구간 정보가 없으면 통과(fail-open). 추격 매수 차단 전용 — 매도에는 쓰지 않는다. |
 | `execute-interval.ts` | execute cron 실행 간격. `EXECUTE_INTERVALS` (5·10·15·20·30·60, 전부 60의 약수), `DEFAULT_EXECUTE_INTERVAL_MIN` 10, `EXECUTE_BASE_MINUTE` 7, `isExecuteInterval` / `parseExecuteInterval` / `isExecuteTick`. 게이트는 `(분 − 7) mod 간격 === 0` — 60분이면 종전 `7 13-21` 스케줄과 실행 시각이 같다. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
-| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisPrice`, `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisEntryPrices` / `safeAnalysisStopLoss` / `safeAnalysisTakeProfit` (the three `actionRecommendation` prices the rule engine reads; the latter two prefer core's `reconciledLevels`), `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
+| `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisEntryPrices` / `safeAnalysisStopLoss` / `safeAnalysisTakeProfit` (the three `actionRecommendation` prices the rule engine reads; the latter two prefer core's `reconciledLevels`), `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeAnalysisPatterns` (`patternSummaries` + `strategyResults` + `candlePatterns`, with core's `confidenceWeight`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
 
 ### `priceTargets` extraction — same bug class as `keyLevels`
 
@@ -53,7 +53,19 @@ Priority-weighted average of 6 analysis axes (weights sum to 38 on the default `
   shrunk bullish/bearish type ratio (same pseudo-count trick as options), snapping to ≥92 when the
   backtest entry rule holds exactly and ≤8 when its bearish inverse does. 92 is deliberately below
   what a lone axis needs to cross the buy threshold: trigger + everything else neutral = 63 → hold.
-- Technical (8): strength-weighted aggregate of `indicatorResults` signals (continuous, 50 ± 35) + riskLevel (±10) + actionRecommendation.entryRecommendation (enter +20 / wait −15 / avoid −25). Falls back to the single top-level `trend` when no indicator signals exist.
+- Technical (8): the **mean of three readings** — (1) strength-weighted `indicatorResults`
+  aggregate, (2) confidence-weighted aggregate of `patternSummaries` + `strategyResults` +
+  `candlePatterns` (`safeAnalysisPatterns`; `detected: false` items abstain), (3) the LLM's overall
+  `trend` — each mapped to 50 ± 35. Then riskLevel (±10) + `entryRecommendation`
+  (enter +10 / wait −6 / avoid −12).
+  Two of those three were dead before: the pattern trio was never wired (core computes
+  `confidenceWeight` for it), and `trend` was reachable only when `indicatorResults` was empty,
+  which core's required-field schema prevents. The consequence was that **entries scored off
+  signal counts while exits read the overall verdict** — one analysis, two different bases.
+  The recommendation modifier was ±20~25, i.e. 64% of the ±35 indicator span, so one literal
+  could invert the whole aggregate and an all-neutral symbol landed at 45 instead of 50
+  (making buys need +25 and sells only −15). `avoid` is now an entry gate
+  (`entry_not_recommended`), not a score penalty.
 - News (6): overallSentiment (bullish 80 / neutral 50 / bearish 20)
 - Options (5): directional (bullish/bearish) signal ratio with shrinkage (pseudo-count k=1) so a lone signal doesn't snap to 0/100; neutral/volatility kinds ignored
 - Fundamental (4): mean of `categoryAssessments` sentiments (continuous, 50 ± 30), falling back to overallSentiment when no categories exist
@@ -80,6 +92,12 @@ and exits. The other four always produce a number, so they always vote.
 ## Position Re-evaluation Priority
 
 When evaluating an existing position, checks fire in this order:
+0. `PositionEvaluation.structural` marks the four *structure-broken* exits (분석 손절가, 지지선,
+   추세 반전, 하락 컨플루언스, 뉴스 악재). They label as `take_profit` in a profit zone — that
+   label exists to keep stop-loss history and the re-entry cooldown clean, **not** to say a
+   target was met — so `execute.ts` passes `structural` to the sizing gate instead of the label.
+   Without it the prompt reads `트리거 종류: 익절` and sizes a broken position as "trim a little,
+   let the rest run".
 1. Fixed stop loss % breach → stop_loss (**only when `fixedExitEnabled` is true**) — `hard: true`
 1.5. 분석 손절가 이탈 (`aiStopLoss`) → stop_loss (always active)
 2. Price below key support level → stop_loss (always active)

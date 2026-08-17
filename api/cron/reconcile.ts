@@ -20,6 +20,7 @@ import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
 import { getOrder } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
+import { isFinitePositive } from '../../lib/validation.js';
 
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
@@ -141,7 +142,10 @@ async function handler(req: Request): Promise<Response> {
                         // books integer order.quantity, so this guarantees it only ever runs
                         // on orders whose actual fill equals that integer quantity.
                         const cleanFull =
-                            detail.avgFilledPrice != null &&
+                            // `!= null`만으로는 파싱 실패로 들어온 0이 통과해 체결가 0이
+                            // 기록되고, 그 매도 전량이 손실로 잡혀 다음 execute 틱에 일일
+                            // 손실 한도가 터진다(= 전 종목 강제청산).
+                            isFinitePositive(detail.avgFilledPrice) &&
                             Number.isInteger(order.quantity) &&
                             Math.abs(detail.filledQuantity - order.quantity) < 1e-6;
                         if (cleanFull) {
@@ -241,9 +245,29 @@ async function handler(req: Request): Promise<Response> {
                         if (isTimedOut) {
                             // Remainder not filling — cancel it, then route the filled
                             // portion to manual review (don't auto-book partial fills).
-                            await cancelOrder(order.tossOrderId).catch((e) =>
-                                console.error('[cancel]', e),
-                            );
+                            // 취소가 실제로 됐는지 확인한 뒤에만 종료 상태로 넘긴다.
+                            // 실패했는데 `needs_review`(종료)로 적으면 이 주문은 다시 조회되지
+                            // 않는데, 브로커에서는 잔량이 살아 있다가 나중에 체결될 수 있다.
+                            // 그러면 DB는 영원히 모르고, 다음 execute 틱은 in-flight가 없다고
+                            // 보고 같은 포지션에 두 번째 매도를 낸다.
+                            const canceled = await cancelOrder(order.tossOrderId)
+                                .then(() => true)
+                                .catch((e) => {
+                                    console.error('[cancel]', e);
+                                    return false;
+                                });
+                            if (!canceled) {
+                                await notifyError(
+                                    `잔량 취소 실패: ${order.symbol}`,
+                                    `${order.side} 주문 ${order.tossOrderId} 부분체결 잔량 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다. 브로커에서 직접 확인이 필요할 수 있습니다.`,
+                                );
+                                results.push({
+                                    id: order.id,
+                                    symbol: order.symbol,
+                                    action: 'cancel_failed',
+                                });
+                                continue;
+                            }
                             await updateOrderTracking(db, order.idempotencyKey, {
                                 status: 'needs_review',
                                 resolvedAt: new Date(),
@@ -270,9 +294,25 @@ async function handler(req: Request): Promise<Response> {
 
                     // PENDING / PENDING_CANCEL / PENDING_REPLACE / REPLACED — still in-flight.
                     if (isTimedOut) {
-                        await cancelOrder(order.tossOrderId).catch((e) =>
-                            console.error('[cancel]', e),
-                        );
+                        // 위와 같은 이유 — 취소 실패는 종료 상태로 넘기지 않는다.
+                        const canceled = await cancelOrder(order.tossOrderId)
+                            .then(() => true)
+                            .catch((e) => {
+                                console.error('[cancel]', e);
+                                return false;
+                            });
+                        if (!canceled) {
+                            await notifyError(
+                                `주문 취소 실패: ${order.symbol}`,
+                                `${order.side} 주문 ${order.tossOrderId} 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다.`,
+                            );
+                            results.push({
+                                id: order.id,
+                                symbol: order.symbol,
+                                action: 'cancel_failed',
+                            });
+                            continue;
+                        }
                         await timeoutOrder(order, age);
                         continue;
                     }

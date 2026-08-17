@@ -115,7 +115,8 @@ useQuery({
 
 ## Signal Scoring
 
-Priority-weighted average (weights sum to 38):
+Priority-weighted average (weights sum to 38 on the `1Hour` profile; `15Min` sums to 39 — a
+weighted average, so the sum itself carries no meaning):
 - Confluence: 12
 - Technical: 8
 - News: 6
@@ -144,6 +145,12 @@ LLM's 61.5% over the same window, which is what the weight of 12 is paying for. 
 - **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
   `(72×26 + 50×12)/38 = 65`, below the buy threshold, so fill count drops. That is the point —
   *no entry the indicators do not back* — not a regression to tune away.
+- **Confluence abstention blocks a buy too.** A `null` snapshot drops the axis's weight, which
+  is *looser*, not neutral: with the other five fixed, the same symbol scores 65 (hold) at a
+  genuinely neutral confluence and **72 (buy)** when FMP simply failed to serve bars. An axis
+  added to stop entries the indicators don't back was opening the gate exactly when the
+  indicators were unreadable. So a `buy` verdict is downgraded to `hold` when the snapshot is
+  absent; sells are untouched.
 - **Confluence can block a buy but never a sell.** Adding an axis widens the denominator, which
   raises *both* thresholds — intended for entries, backwards for exits. `scoreSignals` therefore
   re-scores without confluence and keeps `sell` if that verdict was `sell`. Confluence may still
@@ -189,8 +196,13 @@ Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/spe
 
 **Cron runs in-process via node-cron, on UTC schedules** (`server/app.ts` `CRON_JOBS`). Hours below are UTC, chosen to cover the US regular
 session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
-DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
-`market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
+DST + NYSE holiday + early-close aware since siglens-core 0.44) tightens execution to the actual
+session, so out-of-session fires early-return `market_closed`. That claim used to be aspirational —
+core computed session state from weekday and clock only, so Thanksgiving noon read as `open` and a
+13:00 half day stayed `open` until 16:00. The calendar is *computed*, not fetched
+(`domain/marketCalendar.ts`): every NYSE closure is rule-derived, so there is no feed to fail.
+Unscheduled closures (a national day of mourning) are a short literal list in core and the broker
+remains the backstop for live orders. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
 
 Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cadence.ts` gives each
 type a window size, and `_run-analysis-cron.ts` skips a symbol whose newest analysis already falls
@@ -206,7 +218,7 @@ long a run takes.
 | news          | `0 13-21 * * 1-5`       | 60 minutes        | Event-driven; major catalysts surface within ~60 min of publication. FMP news endpoint is heavily rate-limited. |
 | fundamental   | `0 15 * * 1-5`          | 24 hours          | Quarterly filings and earnings do not move intraday; daily is more than sufficient. |
 | congress      | `0 16 * * 1-5`          | 24 hours          | Congressional disclosures lag the actual trade by weeks; once per weekday is plenty. |
-| execute       | `7-59/5 13-21 * * 1-5`  | `execute_interval_min` (기본 10분) | Cron fires every 5 min; the handler's interval gate decides whether this tick runs. The `:07` offset gives the top-of-hour analysis crons time to save, so a 60-min setting fires at exactly the old times. |
+| execute       | `2-59/5 13-21 * * 1-5`  | `execute_interval_min` (기본 10분) | Cron fires every 5 min (`2-59/5` covers every minute the gate accepts, including the `:02` slot a `7-59/5` expression missed); the handler's interval gate decides whether this tick runs. `noOverlap: true` plus a 900s hard run deadline keep two runs from ever overlapping. The `:07` offset gives the top-of-hour analysis crons time to save, so a 60-min setting fires at exactly the old times. |
 | reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
 | digest        | `0 1 * * *`             | daily             | Flushes the quiet-hours notification queue at 10:00 KST. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. Deliberately not wrapped in the analysis-cron helper, whose US-session gate would suppress it entirely (01:00 UTC is outside the session). |
 
@@ -246,8 +258,22 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
   불리하지 않다. `entryPrices`가 없으면 통과(fail-open). 사이징 게이트보다 앞이라 어차피 사지
   않을 주문에 LLM 호출을 태우지 않는다. 매도에는 걸지 않는다.
 - **`entry_cooldown`** — 같은 심볼 재진입 최소 간격(`config.entry_cooldown_min`, 기본 60분,
-  0이면 off). 실행 주기 단축의 필수 동반: 10분 틱에서는 매수 신호가 살아 있는 한 틱마다 분할
-  진입이 나가 한 종목이 `max_trades_per_day`를 하루치 통째로 먹는다. **설정 > 투자 관리**.
+  0이면 off). 기준은 마지막 **체결**이다 — 매수뿐 아니라 **매도도 쿨다운을 건다.** 매수만 보면
+  손절이 마지막 매수보다 쿨다운 뒤에 일어났을 때 손절 10분 뒤 같은 분석으로 재매수가 가능했다
+  (`recentStopLossSymbols`는 실행 스코프라 다음 틱에 초기화된다). **설정 > 투자 관리**.
+- **`entry_not_recommended`** — 분석의 `entryRecommendation`이 `avoid`면 점수와 무관하게 매수를
+  막는다. core는 `avoid`에서도 "돌파 시 진입" **조건부** 구간을 채우므로 `entryPrices` 상단
+  검사로는 걸러지지 않는다.
+**노출 한도는 원가(투자 금액) 기준이다.** `max_position_size` / `max_total_exposure`는
+`avgPrice × quantity`로 계산한다 — 평가액 기준이면 가격이 내릴수록 예산이 커져 한도가
+아무것도 한정하지 못한다.
+
+**물타기는 규칙으로 막지 않는다.** 점수 ≥70 + 6축 합의 + 사이징 게이트를 통과했다면 그것이
+이미 AI의 추천이고, 규칙 엔진이 방향만 보고 뒤집는 것은 판단 층을 잘못 고른 것이다. 대신
+게이트가 **물타기인 줄 알고** 크기를 정하도록 프롬프트에 성격을 명시한다 — 특히 모델이 계산으로
+얻을 수 없는 사실 하나를 못박는다: 고정 손절선은 평단이 기준이므로 추가 매수가
+손절선을 함께 내린다 (진입 지침 5번).
+- **`entry_after_exit_blocked`** — 같은 틱에 부분 청산한 종목은 다시 늘리지 않는다.
 
 청산 쪽에는 대칭 게이트를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
 대신 빠져 있던 트리거를 채웠다: `actionRecommendation.stopLoss` / `takeProfitPrices`(core의
@@ -255,7 +281,8 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
 `fixed_exit_enabled`가 기본 꺼짐이라, 그전까지 활성 손절 경로는 지지선 이탈·추세 반전·하락
 컨플루언스 같은 **간접** 신호뿐이었다.
 
-설계 근거: [`docs/specs/2026-08-16-execution-cadence-design.md`](docs/specs/2026-08-16-execution-cadence-design.md).
+설계 근거: [`docs/specs/2026-08-16-execution-cadence-design.md`](docs/specs/2026-08-16-execution-cadence-design.md),
+감사 대응: [`docs/specs/2026-08-17-audit-fixes-design.md`](docs/specs/2026-08-17-audit-fixes-design.md).
 
 ### Entry window (신규 진입 시간 창)
 

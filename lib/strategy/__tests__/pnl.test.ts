@@ -41,3 +41,18 @@ describe('realizedPnlForSell', () => {
         expect(realizedPnlForSell(sellPrice, 0, 1)).toBe(0.3);
     });
 });
+
+describe('realizedPnlForSell — 비유한 입력 방어', () => {
+    it('NaN이 섞이면 0으로 떨어진다 — SUM 전체를 NaN으로 만들면 안 된다', () => {
+        // Postgres numeric은 NaN을 저장하고, SUM에 하나만 섞여도 결과가 NaN이 된다.
+        // 그러면 `todayPnl < -limit`이 항상 false라 그날 내내 손실 차단기가 침묵한다.
+        expect(realizedPnlForSell(NaN, 100, 10)).toBe(0);
+        expect(realizedPnlForSell(150, NaN, 10)).toBe(0);
+        expect(realizedPnlForSell(150, 100, NaN)).toBe(0);
+        expect(realizedPnlForSell(Infinity, 100, 10)).toBe(0);
+    });
+
+    it('정상 입력은 그대로 계산한다', () => {
+        expect(realizedPnlForSell(150, 100, 10)).toBe(500);
+    });
+});

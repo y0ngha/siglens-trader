@@ -83,6 +83,9 @@ vi.mock('../../lib/db/queries', () => ({
     updateNotificationConfig: (...args: unknown[]) => mockUpdateNotificationConfig(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getPendingOrderById: (...args: unknown[]) => mockGetPendingOrderById(...args),
+    // 승인 경로가 리스크 차단기를 재확인한다. 기본값은 "여유 있음".
+    getTodayRealizedPnl: () => Promise.resolve(0),
+    getTodayInflightOrderCount: () => Promise.resolve(0),
     approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
     revertPendingOrder: (...args: unknown[]) => mockRevertPendingOrder(...args),
     rejectPendingOrder: (...args: unknown[]) => mockRejectPendingOrder(...args),
@@ -649,6 +652,22 @@ describe('POST /api/config', () => {
             );
             expect(res.status).toBe(400);
         }
+    });
+
+    it('rejects an interval/entry_window combination with no overlapping tick', async () => {
+        mockGetConfigValue.mockResolvedValue(60);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'entry_window',
+                // 실행은 매시 :07 하나뿐인데 창이 11:10–11:50이면 매수가 영구히 0이 된다.
+                value: { start: '11:10', end: '11:50' },
+            }),
+        );
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('교집합');
     });
 
     it('handles watchlist add', async () => {

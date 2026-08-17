@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "idx_trades_client_order_id" ON "trades" USING btree ("client_order_id") WHERE client_order_id IS NOT NULL;

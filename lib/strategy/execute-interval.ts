@@ -43,12 +43,47 @@ export function parseExecuteInterval(value: unknown): ExecuteInterval {
 }
 
 /**
+ * 지각 허용치(분).
+ *
+ * 게이트는 분 단위 등식이라 관용 구간이 없으면, 이벤트 루프가 밀려 핸들러 진입이 분 경계를
+ * 넘긴 틱이 통째로 사라진다 — `startCronRun`보다 앞이라 `cron_runs`에도 흔적이 남지 않는다.
+ * cron은 5분 간격으로만 발화하고 최소 실행 간격도 5분이므로, 1분을 허용해도 한 간격 안에서
+ * 두 번 실행될 수는 없다.
+ */
+const LATE_TICK_TOLERANCE_MIN = 1;
+
+/**
  * 이 시각이 실행 틱인가.
  *
  * 분(minute)만 본다 — cron이 `Etc/UTC`로 등록돼 있고, 모든 후보 간격(5·10·15·20·30·60)이
  * 60의 약수라 시(hour) 경계에서 주기가 끊기지 않는다.
  */
 export function isExecuteTick(now: Date, interval: ExecuteInterval): boolean {
-    const minute = now.getUTCMinutes();
-    return (minute - EXECUTE_BASE_MINUTE + 60) % interval === 0;
+    const offset = (now.getUTCMinutes() - EXECUTE_BASE_MINUTE + 60) % interval;
+    return offset <= LATE_TICK_TOLERANCE_MIN;
+}
+
+/**
+ * 이 간격의 실행 틱이 진입 창 안에 하나라도 존재하는가.
+ *
+ * 실행 틱은 UTC 분(`(분 − 7) mod interval === 0`)에 고정인데 진입 창은 ET 시:분으로 임의
+ * 지정할 수 있다. ET는 UTC에서 정시 오프셋(−4/−5시간)만큼만 다르므로 **분(minute)은 두 시계가
+ * 같다** — 그래서 시(hour)를 몰라도 분만으로 교집합을 판정할 수 있다.
+ *
+ * 창의 길이가 간격 이상이면 어떤 위치에서도 틱이 하나는 들어가므로 곧바로 참이다. 그보다
+ * 짧을 때만 창에 걸치는 분들을 훑는다.
+ */
+export function hasTickInWindow(
+    intervalMin: number,
+    window: { startMinute: number; endMinute: number },
+): boolean {
+    const interval = isExecuteInterval(intervalMin) ? intervalMin : DEFAULT_EXECUTE_INTERVAL_MIN;
+    const span = window.endMinute - window.startMinute;
+    if (!Number.isFinite(span) || span <= 0) return false;
+    if (span >= interval) return true;
+    for (let m = window.startMinute; m < window.endMinute; m++) {
+        const offset = ((((m % 60) - EXECUTE_BASE_MINUTE + 60) % interval) + interval) % interval;
+        if (offset <= LATE_TICK_TOLERANCE_MIN) return true;
+    }
+    return false;
 }

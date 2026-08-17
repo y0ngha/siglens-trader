@@ -14,8 +14,17 @@ import {
     updateNotificationConfig,
 } from '../lib/db/queries.js';
 import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
-import { parseTimeOfDay } from '../lib/strategy/entry-window.js';
-import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
+import {
+    formatEntryWindow,
+    parseEntryWindow,
+    parseTimeOfDay,
+} from '../lib/strategy/entry-window.js';
+import {
+    DEFAULT_EXECUTE_INTERVAL_MIN,
+    EXECUTE_INTERVALS,
+    isExecuteInterval,
+    hasTickInWindow,
+} from '../lib/strategy/execute-interval.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -224,6 +233,32 @@ async function handler(req: Request): Promise<Response> {
                         },
                         { status: 400 },
                     );
+                }
+                // 실행 틱과 진입 창의 교집합이 비면 매수가 영구히 0이 된다.
+                //
+                // 실행 틱은 UTC 분에 고정(`(분 − 7) mod interval === 0`)인데 진입 창은 ET 시:분으로
+                // 임의 지정이라, 예컨대 간격 60분(매시 :07 하나)에 창을 11:10–14:50으로 잡으면
+                // 창 안에 틱이 하나도 없다. 로그에는 `outside_entry_window`만 남아 설정 오류와
+                // 정상 상태가 구분되지 않으므로, 저장 시점에 거부한다.
+                if (key === 'execute_interval_min' || key === 'entry_window') {
+                    const interval =
+                        key === 'execute_interval_min'
+                            ? (value as number)
+                            : ((await getConfigValue<number>(db, 'execute_interval_min')) ??
+                              DEFAULT_EXECUTE_INTERVAL_MIN);
+                    const windowValue =
+                        key === 'entry_window'
+                            ? value
+                            : await getConfigValue<unknown>(db, 'entry_window');
+                    const window = parseEntryWindow(windowValue);
+                    if (!hasTickInWindow(interval, window)) {
+                        return Response.json(
+                            {
+                                error: `실행 주기 ${interval}분과 진입 창 ${formatEntryWindow(window)} (ET)의 교집합이 비어 있어 신규 진입이 영구히 발생하지 않습니다`,
+                            },
+                            { status: 400 },
+                        );
+                    }
                 }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
                     const MAX_VALUE = 1_000_000;

@@ -17,14 +17,19 @@ export function safeString(value: unknown): string | undefined {
     return typeof value === 'string' ? value : undefined;
 }
 
-export function safeAnalysisPrice(result: unknown): number {
-    const r = safeRecord(result);
-    if (!r) return 0;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return 0;
-    const price = keyLevels.currentPrice;
-    return isFinitePositive(price) ? price : 0;
-}
+/**
+ * `safeAnalysisPrice`는 삭제됐다. 읽던 `keyLevels.currentPrice`가 siglens-core에 **존재하지
+ * 않는 필드**라 프로덕션에서 항상 0을 반환했기 때문이다 — core의 `KeyLevels`는
+ * `{ support, resistance, poc }` 셋뿐이고, `normalizeKeyLevels`가 객체를 그 세 키로 재구성하며,
+ * `currentPrice`는 core 타입 전체에 등장하지 않는다.
+ *
+ * 그 결과 (1) FMP 호가 실패 시 쓸 폴백 가격이 없어 그 심볼이 통째로 스킵됐고
+ * (2) 25% 시세 교차검증(`MAX_PRICE_SOURCE_DIVERGENCE`)이 한 번도 발동한 적 없었다.
+ *
+ * 대체 소스는 **컨플루언스 스냅샷의 `close`**(FMP OHLC 마지막 봉 종가)다. 교차검증 주석이
+ * 원래 의도한 비교(quote 엔드포인트 vs OHLC)가 정확히 그것이고, execute cron이 이미 심볼당
+ * 한 번 계산해 캐시하고 있어 추가 조회가 없다. `api/cron/execute.ts`의 `snapshotPriceOf` 참조.
+ */
 
 export function safeAnalysisTrend(result: unknown): string | undefined {
     const r = safeRecord(result);
@@ -178,6 +183,43 @@ export function safeAnalysisTakeProfit(result: unknown): number | undefined {
         safePriceLevelArray(reconciled?.takeProfitPrices) ??
         safePriceLevelArray(rec?.takeProfitPrices);
     return levels?.[0];
+}
+
+/** `patternSummaries` / `strategyResults` / `candlePatterns`가 공통으로 갖는 방향 신호. */
+export interface AnalysisPatternSignal {
+    trend?: string;
+    confidenceWeight?: number;
+    detected?: boolean;
+}
+
+/**
+ * core가 방향(`trend`)과 신뢰도 가중치(`confidenceWeight`)까지 붙여 내는 세 배열을 하나로 모은다.
+ *
+ * `patternSummaries`(차트 패턴), `strategyResults`(전략 스킬 판정), `candlePatterns`(캔들 패턴)는
+ * 전부 `trend: Trend`를 갖고 앞의 둘은 `confidenceWeight`도 갖는데, 이 저장소 어디에서도 읽히지
+ * 않고 있었다 — 죽은 추출(잘못된 모양을 읽어 undefined)이 아니라 **아예 배선되지 않은** 신호다.
+ * `detected: false`인 항목은 방향을 주장하지 않으므로 호출부에서 걸러진다.
+ */
+export function safeAnalysisPatterns(result: unknown): AnalysisPatternSignal[] {
+    const r = safeRecord(result);
+    if (!r) return [];
+    const out: AnalysisPatternSignal[] = [];
+    for (const key of ['patternSummaries', 'strategyResults', 'candlePatterns']) {
+        for (const item of safeArray(r, key) ?? []) {
+            const rec = safeRecord(item);
+            if (!rec) continue;
+            const trend = safeString(rec.trend);
+            if (trend === undefined) continue;
+            out.push({
+                trend,
+                confidenceWeight: isFinitePositive(rec.confidenceWeight)
+                    ? rec.confidenceWeight
+                    : undefined,
+                detected: typeof rec.detected === 'boolean' ? rec.detected : undefined,
+            });
+        }
+    }
+    return out;
 }
 
 export function safeArray(obj: unknown, key: string): unknown[] | undefined {

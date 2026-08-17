@@ -86,6 +86,11 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
 `max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`.
 
+`execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
+does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
+11:10–11:50 window) makes entries permanently impossible, and the logs would show only
+`outside_entry_window`, which is indistinguishable from normal operation.
+
 `execute_interval_min` is an **enum** (`EXECUTE_INTERVALS` = 5/10/15/20/30/60), not a free
 number: the runtime gate is `(minute − 7) mod interval === 0`, so a value that does not divide
 60 makes the cadence break at every hour boundary. Rejected rather than coerced through
@@ -111,14 +116,32 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
 `<input type="time">` fields plus an ON/OFF toggle that sends the off-switch), and it pre-checks
 `start < end` client-side, so a 400 from here now means a hand-rolled request.
 
+## Market calendar
+
+`isEtRegularSessionOpen` (siglens-core ≥0.44) knows NYSE holidays and 13:00 half days, so the
+session gate at the top of every cron now closes the market on Thanksgiving and after an early
+bell — **in every mode, dry_run included**. Before 0.44 it read weekday + clock only, and the
+`isUsMarketOpen()` broker call in `execute` was the sole holiday defense, which left dry_run and
+all five analysis crons running on closed days.
+
+That broker call stays, with a narrower job: **unscheduled closures** (a national day of mourning).
+Those cannot be derived from rules and reach core's literal list only when someone updates it, so
+the live-order path asks the broker directly. Analysis crons accept the residual risk — a missing
+entry costs one day of wasted quota, not a bad trade.
+
 ## Execute Cron Flow
 
-0. **Interval gate** — node-cron fires every 5 minutes (`7-59/5`); `execute_interval_min`
+0. **Interval gate** — node-cron fires every 5 minutes (`2-59/5`, which covers every minute the
+   gate accepts; `7-59/5` missed the `:02` slot and left a 10-minute hole at a 5-minute setting); `execute_interval_min`
    (5/10/15/20/30/60, default 10) decides whether this tick actually runs
    (`lib/strategy/execute-interval.ts`). Runs **before** `startCronRun` so skipped ticks leave
    no audit row, and before the lock. A failed config read falls through to the default rather
    than dropping the tick. `?force=1` bypasses it for manual triggering
-1. Acquire distributed lock (`cron:execute:lock`, 15min TTL)
+1. Acquire distributed lock (`cron:execute:lock`, **30min TTL**) — the TTL must exceed the longest
+   possible run, or the next tick acquires the lock while this one is still alive and two runs
+   place orders against independent exposure/cash snapshots. A **900s hard run deadline**
+   (`run_deadline` decisions) bounds the run, and `noOverlap: true` on the node-cron task blocks
+   in-process overlap as a second layer
 2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
 3. Expire old pending orders
 4. Fetch live prices for all symbols (FMP quote API, cached per run)
@@ -166,9 +189,14 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
        past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
      - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
        (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
-     - `entry_cooldown`: this symbol had a real buy fill inside `entry_cooldown_min`
-       (default 60). Reads `getRecentTrades(db, 100)` once per run and folds it in memory
-       instead of adding a query; `mode: 'skipped'` rows are not fills
+     - `entry_not_recommended`: the analysis says `entryRecommendation: 'avoid'`. Enforced here
+       rather than as a score penalty, and `entry_out_of_zone` cannot substitute — core fills a
+       *contingent* `entryPrices` range even on `avoid`, usually **above** the current price
+     - `entry_cooldown`: this symbol had any real fill (buy **or sell**) inside
+       `entry_cooldown_min` (default 60). Counting sells is what stops a re-buy minutes after a
+       stop-loss — `recentStopLossSymbols` is run-scoped and resets on the next tick. Reads
+       `getRecentTrades(db, 200)` once per run; `mode: 'skipped'` rows are not fills
+     - `entry_after_exit_blocked`: this run already reduced the position
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade
    - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
@@ -234,10 +262,16 @@ real buying power (`auto` only), which `calculatePositionSize` never did — e.g
 cash $250 used to be `skipped_insufficient_cash` (no order) and now buys 2 shares. This is
 intentional (fewer broker rejections) and applies with the gate off too.
 
-**종목당 최대 투자 금액 (`max_position_size`) is a market-value cap, not a cost cap.**
-`existingSymbolExposure` is `currentPrice × quantity`, so a falling price frees budget back up
-and total cost basis can exceed the configured limit (e.g. buying at $100 → $50 → $25 under a
-$1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchanged.
+**노출 한도는 투입 원가 기준이다 (2026-08-17 변경).** `existingSymbolExposure`와
+`currentExposure`는 `avgPrice × quantity`, 즉 **투자 금액**이다. 종전에는 `currentPrice ×
+quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이 커진다: 한도 $1,000에 $100로 10주를
+산 뒤 주가가 $50이 되면 평가액 $500 → "예산 $500 남음"이 되어 10주를 더 살 수 있고, $25에서
+반복하면 한도 $1,000짜리 종목에 원가 $2,000 이상이 들어갔다. 한도가 실제로 아무것도 한정하지
+못한 것이다. 설정 라벨("종목당 최대 **투자 금액**")과도 어긋났다.
+
+부수 효과로 노출 계산 루프의 시세 조회가 사라졌다 — 원가는 DB에 이미 있다. 청산 시에도 판
+가격이 아니라 그 주식의 **원가**만큼 노출을 줄인다. 미실현 손익 차단기는 별개다: 그쪽은
+평가액을 봐야 하므로 여전히 실시간 시세를 쓴다.
 
 ## Reconcile Cron Flow
 
@@ -308,15 +342,22 @@ That is one rule, not an asymmetry: **평가 가능하면 평가를 따르고, �
   two, so it is closed out.
 
 The price feeding the unrealized-PnL breaker is **cross-checked against the technical
-snapshot** (`safeAnalysisPrice`): if the live FMP quote diverges from it by more than **25%**,
+snapshot** (the confluence snapshot's last-bar `close`): if the live FMP quote diverges from it by more than **25%**,
 the snapshot price is summed instead, and one batched `시세 출처 불일치` mail per run lists every
 affected symbol (per-symbol mails would arrive ~8×/day for the whole duration of a real gap).
 `fetchLivePrice` only checks "finite positive", and a wrong tick now liquidates the whole book
 rather than merely halting trading.
 
+**This guard did not run at all until 2026-08-17.** Its snapshot side read
+`keyLevels.currentPrice`, a field siglens-core does not have (`KeyLevels` is
+`{ support, resistance, poc }`, and `normalizeKeyLevels` rebuilds the object from exactly those
+three keys), so `snapshotPrice > 0` was never true. The source is now the confluence snapshot's
+`close` — FMP OHLC, which is the comparison this paragraph always described. It also restores the
+analysis fallback price: before, a failed FMP quote meant `skipped_no_price` for that symbol with
+no second source.
+
 **What this guard does and does not buy — the two sources are not independent.** Both come from
-FMP (quote endpoint vs OHLC through `getMarketDataProvider`), and the snapshot value is
-`keyLevels.currentPrice` — a number the LLM copied into its own JSON, not a raw feed reading. It
+FMP (quote endpoint vs OHLC through `getMarketDataProvider`). It
 therefore catches the dominant failure, a single bad quote tick, and catches **nothing**
 vendor-wide: a symbol-mapping error, an unadjusted split or a currency mixup corrupts both values
 together and sails through. A genuinely independent check would use the Yahoo provider already in

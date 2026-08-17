@@ -36,6 +36,7 @@ import { computeConfluence } from '../../lib/analysis/confluence.js';
 import { isConfluenceExit } from '../../lib/strategy/confluence.js';
 import type { ConfluenceSnapshot } from '../../lib/strategy/confluence.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
+import { getCadenceWindowMs } from '../../lib/analysis/cadence.js';
 import {
     formatEntryWindow,
     isWithinEntryWindow,
@@ -73,11 +74,10 @@ import { acquireLock, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 import { fetchLivePrice, fetchLivePriceDetail } from '../../lib/data/live-price.js';
 import type { LivePriceDetail } from '../../lib/data/live-price.js';
-import { safeNumber } from '../../lib/validation.js';
+import { isFinitePositive, safeNumber } from '../../lib/validation.js';
 import {
     safeRecord,
     safeString,
-    safeAnalysisPrice,
     safeAnalysisTrend,
     safeAnalysisSentiment,
     safeAnalysisSupport,
@@ -86,6 +86,7 @@ import {
     safeArray,
     safeActionRecommendation,
     safeAnalysisIndicators,
+    safeAnalysisPatterns,
     safeAnalysisEntryPrices,
     safeAnalysisStopLoss,
     safeAnalysisTakeProfit,
@@ -98,7 +99,7 @@ type ExecuteDecision = CronDecisionInput & { symbol?: string; score: number };
 function noPriceDetail(
     symbol: string,
     livePriceDetail: LivePriceDetail | undefined,
-    technicalResult: unknown,
+    snapshotPrice: number,
 ) {
     return {
         symbol,
@@ -109,10 +110,12 @@ function noPriceDetail(
                 reason: 'not_available',
                 error: 'FMP quote did not return a usable positive price',
             },
+            // 종전 라벨은 `technical.keyLevels.currentPrice`였는데 그 필드는 core에 없어
+            // 항상 0이었다. 이제 컨플루언스 스냅샷(FMP OHLC 마지막 봉 종가)을 쓴다.
             analysisFallback: {
-                source: 'technical.keyLevels.currentPrice',
-                price: safeAnalysisPrice(technicalResult),
-                usable: safeAnalysisPrice(technicalResult) > 0,
+                source: 'confluence.close',
+                price: snapshotPrice,
+                usable: snapshotPrice > 0,
             },
         },
     };
@@ -168,6 +171,18 @@ type GateSource = 'ai' | 'disabled' | 'hard' | 'error' | 'deadline' | 'risk_halt
  * down 70% would fail an entry-relative band on every run and be silently under-counted.
  */
 const MAX_PRICE_SOURCE_DIVERGENCE = 0.25;
+
+/**
+ * 한 실행이 새 심볼 작업을 시작할 수 있는 마지막 시점 (시작 + 900초).
+ *
+ * 이 시각을 넘기면 남은 심볼은 `run_deadline`으로 남기고 루프를 빠져나온다. 진행 중이던
+ * 호출 하나(최악 브로커 주문 ~135초)가 더 걸려도 실행은 약 1035초 안에 끝나므로 락 TTL
+ * 1800초 안쪽에 머문다 — 락이 살아있는 동안에는 다음 틱이 절대 겹치지 않는다.
+ */
+const RUN_DEADLINE_MS = 900_000;
+
+/** 락 TTL. `RUN_DEADLINE_MS` + 최악 잔여 작업보다 크게 잡는다. */
+const LOCK_TTL_SEC = 1800;
 
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
@@ -297,8 +312,18 @@ async function handler(req: Request): Promise<Response> {
         }
 
         const LOCK_KEY = 'cron:execute:lock';
-        // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-        const lockToken = await acquireLock(LOCK_KEY, 780);
+        // 락 TTL은 **한 실행이 걸릴 수 있는 최대 시간보다 커야 한다.** 종전 780초는 이제
+        // 존재하지 않는 Vercel `maxDuration`(800초)을 상한으로 가정한 값인데, EC2 Node
+        // 서버에는 실행 시간 상한이 없다. FMP가 429를 지속하면(호출당 최악 50초) 한 실행이
+        // 20분을 넘길 수 있고, 그 사이 TTL이 만료되면 다음 틱이 락을 새로 잡아 **두 실행이
+        // 동시에** 돈다 — 각자 `currentExposure`·매수여력·in-flight 스냅샷을 들고 있으므로
+        // 같은 심볼에 주문이 두 번 나간다. 실행 간격이 60분이던 때는 임계값이 3600초라
+        // 사실상 도달 불가였고, 10분으로 줄이면서 1200초가 됐다.
+        //
+        // 그래서 두 가지를 같이 건다: TTL을 아래 하드 데드라인보다 넉넉히 크게 잡고,
+        // 실행 자체가 그 데드라인에서 멈추게 한다(`RUN_DEADLINE_MS`). node-cron 쪽에도
+        // `noOverlap: true`를 걸어 같은 프로세스에서의 겹침을 한 겹 더 막는다.
+        const lockToken = await acquireLock(LOCK_KEY, LOCK_TTL_SEC);
         if (!lockToken) {
             finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
@@ -330,6 +355,88 @@ async function handler(req: Request): Promise<Response> {
 
             // Clean up expired pending orders
             await expireOldPendingOrders(db);
+
+            const analysisTimeframe = normalizeAnalysisTimeframe(
+                await getConfigValue<unknown>(db, 'analysis_timeframe'),
+            );
+            const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
+
+            /**
+             * 실행 스코프 컨플루언스 캐시.
+             *
+             * 포지션 재평가 루프와 워치리스트 루프가 같은 심볼을 각각 한 번씩 보므로,
+             * 캐시가 없으면 FMP 봉 조회가 심볼당 두 번 나간다. 한 실행 안에서 두 루프가
+             * 서로 다른 스냅샷을 보는 것도 곤란하다 — 같은 틱의 판단은 같은 데이터에서 나와야 한다.
+             */
+            const confluenceCache = new Map<string, ConfluenceSnapshot | null>();
+            const getConfluence = async (symbol: string): Promise<ConfluenceSnapshot | null> => {
+                const cached = confluenceCache.get(symbol);
+                if (cached !== undefined) return cached;
+                let snapshot: ConfluenceSnapshot | null = null;
+                try {
+                    snapshot = await computeConfluence(symbol, analysisTimeframe);
+                } catch (err) {
+                    // computeConfluence는 내부에서 이미 삼키지만, 이 조립부가 그 구현
+                    // 세부에 의존하지 않게 한 겹 더 막는다. 컨플루언스 실패가 실행 전체를
+                    // 중단시키는 일은 없어야 한다.
+                    console.warn('[execute] 컨플루언스 계산 실패:', symbol, err);
+                }
+                confluenceCache.set(symbol, snapshot);
+                return snapshot;
+            };
+
+            /**
+             * 분석 폴백 가격 — 컨플루언스 스냅샷의 마지막 봉 종가.
+             *
+             * 종전에는 `safeAnalysisPrice(technical.keyLevels.currentPrice)`였는데 그 필드가
+             * core에 존재하지 않아 항상 0이었다(= 폴백이 없었고, 25% 시세 교차검증도 죽어
+             * 있었다). 봉 종가는 FMP OHLC에서 오므로 quote 엔드포인트와 **다른 경로**이고,
+             * 교차검증 주석이 원래 비교하려던 두 소스가 정확히 이 둘이다. 이미 컨플루언스가
+             * 심볼당 한 번 계산해 캐시하므로 추가 조회는 없다.
+             *
+             * 여전히 같은 벤더(FMP)라 심볼 매핑 오류·미조정 분할·통화 혼동은 두 값을 함께
+             * 오염시킨다 — 잡는 것은 지배적 실패인 "한 번의 나쁜 호가 틱"이다.
+             */
+            const snapshotPriceOf = async (symbol: string): Promise<number> => {
+                const snapshot = await getConfluence(symbol);
+                return snapshot && isFinitePositive(snapshot.close) ? snapshot.close : 0;
+            };
+
+            /**
+             * 축별 신선도 배수. 케이던스 윈도우의 몇 배까지 투표를 허용하는가.
+             *
+             * 3배인 이유: 한 번 실패하고 다음 주기에 복구되는 것은 정상 운영이지만, 연속
+             * 세 주기를 놓쳤다면 그 축은 고장 났다고 보는 편이 맞다. 뉴스 60분 → 3시간,
+             * 펀더멘털·의회 24시간 → 3일.
+             */
+            const AXIS_STALE_MULTIPLIER = 3;
+
+            /**
+             * 낡은 분석 행을 `null`로 떨어뜨린다.
+             *
+             * 신선도 검사가 technical에만 걸려 있었다. 나머지 네 축은 `getLatestAnalysisResult`가
+             * 나이 제한 없이 최신 1행을 돌려주고 그 값이 그대로 투표하므로, 뉴스 cron이
+             * FMP 쿼터 소진으로 며칠 죽어 있어도 그때의 강세 판정이 가중치 6으로 계속 표를
+             * 던진다. 네 축을 합치면 합성 점수를 최대 31점까지 밀어올릴 수 있다 — 매수 임계값이
+             * 70이므로 실제로는 39점짜리 종목이 매수될 수 있다는 뜻이다.
+             *
+             * `null`은 각 축의 스코어러에서 중립 50(컨플루언스·의회는 기권)으로 처리된다.
+             * 낡은 값이 방향을 주장하는 것보다 중립이 낫다.
+             */
+            const freshOrNull = <T extends { analyzedAt: Date | string } | null>(
+                row: T,
+                analysisType: string,
+            ): T | null => {
+                if (!row) return null;
+                const window = getCadenceWindowMs(analysisType, analysisTimeframe);
+                if (window <= 0) return row;
+                const at = getAnalysisReferenceTime(row);
+                // 시각을 읽을 수 없으면 낡았다고 **단정하지 않는다** — `analysis_results.analyzed_at`은
+                // NOT NULL이라 프로덕션에서는 발생하지 않고, 기술 축의 신선도 가드도 같은 경우
+                // 통과시킨다(비교가 NaN이라 false). 한쪽만 엄격하면 규칙이 둘이 된다.
+                if (!at || !Number.isFinite(at.getTime())) return row;
+                return Date.now() - at.getTime() > window * AXIS_STALE_MULTIPLIER ? null : row;
+            };
 
             // Read ahead of the breakers: their alerts state what will still happen to open
             // positions, and that differs per mode (auto sells, semi_auto only queues an
@@ -400,7 +507,7 @@ async function handler(req: Request): Promise<Response> {
 
             // Circuit breaker: daily loss limit
             const maxDailyLoss = (await getConfigValue<number>(db, 'max_daily_loss_usd')) ?? 500;
-            const todayPnl = await getTodayRealizedPnl(db);
+            const todayPnl = await getTodayRealizedPnl(db, tradingMode);
             if (todayPnl < -maxDailyLoss) {
                 await notifyError(
                     '일일 손실 한도 초과',
@@ -433,11 +540,7 @@ async function handler(req: Request): Promise<Response> {
                 for (const pos of preCheckPositions) {
                     try {
                         const livePreCheck = await fetchLivePrice(pos.symbol).catch(() => null);
-                        const techForPos = await getLatestAnalysisResult(
-                            db,
-                            pos.symbol,
-                            'technical',
-                        );
+
                         // Cross-check the FMP quote against the technical snapshot.
                         // `fetchLivePrice` only checks "finite positive", so a corrupt quote
                         // would otherwise trip the loss limit — which now forces a full
@@ -452,7 +555,7 @@ async function handler(req: Request): Promise<Response> {
                         // values together and passes the check.
                         // TODO: a genuinely independent cross-check needs the Yahoo provider
                         // already in `lib/data/` — out of scope here.
-                        const snapshotPrice = safeAnalysisPrice(techForPos?.result);
+                        const snapshotPrice = await snapshotPriceOf(pos.symbol);
                         const avgP = safeNumber(Number(pos.avgPrice), 0);
                         const liveOk = livePreCheck != null && livePreCheck > 0;
                         const diverged =
@@ -550,10 +653,6 @@ async function handler(req: Request): Promise<Response> {
                 (await getConfigValue<number>(db, 'take_profit_percent')) ?? 10;
             const fixedExitEnabled =
                 (await getConfigValue<boolean>(db, 'fixed_exit_enabled')) ?? false;
-            const analysisTimeframe = normalizeAnalysisTimeframe(
-                await getConfigValue<unknown>(db, 'analysis_timeframe'),
-            );
-            const maxTechnicalAge = getTechnicalMaxAgeMs(analysisTimeframe);
 
             // 같은 심볼 재진입 최소 간격. 기본 60분 = 실행 간격이 60분이던 시절의 동작.
             //
@@ -562,30 +661,6 @@ async function handler(req: Request): Promise<Response> {
             // 먹는다. 진입 간격을 실행 간격에서 분리하는 게 목적이고, 0이면 꺼진다.
             const entryCooldownMs =
                 ((await getConfigValue<number>(db, 'entry_cooldown_min')) ?? 60) * 60_000;
-
-            /**
-             * 실행 스코프 컨플루언스 캐시.
-             *
-             * 포지션 재평가 루프와 워치리스트 루프가 같은 심볼을 각각 한 번씩 보므로,
-             * 캐시가 없으면 FMP 봉 조회가 심볼당 두 번 나간다. 한 실행 안에서 두 루프가
-             * 서로 다른 스냅샷을 보는 것도 곤란하다 — 같은 틱의 판단은 같은 데이터에서 나와야 한다.
-             */
-            const confluenceCache = new Map<string, ConfluenceSnapshot | null>();
-            const getConfluence = async (symbol: string): Promise<ConfluenceSnapshot | null> => {
-                const cached = confluenceCache.get(symbol);
-                if (cached !== undefined) return cached;
-                let snapshot: ConfluenceSnapshot | null = null;
-                try {
-                    snapshot = await computeConfluence(symbol, analysisTimeframe);
-                } catch (err) {
-                    // computeConfluence는 내부에서 이미 삼키지만, 이 조립부가 그 구현
-                    // 세부에 의존하지 않게 한 겹 더 막는다. 컨플루언스 실패가 실행 전체를
-                    // 중단시키는 일은 없어야 한다.
-                    console.warn('[execute] 컨플루언스 계산 실패:', symbol, err);
-                }
-                confluenceCache.set(symbol, snapshot);
-                return snapshot;
-            };
 
             // Weights start from the profile for the timeframe being traded (slow signals
             // count for less the shorter the horizon), then any dashboard-configured value
@@ -602,8 +677,11 @@ async function handler(req: Request): Promise<Response> {
                 ...(storedWeights ?? {}),
             };
 
-            // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
-            // gated by wall-clock at entry; this catches holidays the static schedule misses.
+            // 브로커 캘린더 확인 (non-dry-run만). 진입부의 `isEtRegularSessionOpen`이
+            // siglens-core 0.44부터 NYSE 휴장일·반일장을 반영하므로 예정된 휴장은 이미
+            // 거기서 걸린다 — **모든 모드에서**, dry_run 포함. 이 블록에 남은 역할은
+            // 예정 외 휴장(국가 애도의 날 등)이다: 규칙으로 유도할 수 없고 core의 목록에
+            // 아직 없을 수 있으니, 실주문 경로만은 브로커에게 직접 묻는다.
             if (tradingMode !== 'dry_run') {
                 let marketOpen: boolean;
                 try {
@@ -658,37 +736,44 @@ async function handler(req: Request): Promise<Response> {
                 return Response.json({ skipped: true, reason: 'empty_watchlist' });
             }
 
+            /**
+             * 포지션의 **투입 원가**. 노출 한도(`max_position_size` / `max_total_exposure`)의
+             * 단위는 평가액이 아니라 투자 금액이다.
+             *
+             * 종전에는 현재가 × 수량이었다. 그러면 가격이 내릴수록 남은 예산이 커진다 —
+             * 한도 $1,000에 $100로 10주를 산 뒤 주가가 $50이 되면 평가액이 $500이 되어
+             * "예산 $500이 남았다"가 되고, 원가로는 이미 $1,000을 다 쓴 상태인데 10주를
+             * 더 살 수 있다. $25에서 또 반복하면 한도 $1,000짜리 종목에 원가 $2,000 이상이
+             * 들어간다. 한도가 실제로는 아무것도 한정하지 못했다.
+             *
+             * 원가 기준이면 그 경로가 산술적으로 닫힌다. 부수 효과로 이 루프의 시세 조회가
+             * 통째로 사라진다 — 원가는 DB에 이미 있다.
+             */
+            const costBasisOf = (p: { avgPrice: unknown; quantity: number }) =>
+                safeNumber(Number(p.avgPrice), 0) * p.quantity;
+
             let currentExposure = 0;
             for (const p of openPositions) {
-                let priceForExposure = safeNumber(Number(p.avgPrice), 0);
-                try {
-                    const liveExposure = await fetchLivePrice(p.symbol).catch(() => null);
-                    if (liveExposure && liveExposure > 0) {
-                        priceForExposure = liveExposure;
-                    } else {
-                        const techForExposure = await getLatestAnalysisResult(
-                            db,
-                            p.symbol,
-                            'technical',
-                        );
-                        const marketPrice = safeAnalysisPrice(techForExposure?.result);
-                        if (marketPrice > 0) priceForExposure = marketPrice;
-                    }
-                } catch {
-                    // Fall back to avgPrice when analysis data is unavailable
-                }
-                currentExposure += priceForExposure * p.quantity;
+                currentExposure += costBasisOf(p);
             }
 
             // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
             const recentStopLossSymbols = new Set<string>();
+            /** 분석이 낡아 평가 자체를 못 한 보유 종목. 실행 끝에 한 통으로 알린다. */
+            const stalePositions: string[] = [];
+            /**
+             * 이 실행에서 포지션을 **줄인** 심볼. 매도 중복 방지(`exitedSymbols`)와 별개로
+             * 진입도 막는다 — 부분 익절로 노출이 줄면 그만큼 예산이 풀려, 같은 틱의 워치리스트
+             * 루프가 방금 판 종목을 곧바로 추가매수할 수 있다(왕복 수수료 + 체결 한도 2건 소모).
+             */
+            const reducedSymbols = new Set<string>();
             // Symbols the re-evaluation loop already sold (fully or partially) this run. The
             // watchlist loop must not sell them again on the same tick: a partial exit leaves
             // a position behind, so a low overall score would otherwise open a *second* sell
             // for the same symbol — same bearish data, two orders, colliding idempotency keys.
             const exitedSymbols = new Set<string>();
 
-            // 심볼별 마지막 실체결 매수 시각 (재진입 쿨다운용).
+            // 심볼별 마지막 실체결 시각 (재진입 쿨다운용).
             //
             // 전용 쿼리 대신 기존 `getRecentTrades`를 한 번 읽어 메모리에서 접는다 — 쿨다운이
             // 보는 범위는 길어야 몇 시간이고, `max_trades_per_day` 기본값 20이면 100행은
@@ -696,18 +781,25 @@ async function handler(req: Request): Promise<Response> {
             // 조회 실패는 삼킨다. 쿨다운은 체결 빈도 제한이지 리스크 통제가 아니라서,
             // 이 쿼리 하나 때문에 실행 전체가 죽으면 **청산 경로까지** 같이 죽는다 —
             // 원칙 7이 막으라는 바로 그 형태다. 이력이 없으면 쿨다운 없이 진행한다.
-            const lastBuyAtBySymbol = new Map<string, number>();
+            //
+            // **매수뿐 아니라 매도도 센다.** 종전에는 매수 체결만 봤는데, 그러면 손절 직후
+            // 재진입을 전혀 막지 못한다 — 손절이 마지막 매수로부터 쿨다운보다 늦게 일어나면
+            // 쿨다운은 이미 만료돼 있고, 유일한 방어인 `recentStopLossSymbols`는 실행 스코프라
+            // 다음 틱(기본 10분 뒤)에 초기화된다. 실제로 "손절 10분 뒤 같은 분석으로 재매수"가
+            // 가능했다. 매도를 기준에 넣으면 익절 후 재진입도 같이 늦춰지는데, 방금 정리한
+            // 종목을 몇 분 만에 되사지 않는 쪽이 맞다.
+            const lastTradeAtBySymbol = new Map<string, number>();
             if (entryCooldownMs > 0) {
-                const recentTrades = await getRecentTrades(db, 100).catch((err) => {
+                const recentTrades = await getRecentTrades(db, 200).catch((err) => {
                     console.error('[execute] 최근 체결 조회 실패 — 재진입 쿨다운 미적용', err);
                     return [];
                 });
                 for (const t of recentTrades) {
-                    if (t.side !== 'buy' || t.mode === 'skipped' || t.quantity <= 0) continue;
+                    if (t.mode === 'skipped' || t.quantity <= 0) continue;
                     const at = new Date(t.executedAt).getTime();
                     if (!Number.isFinite(at)) continue;
-                    if (at > (lastBuyAtBySymbol.get(t.symbol) ?? 0)) {
-                        lastBuyAtBySymbol.set(t.symbol, at);
+                    if (at > (lastTradeAtBySymbol.get(t.symbol) ?? 0)) {
+                        lastTradeAtBySymbol.set(t.symbol, at);
                     }
                 }
             }
@@ -745,22 +837,28 @@ async function handler(req: Request): Promise<Response> {
 
                 let priceForPending = priceCache.get(order.symbol) ?? 0;
                 if (priceForPending <= 0) {
-                    try {
-                        const techForPending = await getLatestAnalysisResult(
-                            db,
-                            order.symbol,
-                            'technical',
-                        );
-                        priceForPending = safeAnalysisPrice(techForPending?.result);
-                    } catch {
-                        priceForPending = 0;
-                    }
+                    priceForPending = await snapshotPriceOf(order.symbol);
                 }
 
                 if (priceForPending > 0) {
                     pendingBuyExposure += priceForPending * order.quantity;
                 } else {
                     pendingBuyExposureMissingPrice.push(order.symbol);
+                }
+            }
+            // semi_auto 승인 대기 매수도 노출로 센다.
+            //
+            // `order_tracking`에는 승인 후에야 행이 생기므로, 대기 중인 매수는 다음 실행의
+            // 노출 계산에서 통째로 사라진다. 그러면 매 틱 새 종목에 승인 요청이 쌓이고
+            // 운영자가 그걸 다 승인하면 `max_total_exposure`를 몇 배로 초과할 수 있다.
+            for (const pending of await getPendingOrders(db)) {
+                if (pending.side !== 'buy' || pending.status !== 'pending') continue;
+                const limit = safeNumber(Number(pending.priceLimit), 0);
+                const priceForApproval = limit > 0 ? limit : (priceCache.get(pending.symbol) ?? 0);
+                if (priceForApproval > 0) {
+                    pendingBuyExposure += priceForApproval * pending.quantity;
+                } else {
+                    pendingBuyExposureMissingPrice.push(pending.symbol);
                 }
             }
             currentExposure += pendingBuyExposure;
@@ -775,7 +873,19 @@ async function handler(req: Request): Promise<Response> {
             let remainingBuyingPower: number | null = usdBuyingPower;
 
             // --- Position re-evaluation ---
+            /** 실행이 락 TTL을 넘겨 살아 있으면 다음 틱과 동시 실행된다. 그 전에 멈춘다. */
+            const runDeadlineMs = startedMs + RUN_DEADLINE_MS;
+            let deadlineHit = false;
             for (const position of openPositions) {
+                if (Date.now() > runDeadlineMs) {
+                    deadlineHit = true;
+                    decisions.push({
+                        symbol: position.symbol,
+                        action: 'run_deadline',
+                        score: 0,
+                    });
+                    continue;
+                }
                 try {
                     // Skip position if there's a pending submitted sell order
                     const hasPendingSell = pendingSubmittedOrders.some(
@@ -806,11 +916,13 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
-                    const [tech, news, confluence] = await Promise.all([
+                    const [tech, newsRow, confluence] = await Promise.all([
                         getLatestAnalysisResult(db, position.symbol, 'technical'),
                         getLatestAnalysisResult(db, position.symbol, 'news'),
                         getConfluence(position.symbol),
                     ]);
+                    // 낡은 뉴스가 '뉴스 악재' 청산 분기를 계속 켜 두는 것을 막는다.
+                    const news = freshOrNull(newsRow, 'news');
 
                     // Staleness check: skip position if technical analysis is too old
                     const techReferenceTime = tech ? getAnalysisReferenceTime(tech) : null;
@@ -819,7 +931,7 @@ async function handler(req: Request): Promise<Response> {
                         : Infinity;
                     const techResult = tech?.result;
                     const currentPrice =
-                        priceCache.get(position.symbol) ?? safeAnalysisPrice(techResult);
+                        priceCache.get(position.symbol) ?? (await snapshotPriceOf(position.symbol));
                     const staleAnalysis = techAge > maxTechnicalAge;
 
                     // A forced liquidation is driven by the loss limit, not by analysis, so it
@@ -832,6 +944,15 @@ async function handler(req: Request): Promise<Response> {
                     const mechanicalExit = forceFullExit && (staleAnalysis || currentPrice <= 0);
 
                     if (staleAnalysis && !forceFullExit) {
+                        // 이 경로는 **청산을 통째로 멈춘다** — 손절·익절·구조 훼손 판정이 전부
+                        // `evaluateExistingPosition`을 거치기 때문이다. 그런데 분석 cron은
+                        // 실패해도 이메일을 보내지 않으므로, 알리지 않으면 운영자는 장중 내내
+                        // 포지션이 무평가 상태인 것을 모른다. 유일한 탈출구가 "일일 손실 한도를
+                        // 이미 넘겨 강제청산이 켜지는 것"이어서는 안 된다.
+                        // 심볼별로 보내면 10분 간격 × 종목 수만큼 쌓이므로 실행당 한 통으로 묶는다.
+                        stalePositions.push(
+                            `${position.symbol}: 최신 기술분석 ${techReferenceTime?.toISOString() ?? '없음'} (허용 ${Math.round(maxTechnicalAge / 60_000)}분)`,
+                        );
                         decisions.push({
                             symbol: position.symbol,
                             action: 'stale_analysis',
@@ -857,7 +978,7 @@ async function handler(req: Request): Promise<Response> {
                                 ...noPriceDetail(
                                     position.symbol,
                                     priceFailures.get(position.symbol),
-                                    techResult,
+                                    await snapshotPriceOf(position.symbol),
                                 ),
                                 forcedLiquidationBlocked: forceFullExit,
                             },
@@ -925,8 +1046,16 @@ async function handler(req: Request): Promise<Response> {
                     // Exits are fail-OPEN: any gate problem sells the full position. Failing to
                     // buy costs an opportunity, failing to sell costs realized money, so a
                     // provider outage must never leave a stop-loss signal holding the bag.
-                    const exitTrigger: ExitTrigger =
-                        evaluation.action === 'stop_loss' ? 'stop_loss' : 'take_profit';
+                    // 게이트에 넘길 트리거는 `action` 라벨이 아니라 **왜 나가는지**를 따른다.
+                    // 지지선 이탈·추세 반전·지표 반전·분석 손절가 이탈은 수익 구간이면
+                    // `take_profit`으로 라벨링되는데(손절 이력 오염 방지), 그 라벨을 그대로
+                    // 넘기면 프롬프트가 '익절'을 읽고 "목표 달성형이니 일부만 덜어내고
+                    // 나머지는 태운다"로 판단한다 — 구조가 깨진 포지션에 정반대 결론이다.
+                    const exitTrigger: ExitTrigger = evaluation.structural
+                        ? 'structural'
+                        : evaluation.action === 'stop_loss'
+                          ? 'stop_loss'
+                          : 'take_profit';
                     let exitFraction = 1;
                     let exitGateSource: GateSource = 'disabled';
                     let exitOutcome: TradeGateOutcome | null = null;
@@ -975,7 +1104,9 @@ async function handler(req: Request): Promise<Response> {
                             account: {
                                 availableCashUsd: remainingBuyingPower,
                                 maxPositionSize,
-                                symbolExposure: currentPrice * position.quantity,
+                                // 예산 단위와 같아야 모델이 `## 계좌 상태`와 `## 예산`을
+                                // 대조할 수 있다 — 둘이 다른 단위면 숫자가 서로 어긋나 보인다.
+                                symbolExposure: costBasisOf(position),
                                 currentExposure,
                                 maxTotalExposure,
                                 todayRealizedPnl: todayPnl,
@@ -1086,6 +1217,7 @@ async function handler(req: Request): Promise<Response> {
 
                     // Execute the exit
                     exitedSymbols.add(position.symbol);
+                    reducedSymbols.add(position.symbol);
                     let decisionPushed = false;
                     switch (tradingMode) {
                         case 'dry_run':
@@ -1152,7 +1284,9 @@ async function handler(req: Request): Promise<Response> {
                                         )
                                         .catch((err) => console.error('[email] send failed:', err));
                                 }
-                                currentExposure -= currentPrice * exitQty;
+                                // 노출은 원가 단위이므로 판 가격이 아니라 그 주식의 원가만큼 줄인다.
+                                currentExposure -=
+                                    safeNumber(Number(position.avgPrice), 0) * exitQty;
                                 if (currentExposure < 0) currentExposure = 0;
                             } catch (txErr) {
                                 if (
@@ -1332,7 +1466,10 @@ async function handler(req: Request): Promise<Response> {
                             // fill or missing price) is routed to needs_review (no auto-book).
                             const filledQ = orderResult.filledQuantity ?? sellQty;
                             const cleanFullFill =
-                                orderResult.avgFilledPrice != null &&
+                                // `!= null`만 보면 파싱 실패로 들어온 0이 통과해 체결가 0으로
+                                // 기록되고, 매도 전량이 손실로 잡혀 다음 틱에 일일 손실 한도가
+                                // 터진다(= 전 종목 강제청산). 양수인지까지 본다.
+                                isFinitePositive(orderResult.avgFilledPrice) &&
                                 Number.isInteger(sellQty) &&
                                 Math.abs(filledQ - sellQty) < 1e-6;
                             if (!cleanFullFill) {
@@ -1406,7 +1543,9 @@ async function handler(req: Request): Promise<Response> {
                                         resolvedAt: new Date(),
                                     });
                                 });
-                                currentExposure -= filledSellPrice * actualExitQty;
+                                // 위와 같은 이유 — 체결가가 아니라 원가만큼 줄인다.
+                                currentExposure -=
+                                    safeNumber(Number(position.avgPrice), 0) * actualExitQty;
                             } catch (txErr) {
                                 if (
                                     txErr instanceof Error &&
@@ -1469,28 +1608,11 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
-            // Recalculate exposure after position closures using cached market prices
+            // Recalculate exposure after position closures (cost basis — see `costBasisOf`).
             const updatedPositions = await getOpenPositions(db);
             currentExposure = 0;
             for (const p of updatedPositions) {
-                let priceForRecalc = safeNumber(Number(p.avgPrice), 0);
-                const cachedRecalc = priceCache.get(p.symbol);
-                if (cachedRecalc && cachedRecalc > 0) {
-                    priceForRecalc = cachedRecalc;
-                } else {
-                    try {
-                        const techForRecalc = await getLatestAnalysisResult(
-                            db,
-                            p.symbol,
-                            'technical',
-                        );
-                        const recalcPrice = safeAnalysisPrice(techForRecalc?.result);
-                        if (recalcPrice > 0) priceForRecalc = recalcPrice;
-                    } catch {
-                        // Fall back to avgPrice when analysis data is unavailable
-                    }
-                }
-                currentExposure += priceForRecalc * p.quantity;
+                currentExposure += costBasisOf(p);
             }
             currentExposure += pendingBuyExposure;
 
@@ -1498,9 +1620,14 @@ async function handler(req: Request): Promise<Response> {
             // and signal sells with them: the re-evaluation loop above already had first
             // refusal on every held position (and under a loss breaker sold each in full).
             for (const item of watchlistItems) {
+                if (Date.now() > runDeadlineMs) {
+                    deadlineHit = true;
+                    decisions.push({ symbol: item.symbol, action: 'run_deadline', score: 0 });
+                    continue;
+                }
                 try {
                     // Gather latest analysis results
-                    const [tech, news, options, fundamental, congress, confluence] =
+                    const [techRow, newsRow, optionsRow, fundamentalRow, congressRow, confluence] =
                         await Promise.all([
                             getLatestAnalysisResult(db, item.symbol, 'technical'),
                             getLatestAnalysisResult(db, item.symbol, 'news'),
@@ -1509,6 +1636,12 @@ async function handler(req: Request): Promise<Response> {
                             getLatestAnalysisResult(db, item.symbol, 'congress'),
                             getConfluence(item.symbol),
                         ]);
+                    // technical은 아래에서 자체 신선도 가드(`maxTechnicalAge`)를 거치므로 그대로 둔다.
+                    const tech = techRow;
+                    const news = freshOrNull(newsRow, 'news');
+                    const options = freshOrNull(optionsRow, 'options');
+                    const fundamental = freshOrNull(fundamentalRow, 'fundamental');
+                    const congress = freshOrNull(congressRow, 'congress');
 
                     // Staleness check: skip symbol if technical analysis is too old
                     const techReferenceTime = tech ? getAnalysisReferenceTime(tech) : null;
@@ -1538,6 +1671,9 @@ async function handler(req: Request): Promise<Response> {
                                   riskLevel: safeString(safeRecord(tech.result)?.riskLevel),
                                   actionRecommendation: safeActionRecommendation(tech.result),
                                   indicators: safeAnalysisIndicators(tech.result),
+                                  // patternSummaries + strategyResults + candlePatterns.
+                                  // core가 방향과 신뢰도 가중치까지 붙여 내는데 여태 미배선이었다.
+                                  patterns: safeAnalysisPatterns(tech.result),
                               }
                             : null,
                         news: news?.result
@@ -1595,7 +1731,7 @@ async function handler(req: Request): Promise<Response> {
                     // Position + pricing
                     const existingPosition = await getOpenPositionBySymbol(db, item.symbol);
                     const currentPrice =
-                        priceCache.get(item.symbol) ?? safeAnalysisPrice(tech?.result);
+                        priceCache.get(item.symbol) ?? (await snapshotPriceOf(item.symbol));
 
                     if (currentPrice <= 0) {
                         decisions.push({
@@ -1605,7 +1741,7 @@ async function handler(req: Request): Promise<Response> {
                             detail: noPriceDetail(
                                 item.symbol,
                                 priceFailures.get(item.symbol),
-                                tech?.result,
+                                await snapshotPriceOf(item.symbol),
                             ),
                         });
                         continue;
@@ -1615,8 +1751,9 @@ async function handler(req: Request): Promise<Response> {
                     // planEntry folds in the per-symbol cap, the total-exposure cap and (auto
                     // only) real cash, which is why the old average_in-specific cap block that
                     // used to live further down is gone — it was the same arithmetic twice.
+                    // 종목 노출도 원가다. 현재가 기준이면 가격이 내릴수록 예산이 늘어난다.
                     const existingSymbolExposure = existingPosition
-                        ? currentPrice * existingPosition.quantity
+                        ? costBasisOf(existingPosition)
                         : 0;
                     const entryPlanInputs = {
                         price: currentPrice,
@@ -1771,21 +1908,52 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // 분석이 명시적으로 "진입하지 마라"고 한 종목은 사지 않는다.
+                    //
+                    // 종전에는 `avoid`가 기술 축 감점으로만 표현됐는데, 가중치 8/38을 거치면
+                    // 합성 점수에 −2.5점 남짓이라 다른 축이 강하면 그대로 매수가 나갔다.
+                    // `entryPrices` 게이트도 이걸 못 잡는다 — core는 `avoid`에서도 "돌파 시
+                    // 진입" 같은 **조건부** 구간을 채우도록 강제하고, 그 구간은 대개 현재가
+                    // 위쪽이라 상단 검사를 통과한다. 명시적 거부는 점수가 아니라 게이트에서
+                    // 처리해야 할 층이다.
+                    if (
+                        isEntryDecision &&
+                        safeActionRecommendation(tech?.result)?.entryRecommendation === 'avoid'
+                    ) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_not_recommended',
+                            score: decision.score,
+                            detail: { entryRecommendation: 'avoid' },
+                        });
+                        continue;
+                    }
+
+                    // 같은 틱에 방금 줄인 포지션은 다시 늘리지 않는다.
+                    if (isEntryDecision && reducedSymbols.has(item.symbol)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_after_exit_blocked',
+                            score: decision.score,
+                        });
+                        continue;
+                    }
+
                     // 재진입 쿨다운 — 실행 간격을 좁혔을 때 한 종목이 하루치 체결 한도를
                     // 통째로 먹는 것을 막는다. 매도에는 걸지 않는다 (원칙 7).
-                    const lastBuyAt = lastBuyAtBySymbol.get(item.symbol);
+                    const lastTradeAt = lastTradeAtBySymbol.get(item.symbol);
                     if (
                         isEntryDecision &&
                         entryCooldownMs > 0 &&
-                        lastBuyAt !== undefined &&
-                        Date.now() - lastBuyAt < entryCooldownMs
+                        lastTradeAt !== undefined &&
+                        Date.now() - lastTradeAt < entryCooldownMs
                     ) {
                         decisions.push({
                             symbol: item.symbol,
                             action: 'entry_cooldown',
                             score: decision.score,
                             detail: {
-                                lastBuyAt: new Date(lastBuyAt).toISOString(),
+                                lastTradeAt: new Date(lastTradeAt).toISOString(),
                                 cooldownMs: entryCooldownMs,
                             },
                         });
@@ -2221,12 +2389,16 @@ async function handler(req: Request): Promise<Response> {
                                         cronRunId,
                                     });
                                     if (existingDryRun) {
-                                        await averageIntoPosition(
+                                        // 0행 매칭 = 조회 후 포지션이 닫혔다. 매도 경로와 같이
+                                        // 롤백한다 — 그러지 않으면 trade만 남고 포지션이 없어
+                                        // 그 주식의 손절선이 영원히 작동하지 않는다.
+                                        const merged = await averageIntoPosition(
                                             tx,
                                             existingDryRun.id,
                                             decision.quantity,
                                             currentPrice,
                                         );
+                                        if (!merged) throw new Error('POSITION_ALREADY_CLOSED');
                                     } else {
                                         await openPosition(tx, {
                                             symbol: item.symbol,
@@ -2595,7 +2767,10 @@ async function handler(req: Request): Promise<Response> {
                             // fill or missing price) is routed to needs_review (no auto-book).
                             const filledQ = orderResult.filledQuantity ?? autoQuantity;
                             const cleanFullFill =
-                                orderResult.avgFilledPrice != null &&
+                                // `!= null`만 보면 파싱 실패로 들어온 0이 통과해 체결가 0으로
+                                // 기록되고, 매도 전량이 손실로 잡혀 다음 틱에 일일 손실 한도가
+                                // 터진다(= 전 종목 강제청산). 양수인지까지 본다.
+                                isFinitePositive(orderResult.avgFilledPrice) &&
                                 Number.isInteger(autoQuantity) &&
                                 Math.abs(filledQ - autoQuantity) < 1e-6;
                             if (!cleanFullFill) {
@@ -2641,12 +2816,13 @@ async function handler(req: Request): Promise<Response> {
                                         clientOrderId,
                                     });
                                     if (existingAuto) {
-                                        await averageIntoPosition(
+                                        const merged = await averageIntoPosition(
                                             tx,
                                             existingAuto.id,
                                             actualQuantity,
                                             filledPrice,
                                         );
+                                        if (!merged) throw new Error('POSITION_ALREADY_CLOSED');
                                     } else {
                                         await openPosition(tx, {
                                             symbol: item.symbol,
@@ -2820,6 +2996,23 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
+            // 실행당 한 통씩. 심볼별로 보내면 10분 간격 × 종목 수만큼 받은편지함이 죽는다.
+            if (stalePositions.length > 0) {
+                await notifyError(
+                    `분석 지연으로 포지션 평가 중단 (${stalePositions.length}종목)`,
+                    `아래 보유 종목은 기술분석이 허용 나이를 넘겨 손절·익절 판정을 하지 못했습니다.\n` +
+                        `분석 cron 상태를 확인하세요 — 이 상태가 지속되면 청산 경로가 열리지 않습니다.\n\n` +
+                        stalePositions.join('\n'),
+                );
+            }
+            if (deadlineHit) {
+                await notifyError(
+                    '실행 시간 초과 — 일부 종목 미처리',
+                    `실행이 ${Math.round(RUN_DEADLINE_MS / 60_000)}분을 넘겨 남은 종목을 처리하지 않고 종료했습니다.\n` +
+                        `다음 틱과 동시 실행되는 것을 막기 위한 정상 동작이지만, 반복되면 원인(대개 FMP 지연) 확인이 필요합니다.`,
+                );
+            }
+
             const decisionsByAction = decisions.reduce<Record<string, number>>((acc, d) => {
                 acc[d.action] = (acc[d.action] ?? 0) + 1;
                 return acc;
@@ -2834,6 +3027,8 @@ async function handler(req: Request): Promise<Response> {
                     decisionsByAction,
                     pendingBuyExposure,
                     pendingBuyExposureMissingPrice,
+                    stalePositions: stalePositions.length,
+                    ...(deadlineHit ? { runDeadlineHit: true } : {}),
                     ...(entryBlock
                         ? {
                               exitOnly: true,

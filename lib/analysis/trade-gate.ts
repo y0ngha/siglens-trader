@@ -1,4 +1,10 @@
-import { callAnalysisAi, getEtSessionStatus, type ActiveModelId } from '@y0ngha/siglens-core';
+import {
+    callAnalysisAi,
+    getEtSessionStatus,
+    isUsMarketEarlyClose,
+    minutesUntilUsMarketClose,
+    type ActiveModelId,
+} from '@y0ngha/siglens-core';
 import type { ScoreWeights } from '../strategy/types.js';
 import type { ConfluenceSnapshot } from '../strategy/confluence.js';
 import type { ExitTrigger } from '../strategy/trade-plan.js';
@@ -155,12 +161,9 @@ const CONFLUENCE_SOURCE_LINE: Record<TradeGateKind, string> = {
     exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 진입 룰의 70% 승률은 이쪽에 적용되지 않는다.',
 };
 
-/**
- * 통상 마감(16:00 ET)을 자정 기준 분으로. **조기 마감(반일장, 13:00 ET)은 모르는 값이다** —
- * core의 세션 판정에 휴장일·반일장 테이블이 없기 때문이다. 그래서 프롬프트는 이 값을
- * 사실이 아니라 가정으로 제시한다(아래 `SESSION_CAVEAT`).
- */
-const ET_CLOSE_MINUTES = 16 * 60;
+// 마감 시각은 이제 core의 거래소 캘린더가 답한다(`minutesUntilUsMarketClose`) —
+// 휴장일이면 0, 반일장이면 13:00 기준이다. 종전에는 16:00을 상수로 가정하고
+// 프롬프트에 "가정"이라고 적어 두는 수밖에 없었다.
 
 // ---------------------------------------------------------------------------
 // 표시 포맷 — 모델은 사람이 읽는 형태를 그대로 읽는다. 단위 없는 맨 숫자는
@@ -279,15 +282,15 @@ const ET_PARTS = new Intl.DateTimeFormat('en-US', {
 });
 
 /**
- * 라벨이 "정규장"이 아니라 "정규장 **시간대**"인 것은 말장난이 아니다. core의
- * `getEtSessionStatus`는 요일과 시각만 본다 — 휴장일 테이블이 없다. 추수감사절 14:00 ET도
- * `open`이고, 반일장(13:00 마감)도 `open`이다.
+ * 라벨이 이제 "정규장"이라고 단정할 수 있다. core의 `getEtSessionStatus`가 NYSE 거래소
+ * 캘린더(`marketCalendar.ts`)를 반영하기 때문이다 — 추수감사절 14:00 ET는 `closed`이고,
+ * 반일장은 13:00을 넘기면 `closed`다. 종전에는 요일과 시각만 봐서 둘 다 `open`이었고,
+ * 규칙 2("프롬프트에 적힌 값은 참")를 지키려면 라벨을 "정규장 **시간대**"로 낮춰 적고
+ * 캐비앗을 붙이는 수밖에 없었다.
  *
- * 규칙 2가 "프롬프트에 적힌 값은 참"이라고 못박은 이상, 알 수 없는 것을 단정하면 그 자체가
- * 거짓말이 된다. 진입 지침 6("마감이 임박하면 줄인다")이 바로 이 값에 기대므로 더 그렇다.
- * `execute.ts`의 공휴일 게이트는 dry_run에서 돌지 않고 반일장은 개장일이라 어차피 통과하니,
- * 상위 게이트에 기댈 수도 없다. 브로커 API를 여기서 부르는 것은 레이어 위반이므로
- * (그리고 25s 예산에 네트워크를 더하므로) **정직한 라벨이 해법이다.**
+ * 남은 한 가지는 **예정 외 휴장**(국가 애도의 날 등)이다. 캘린더 목록에 없는 날은 여전히
+ * `open`으로 나온다 — 그건 규칙으로 유도할 수 없고 선언 시점에 목록이 갱신되어야 한다.
+ * 실주문 경로는 브로커가 거부하므로 막히지만, 이 프롬프트는 그걸 모른다.
  *
  * **이 맵만 키가 `string`이다.** `PRICE_SOURCE_LABEL`/`TRIGGER_LABEL`은 유니온 키를 쓴다 —
  * `ExitTrigger`와 `priceSource`는 이 저장소 소유라, 값을 추가하면 `tsc`가 여기를 가리켜 주는
@@ -297,13 +300,13 @@ const ET_PARTS = new Intl.DateTimeFormat('en-US', {
  * 우아한 폴백(`?? '미상'`)이 낫다. 어느 쪽이든 폴백은 유지된다.
  */
 const SESSION_LABEL: Record<string, string> = {
-    open: '정규장 시간대 (open)',
-    closed: '정규장 시간대 아님 (closed)',
+    open: '정규장 (open)',
+    closed: '정규장 아님 (closed)',
     weekend: '주말 (weekend)',
 };
 
 const SESSION_CAVEAT =
-    '이 판정은 요일과 시각만으로 계산했다. **공휴일 휴장과 조기 마감(반일장)은 반영되어 있지 않다** — `open`이어도 실제로는 휴장일 수 있다.';
+    '이 판정은 NYSE 휴장일과 조기 마감(반일장)을 반영한다. 다만 예정 외 휴장(국가 애도의 날 등)은 선언 시점에 반영되므로 드물게 누락될 수 있다.';
 
 /**
  * 결정 시각을 ET 현지 시각 · 세션 상태 · 마감까지 남은 분으로 옮긴다.
@@ -311,7 +314,8 @@ const SESSION_CAVEAT =
  * UTC 하나만 주면 모델은 개장 직후인지 마감 30분 전인지 알 수 없는데, 그 둘은 같은 크기여선
  * 안 된다. 그렇다고 모델에게 UTC→ET 변환을 시키는 것은 규칙 2("새 값을 만들지 마라")가
  * 금지한 행위다. 그래서 여기서 변환해 준다. 세션 판정은 siglens-core의 `getEtSessionStatus`
- * (DST 인식)를 그대로 쓴다.
+ * (DST + NYSE 거래소 캘린더 인식)를 그대로 쓰고, 마감까지 남은 분도 core의
+ * `minutesUntilUsMarketClose`가 답한다 — 반일장이면 13:00 기준이다.
  */
 function etClock(date: Date): { local: string; session: string; toClose: string } {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
@@ -326,7 +330,11 @@ function etClock(date: Date): { local: string; session: string; toClose: string 
         session: label,
         toClose:
             status === 'open'
-                ? `약 ${ET_CLOSE_MINUTES - minutes}분 (통상 마감 16:00 ET 가정. 조기 마감일이면 실제로는 더 짧다)`
+                ? `약 ${minutesUntilUsMarketClose(date, minutes)}분 (${
+                      isUsMarketEarlyClose(date)
+                          ? '조기 마감일 — 13:00 ET 마감'
+                          : '정규 마감 16:00 ET'
+                  })`
                 : `해당 없음 (지금은 ${label})`,
     };
 }
@@ -576,6 +584,9 @@ const TRIGGER_LABEL: Record<ExitTrigger, string> = {
     stop_loss: '손절',
     take_profit: '익절',
     signal_sell: '신호 매도',
+    // 라벨이 '익절'이면 청산 지침 1번이 "목표 달성형이니 일부만"으로 읽는다. 구조 훼손은
+    // 수익 구간에서도 목표 달성이 아니므로 별도 라벨을 준다.
+    structural: '구조 훼손 (지지선 이탈·추세 반전·지표 반전 — 수익 구간이어도 목표 달성이 아님)',
 };
 
 const ANALYSIS_LABEL: Record<TradeGateAnalysisEntry['type'], string> = {
@@ -711,6 +722,21 @@ function sectionPosition(input: TradeGateInput): string[] {
         `- 현재 평가액: ${fmtUsd(marketValue)}`,
         `- 미실현 손익: ${fmtUsd(pnl)} (${fmtPct(pnlPct)})`,
         `- 최초 진입 시각: ${fmtStamp(p.openedAt, input.decidedAt)}`,
+        // 진입 결정에서만 방향을 못박는다. 평단과 현재가로 물타기인 것 자체는 모델이 계산해
+        // 낼 수 있지만, **손절선이 함께 내려간다**는 것은 계산으로 나오지 않는다 — 고정 손절선의
+        // 기준이 평단이라는 사실이 프롬프트 어디에도 없기 때문이다. 같은 하락폭에 손절이 더
+        // 늦게 걸린다는 것은 사이징에 직결되는 사실이다.
+        //
+        // 예산 쪽은 이제 알릴 것이 없다: 노출 한도가 원가 기준으로 바뀌어(2026-08-17)
+        // 가격이 내려도 예산이 늘지 않는다. 그 전에는 늘었고, 그게 물타기를 구조적으로
+        // 밀어주는 두 메커니즘 중 하나였다.
+        ...(input.kind === 'entry' && avg !== null
+            ? [
+                  input.price < avg
+                      ? `- 이번 결정의 성격: **평단 아래 추가 매수(물타기)**. \`## 예산\`의 금액은 이미 투입한 원가를 뺀 값이므로, 가격이 내렸다고 예산이 늘어나지는 않는다. 다만 고정 손절선을 쓰는 경우 그 기준은 평단이므로 추가 매수는 손절선을 함께 아래로 옮긴다 — 같은 하락폭이 손절을 더 늦게 발동시킨다.`
+                      : `- 이번 결정의 성격: **평단 위 추가 매수(불타기)**. 기존 보유분은 이미 수익 구간이며, 추가분의 손익비는 현재가 기준으로 다시 계산해야 한다.`,
+              ]
+            : []),
     ];
 }
 
@@ -909,7 +935,11 @@ const GUIDELINES: Record<TradeGateKind, string[]> = {
         '2. **분석의 신선도.** 각 축의 기준시각과 경과 시간을 본다. 오래된 분석에 기대어 내린 판단은 확신을 낮춘다.',
         '3. **신호 구성요소의 일치도.** 5개 축이 한 방향이면 확신을 높이고, 기술만 강하고 나머지가 엇갈리면 낮춘다.',
         '4. **현재 위치와 키 레벨의 관계.** 현재가가 권장 진입 구간 안인지, 저항 바로 아래인지 지지 위인지를 본다. 같은 점수라도 크기가 달라야 한다. 손절가·익절가가 있으면 손익비를 함께 본다.',
-        '5. **기존 포지션.** 이미 종목당 한도의 상당 부분을 채웠다면 추가 매수는 작아야 한다.',
+        '5. **기존 포지션과 추가 매수의 방향.** 이미 종목당 한도의 상당 부분을 채웠다면 추가 매수는 작아야 한다. ' +
+            '`## 포지션`에 성격이 적혀 있으면 그것을 사이징에 반영한다 — 물타기는 고정 손절선을 함께 ' +
+            '아래로 옮겨 같은 하락폭에서 손절이 더 늦게 걸리므로, 진입 근거가 약해진 상태의 물타기는 작게 낸다. ' +
+            '다만 축이 일치하고 근거가 살아 있다면 물타기 자체를 금지하지는 않는다. 판단의 근거는 가격 방향이 ' +
+            '아니라 분석이다.',
         '6. **당일 손익 여력과 남은 장 시간.** 일일 손실 한도에 근접했다면 신규 리스크를 줄인다. 정규장 마감이 임박했거나 임박한 예정 이벤트(실적 발표 등)가 있으면 크기를 줄인다.',
         '7. **청산 판단은 이번 결정에 없다.** 이번은 진입이므로 `fraction`은 예산 대비 비율이다. 진입이 부담스러우면 0에 가까운 값을 내되, 0은 "이번 틱에 아무것도 사지 않는다"를 뜻한다는 점을 알고 낸다.',
         // 이 지시는 원래 컨플루언스 블록 첫 줄, 즉 `<analysis>` 펜스 **안**에 있었다. 규칙 3이

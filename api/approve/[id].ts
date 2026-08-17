@@ -1,4 +1,5 @@
 import { getDb } from '../_lib/db.js';
+import { isFinitePositive } from '../../lib/validation.js';
 import { isAuthenticated } from '../_lib/auth.js';
 import {
     approvePendingOrder,
@@ -16,6 +17,9 @@ import {
     createOrderTracking,
     updateOrderTracking,
     averageIntoPosition,
+    getTodayInflightOrderCount,
+    getTodayRealizedPnl,
+    getTodayTradeCount,
 } from '../../lib/db/queries.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
@@ -96,6 +100,40 @@ async function handler(req: Request): Promise<Response> {
             return Response.json({ error: 'trading is disabled (kill switch)' }, { status: 409 });
         }
 
+        // 리스크 회로차단기 재확인 — 매수 승인에 한해서.
+        //
+        // 종전에는 킬 스위치 하나만 다시 봤다. 대기 주문은 큐잉된 뒤 승인까지 최대 15분이
+        // 비는데, 그 사이 일일 손실 한도가 터져 전 종목이 강제청산됐어도 승인 버튼은 그대로
+        // 신규 진입을 체결시켰다. `CLAUDE.md`가 면제한다고 명시한 것은 **진입 시간 창**뿐이고
+        // (운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스럽다는 이유),
+        // 손실·체결 한도는 원칙 7이 말하는 리스크 차단기라 같은 면제 대상이 아니다.
+        // 매도 승인은 리스크를 줄이는 방향이므로 막지 않는다.
+        if (order.side === 'buy') {
+            const approveMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+            const [maxDailyLoss, todayPnl, maxTradesPerDay, tradeCount, inflightCount] =
+                await Promise.all([
+                    getConfigValue<number>(db, 'max_daily_loss_usd'),
+                    getTodayRealizedPnl(db, approveMode),
+                    getConfigValue<number>(db, 'max_trades_per_day'),
+                    getTodayTradeCount(db),
+                    getTodayInflightOrderCount(db),
+                ]);
+            const lossLimit = maxDailyLoss ?? 500;
+            const tradeLimit = maxTradesPerDay ?? 20;
+            const blocked =
+                todayPnl < -lossLimit
+                    ? `일일 손실 한도 초과 (실현 $${todayPnl.toFixed(2)} / 한도 $${lossLimit})`
+                    : tradeCount + inflightCount >= tradeLimit
+                      ? `일일 거래 한도 도달 (${tradeCount + inflightCount}/${tradeLimit})`
+                      : null;
+            if (blocked) {
+                await revertPendingOrder(db, id).catch((err) =>
+                    console.error(`[approve] Failed to revert pending order ${id}:`, err),
+                );
+                return Response.json({ error: blocked }, { status: 409 });
+            }
+        }
+
         // Determine trading mode and attempt real execution when applicable.
         // dry_run keeps the existing simulated approval behavior; semi_auto and auto both
         // place a real Toss order after explicit user approval.
@@ -170,7 +208,8 @@ async function handler(req: Request): Promise<Response> {
                 // If NOT clean (null price, fractional qty, or short fill) → needs_review + alert.
                 const filledQ = result.filledQuantity ?? order.quantity;
                 const cleanFullFill =
-                    result.avgFilledPrice != null &&
+                    // 0을 통과시키면 체결가 0으로 기록되어 실현 손익이 왜곡된다.
+                    isFinitePositive(result.avgFilledPrice) &&
                     Number.isInteger(order.quantity) &&
                     Math.abs(filledQ - order.quantity) < 1e-6;
                 if (!cleanFullFill) {
@@ -194,7 +233,7 @@ async function handler(req: Request): Promise<Response> {
                         { status: 202 },
                     );
                 }
-                filledPrice = result.avgFilledPrice!; // non-null: cleanFullFill requires avgFilledPrice != null
+                filledPrice = result.avgFilledPrice!; // cleanFullFill이 유한 양수를 보장한다
                 actualQuantity = order.quantity; // integer, == filledQ
                 filledTossOrderId = result.orderId || undefined;
             } catch (err) {
@@ -241,7 +280,14 @@ async function handler(req: Request): Promise<Response> {
                         clientOrderId: bookingClientOrderId,
                     });
                     if (existingPos) {
-                        await averageIntoPosition(tx, existingPos.id, actualQuantity, filledPrice);
+                        // 0행 매칭이면 포지션이 그 사이 닫힌 것 — 매도 경로와 같이 롤백한다.
+                        const merged = await averageIntoPosition(
+                            tx,
+                            existingPos.id,
+                            actualQuantity,
+                            filledPrice,
+                        );
+                        if (!merged) throw new Error('POSITION_ALREADY_CLOSED');
                     } else {
                         await openPosition(tx, {
                             symbol: order.symbol,

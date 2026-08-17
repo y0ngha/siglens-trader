@@ -610,7 +610,7 @@ describe('buildTradeGatePrompt — 결정 시각과 ET 세션', () => {
 
         expect(user).toContain('결정 시각: 2026-08-12T14:07:00.000Z (UTC)');
         expect(user).toContain('동부 현지 시각(ET): 2026-08-12 10:07 EDT');
-        expect(user).toContain('미국 장 상태: 정규장 시간대 (open)');
+        expect(user).toContain('미국 장 상태: 정규장 (open)');
         expect(user).toContain('정규장 마감까지: 약 353분'); // 16:00 - 10:07
     });
 
@@ -630,30 +630,44 @@ describe('buildTradeGatePrompt — 결정 시각과 ET 세션', () => {
             baseInput({ decidedAt: new Date('2026-08-15T14:07:00.000Z') }), // 토요일
         ).user;
 
-        expect(closed).toContain('정규장 마감까지: 해당 없음 (지금은 정규장 시간대 아님 (closed))');
+        expect(closed).toContain('정규장 마감까지: 해당 없음 (지금은 정규장 아님 (closed))');
         expect(weekend).toContain('미국 장 상태: 주말 (weekend)');
     });
 
-    // core의 `getEtSessionStatus`에는 휴장일 테이블이 없다. 고칠 수 없는 한계이므로,
-    // 프롬프트가 이 값을 절대 사실로 제시하지 않는 것이 유일한 방어선이다.
-    it('공휴일·반일장을 모른다는 사실을 프롬프트가 스스로 밝힌다', () => {
+    // core에 NYSE 거래소 캘린더가 들어온 뒤로는 휴장일이 실제로 `closed`다.
+    // 종전에는 이날도 `open`이라 라벨을 "정규장 시간대"로 낮춰 적고 캐비앗을 붙였다.
+    it('휴장일은 정규장이 아니라고 답한다', () => {
         const thanksgiving = buildTradeGatePrompt(
             baseInput({ decidedAt: new Date('2026-11-26T19:00:00.000Z') }), // 추수감사절 14:00 ET
         ).user;
 
-        // core는 이날도 open이라 답한다 — 라벨이 "정규장"이 아니라 "정규장 시간대"인 이유.
-        expect(thanksgiving).toContain('미국 장 상태: 정규장 시간대 (open)');
-        expect(thanksgiving).toContain('공휴일 휴장과 조기 마감(반일장)은 반영되어 있지 않다');
-        expect(thanksgiving).toContain('`open`이어도 실제로는 휴장일 수 있다');
+        expect(thanksgiving).toContain('미국 장 상태: 정규장 아님 (closed)');
+        expect(thanksgiving).toContain('정규장 마감까지: 해당 없음');
     });
 
-    it('마감 잔여 분도 가정임을 밝힌다 (반일장이면 실제로는 더 짧다)', () => {
+    it('반일장은 13:00 마감 기준으로 남은 분을 센다', () => {
         const halfDay = buildTradeGatePrompt(
             baseInput({ decidedAt: new Date('2026-11-27T17:50:00.000Z') }), // 반일장 12:50 ET
         ).user;
 
-        expect(halfDay).toContain('통상 마감 16:00 ET 가정');
-        expect(halfDay).toContain('조기 마감일이면 실제로는 더 짧다');
+        // 종전에는 16:00 기준으로 190분이 남았다고 적었다.
+        expect(halfDay).toContain('정규장 마감까지: 약 10분');
+        expect(halfDay).toContain('조기 마감일 — 13:00 ET 마감');
+    });
+
+    it('반일장 마감 후에는 정규장이 아니다', () => {
+        const afterBell = buildTradeGatePrompt(
+            baseInput({ decidedAt: new Date('2026-11-27T18:30:00.000Z') }), // 13:30 ET
+        ).user;
+
+        expect(afterBell).toContain('미국 장 상태: 정규장 아님 (closed)');
+    });
+
+    it('캐비앗은 이제 예정 외 휴장만 남긴다', () => {
+        const { user } = buildTradeGatePrompt(baseInput());
+
+        expect(user).toContain('NYSE 휴장일과 조기 마감(반일장)을 반영한다');
+        expect(user).toContain('예정 외 휴장');
     });
 });
 
@@ -1116,7 +1130,7 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         // 손익비·일일 손실 여력 등 리스크를 제한하는 항목이 사이징을 키우는 컨플루언스
         // 항목보다 위에 있어야 한다 — 그래서 컨플루언스가 맨 마지막(8번)이다.
         expect(user).toContain('4. **현재 위치와 키 레벨의 관계.**');
-        expect(user).toContain('5. **기존 포지션.**');
+        expect(user).toContain('5. **기존 포지션과 추가 매수의 방향.**');
         expect(user).toContain('6. **당일 손익 여력과 남은 장 시간.**');
         expect(user).toContain('7. **청산 판단은 이번 결정에 없다.**');
         expect(user).toContain('8. **지표 컨플루언스는 LLM이 아닌');
@@ -1875,5 +1889,37 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         expect(headers(user)).toEqual(SECTION_ORDER);
         expect(fenceCounts(user)).toEqual({ open: 1, close: 1 });
         expect(user).not.toContain('\n## 판단 지침\n1. fraction');
+    });
+});
+
+describe('buildTradeGatePrompt — 추가 매수 방향', () => {
+    it('평단 아래 진입이면 물타기임과 손절선이 함께 내려간다는 사실을 못박는다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({ price: 80, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).toContain('평단 아래 추가 매수(물타기)');
+        // 모델이 계산으로 얻을 수 없는 사실 — 고정 손절선의 기준이 평단이라는 것.
+        expect(user).toContain('손절선을 함께 아래로 옮긴다');
+        // 노출 한도가 원가 기준이 된 뒤로는 "가격이 내려 예산이 늘었다"가 사실이 아니다.
+        expect(user).not.toContain('예산이 늘어나지는 않는다면');
+    });
+
+    it('평단 위 진입이면 불타기로 표기한다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({ price: 120, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).toContain('평단 위 추가 매수(불타기)');
+        // 지침 5에는 '물타기'라는 단어가 항상 있으므로, 포지션 블록의 표기만 본다.
+        expect(user).not.toContain('평단 아래 추가 매수(물타기)');
+    });
+
+    it('청산 프롬프트에는 방향 표기가 없다 — 진입 전용 판단이다', () => {
+        const { user } = buildTradeGatePrompt(
+            exitInput({ price: 80, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).not.toContain('이번 결정의 성격');
     });
 });

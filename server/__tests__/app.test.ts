@@ -13,7 +13,7 @@ describe('CRON_JOBS', () => {
             // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가
             // 정한다. :07 오프셋은 종전 `7 13-21`에서 그대로 이어받았다 — 간격 60분이면
             // 실행 시각이 종전과 같다.
-            ['execute', '7-59/5 13-21 * * 1-5'],
+            ['execute', '2-59/5 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
             // Daily, not weekday-only: Friday-night events must reach the operator on
             // Saturday morning. 01:00 UTC = 10:00 KST, just after quiet hours end.

@@ -3,7 +3,6 @@ import type { ActionRecommendation } from '@y0ngha/siglens-core';
 import {
     safeRecord,
     safeString,
-    safeAnalysisPrice,
     safeAnalysisTrend,
     safeAnalysisSentiment,
     safeAnalysisSupport,
@@ -51,55 +50,12 @@ describe('safeRecord', () => {
     });
 });
 
-describe('safeAnalysisPrice', () => {
-    it('extracts currentPrice from valid structure', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: 150 } })).toBe(150);
-    });
-
-    it('returns 0 for null input', () => {
-        expect(safeAnalysisPrice(null)).toBe(0);
-    });
-
-    it('returns 0 for undefined input', () => {
-        expect(safeAnalysisPrice(undefined)).toBe(0);
-    });
-
-    it('returns 0 when keyLevels is missing', () => {
-        expect(safeAnalysisPrice({})).toBe(0);
-    });
-
-    it('returns 0 when keyLevels is not an object', () => {
-        expect(safeAnalysisPrice({ keyLevels: 'invalid' })).toBe(0);
-    });
-
-    it('returns 0 when keyLevels is an array', () => {
-        expect(safeAnalysisPrice({ keyLevels: [150] })).toBe(0);
-    });
-
-    it('returns 0 when currentPrice is 0', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: 0 } })).toBe(0);
-    });
-
-    it('returns 0 when currentPrice is negative', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: -10 } })).toBe(0);
-    });
-
-    it('returns 0 when currentPrice is NaN', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: NaN } })).toBe(0);
-    });
-
-    it('returns 0 when currentPrice is Infinity', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: Infinity } })).toBe(0);
-    });
-
-    it('returns 0 when currentPrice is a string', () => {
-        expect(safeAnalysisPrice({ keyLevels: { currentPrice: '150' } })).toBe(0);
-    });
-
-    it('returns 0 when input is an array', () => {
-        expect(safeAnalysisPrice([{ keyLevels: { currentPrice: 150 } }])).toBe(0);
-    });
-});
+/**
+ * `safeAnalysisPrice`의 테스트는 함수와 함께 삭제됐다. 읽던 `keyLevels.currentPrice`가
+ * core에 존재하지 않는 필드였고, **이 파일의 픽스처가 그 모양을 흉내낸 것이 버그를
+ * 릴리스 하나 동안 살려 둔 원인**이다. 분석 폴백 가격은 이제 컨플루언스 스냅샷의 종가에서
+ * 온다 — 그쪽은 `api/cron/__tests__/execute.test.ts`가 검증한다.
+ */
 
 describe('safeAnalysisTrend', () => {
     it('extracts trend from valid structure', () => {

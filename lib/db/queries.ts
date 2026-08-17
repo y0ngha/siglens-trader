@@ -1,4 +1,5 @@
 import { eq, desc, and, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
 import {
@@ -249,13 +250,19 @@ export async function averageIntoPosition(
     positionId: number,
     additionalQuantity: number,
     additionalPrice: number,
-) {
-    return db.execute(sql`
+): Promise<boolean> {
+    const result = await db.execute(sql`
         UPDATE positions
         SET quantity = quantity + ${additionalQuantity},
             avg_price = ((quantity * avg_price::numeric + ${additionalQuantity} * ${additionalPrice}) / (quantity + ${additionalQuantity}))::text
         WHERE id = ${positionId} AND status = 'open'
+        RETURNING id
     `);
+    // 0행 매칭 = 조회와 UPDATE 사이에 포지션이 닫혔다(수동 청산·reconcile 복구·동시 실행).
+    // 매도 경로는 예전부터 이걸 검사해 롤백하는데 매수만 빠져 있었다. 검사하지 않으면
+    // trade 행과 order_tracking은 기록되고 포지션만 없는 상태가 되어, 그 주식은
+    // `getOpenPositions`에 안 잡혀 **손절선도 익절선도 영원히 작동하지 않는다.**
+    return ((result as { rowCount?: number } | null)?.rowCount ?? 0) > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +335,7 @@ export async function getTodayInflightOrderCount(db: Db): Promise<number> {
         .from(orderTracking)
         .where(
             sql`${orderTracking.submittedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')
-                AND ${orderTracking.status} IN ('submitted', 'pending', 'partial')`,
+                AND ${orderTracking.status} IN ('submitted', 'pending', 'partial', 'error')`,
         );
     return Number(rows[0]?.count ?? 0);
 }
@@ -362,7 +369,24 @@ export async function getTodayInflightOrderCount(db: Db): Promise<number> {
  * rows[0] to be undefined → PnL silently always 0 → daily-loss breaker never
  * trips.
  */
-export async function getTodayRealizedPnl(db: Db): Promise<number> {
+/**
+ * 오늘(뉴욕 기준) 실현 손익.
+ *
+ * `tradingMode`를 받는 이유: dry_run에서는 dry_run 체결이 **유일한** 실현 손익이다.
+ * 이걸 제외하면 `todayPnl`이 항상 0이라 일일 손실 차단기의 실현 절반이 죽고, 리허설이
+ * 실전보다 관대해진다 — 미실현 차단기는 dry_run에서도 도는데(의도된 설계) 실현만 빠지는
+ * 비대칭이었다. 라이브 모드에서는 시뮬레이션 체결이 실계좌 차단기를 오염시키면 안 되므로
+ * 종전대로 제외한다.
+ */
+export async function getTodayRealizedPnl(db: Db, tradingMode?: string): Promise<number> {
+    const modeFilter =
+        tradingMode === 'dry_run'
+            ? sql`${trades.mode} != 'skipped'`
+            : sql`${trades.mode} NOT IN ('skipped', 'dry_run')`;
+    return getTodayRealizedPnlWhere(db, modeFilter);
+}
+
+async function getTodayRealizedPnlWhere(db: Db, modeFilter: SQL): Promise<number> {
     const rows = await db
         .select({
             pnl: sql<number>`COALESCE(SUM(${trades.realizedPnl}::numeric), 0)`,
@@ -371,8 +395,12 @@ export async function getTodayRealizedPnl(db: Db): Promise<number> {
         .where(
             and(
                 eq(trades.side, 'sell'),
-                sql`${trades.mode} NOT IN ('skipped', 'dry_run')`,
+                modeFilter,
                 sql`${trades.realizedPnl} IS NOT NULL`,
+                // NaN이 한 행이라도 섞이면 SUM 전체가 NaN이 되고, `NaN < -limit`은 항상
+                // false라 그날 내내 차단기가 침묵한다. 손상된 행은 합계에서 뺀다.
+                // (Postgres numeric은 IEEE와 달리 `'NaN' = 'NaN'`이 참이므로 등호로 거른다.)
+                sql`${trades.realizedPnl}::numeric != 'NaN'::numeric`,
                 sql`${trades.executedAt} AT TIME ZONE 'America/New_York' >= date_trunc('day', now() AT TIME ZONE 'America/New_York')`,
             ),
         );
@@ -513,6 +541,11 @@ export async function createOrderTracking(
         cronRunId?: string;
     },
 ) {
+    // upsert인 이유: `approve/[id].ts`는 `approve-{id}`라는 **고정** 멱등키를 쓴다. 1차 승인이
+    // 브로커 오류로 실패해 대기 주문이 `pending`으로 되돌아가면, 재승인 시 순수 insert는
+    // 유니크 위반으로 터지고 catch가 "Toss API 주문 실행 실패" 502를 반환한다 — Toss를
+    // 호출조차 하지 않았는데. 그러면 그 주문은 TTL 만료까지 승인이 영구 불가다.
+    // 같은 키의 재시도는 같은 주문의 새 시도이므로 행을 갱신하는 것이 맞다.
     return db
         .insert(orderTracking)
         .values({
@@ -524,6 +557,20 @@ export async function createOrderTracking(
             clientOrderId: params.clientOrderId,
             status: params.status,
             cronRunId: params.cronRunId,
+        })
+        .onConflictDoUpdate({
+            target: orderTracking.idempotencyKey,
+            set: {
+                symbol: params.symbol,
+                side: params.side,
+                quantity: params.quantity,
+                tossOrderId: params.tossOrderId,
+                clientOrderId: params.clientOrderId,
+                status: params.status,
+                cronRunId: params.cronRunId,
+                submittedAt: new Date(),
+                resolvedAt: null,
+            },
         })
         .returning();
 }
@@ -547,12 +594,24 @@ export async function updateOrderTracking(
         .where(eq(orderTracking.idempotencyKey, idempotencyKey));
 }
 
+/**
+ * 아직 결말이 확정되지 않은 주문 상태.
+ *
+ * `error`가 포함된 이유가 중요하다. Toss POST가 타임아웃되거나 `idempotency-key-conflict`를
+ * 내면 execute는 `error`로 기록하고 끝나는데, **그 둘은 "브로커가 주문을 받지 않았다"는
+ * 뜻이 아니다** — 특히 멱등키 충돌은 브로커가 이미 그 주문을 갖고 있다는 신호다. `error`를
+ * 종료 상태로 빼 두면 (1) reconcile이 다시 묻지 않아 체결이 장부에서 사라지고
+ * (2) 다음 틱이 in-flight 주문이 없다고 보고 **같은 심볼에 두 번째 주문**을 낸다.
+ * 확정될 때까지는 in-flight로 취급하는 쪽이 양쪽 모두를 막는다.
+ */
+export const INFLIGHT_ORDER_STATUSES = ['submitted', 'pending', 'partial', 'error'] as const;
+
 export async function getPendingSubmittedOrders(db: Db) {
     // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.
     return db
         .select()
         .from(orderTracking)
-        .where(inArray(orderTracking.status, ['submitted', 'pending', 'partial']))
+        .where(inArray(orderTracking.status, [...INFLIGHT_ORDER_STATUSES]))
         .orderBy(orderTracking.submittedAt);
 }
 
@@ -595,7 +654,13 @@ export type CronOutcome =
  * starting new work at 690s (see `_run-analysis-cron.ts`) and then finish in flight —
  * otherwise a live, still-running invocation could be swept mid-execution.
  */
-export const CRON_STALE_AFTER_MS = 15 * 60_000;
+/**
+ * 30분인 이유: 이 값은 **가장 오래 걸릴 수 있는 크론 실행보다 커야 한다.** execute 한 번은
+ * FMP가 429를 지속하면(호출당 최악 50초) 20분을 넘길 수 있다. 15분이던 시절에는 아직
+ * 살아 있는 실행의 감사 행을 다음 크론이 `error/timeout`으로 덮어썼고, 그 실행이 끝나면
+ * `finishCronRun`이 다시 `completed`로 덮어 `timeout` 값 자체가 신뢰할 수 없게 됐다.
+ */
+export const CRON_STALE_AFTER_MS = 30 * 60_000;
 
 /**
  * Atomically finalize any `running` cron audit rows whose `started_at` is older

@@ -143,7 +143,23 @@ export const trades = pgTable(
         userId: ownerUserId(),
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     },
-    (table) => [index('idx_trades_executed_at').on(table.executedAt)],
+    (table) => [
+        index('idx_trades_executed_at').on(table.executedAt),
+        // 한 브로커 체결이 두 행으로 기록되는 것을 DB가 막는다.
+        //
+        // execute는 booking 트랜잭션 안에서 trade를 넣고, reconcile의 `autoRecoverFilledOrders`는
+        // `client_order_id`로 기존 trade를 찾아 없으면 복구 삽입한다. 두 크론은 **서로 다른
+        // 락**을 잡으므로(`cron:execute:lock` vs `cron:reconcile:lock`) execute의 커밋 전에
+        // reconcile이 같은 주문을 복구하면 체결 1건에 trade 2행 + 포지션 2회 변경이 된다.
+        // 코드로 창을 좁히는 것보다 제약으로 불가능하게 만드는 편이 확실하다 — 두 번째
+        // insert가 실패하며 그쪽 트랜잭션이 통째로 롤백된다.
+        //
+        // partial index인 이유: `client_order_id`는 dry_run·수동 청산·구 데이터에서 NULL이고,
+        // Postgres는 NULL을 서로 다른 값으로 보지만 의도를 명시해 두는 편이 안전하다.
+        uniqueIndex('idx_trades_client_order_id')
+            .on(table.clientOrderId)
+            .where(sql`client_order_id IS NOT NULL`),
+    ],
 );
 
 export const pendingOrders = pgTable(

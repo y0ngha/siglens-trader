@@ -119,7 +119,7 @@ cron은 앱 프로세스 안에서 `node-cron`으로 돈다(`server/app.ts`의 `
 | news | `0 13-21 * * 1-5` | 뉴스 분석 |
 | options | `0 13-21 * * 1-5` | 옵션 분석 |
 | fundamental | `0 15 * * 1-5` | 펀더멘털 분석 |
-| execute | `7-59/5 13-21 * * 1-5` | 매매 판단/실행 (분산 락). 실제 실행 여부는 `execute_interval_min` 설정(기본 10분)이 정한다 — 간격에 안 걸린 틱은 `off_interval`로 조기 종료 |
+| execute | `2-59/5 13-21 * * 1-5` | 매매 판단/실행 (분산 락). 실제 실행 여부는 `execute_interval_min` 설정(기본 10분)이 정한다 — 간격에 안 걸린 틱은 `off_interval`로 조기 종료 |
 | reconcile | `*/10 13-21 * * 1-5` | 미체결 주문 타임아웃 + DB 정합성 |
 
 UTC 13~21시 = KST 22:00~06:59. 실제 실행은 런타임 게이트 `isEtRegularSessionOpen`이

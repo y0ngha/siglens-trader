@@ -37,12 +37,24 @@ export async function getBuyingPower(currency: 'USD' | 'KRW'): Promise<number> {
     return parseDecimal(res.cashBuyingPower, 0);
 }
 
-export async function getSellableQuantity(symbol: string): Promise<number> {
+/**
+ * 매도 가능 수량. **읽을 수 없으면 `null`이다 — 0이 아니다.**
+ *
+ * 이전에는 파싱 실패가 `0`으로 떨어졌는데, 호출부는 0을 "팔 수 있는 주식이 없다"로 읽어
+ * 청산을 조용히 건너뛴다(이메일도 없다). 브로커가 200에 필드명을 바꾸거나 `null`을 주는
+ * 것만으로 손절이 무기한 막히는 경로였다. `null`은 호출부에서 "가드 비활성"으로 처리되어
+ * 게이트가 정한 수량이 그대로 나간다 — 청산 fail-open 원칙과 같은 방향이다.
+ *
+ * 브로커가 명시적으로 `"0"`을 주는 것은 정상 값이므로 그대로 0을 반환한다.
+ */
+export async function getSellableQuantity(symbol: string): Promise<number | null> {
     const res = await tossFetch<{ sellableQuantity?: string }>('GET', '/api/v1/sellable-quantity', {
         account: true,
         query: { symbol },
     });
-    return parseDecimal(res.sellableQuantity, 0);
+    if (res.sellableQuantity == null) return null;
+    const parsed = parseDecimal(res.sellableQuantity, NaN);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export async function cancelOrder(orderId: string): Promise<void> {

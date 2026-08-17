@@ -16,6 +16,15 @@ export interface ActionRecommendation {
     entryRecommendation: 'enter' | 'wait' | 'avoid';
 }
 
+/** `patternSummaries` / `strategyResults` / `candlePatterns`의 공통 최소 형태. */
+export interface WeightedTrendSignal {
+    trend?: string;
+    /** core가 스킬 카탈로그에서 상속시킨 신뢰도 가중치. 없으면 1로 센다. */
+    confidenceWeight?: number;
+    /** `candlePatterns` / `patternSummaries`는 미검출 항목도 배열에 남긴다. */
+    detected?: boolean;
+}
+
 export interface AnalysisInputs {
     /**
      * 지표 컨플루언스 스냅샷 (LLM이 아니라 규칙이 만든 축).
@@ -28,6 +37,11 @@ export interface AnalysisInputs {
         actionRecommendation?: ActionRecommendation;
         // Per-indicator signals (siglens-core `indicatorResults`); aggregated for a continuous score.
         indicators?: Array<{ trend?: string; strength?: string }>;
+        /**
+         * `patternSummaries` + `strategyResults` + `candlePatterns`를 합친 목록.
+         * core가 방향과 `confidenceWeight`까지 붙여 내는데 여태 어디서도 읽히지 않았다.
+         */
+        patterns?: WeightedTrendSignal[];
     } | null;
     news: { overallSentiment?: string } | null;
     // siglens-core's OptionsSignalKind: 'bullish' | 'bearish' | 'neutral' | 'volatility'.
@@ -137,11 +151,24 @@ export function scoreSignals(
         sellThreshold,
     );
 
+    // 컨플루언스가 기권하면 매수를 열지 않는다 (매도는 그대로).
+    //
+    // 기권은 가중치 12를 분모에서 빼는데, 그 결과는 "이 축 도입 이전과 동일"이 아니라
+    // **더 느슨한 쪽**이다. 다른 5축을 고정하고 재보면 같은 종목이 컨플루언스 50(진짜 중립)일
+    // 때 65(hold)인데 스냅샷이 null이면 72(buy)가 된다 — 시장은 하나도 변하지 않았고 FMP가
+    // 봉을 못 줬을 뿐이다. 지표가 받쳐주지 않는 진입은 하지 않겠다고 넣은 축이 정작
+    // **지표를 확인할 수 없을 때 통째로 열리는** 구조였다.
+    //
+    // 그래서 매수만 hold로 내린다. 매도·청산은 건드리지 않는다 — 놓친 매수는 기회비용,
+    // 놓친 매도는 실현 손실이라는 이 저장소의 비대칭(원칙 7, 게이트 설계 §8)과 같은 방향이다.
+    const corrected = signalWithoutConfluence === 'sell' ? 'sell' : signal;
+    const confluenceAbstained = inputs.confluence == null;
+
     return {
         total,
         totalWithoutConfluence,
         components,
-        signal: signalWithoutConfluence === 'sell' ? 'sell' : signal,
+        signal: confluenceAbstained && corrected === 'buy' ? 'hold' : corrected,
     };
 }
 
@@ -151,6 +178,7 @@ function scoreTechnical(
         riskLevel?: string;
         actionRecommendation?: ActionRecommendation;
         indicators?: Array<{ trend?: string; strength?: string }>;
+        patterns?: WeightedTrendSignal[];
     } | null,
 ): number {
     if (!input) return 50;
@@ -162,31 +190,76 @@ function scoreTechnical(
     return clamp(Math.round(trendScore + riskModifier + recommendationModifier), 0, 100);
 }
 
-// Strength-weighted aggregate of per-indicator signals → continuous trend score.
-// Falls back to the single top-level trend when no indicator signals are usable.
+/**
+ * 기술 축의 방향 점수.
+ *
+ * 세 재료를 **평균**한다 — 시그널 집계, 패턴/전략/캔들 집계, 그리고 LLM의 종합 `trend`.
+ *
+ * 종전에는 `mapTrend(trend)`가 "시그널이 하나도 없을 때"의 폴백이었는데, core 스키마에서
+ * `indicatorResults`는 required이고 항상 배열로 정규화되므로 그 폴백은 실전에서 도달하지
+ * 않는 죽은 코드였다. 결과적으로 분석의 가장 종합적인 판정이 진입 점수에서 통째로 버려지고
+ * 있었다 — 그런데 같은 값이 `evaluateExistingPosition({ technicalTrend })`에서는 청산 판단에
+ * 쓰인다. **진입은 시그널 카운트를, 청산은 종합 판정을 보는** 상태였다. 평균을 내면 두 경로가
+ * 같은 근거를 본다.
+ *
+ * `patterns`(patternSummaries + strategyResults + candlePatterns)도 여기서 처음 배선된다.
+ * core가 `confidenceWeight`까지 계산해 주는 방향 신호 세 묶음이 그동안 읽히지 않았다.
+ */
 function technicalTrendScore(input: {
     trend?: string;
     indicators?: Array<{ trend?: string; strength?: string }>;
+    patterns?: WeightedTrendSignal[];
 }): number {
-    const agg = aggregateDirection(
+    const parts: number[] = [];
+
+    const signalAgg = aggregateDirection(
         input.indicators ?? [],
         (i) => directionOf(i.trend),
         (i) => strengthWeight(i.strength),
     );
-    if (agg === null) return mapTrend(input.trend);
-    return 50 + agg * TREND_SPAN;
+    if (signalAgg !== null) parts.push(50 + signalAgg * TREND_SPAN);
+
+    const patternAgg = aggregateDirection(
+        // 미검출 항목은 방향을 주장하지 않는다 — 분모에 넣으면 카탈로그 크기가 곧 희석이 된다.
+        (input.patterns ?? []).filter((p) => p.detected !== false),
+        (p) => directionOf(p.trend),
+        (p) => (isFinitePositiveNumber(p.confidenceWeight) ? p.confidenceWeight : 1),
+    );
+    if (patternAgg !== null) parts.push(50 + patternAgg * TREND_SPAN);
+
+    const overall = directionOf(input.trend);
+    if (overall !== null) parts.push(mapTrend(input.trend));
+
+    if (parts.length === 0) return 50;
+    return parts.reduce((sum, v) => sum + v, 0) / parts.length;
 }
 
+function isFinitePositiveNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * `entryRecommendation` 수정자. 폭을 ±20~25에서 ±10~12로 줄였다.
+ *
+ * 종전 폭 45점(enter +20 ~ avoid −25)은 `TREND_SPAN` ±35 = 70점의 64%라, 리터럴 한 단어가
+ * 지표 집계 전체를 뒤집었다: 지표가 100% 강세인데 `avoid`면 60, 지표가 완전 중립인데
+ * `enter`면 70. 더 나쁜 것은 중립점 이동이었다 — 6축이 전부 중립인 종목이 `avoid` 하나로
+ * 합성 45가 되어, **매수는 임계까지 +25가 필요하고 매도는 −15면 되는** 비대칭이 생겼다.
+ * `entryRecommendation`은 강세장에서도 과열이면 `wait`이 나오는 필드라 이 편향이 상시적이다.
+ *
+ * `avoid`는 이제 점수가 아니라 진입 게이트(`execute.ts`의 `entry_not_recommended`)가 막는다.
+ * 명시적 거부를 5점짜리 감점으로 표현하려던 것이 애초에 잘못된 층이었다.
+ */
 function mapActionRecommendation(rec: ActionRecommendation | undefined): number {
     if (!rec) return 0;
 
     switch (rec.entryRecommendation) {
         case 'enter':
-            return 20;
+            return 10;
         case 'wait':
-            return -15;
+            return -6;
         case 'avoid':
-            return -25;
+            return -12;
     }
 }
 

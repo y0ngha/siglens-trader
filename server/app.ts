@@ -56,7 +56,9 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
     // = 재시작이 필요한데, 게이트는 대시보드에서 바꾼 즉시 다음 틱부터 먹는다.
     // `7-59/5`의 :07 오프셋은 정각에 시작하는 분석 cron 결과가 저장될 시간을 준다 — 간격을
     // 60분으로 두면 종전 `7 13-21` 스케줄과 실행 시각이 분 단위로 같다.
-    { name: 'execute', schedule: '7-59/5 13-21 * * 1-5', handler: cronExecute },
+    // `2-59/5`는 매 5분(:02 :07 :12 …)이라 게이트가 인정하는 모든 분을 덮는다. `7-59/5`는
+    // :02를 빼먹어 `execute_interval_min = 5`에서 :57 → 다음 시 :07이 10분 공백이 됐다.
+    { name: 'execute', schedule: '2-59/5 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
     // 01:00 UTC = 10:00 KST. Runs daily (including weekends) — there are no day-of-week
     // restrictions because quiet-hours notifications can be queued any day US market trades.
@@ -125,7 +127,10 @@ export function startCron(): ScheduledTask[] {
                     console.error(`[cron:${name}] failed`, err);
                 }
             },
-            { timezone: 'Etc/UTC' },
+            // 겹침 금지. 락(Redis)은 프로세스 간 방어이고 이건 같은 프로세스 안에서 이전
+            // 실행이 끝나기 전에 다음 틱이 시작되는 것을 막는다 — execute가 10분 간격으로
+            // 돌면서 한 실행이 그보다 오래 걸릴 수 있게 된 뒤로는 필수다.
+            { timezone: 'Etc/UTC', noOverlap: true },
         ),
     );
 }

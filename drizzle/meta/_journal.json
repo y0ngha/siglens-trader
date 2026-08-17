@@ -99,6 +99,13 @@
       "when": 1786541587707,
       "tag": "0013_cron_health_event",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786896935019,
+      "tag": "0014_slim_shatterstar",
+      "breakpoints": true
     }
   ]
 }
