@@ -346,7 +346,8 @@ function setupDefaults() {
     mockGetSellableQuantity.mockResolvedValue(1_000_000);
     mockCreateOrderTracking.mockResolvedValue([]);
     mockUpdateOrderTracking.mockResolvedValue([]);
-    mockAverageIntoPosition.mockResolvedValue(undefined);
+    // rowCount 기반 boolean — false면 그 사이 포지션이 닫힌 것이라 booking이 롤백된다.
+    mockAverageIntoPosition.mockResolvedValue(true);
     mockReducePositionQuantity.mockResolvedValue(true);
     mockGetPendingSubmittedOrders.mockResolvedValue([]);
     // 기본은 **정상 호가**다. 프로덕션에서 FMP quote가 1차 가격원이고, 종전 기본값(null)은
@@ -8356,7 +8357,7 @@ describe('execute cron handler', () => {
             });
         });
 
-        describe('avoid / 물타기 / 매도 직후 재매수 가드', () => {
+        describe('avoid / 추가매수 / 매도 직후 재매수 가드', () => {
             const techAvoid = (extra: Record<string, unknown> = {}) => ({
                 result: {
                     trend: 'bullish',
@@ -8391,7 +8392,7 @@ describe('execute cron handler', () => {
                 expect(mockRunTradeGate).not.toHaveBeenCalled();
             });
 
-            it('평단 아래 추가매수는 기본적으로 막힌다', async () => {
+            it('물타기는 규칙으로 막지 않는다 — 점수와 게이트가 이미 AI 판단이다', async () => {
                 buySetup(80);
                 mockGetOpenPositionBySymbol.mockResolvedValue({
                     id: 1,
@@ -8411,36 +8412,18 @@ describe('execute cron handler', () => {
                 const body = await (await handler(makeRequest(true))).json();
 
                 expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'average_down_blocked' }),
+                    expect.objectContaining({ symbol: 'AAPL', action: 'average_in' }),
                 );
-                expect(mockAverageIntoPosition).not.toHaveBeenCalled();
-            });
-
-            it('average_down_enabled면 평단 아래에서도 추가매수한다', async () => {
-                buySetup(80, { average_down_enabled: true });
-                mockGetOpenPositionBySymbol.mockResolvedValue({
-                    id: 1,
-                    symbol: 'AAPL',
-                    quantity: 5,
-                    avgPrice: '100',
-                    status: 'open',
-                });
-                mockMakeTradeDecision.mockReturnValue({
-                    action: 'average_in',
-                    symbol: 'AAPL',
-                    score: 80,
-                    reason: 'AVERAGE_IN',
-                    quantity: 3,
-                });
-
-                const body = await (await handler(makeRequest(true))).json();
-
-                expect(body.decisions).not.toContainEqual(
-                    expect.objectContaining({ action: 'average_down_blocked' }),
+                // 크기 판단은 게이트가 한다 — 프롬프트의 `## 포지션`에 물타기임이 명시된다.
+                expect(mockRunTradeGate).toHaveBeenCalledWith(
+                    expect.objectContaining({
+                        kind: 'entry',
+                        position: expect.objectContaining({ avgPrice: 100 }),
+                    }),
                 );
             });
 
-            it('평단 위 추가매수(불타기)는 막지 않는다', async () => {
+            it('평단 위 추가매수(불타기)도 그대로 진행한다', async () => {
                 buySetup(120);
                 mockGetOpenPositionBySymbol.mockResolvedValue({
                     id: 1,
@@ -8459,8 +8442,8 @@ describe('execute cron handler', () => {
 
                 const body = await (await handler(makeRequest(true))).json();
 
-                expect(body.decisions).not.toContainEqual(
-                    expect.objectContaining({ action: 'average_down_blocked' }),
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'average_in' }),
                 );
             });
         });

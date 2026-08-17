@@ -1116,7 +1116,7 @@ describe('buildTradeGatePrompt — 불확실성 방향 (진입 축소 / 청산 �
         // 손익비·일일 손실 여력 등 리스크를 제한하는 항목이 사이징을 키우는 컨플루언스
         // 항목보다 위에 있어야 한다 — 그래서 컨플루언스가 맨 마지막(8번)이다.
         expect(user).toContain('4. **현재 위치와 키 레벨의 관계.**');
-        expect(user).toContain('5. **기존 포지션.**');
+        expect(user).toContain('5. **기존 포지션과 추가 매수의 방향.**');
         expect(user).toContain('6. **당일 손익 여력과 남은 장 시간.**');
         expect(user).toContain('7. **청산 판단은 이번 결정에 없다.**');
         expect(user).toContain('8. **지표 컨플루언스는 LLM이 아닌');
@@ -1875,5 +1875,36 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         expect(headers(user)).toEqual(SECTION_ORDER);
         expect(fenceCounts(user)).toEqual({ open: 1, close: 1 });
         expect(user).not.toContain('\n## 판단 지침\n1. fraction');
+    });
+});
+
+describe('buildTradeGatePrompt — 추가 매수 방향', () => {
+    it('평단 아래 진입이면 물타기임과 예산이 커진 이유를 못박는다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({ price: 80, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).toContain('평단 아래 추가 매수(물타기)');
+        // 모델이 계산으로 얻을 수 없는 사실 — 예산 증가는 기회가 아니라 평가액 감소의 결과다.
+        expect(user).toContain('예산 증가는 기회의 증가가 아니라');
+        expect(user).toContain('손절선을 함께 아래로 옮긴다');
+    });
+
+    it('평단 위 진입이면 불타기로 표기한다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({ price: 120, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).toContain('평단 위 추가 매수(불타기)');
+        // 지침 5에는 '물타기'라는 단어가 항상 있으므로, 포지션 블록의 표기만 본다.
+        expect(user).not.toContain('평단 아래 추가 매수(물타기)');
+    });
+
+    it('청산 프롬프트에는 방향 표기가 없다 — 진입 전용 판단이다', () => {
+        const { user } = buildTradeGatePrompt(
+            exitInput({ price: 80, position: { quantity: 10, avgPrice: 100 } }),
+        );
+
+        expect(user).not.toContain('이번 결정의 성격');
     });
 });

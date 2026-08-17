@@ -662,21 +662,6 @@ async function handler(req: Request): Promise<Response> {
             const entryCooldownMs =
                 ((await getConfigValue<number>(db, 'entry_cooldown_min')) ?? 60) * 60_000;
 
-            /**
-             * 평단 아래에서의 추가매수(물타기) 허용 여부. 기본 **꺼짐**.
-             *
-             * 규칙 엔진은 `average_in`을 "매수 신호 + 보유 중"으로만 판정하고 방향을 보지 않는데,
-             * 예산 계산이 구조적으로 물타기를 밀어준다: 종목 예산은
-             * `maxPositionSize − 현재가 × 보유수량`이라 **가격이 내릴수록 살 수 있는 금액이 커진다.**
-             * 동시에 고정 손절선은 평단 기준이라 물타기로 평단이 내려가면 손절선도 같이 내려간다
-             * ($100 매수 후 $50 추가 → 평단 $75, 5% 손절선 $95 → $71.25). 두 효과가 같은 방향으로
-             * 겹쳐 "내려갈수록 더 사고 손절은 더 멀어지는" 구조가 된다.
-             *
-             * 끄면 강세 확인 후 추가매수(불타기)만 남는다. 물타기를 전략으로 쓰려면 켠다.
-             */
-            const averageDownEnabled =
-                (await getConfigValue<boolean>(db, 'average_down_enabled')) ?? false;
-
             // Weights start from the profile for the timeframe being traded (slow signals
             // count for less the shorter the horizon), then any dashboard-configured value
             // overrides per key — an explicit setting must always win.
@@ -1934,25 +1919,6 @@ async function handler(req: Request): Promise<Response> {
                             action: 'entry_not_recommended',
                             score: decision.score,
                             detail: { entryRecommendation: 'avoid' },
-                        });
-                        continue;
-                    }
-
-                    // 평단 아래 추가매수 차단 (기본값). 순매수(신규 진입)에는 걸지 않는다.
-                    if (
-                        decision.action === 'average_in' &&
-                        !averageDownEnabled &&
-                        existingPosition &&
-                        currentPrice < safeNumber(Number(existingPosition.avgPrice), 0)
-                    ) {
-                        decisions.push({
-                            symbol: item.symbol,
-                            action: 'average_down_blocked',
-                            score: decision.score,
-                            detail: {
-                                price: currentPrice,
-                                avgPrice: safeNumber(Number(existingPosition.avgPrice), 0),
-                            },
                         });
                         continue;
                     }

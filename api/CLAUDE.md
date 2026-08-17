@@ -84,8 +84,7 @@ The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitra
 Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
-`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`average_down_enabled`.
+`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`.
 
 `execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
 does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
@@ -184,7 +183,6 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
        `entry_cooldown_min` (default 60). Counting sells is what stops a re-buy minutes after a
        stop-loss — `recentStopLossSymbols` is run-scoped and resets on the next tick. Reads
        `getRecentTrades(db, 200)` once per run; `mode: 'skipped'` rows are not fills
-     - `average_down_blocked`: `average_in` below avgPrice while `average_down_enabled` is off
      - `entry_after_exit_blocked`: this run already reduced the position
    - Pending sell guard: skip sell if submitted sell order exists
    - Re-check kill switch before each trade

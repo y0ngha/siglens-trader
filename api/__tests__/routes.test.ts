@@ -670,28 +670,6 @@ describe('POST /api/config', () => {
         expect((await res.json()).error).toContain('교집합');
     });
 
-    it('accepts average_down_enabled as a boolean and rejects other types', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        const ok = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'average_down_enabled',
-                value: true,
-            }),
-        );
-        expect(ok.status).toBe(200);
-
-        const bad = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'average_down_enabled',
-                value: 'yes',
-            }),
-        );
-        expect(bad.status).toBe(400);
-    });
-
     it('handles watchlist add', async () => {
         mockGetAllWatchlist.mockResolvedValue([{ id: 1, symbol: 'NVDA' }]);
         mockAddToWatchlist.mockResolvedValue([{ id: 2, symbol: 'AAPL' }]);

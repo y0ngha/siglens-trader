@@ -78,7 +78,6 @@ async function handler(req: Request): Promise<Response> {
             'entry_window',
             'execute_interval_min',
             'entry_cooldown_min',
-            'average_down_enabled',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -93,11 +92,7 @@ async function handler(req: Request): Promise<Response> {
             'entry_cooldown_min',
         ]);
 
-        const BOOLEAN_CONFIG_KEYS = new Set([
-            'trading_enabled',
-            'fixed_exit_enabled',
-            'average_down_enabled',
-        ]);
+        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
 
         switch (payload.type) {
             case 'config': {
