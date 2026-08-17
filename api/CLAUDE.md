@@ -38,7 +38,11 @@ Single-purpose routes can also export the method function directly
   a clearly-labelled `DEV_BYPASS_USER` on top for local development only.
 - **Auth routes** (`api/auth/*`): unguarded by design — the login form has to be reachable while
   logged out. `login.ts` is throttled to 10 failures per client per 15 minutes.
-- **Cron routes**: `verifyCronSecret(req)` checks `Authorization: Bearer <CRON_SECRET>` header. Returns 401 on failure.
+- **Cron routes**: `verifyCronSecret(req)` checks `Authorization: Bearer <CRON_SECRET>` header
+  with a constant-time compare. Returns 401 on failure; a missing `CRON_SECRET` fails closed.
+- **`health`**: the shallow check is unauthenticated (uptime monitoring). `?deep=true` is **not** —
+  it returns consistency alert strings carrying symbols and idempotency keys, and each call scans
+  24h of `order_tracking`/`trades`. Its `version` is the deployed image tag (`APP_VERSION`).
 
 ## Config POST Security
 
@@ -98,7 +102,8 @@ long weekend, and this cron is the only thing that does it. Gating it on the ses
 the safety net down exactly when it has the most to do.
 
 What it *does* skip on a closed day is the **broker holdings comparison** — and only when there is
-nothing to reconcile (no in-flight orders, nothing recovered this run). Broker holdings move on
+nothing to reconcile (no in-flight orders, nothing recovered **and nothing failed to recover** this
+run; a failed recovery means the books are already known to disagree). Broker holdings move on
 fills, and a closed market has none, so the same question asked 39 times in a day has the same
 answer 39 times; each one is a broker API call. The previous session's runs already compared and
 the next session's will again, so the skip delays nothing that could have changed. The audit row
@@ -116,8 +121,12 @@ broken check.
 1. Acquire distributed lock (`cron:execute:lock`, **30min TTL**) — the TTL must exceed the longest
    possible run, or the next tick acquires the lock while this one is still alive and two runs
    place orders against independent exposure/cash snapshots. A **900s hard run deadline**
-   (`run_deadline` decisions) bounds the run, and `noOverlap: true` on the node-cron task blocks
-   in-process overlap as a second layer
+   (`run_deadline` decisions) bounds the run — checked in the position, watchlist **and the two
+   preceding price loops**, since a sustained FMP outage can burn the whole budget on quotes
+   alone — and `noOverlap: true` on the node-cron task blocks in-process overlap as a second
+   layer. Contention records `status='skipped'`; a lock **backend failure** records
+   `status='error'` (`acquireLockDetailed`) — the two are different events and only the latter
+   should reach the cron-health alert. Same rule in reconcile and the analysis crons
 2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
 3. Expire old pending orders
 4. Fetch live prices for all symbols (FMP quote API, cached per run)
@@ -249,16 +258,41 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
 가격이 아니라 그 주식의 **원가**만큼 노출을 줄인다. 미실현 손익 차단기는 별개다: 그쪽은
 평가액을 봐야 하므로 여전히 실시간 시세를 쓴다.
 
+## 수동 청산 / 승인 (dashboard 경로)
+
+`POST /api/positions/:id/close`는 **`dry_run`이 아닌 모든 모드에서 브로커 주문을 낸다.**
+`semi_auto`도 승인 경로(`shouldPlaceLiveOrder = semi_auto || auto`)가 실주문을 내므로 그 모드의
+포지션은 실계좌에 실재한다 — DB만 닫으면 손절·강제청산 어디에도 닿지 않는 유령 보유가 된다.
+같은 이유로 이 엔드포인트는 execute의 매도 경로와 같은 가드를 갖는다: 같은 심볼의 in-flight
+매도가 있으면 409(더블클릭이 곧 네이키드 숏이다), `getSellableQuantity` 클램프, 그리고
+체결 확정(`filled`) 기록은 booking 트랜잭션 **안에서** — 밖에 두면 booking이 경합으로 롤백됐을
+때 "trade 없는 filled" 행이 남고 reconcile 자동 복구가 그 행을 근거로 다른 포지션을 건드린다.
+
+`POST /api/approve/:id`:
+
+- 기록되는 `mode`는 **실제 `trading_mode`**다. dry_run 승인을 `semi_auto`로 남기면 시뮬레이션
+  손익이 `getTodayRealizedPnl`에 섞여 실계좌 손실 차단기를 오염시킨다.
+- 매도 승인도 `getSellableQuantity`로 클램프한다 — 대기 주문은 큐잉 후 승인까지 최대 15분이
+  비고, 그 사이 execute가 같은 포지션을 부분 청산했을 수 있다.
+- 주문 호출이 **던지면 대기 주문을 되살리지 않는다.** 예외는 "주문이 나가지 않았다"가 아니라
+  "결말을 모른다"이고, 토스 멱등키는 10분만 유효해 그 뒤의 재승인은 새 주문으로 처리된다.
+  확정은 reconcile이 브로커에 물어서 한다.
+
 ## Reconcile Cron Flow
 
 1. Acquire lock (`cron:reconcile:lock`, 5min TTL)
 2. Query all `submitted` orders from `order_tracking`
-3. For orders older than 30 minutes: mark `timeout`, send email (urgent for sells)
+3. For orders older than 30 minutes: cancel at the broker **first**, then mark `timeout` + email
+   (urgent for sells). This holds on the broker-poll-failure path too: a failed `getOrder` says
+   nothing about whether the order is still live, and a terminal `timeout` takes it out of the
+   in-flight set forever — a later fill would never reach the books and the next execute tick
+   would place a second order. A failed cancel keeps the row in flight (`cancel_failed`)
 4. Run DB consistency check (`checkConsistency`) — find filled orders without matching trades
 5. If inconsistencies found, send alert email
 
 `autoRecoverFilledOrders` only scans `status = 'filled'`, so a recovery that cannot succeed
-(no fill price, or a position update that matches no rows) is moved to `needs_review`. Left at
+(no fill price, a position update that matches no rows, or a position **opened after the order
+was submitted** — a re-entry, not the shares that order sold) is moved to `needs_review`. Left at
 `filled` it would be retried every 10 minutes for 24 hours and mail the operator each time.
 
 ## Circuit Breakers

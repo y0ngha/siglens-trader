@@ -112,6 +112,27 @@ app.get('/*', serveStatic({ path: './dist/index.html' }));
  * CRON_SECRET-bearing Request so the handler's own auth + logic run unchanged. Returns the
  * tasks so the caller can stop them on shutdown. No-op (warns) if CRON_SECRET is unset.
  */
+/**
+ * 진행 중인 크론 틱. 종료 시 이것들을 기다린다 — `task.stop()`은 **다음 틱만** 막고
+ * 실행 중인 콜백은 그대로 둔다. 배포(systemctl restart)가 장중에 걸리면 브로커 주문은
+ * 나갔는데 booking 트랜잭션 전에 프로세스가 죽어, 브로커엔 체결·DB엔 `submitted`만
+ * 남는다(복구는 reconcile 30분 뒤 + 수동).
+ */
+const inFlightCronTicks = new Set<Promise<unknown>>();
+
+/** 진행 중인 크론 틱이 끝날 때까지 기다린다(상한 `timeoutMs`). */
+export async function drainCron(timeoutMs = 20_000): Promise<void> {
+    if (inFlightCronTicks.size === 0) return;
+    console.log(`[cron] draining ${inFlightCronTicks.size} in-flight tick(s)`);
+    let timer: ReturnType<typeof setTimeout>;
+    await Promise.race([
+        Promise.allSettled([...inFlightCronTicks]),
+        new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, timeoutMs);
+        }),
+    ]).finally(() => clearTimeout(timer));
+}
+
 export function startCron(): ScheduledTask[] {
     const secret = process.env.CRON_SECRET;
     if (!secret) {
@@ -131,14 +152,22 @@ export function startCron(): ScheduledTask[] {
         cron.schedule(
             schedule,
             async () => {
+                const work = (async () => {
+                    try {
+                        const req = new Request(`http://localhost/api/cron/${name}`, {
+                            headers: { authorization: `Bearer ${secret}` },
+                        });
+                        const res = await handler(req);
+                        console.log(`[cron:${name}] ${res.status}`);
+                    } catch (err) {
+                        console.error(`[cron:${name}] failed`, err);
+                    }
+                })();
+                inFlightCronTicks.add(work);
                 try {
-                    const req = new Request(`http://localhost/api/cron/${name}`, {
-                        headers: { authorization: `Bearer ${secret}` },
-                    });
-                    const res = await handler(req);
-                    console.log(`[cron:${name}] ${res.status}`);
-                } catch (err) {
-                    console.error(`[cron:${name}] failed`, err);
+                    await work;
+                } finally {
+                    inFlightCronTicks.delete(work);
                 }
             },
             // 겹침 금지. 락(Redis)은 프로세스 간 방어이고 이건 같은 프로세스 안에서 이전
