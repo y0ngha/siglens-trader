@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
-import { acquireLock, releaseLock } from '../../lib/lock.js';
+import { acquireLockDetailed, releaseLock } from '../../lib/lock.js';
 import {
     getPendingSubmittedOrders,
     updateOrderTracking,
@@ -59,11 +59,21 @@ async function handler(req: Request): Promise<Response> {
 
     const LOCK_KEY = 'cron:reconcile:lock';
     // TTL < maxDuration(800s): a hung run holds the lock for its whole life (no mid-run expiry/overlap), and a killed fn's lock can't outlive it.
-    const lockToken = await acquireLock(LOCK_KEY, 780);
+    const lock = await acquireLockDetailed(LOCK_KEY, 780);
+    const lockToken = lock.token;
 
     try {
         if (!lockToken) {
-            finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
+            // 경합과 Redis 장애를 가른다 — 후자는 감시망에 걸려야 한다.
+            finishState =
+                lock.reason === 'unavailable'
+                    ? {
+                          status: 'error',
+                          outcome: 'locked',
+                          error: 'lock backend unavailable',
+                          ...elapsed(),
+                      }
+                    : { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'locked' });
         }
         const tradingMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';

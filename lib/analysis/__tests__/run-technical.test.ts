@@ -98,7 +98,10 @@ describe('runTechnicalAnalysis', () => {
 
         await runTechnicalAnalysis({ ...baseOptions, userApiKey: 'sk-123' });
 
-        expect(mockedRun).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', false, undefined, {
+        // 4번째 인자 `force = true` — core 캐시를 우회한다. 캐시 TTL(1Hour)이 케이던스
+        // 창과 같아, 캐시를 쓰면 신규 분석이 2시간에 한 번이 되고 execute가
+        // `source_analyzed_at` 기준으로 `stale_analysis` 처리해 청산 평가가 멈춘다.
+        expect(mockedRun).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', true, undefined, {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,

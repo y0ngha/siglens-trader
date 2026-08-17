@@ -94,7 +94,7 @@ export async function seed() {
             channel: 'email',
             enabled: true,
             target: 'dev.y0ngha@gmail.com',
-            events: ['trade_executed', 'order_pending', 'stop_loss', 'error'],
+            events: ['trade_executed', 'order_pending', 'stop_loss', 'error', 'cron_health'],
         })
         .onConflictDoNothing();
 

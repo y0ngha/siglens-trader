@@ -1,15 +1,17 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
-import { app, CRON_JOBS } from '../app.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { app, CRON_JOBS, startCron } from '../app.js';
 
 describe('CRON_JOBS', () => {
     it('keeps the 8 cron schedules with technical/options on 15-min ticks (UTC)', () => {
         expect(CRON_JOBS.map((j) => [j.name, j.schedule])).toEqual([
             ['technical', '*/15 13-21 * * 1-5'],
-            ['news', '0 13-21 * * 1-5'],
+            // 창(60분)당 틱을 여러 개 둔다 — 하나를 놓쳐도 그 창을 잃지 않는다.
+            // 케이던스 가드가 runner 호출 전에 스킵하므로 잉여 틱의 쿼터 비용은 0이다.
+            ['news', '*/15 13-21 * * 1-5'],
             ['options', '*/15 13-21 * * 1-5'],
-            ['fundamental', '0 15 * * 1-5'],
-            ['congress', '0 16 * * 1-5'],
+            ['fundamental', '0 15-21 * * 1-5'],
+            ['congress', '0 16-21 * * 1-5'],
             // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가
             // 정한다. :07 오프셋은 종전 `7 13-21`에서 그대로 이어받았다 — 간격 60분이면
             // 실행 시각이 종전과 같다.
@@ -29,6 +31,34 @@ describe('CRON_JOBS', () => {
         // `7-59/5` 같은 step 표현식은 스케줄러가 받아주지 않으면 등록 시점에 터진다.
         const cron = (await import('node-cron')).default;
         for (const j of CRON_JOBS) expect(cron.validate(j.schedule)).toBe(true);
+    });
+});
+
+describe('startCron', () => {
+    const originalSecret = process.env.CRON_SECRET;
+    const originalEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+        if (originalSecret === undefined) delete process.env.CRON_SECRET;
+        else process.env.CRON_SECRET = originalSecret;
+        process.env.NODE_ENV = originalEnv;
+    });
+
+    it('프로덕션에서 CRON_SECRET이 없으면 부팅을 실패시킨다', () => {
+        // 종전에는 경고만 남기고 빈 배열을 돌려줬다 — 매매·정산·분석 크론이 하나도 돌지
+        // 않는데 헬스체크는 200이라 배포가 성공으로 기록되고, 침묵을 감시하는 cron-health는
+        // digest 크론이 돌아야 동작하므로 경보도 없다.
+        delete process.env.CRON_SECRET;
+        process.env.NODE_ENV = 'production';
+
+        expect(() => startCron()).toThrow(/CRON_SECRET/);
+    });
+
+    it('개발 환경에서는 경고만 남기고 진행한다', () => {
+        delete process.env.CRON_SECRET;
+        process.env.NODE_ENV = 'test';
+
+        expect(startCron()).toEqual([]);
     });
 });
 

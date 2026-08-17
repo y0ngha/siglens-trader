@@ -72,7 +72,7 @@ import {
     DEFAULT_SELL_THRESHOLD,
 } from '../../lib/strategy/types.js';
 import type { ScoreWeights, SignalScore } from '../../lib/strategy/types.js';
-import { acquireLock, releaseLock } from '../../lib/lock.js';
+import { acquireLockDetailed, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 import { fetchLivePrice, fetchLivePriceDetail } from '../../lib/data/live-price.js';
 import type { LivePriceDetail } from '../../lib/data/live-price.js';
@@ -333,9 +333,21 @@ async function handler(req: Request): Promise<Response> {
         // 그래서 두 가지를 같이 건다: TTL을 아래 하드 데드라인보다 넉넉히 크게 잡고,
         // 실행 자체가 그 데드라인에서 멈추게 한다(`RUN_DEADLINE_MS`). node-cron 쪽에도
         // `noOverlap: true`를 걸어 같은 프로세스에서의 겹침을 한 겹 더 막는다.
-        const lockToken = await acquireLock(LOCK_KEY, LOCK_TTL_SEC);
+        const lock = await acquireLockDetailed(LOCK_KEY, LOCK_TTL_SEC);
+        const lockToken = lock.token;
         if (!lockToken) {
-            finishState = { status: 'skipped', outcome: 'locked', ...elapsed() };
+            // Redis 장애는 경합이 아니다 — 그 상태가 이어지면 매매 크론이 한 틱도 돌지
+            // 않는데 `skipped`로 남기면 침묵 감시(`assessCronHealth`)가 아무 경보도 내지
+            // 않는다. `error`로 남겨야 digest가 알린다.
+            finishState =
+                lock.reason === 'unavailable'
+                    ? {
+                          status: 'error',
+                          outcome: 'locked',
+                          error: 'lock backend unavailable',
+                          ...elapsed(),
+                      }
+                    : { status: 'skipped', outcome: 'locked', ...elapsed() };
             return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
         }
 

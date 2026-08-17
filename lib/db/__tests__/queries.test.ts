@@ -1478,9 +1478,13 @@ describe('Cron audit log queries', () => {
     });
 
     describe('finalizeStaleCronRuns', () => {
-        it('exposes a 30-minute stale threshold constant', () => {
-            // 실행 시간 상한(execute 최악 ~20분)보다 커야 한다.
-            expect(CRON_STALE_AFTER_MS).toBe(30 * 60_000);
+        it('exposes a 45-minute stale threshold constant', () => {
+            // 실행 시간 상한(execute 최악 ~20분)보다 커야 하고, **분석 크론의 락
+            // TTL(1800초)과 같아서는 안 된다** — 같으면 TTL이 만료되는 시점에 다른
+            // 크론이 살아 있는 실행의 감사 행을 error/timeout으로 덮는다
+            // (이 UPDATE에는 cron_type 필터가 없다).
+            expect(CRON_STALE_AFTER_MS).toBe(45 * 60_000);
+            expect(CRON_STALE_AFTER_MS).toBeGreaterThan(1800 * 1000);
         });
 
         it('executes a single atomic UPDATE marking running rows older than the cutoff as error/timeout', async () => {

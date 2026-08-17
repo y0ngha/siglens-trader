@@ -24,7 +24,7 @@ import { extractSourceAnalyzedAt } from '../../lib/analysis/source-time.js';
 import { toCoreTimeframe } from '../../lib/analysis/timeframe.js';
 import type { AnalysisTimeframe } from '../../lib/analysis/timeframe.js';
 import { getCadenceWindowMs, isWithinCadenceWindow } from '../../lib/analysis/cadence.js';
-import { acquireLock, releaseLock } from '../../lib/lock.js';
+import { acquireLockDetailed, releaseLock } from '../../lib/lock.js';
 import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 
 type AnalysisRunner = (options: RunAnalysisOptions) => Promise<AnalysisRunResult>;
@@ -69,13 +69,20 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             // 락이 만료돼 다음 틱이 새로 잡고 같은 심볼을 동시에 분석한다(execute에서 같은
             // 버그를 고쳤다). 심볼을 병렬로 돌리므로 상한은 종목 수와 무관하게 가장 느린
             // 심볼 하나(최악 ~7분) + 저장이다. 30분은 넉넉한 여유.
-            const lockToken = await acquireLock(LOCK_KEY, 1800);
+            const lock = await acquireLockDetailed(LOCK_KEY, 1800);
+            const lockToken = lock.token;
             if (!lockToken) {
-                finishState = {
-                    status: 'skipped',
-                    outcome: 'locked',
-                    ...elapsed(),
-                };
+                // Redis 장애로 전 크론이 조용히 멈추는 것을 막는다 — `skipped`는
+                // `assessCronHealth`가 실패로 세지 않아 경보가 0건이 된다.
+                finishState =
+                    lock.reason === 'unavailable'
+                        ? {
+                              status: 'error',
+                              outcome: 'locked',
+                              error: 'lock backend unavailable',
+                              ...elapsed(),
+                          }
+                        : { status: 'skipped', outcome: 'locked', ...elapsed() };
                 return Response.json({ skipped: true, reason: 'another_execution_in_progress' });
             }
 
@@ -167,20 +174,31 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                                 }
                             }
 
-                            const result = await runner({
-                                symbol: item.symbol,
-                                companyName: item.companyName,
-                                modelId: config.modelId as RunAnalysisOptions['modelId'],
-                                userApiKey: config.useByok
-                                    ? resolveApiKey(config.modelId)
-                                    : undefined,
-                                timeframe,
-                                cardStore,
-                                deadlineMs: analysisDeadlineMs,
-                                // 분석 타입별 reasoning 정책(짧은 주기 축은 OFF). 대시보드에
-                                // 스위치가 생기면 이 값을 config에서 흘려보낸다.
-                                reasoning: getAnalysisReasoning(analysisType),
-                            });
+                            // 심볼 작업을 실행 마감으로 감싼다.
+                            //
+                            // 심볼당 `AbortSignal`(150초)은 LLM 호출만 덮고 FMP I/O는
+                            // 덮지 않는다 — `fmpGet`의 세마포어 대기에는 타임아웃이
+                            // 없어서, 429가 계속되면 한 심볼이 그 상한을 훌쩍 넘긴다.
+                            // 그러면 핸들러가 반환하지 않아 락 해제도 감사 행 마감도
+                            // 없고, node-cron의 `noOverlap`이 이후 모든 틱을 프로세스
+                            // 재시작까지 막는다. 마감은 그 정지를 끊는 백스톱이다.
+                            const result = await withDeadline(
+                                runner({
+                                    symbol: item.symbol,
+                                    companyName: item.companyName,
+                                    modelId: config.modelId as RunAnalysisOptions['modelId'],
+                                    userApiKey: config.useByok
+                                        ? resolveApiKey(config.modelId)
+                                        : undefined,
+                                    timeframe,
+                                    cardStore,
+                                    deadlineMs: analysisDeadlineMs,
+                                    // 분석 타입별 reasoning 정책(짧은 주기 축은 OFF).
+                                    // 대시보드에 스위치가 생기면 config에서 흘려보낸다.
+                                    reasoning: getAnalysisReasoning(analysisType),
+                                }),
+                                analysisDeadlineMs - Date.now(),
+                            );
 
                             if (result.status === 'done' || result.status === 'cached') {
                                 const savedAt = new Date();
@@ -215,6 +233,23 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 );
                 results.push(...settled);
 
+                const byStatus = countResultsByStatus(results);
+                // 전 심볼이 실패한 실행은 `completed`가 아니다.
+                //
+                // 심볼 단위 try/catch를 넣으면서(병렬화) 런 전체가 `error`가 되는 경로가
+                // 사라졌다 — LLM 키 만료나 프로바이더 429가 지속되면 5심볼 전부 error인데
+                // 런은 `completed`로 남고, `assessCronHealth`는 error 행만 실패로 세므로
+                // 아무 경보도 나가지 않는다. 부분 실패는 지금처럼 completed로 둔다.
+                const allFailed = byStatus.error > 0 && byStatus.done + byStatus.cached === 0;
+                if (allFailed) {
+                    finishState = {
+                        status: 'error',
+                        error: `모든 심볼 실패 (${byStatus.error}/${results.length})`,
+                        ...elapsed(),
+                    };
+                    return Response.json({ cronRunId, results });
+                }
+
                 finishState = {
                     status: 'completed',
                     outcome: 'completed',
@@ -222,7 +257,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                         processed: results.length,
                         saved: results.filter((r) => r.status === 'done' || r.status === 'cached')
                             .length,
-                        byStatus: countResultsByStatus(results),
+                        byStatus,
                         results: results.map((r) => ({
                             symbol: r.symbol,
                             status: r.status,
@@ -250,6 +285,21 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
             }
         }
     };
+}
+
+/**
+ * `promise`가 `ms` 안에 끝나지 않으면 던진다. 인플라이트 작업을 **취소하지는 못한다** —
+ * 그건 각 runner의 AbortSignal 몫이고, 이건 실행이 영영 반환하지 않는 것만 막는다.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+    if (!Number.isFinite(ms) || ms <= 0) return Promise.reject(new Error('run_deadline'));
+    let timer: ReturnType<typeof setTimeout>;
+    return Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('run_deadline')), ms);
+        }),
+    ]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
 function countResultsByStatus(results: Array<{ status: AnalysisRunResult['status'] }>) {

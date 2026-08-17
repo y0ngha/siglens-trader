@@ -159,10 +159,17 @@ vi.mock('../../../lib/data/live-price', () => ({
     fetchLivePriceDetail: (...args: [string]) => mockFetchLivePriceDetail(...args),
 }));
 
+const mockAcquireLockDetailed = vi.fn(async (...args: unknown[]) => {
+    const token = await mockAcquireLock(...(args as []));
+    return token ? { token } : { token: null, reason: 'contended' };
+});
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
+    // 경합/장애 구분 버전. 기본 구현은 기존 mock을 재사용하고 null이면 경합으로 본다.
+    // 장애(Redis down) 경로는 이 mock을 직접 덮는 테스트가 검증한다.
+    acquireLockDetailed: (...args: unknown[]) => mockAcquireLockDetailed(...(args as [])),
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 

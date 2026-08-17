@@ -24,11 +24,20 @@ export async function runTechnicalAnalysis(
     try {
         // 미지정 시 분석 타임프레임 계약의 기본값(1Hour)으로. '1Day'는 계약 밖이라 금지.
         const timeframe = options.timeframe ?? DEFAULT_ANALYSIS_TIMEFRAME;
+        // `force = true` — core의 Redis 분석 캐시를 우회한다.
+        //
+        // 캐시 키에는 입력 해시가 없고(심볼·타임프레임·모델·프롬프트버전·스킬지문·reasoning)
+        // 1Hour TTL이 케이던스 창과 **같은 1시간**이라, 창마다 부르면 한 번 걸러 한 번씩
+        // 캐시 히트가 난다. 히트한 결과의 `analyzedAt`은 원본(최대 1시간 전)인데 크론은
+        // 저장 시각으로 케이던스 창을 소비하므로, 실제 신규 분석은 **2시간에 한 번**이
+        // 된다. execute는 `source_analyzed_at`으로 나이를 재므로 1Hour 한도(2시간)를
+        // 넘겨 `stale_analysis`가 되고, 그러면 그 종목의 **청산 평가가 통째로 멈춘다**.
+        // 호출 빈도는 이미 케이던스 창이 제한하므로 캐시가 더 줄일 것이 없다.
         const outcome = await runAnalysis(
             options.symbol,
             options.companyName,
             timeframe,
-            false,
+            true,
             undefined,
             {
                 modelId: options.modelId,

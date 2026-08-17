@@ -8,7 +8,10 @@ import type { NewsCardStore } from './types.js';
 
 // 최신 10건만 enrich(과거 20건에서 축소). cron maxDuration 안에서 처리 가능하도록.
 export const NEWS_ENRICH_LIMIT = 10;
-// 고정 크기 워커 풀: 동시 LLM 작업 상한.
+/** 카드 1건의 응답 대기 상한. */
+const CARD_TIMEOUT_MS = 30_000;
+// 고정 크기 워커 풀: **심볼당** 동시 LLM 작업 상한. 분석 cron이 심볼을 병렬로 돌리므로
+// 프로세스 전체의 동시 호출은 이 값 × 심볼 수다(워치리스트 상한 5 → 최대 15).
 export const NEWS_ENRICH_CONCURRENCY = 3;
 // 풀 전반의 누적 실패 상한(성공해도 리셋되지 않는 합산 카운터). LLM down/rate-limit storm 시 조기 종료.
 export const ENRICH_TOTAL_FAILURE_LIMIT = 6;
@@ -41,10 +44,14 @@ export async function enrichNewsCards(
      * symbol을 클로저로 참조하므로 enrichNewsCards 내부에 중첩한다.
      */
     async function generateCard(item: NewsItem): Promise<NewsCardAnalysis | null> {
-        // 남은 시간 기반 AbortSignal. Infinity deadline 시 undefined(시그널 없음).
-        const cardSignal = Number.isFinite(deadlineMs)
-            ? AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()))
-            : undefined;
+        // 카드 하나의 상한은 **실행 마감이 아니라** 카드 모델의 현실적인 응답 시간이다.
+        // 남은 마감(최대 20분)을 그대로 주면 멈춘 카드 하나가 그 심볼의 news 예산을 다
+        // 태우고, 워커 3개가 모두 걸리면 정상인 나머지 기사까지 통째로 버려진다.
+        // 카드 모델은 `thinkingBudget: 0`이라 30초면 충분하다.
+        const remainingMs = Number.isFinite(deadlineMs)
+            ? Math.max(1, deadlineMs - Date.now())
+            : CARD_TIMEOUT_MS;
+        const cardSignal = AbortSignal.timeout(Math.min(CARD_TIMEOUT_MS, remainingMs));
         try {
             const outcome = await runNewsCardAnalysis({
                 item,

@@ -532,7 +532,15 @@ export async function getNotificationConfig(db: Db) {
 // deploy where the seed never ran). Keep event keys in sync with the dashboard
 // (src/pages/Settings.tsx NOTIFICATION_EVENTS).
 const DEFAULT_NOTIFICATION_TARGET = 'dev.y0ngha@gmail.com';
-const DEFAULT_NOTIFICATION_EVENTS = ['trade_executed', 'order_pending', 'stop_loss', 'error'];
+// `cron_health`(크론 침묵·실패 감지)가 빠져 있으면 "시스템이 죽었다"는 유일한 경보가
+// 기본 OFF다. 조용한 날과 전면 장애를 구분하려고 만든 기능이므로 기본에 넣는다.
+const DEFAULT_NOTIFICATION_EVENTS = [
+    'trade_executed',
+    'order_pending',
+    'stop_loss',
+    'error',
+    'cron_health',
+];
 
 export async function updateNotificationConfig(
     db: Db,
@@ -709,12 +717,17 @@ export type CronOutcome =
  * otherwise a live, still-running invocation could be swept mid-execution.
  */
 /**
- * 30분인 이유: 이 값은 **가장 오래 걸릴 수 있는 크론 실행보다 커야 한다.** execute 한 번은
+ * 45분인 이유: 이 값은 **가장 오래 걸릴 수 있는 크론 실행보다 커야 한다.** execute 한 번은
  * FMP가 429를 지속하면(호출당 최악 50초) 20분을 넘길 수 있다. 15분이던 시절에는 아직
  * 살아 있는 실행의 감사 행을 다음 크론이 `error/timeout`으로 덮어썼고, 그 실행이 끝나면
  * `finishCronRun`이 다시 `completed`로 덮어 `timeout` 값 자체가 신뢰할 수 없게 됐다.
+ *
+ * 30분은 분석 크론의 락 TTL(1800초)과 **같은 값**이라 그 버그가 되살아났다: 30분을 넘긴
+ * 분석 실행은 락이 만료되는 바로 그 시점에 다른 크론(execute는 5분마다 이 함수를 부른다)이
+ * 자기 행을 `error/timeout`으로 덮는다. 이 UPDATE에는 `cron_type` 필터가 없다. 두 값을
+ * 벌려 둔다.
  */
-export const CRON_STALE_AFTER_MS = 30 * 60_000;
+export const CRON_STALE_AFTER_MS = 45 * 60_000;
 
 /**
  * Atomically finalize any `running` cron audit rows whose `started_at` is older
@@ -775,7 +788,8 @@ export type CronRunFinish =
     | {
           status: 'error';
           error: string;
-          outcome?: 'timeout';
+          /** `timeout`(스톨 종료) 외에 `locked`(락 백엔드 장애)도 실패로 기록된다. */
+          outcome?: CronOutcome;
           durationMs?: number;
           finishedAt: Date;
       };
