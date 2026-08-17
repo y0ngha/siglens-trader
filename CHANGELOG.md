@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/y0ngha/siglens-trader/compare/v0.21.0...v0.21.1) (2026-08-17)
+
+
+### Performance Improvements
+
+* 휴장일 reconcile의 브로커 보유 조회를 건너뛴다 ([deae6d7](https://github.com/y0ngha/siglens-trader/commit/deae6d7da19fd8e9bb5376df08b5fa99deeb3fa4))
+
 # [0.21.0](https://github.com/y0ngha/siglens-trader/compare/v0.20.0...v0.21.0) (2026-08-17)
 
 
