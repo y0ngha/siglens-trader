@@ -439,6 +439,85 @@ describe('autoRecoverFilledOrders', () => {
         expect(mockClosePosition).not.toHaveBeenCalled();
     });
 
+    it('주문 이후 새로 열린 포지션에는 매도 복구를 적용하지 않는다 — 재진입분을 닫아버린다', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 2,
+            idempotencyKey: 'exec-def-AAPL-sell',
+            symbol: 'AAPL',
+            side: 'sell',
+            quantity: 10,
+            filledPrice: '250.00',
+            submittedAt: new Date('2026-05-24T11:00:00Z'),
+            resolvedAt: new Date('2026-05-24T11:01:00Z'),
+            cronRunId: 'run-2',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+
+        // 오후에 새로 연 포지션 — 오전에 판 그 주식이 아니다.
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 9,
+            symbol: 'AAPL',
+            quantity: 5,
+            avgPrice: '200.00',
+            status: 'open',
+            openedAt: new Date('2026-05-24T15:00:00Z'),
+        } as any);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(0);
+        expect(result.failed).toBe(1);
+        // 종전에는 `10 >= 5`로 이 새 포지션을 닫아, 브로커엔 5주가 남고 장부에서만 사라졌다.
+        expect(mockClosePosition).not.toHaveBeenCalled();
+        expect(mockReducePositionQuantity).not.toHaveBeenCalled();
+        expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+            expect.anything(),
+            'exec-def-AAPL-sell',
+            expect.objectContaining({ status: 'needs_review' }),
+        );
+    });
+
+    it('주문보다 먼저 열린 포지션이면 정상 복구한다', async () => {
+        const mockDb = createChainableMockDb();
+        const filledOrder = {
+            id: 2,
+            idempotencyKey: 'exec-def-AAPL-sell',
+            symbol: 'AAPL',
+            side: 'sell',
+            quantity: 10,
+            filledPrice: '250.00',
+            submittedAt: new Date('2026-05-24T11:00:00Z'),
+            resolvedAt: new Date('2026-05-24T11:01:00Z'),
+            cronRunId: 'run-2',
+        };
+
+        mockDb.where.mockResolvedValueOnce([filledOrder]);
+        mockDb.limit.mockResolvedValueOnce([]);
+        mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<void>) => {
+            await fn(mockDb);
+        });
+
+        mockGetOpenPositionBySymbol.mockResolvedValueOnce({
+            id: 7,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '200.00',
+            status: 'open',
+            openedAt: new Date('2026-05-24T09:30:00Z'),
+        } as any);
+
+        const result = await autoRecoverFilledOrders(mockDb as any);
+
+        expect(result.recovered).toBe(1);
+        expect(mockClosePosition).toHaveBeenCalledWith(expect.anything(), 7, 250);
+    });
+
     it('fails the recovery when the partial reduce matches no rows', async () => {
         // The position was looked up outside the transaction; if it moved in between,
         // the UPDATE matches nothing and the recovery must abort rather than book a

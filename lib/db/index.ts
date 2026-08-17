@@ -10,9 +10,12 @@ neonConfig.webSocketConstructor = ws;
 export function createDb() {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    // max:1 — a serverless instance handles one request at a time, so one connection
-    // per instance avoids exhausting Neon's connection limit when functions scale out.
-    const pool = new Pool({ connectionString: url, max: 1 });
+    // 상주 서버라 요청이 동시에 들어온다 — SPA·API·크론이 한 프로세스에 있고 분석 cron은
+    // 심볼을 병렬로 돈다. `max: 1`은 "서버리스 인스턴스는 요청을 하나씩 처리한다"는 전제로
+    // 붙어 있었는데 EC2 전환으로 그 전제가 깨졌고, 그 상태에서 `db.transaction()`이 단일
+    // 커넥션을 잡으면 다른 모든 쿼리가 직렬로 밀려 실행 데드라인·락 TTL을 압박한다.
+    // 10은 Neon 커넥션 한도에 비해 여유롭다(인스턴스 1대).
+    const pool = new Pool({ connectionString: url, max: 10 });
     return drizzle(pool, { schema });
 }
 

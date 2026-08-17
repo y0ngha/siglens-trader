@@ -325,6 +325,32 @@ async function handler(req: Request): Promise<Response> {
 
             // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.
             if (isTimedOut) {
+                // 조회가 실패했을 뿐 브로커에는 주문이 **살아 있을 수 있다.** 취소를 확인하지
+                // 않고 `timeout`(종료 상태)으로 확정하면 그 주문은 in-flight 집합에서 빠져
+                // 다시 조회되지 않고, 나중에 체결되면 장부에 영영 안 잡힌다. 그리고 다음
+                // execute 틱은 in-flight가 없다고 보고 같은 심볼에 두 번째 주문을 낸다.
+                // PENDING 분기가 이미 지키는 규칙(취소 성공 확인 후에만 종료 상태)을
+                // 브로커 조회 실패 경로에도 적용한다.
+                if (order.tossOrderId && tradingMode !== 'dry_run') {
+                    const canceled = await cancelOrder(order.tossOrderId)
+                        .then(() => true)
+                        .catch((e) => {
+                            console.error('[cancel]', e);
+                            return false;
+                        });
+                    if (!canceled) {
+                        await notifyError(
+                            `주문 취소 실패: ${order.symbol}`,
+                            `${order.side} 주문 ${order.tossOrderId} 는 조회도 취소도 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다. 브로커 계좌를 직접 확인하세요.`,
+                        );
+                        results.push({
+                            id: order.id,
+                            symbol: order.symbol,
+                            action: 'cancel_failed',
+                        });
+                        continue;
+                    }
+                }
                 await timeoutOrder(
                     order,
                     age,
@@ -398,7 +424,10 @@ async function handler(req: Request): Promise<Response> {
         // 불일치를 만들 사건 자체가 없다. 반대로 주문이 남아 있거나 이번 실행이 무언가를
         // 복구했다면 잔고가 움직였을 수 있으므로 그때는 비교한다.
         const marketClosedToday = !isUsTradingDay(startedAt);
-        const nothingToReconcile = submitted.length === 0 && recovery.recovered === 0;
+        // 복구가 **실패**했다는 것은 장부가 이미 어긋나 있다는 뜻이므로, 그때는 조용한
+        // 휴장일이어도 보유를 대조한다.
+        const nothingToReconcile =
+            submitted.length === 0 && recovery.recovered === 0 && recovery.failed === 0;
         const skipHoldingsCheck = marketClosedToday && nothingToReconcile;
 
         let holdingsMismatchCount = 0;

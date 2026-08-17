@@ -1611,13 +1611,31 @@ describe('GET /api/health', () => {
 
         const data = await res.json();
         expect(data.status).toBe('ok');
-        expect(data.version).toBe('0.1.0');
+        // 이미지 빌드가 심는 값 (`APP_VERSION`). 없으면 'unknown' — 하드코딩된 '0.1.0'은
+        // 실제 배포 버전과 무관해 "어떤 빌드가 도는지"를 말해주지 못했다.
+        expect(data.version).toBe(process.env.APP_VERSION ?? 'unknown');
         expect(typeof data.timestamp).toBe('string');
     });
 
     it('rejects non-GET methods', async () => {
         const res = await handler(makeRequest('https://example.com/api/health', 'POST'));
         expect(res.status).toBe(405);
+    });
+
+    it('deep 검사는 인증을 요구한다 — 정합성 알림에 심볼·주문키가 들어간다', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+
+        const res = await handler(makeRequest('https://example.com/api/health?deep=true'));
+
+        expect(res.status).toBe(403);
+    });
+
+    it('얕은 헬스체크는 인증 없이 통과한다 — 업타임 모니터링용', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+
+        const res = await handler(makeRequest('https://example.com/api/health'));
+
+        expect(res.status).toBe(200);
     });
 });
 

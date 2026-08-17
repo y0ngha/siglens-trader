@@ -223,8 +223,14 @@ export async function closePosition(db: DbOrTx, id: number, closePrice: number) 
 
 /**
  * Reduce an open position's quantity after a partial sell.
- * Only updates if the position is open and has more shares than `soldQuantity`.
+ * Only updates if the position is open and has **strictly more** shares than `soldQuantity`.
  * Returns true if the update matched a row, false otherwise.
+ *
+ * 동수량(`quantity === soldQuantity`)을 일부러 매칭하지 않는다. 종전 `>=`는 수량 0짜리
+ * `open` 행을 남겼고, 그 행은 `planExit`이 항상 0을 돌려줘 `exit_deferred`가 영구
+ * 반복되는 데다 `idx_positions_symbol_open` 때문에 그 심볼의 새 포지션도 열 수 없었다.
+ * 호출부는 전부 동수량을 `closePosition`으로 보내며, 경합으로 그 사이 동수량이 된
+ * 경우는 0행 → `POSITION_ALREADY_CLOSED` 롤백·재시도 경로가 받는다.
  */
 export async function reducePositionQuantity(
     db: DbOrTx,
@@ -234,7 +240,7 @@ export async function reducePositionQuantity(
     const result = await db.execute(sql`
         UPDATE positions
         SET quantity = quantity - ${soldQuantity}
-        WHERE id = ${id} AND status = 'open' AND quantity >= ${soldQuantity}
+        WHERE id = ${id} AND status = 'open' AND quantity > ${soldQuantity}
         RETURNING id
     `);
     return ((result as { rowCount?: number } | null)?.rowCount ?? 0) > 0;

@@ -771,13 +771,29 @@ describe('reconcile cron handler', () => {
             expect(body.results).toEqual([{ id: 2, symbol: 'AAPL', action: 'waiting' }]);
         });
 
-        it('getOrder throws (null) → falls back to age-based timeout', async () => {
+        it('조회도 취소도 실패하면 상태를 유지한다 — 살아 있는 주문을 종료 처리하지 않는다', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
+            mockGetOrder.mockRejectedValue(new Error('broker down'));
+            mockCancelOrder.mockRejectedValue(new Error('cancel failed'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'cancel_failed' }]);
+        });
+
+        it('getOrder throws (null) → 취소를 확인한 뒤에만 age-based timeout으로 확정한다', async () => {
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
             mockGetOrder.mockRejectedValue(new Error('broker down'));
 
             const res = await handler(makeRequest(true));
             const body = await res.json();
 
+            // 조회가 실패했을 뿐 브로커에는 주문이 살아 있을 수 있다. 취소 없이
+            // `timeout`(종료 상태)으로 확정하면 다시 조회되지 않고, 나중에 체결되면
+            // 장부에 영영 안 잡힌다.
+            expect(mockCancelOrder).toHaveBeenCalledWith('toss-1');
             expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
                 status: 'timeout',
                 resolvedAt: expect.any(Date),
