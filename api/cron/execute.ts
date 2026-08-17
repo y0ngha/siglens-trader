@@ -677,8 +677,11 @@ async function handler(req: Request): Promise<Response> {
                 ...(storedWeights ?? {}),
             };
 
-            // U.S. market-holiday gating (non-dry-run only). isEtRegularSessionOpen already
-            // gated by wall-clock at entry; this catches holidays the static schedule misses.
+            // 브로커 캘린더 확인 (non-dry-run만). 진입부의 `isEtRegularSessionOpen`이
+            // siglens-core 0.44부터 NYSE 휴장일·반일장을 반영하므로 예정된 휴장은 이미
+            // 거기서 걸린다 — **모든 모드에서**, dry_run 포함. 이 블록에 남은 역할은
+            // 예정 외 휴장(국가 애도의 날 등)이다: 규칙으로 유도할 수 없고 core의 목록에
+            // 아직 없을 수 있으니, 실주문 경로만은 브로커에게 직접 묻는다.
             if (tradingMode !== 'dry_run') {
                 let marketOpen: boolean;
                 try {

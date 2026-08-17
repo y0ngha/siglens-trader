@@ -196,8 +196,13 @@ Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/spe
 
 **Cron runs in-process via node-cron, on UTC schedules** (`server/app.ts` `CRON_JOBS`). Hours below are UTC, chosen to cover the US regular
 session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
-DST + holiday aware) tightens execution to the actual session, so out-of-session fires early-return
-`market_closed`. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
+DST + NYSE holiday + early-close aware since siglens-core 0.44) tightens execution to the actual
+session, so out-of-session fires early-return `market_closed`. That claim used to be aspirational —
+core computed session state from weekday and clock only, so Thanksgiving noon read as `open` and a
+13:00 half day stayed `open` until 16:00. The calendar is *computed*, not fetched
+(`domain/marketCalendar.ts`): every NYSE closure is rule-derived, so there is no feed to fail.
+Unscheduled closures (a national day of mourning) are a short literal list in core and the broker
+remains the backstop for live orders. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
 
 Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cadence.ts` gives each
 type a window size, and `_run-analysis-cron.ts` skips a symbol whose newest analysis already falls

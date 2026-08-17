@@ -1,4 +1,10 @@
-import { callAnalysisAi, getEtSessionStatus, type ActiveModelId } from '@y0ngha/siglens-core';
+import {
+    callAnalysisAi,
+    getEtSessionStatus,
+    isUsMarketEarlyClose,
+    minutesUntilUsMarketClose,
+    type ActiveModelId,
+} from '@y0ngha/siglens-core';
 import type { ScoreWeights } from '../strategy/types.js';
 import type { ConfluenceSnapshot } from '../strategy/confluence.js';
 import type { ExitTrigger } from '../strategy/trade-plan.js';
@@ -155,12 +161,9 @@ const CONFLUENCE_SOURCE_LINE: Record<TradeGateKind, string> = {
     exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 진입 룰의 70% 승률은 이쪽에 적용되지 않는다.',
 };
 
-/**
- * 통상 마감(16:00 ET)을 자정 기준 분으로. **조기 마감(반일장, 13:00 ET)은 모르는 값이다** —
- * core의 세션 판정에 휴장일·반일장 테이블이 없기 때문이다. 그래서 프롬프트는 이 값을
- * 사실이 아니라 가정으로 제시한다(아래 `SESSION_CAVEAT`).
- */
-const ET_CLOSE_MINUTES = 16 * 60;
+// 마감 시각은 이제 core의 거래소 캘린더가 답한다(`minutesUntilUsMarketClose`) —
+// 휴장일이면 0, 반일장이면 13:00 기준이다. 종전에는 16:00을 상수로 가정하고
+// 프롬프트에 "가정"이라고 적어 두는 수밖에 없었다.
 
 // ---------------------------------------------------------------------------
 // 표시 포맷 — 모델은 사람이 읽는 형태를 그대로 읽는다. 단위 없는 맨 숫자는
@@ -279,15 +282,15 @@ const ET_PARTS = new Intl.DateTimeFormat('en-US', {
 });
 
 /**
- * 라벨이 "정규장"이 아니라 "정규장 **시간대**"인 것은 말장난이 아니다. core의
- * `getEtSessionStatus`는 요일과 시각만 본다 — 휴장일 테이블이 없다. 추수감사절 14:00 ET도
- * `open`이고, 반일장(13:00 마감)도 `open`이다.
+ * 라벨이 이제 "정규장"이라고 단정할 수 있다. core의 `getEtSessionStatus`가 NYSE 거래소
+ * 캘린더(`marketCalendar.ts`)를 반영하기 때문이다 — 추수감사절 14:00 ET는 `closed`이고,
+ * 반일장은 13:00을 넘기면 `closed`다. 종전에는 요일과 시각만 봐서 둘 다 `open`이었고,
+ * 규칙 2("프롬프트에 적힌 값은 참")를 지키려면 라벨을 "정규장 **시간대**"로 낮춰 적고
+ * 캐비앗을 붙이는 수밖에 없었다.
  *
- * 규칙 2가 "프롬프트에 적힌 값은 참"이라고 못박은 이상, 알 수 없는 것을 단정하면 그 자체가
- * 거짓말이 된다. 진입 지침 6("마감이 임박하면 줄인다")이 바로 이 값에 기대므로 더 그렇다.
- * `execute.ts`의 공휴일 게이트는 dry_run에서 돌지 않고 반일장은 개장일이라 어차피 통과하니,
- * 상위 게이트에 기댈 수도 없다. 브로커 API를 여기서 부르는 것은 레이어 위반이므로
- * (그리고 25s 예산에 네트워크를 더하므로) **정직한 라벨이 해법이다.**
+ * 남은 한 가지는 **예정 외 휴장**(국가 애도의 날 등)이다. 캘린더 목록에 없는 날은 여전히
+ * `open`으로 나온다 — 그건 규칙으로 유도할 수 없고 선언 시점에 목록이 갱신되어야 한다.
+ * 실주문 경로는 브로커가 거부하므로 막히지만, 이 프롬프트는 그걸 모른다.
  *
  * **이 맵만 키가 `string`이다.** `PRICE_SOURCE_LABEL`/`TRIGGER_LABEL`은 유니온 키를 쓴다 —
  * `ExitTrigger`와 `priceSource`는 이 저장소 소유라, 값을 추가하면 `tsc`가 여기를 가리켜 주는
@@ -297,13 +300,13 @@ const ET_PARTS = new Intl.DateTimeFormat('en-US', {
  * 우아한 폴백(`?? '미상'`)이 낫다. 어느 쪽이든 폴백은 유지된다.
  */
 const SESSION_LABEL: Record<string, string> = {
-    open: '정규장 시간대 (open)',
-    closed: '정규장 시간대 아님 (closed)',
+    open: '정규장 (open)',
+    closed: '정규장 아님 (closed)',
     weekend: '주말 (weekend)',
 };
 
 const SESSION_CAVEAT =
-    '이 판정은 요일과 시각만으로 계산했다. **공휴일 휴장과 조기 마감(반일장)은 반영되어 있지 않다** — `open`이어도 실제로는 휴장일 수 있다.';
+    '이 판정은 NYSE 휴장일과 조기 마감(반일장)을 반영한다. 다만 예정 외 휴장(국가 애도의 날 등)은 선언 시점에 반영되므로 드물게 누락될 수 있다.';
 
 /**
  * 결정 시각을 ET 현지 시각 · 세션 상태 · 마감까지 남은 분으로 옮긴다.
@@ -311,7 +314,8 @@ const SESSION_CAVEAT =
  * UTC 하나만 주면 모델은 개장 직후인지 마감 30분 전인지 알 수 없는데, 그 둘은 같은 크기여선
  * 안 된다. 그렇다고 모델에게 UTC→ET 변환을 시키는 것은 규칙 2("새 값을 만들지 마라")가
  * 금지한 행위다. 그래서 여기서 변환해 준다. 세션 판정은 siglens-core의 `getEtSessionStatus`
- * (DST 인식)를 그대로 쓴다.
+ * (DST + NYSE 거래소 캘린더 인식)를 그대로 쓰고, 마감까지 남은 분도 core의
+ * `minutesUntilUsMarketClose`가 답한다 — 반일장이면 13:00 기준이다.
  */
 function etClock(date: Date): { local: string; session: string; toClose: string } {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
@@ -326,7 +330,11 @@ function etClock(date: Date): { local: string; session: string; toClose: string 
         session: label,
         toClose:
             status === 'open'
-                ? `약 ${ET_CLOSE_MINUTES - minutes}분 (통상 마감 16:00 ET 가정. 조기 마감일이면 실제로는 더 짧다)`
+                ? `약 ${minutesUntilUsMarketClose(date, minutes)}분 (${
+                      isUsMarketEarlyClose(date)
+                          ? '조기 마감일 — 13:00 ET 마감'
+                          : '정규 마감 16:00 ET'
+                  })`
                 : `해당 없음 (지금은 ${label})`,
     };
 }

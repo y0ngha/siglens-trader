@@ -116,6 +116,19 @@ here would hide the operator's typo. The dashboard posts this key from 설정 > 
 `<input type="time">` fields plus an ON/OFF toggle that sends the off-switch), and it pre-checks
 `start < end` client-side, so a 400 from here now means a hand-rolled request.
 
+## Market calendar
+
+`isEtRegularSessionOpen` (siglens-core ≥0.44) knows NYSE holidays and 13:00 half days, so the
+session gate at the top of every cron now closes the market on Thanksgiving and after an early
+bell — **in every mode, dry_run included**. Before 0.44 it read weekday + clock only, and the
+`isUsMarketOpen()` broker call in `execute` was the sole holiday defense, which left dry_run and
+all five analysis crons running on closed days.
+
+That broker call stays, with a narrower job: **unscheduled closures** (a national day of mourning).
+Those cannot be derived from rules and reach core's literal list only when someone updates it, so
+the live-order path asks the broker directly. Analysis crons accept the residual risk — a missing
+entry costs one day of wasted quota, not a bad trade.
+
 ## Execute Cron Flow
 
 0. **Interval gate** — node-cron fires every 5 minutes (`2-59/5`, which covers every minute the
