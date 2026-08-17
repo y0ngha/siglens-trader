@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.21.0](https://github.com/y0ngha/siglens-trader/compare/v0.20.0...v0.21.0) (2026-08-17)
+
+
+### Bug Fixes
+
+* 4축 감사 지적 전건 수정 (Blocker 5 / High 10 / Medium 12 / Low 4) ([#43](https://github.com/y0ngha/siglens-trader/issues/43)) ([026a52a](https://github.com/y0ngha/siglens-trader/commit/026a52a6a0f7d1437ef99952df150be31ccc50b2))
+
 # [0.20.0](https://github.com/y0ngha/siglens-trader/compare/v0.19.0...v0.20.0) (2026-08-16)
 
 
