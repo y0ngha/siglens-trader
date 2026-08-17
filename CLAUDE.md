@@ -192,169 +192,32 @@ Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/spe
 
 ---
 
-## Cron Schedule
+## Cron Schedule (요약)
 
-**Cron runs in-process via node-cron, on UTC schedules** (`server/app.ts` `CRON_JOBS`). Hours below are UTC, chosen to cover the US regular
-session (13:30–21:00 UTC across EDT/EST). The runtime gate `isEtRegularSessionOpen` (America/New_York,
-DST + NYSE holiday + early-close aware since siglens-core 0.44) tightens execution to the actual
-session, so out-of-session fires early-return `market_closed`. That claim used to be aspirational —
-core computed session state from weekday and clock only, so Thanksgiving noon read as `open` and a
-13:00 half day stayed `open` until 16:00. The calendar is *computed*, not fetched
-(`domain/marketCalendar.ts`): every NYSE closure is rule-derived, so there is no feed to fail.
-Unscheduled closures (a national day of mourning) are a short literal list in core and the broker
-remains the backstop for live orders. (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
+Cron은 node-cron으로 **인프로세스** 실행되고 스케줄은 UTC다 (`server/app.ts`의 `CRON_JOBS`).
+정규장 밖 발사는 `isEtRegularSessionOpen` 런타임 게이트가 `market_closed`로 조기 반환한다.
+분석 cron은 심볼을 **병렬로** 돌리고, cadence는 경과 시간이 아니라 **시계 창**으로 강제한다.
 
-Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cadence.ts` gives each
-type a window size, and `_run-analysis-cron.ts` skips a symbol whose newest analysis already falls
-in the current window. Elapsed-time checks drift, because an analysis is stamped when it is *saved*
-— a 5-minute run starting at :00 is stamped :05, so the :30 tick would see only 25 minutes and skip,
-silently turning a 30-minute cadence into a 45-minute one. Windows make the guard indifferent to run
-duration **as long as the run finishes inside its own window**. A run that crosses the boundary
-stamps its last symbols into the *next* window and so consumes it — that symbol then refreshes at
-2× the window.
+- 스케줄 표, cadence 창, reasoning 정책 → [`server/CLAUDE.md`](server/CLAUDE.md)
+- 매매 실행 주기(`execute_interval_min`, 기본 10분), 진입 품질 가드, 진입 시간 창(기본 ET
+  11:00–15:00), quiet hours(00:00–09:59 KST) → [`api/CLAUDE.md`](api/CLAUDE.md)
 
-**심볼은 병렬로 돈다** (`_run-analysis-cron.ts`의 `Promise.all`). 실행 시간이 종목 수에
-비례하지 않고 **가장 느린 심볼 하나**로 수렴하므로, 위의 창 넘어감은 종목을 늘려도 다시
-나타나지 않는다. 심볼당 상한은 여전히 `PER_SYMBOL_MAX_MS`(150초)이고, 한 심볼의 예외는
-그 심볼만 `error`로 기록되고 나머지 결과를 버리지 않는다.
-
-| Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
-|---------------|-------------------------|-------------------|-----------|
-| technical     | `*/15 13-21 * * 1-5`    | follows timeframe | Horizon-sensitive: a new bar only closes once per timeframe tick. Surplus ticks land in a window that is already covered and collapse (1Hour config → 1 LLM call/hour despite the 15-min schedule). |
-| options       | `*/15 13-21 * * 1-5`    | follows timeframe | Same as technical — option-chain snapshots are keyed by hash, so re-analysis before the next bar is pointless. |
-| news          | `0 13-21 * * 1-5`       | 60 minutes        | Event-driven; major catalysts surface within ~60 min of publication. FMP news endpoint is heavily rate-limited. |
-| fundamental   | `0 15 * * 1-5`          | 24 hours          | Quarterly filings and earnings do not move intraday; daily is more than sufficient. |
-| congress      | `0 16 * * 1-5`          | 24 hours          | Congressional disclosures lag the actual trade by weeks; once per weekday is plenty. |
-| execute       | `2-59/5 13-21 * * 1-5`  | `execute_interval_min` (기본 10분) | Cron fires every 5 min (`2-59/5` covers every minute the gate accepts, including the `:02` slot a `7-59/5` expression missed); the handler's interval gate decides whether this tick runs. `noOverlap: true` plus a 900s hard run deadline keep two runs from ever overlapping. The `:07` offset gives the top-of-hour analysis crons time to save, so a 60-min setting fires at exactly the old times. |
-| reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
-| digest        | `0 1 * * *`             | daily             | Flushes the quiet-hours notification queue at 10:00 KST. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. Deliberately not wrapped in the analysis-cron helper, whose US-session gate would suppress it entirely (01:00 UTC is outside the session). |
-
-**Reasoning (상세 분석) is also per-type** — `ANALYSIS_REASONING` in `lib/analysis/types.ts`.
-technical/options run with reasoning **off**: measured on deepseek-v4-flash, reasoning pushed a
-single technical symbol to ~7 minutes (a 148s call truncated to zero output, then a 269s retry),
-so a 4-symbol pass exceeded the 690s cron cutoff and symbols went without a signal. news,
-fundamental and congress keep it on — they run hourly or daily, so the latency is affordable and
-the narrative quality feeds the decision.
-
-### 매매 실행 주기 (execute_interval_min)
-
-가격 조건 — 진입 구간, 손절선, 익절선 — 은 전부 `execute` 틱 안에서만 판정된다. 그래서 이 간격이
-곧 **반응 지연의 상한**이다. 종전 `7 13-21` 스케줄은 하루 6틱(진입 창 안은 4틱), 즉 최소 60분
-간격이었고, 손절선이 뚫려도 최대 60분 방치됐다.
-
-cron은 `7-59/5`로 5분마다 핸들러를 부르고, 실제 실행 여부는 `lib/strategy/execute-interval.ts`의
-게이트가 `config.execute_interval_min`(5·10·15·20·30·60, 기본 **10**)으로 정한다. 스케줄 문자열을
-설정으로 만들지 않은 이유는 node-cron 태스크가 등록 시점에 고정되기 때문 — 게이트는 대시보드에서
-바꾼 즉시 다음 틱부터 먹는다. **설정 > 매매 실행 주기**.
-
-- 허용값이 60의 약수뿐인 이유: 게이트는 `(분 − 7) mod 간격 === 0`이라, 약수가 아니면 시(hour)
-  경계에서 주기가 어긋난다. 60분 설정은 종전 스케줄과 실행 시각이 분 단위로 같다.
-- 게이트는 `startCronRun`보다 **앞**이다 — 건너뛴 틱까지 감사 행을 남기면 하루 78행 중 6행만
-  실제 실행이라 `cron_runs`가 잡음으로 덮인다. `?force=1`은 수동 트리거용 우회.
-- 설정 조회 실패는 기본값으로 **진행**한다. DB 일시 장애로 매매 틱이 사라지는 쪽이 더 나쁘다.
-- 한 틱은 심볼당 FMP 호출 2회(quote + 컨플루언스 봉). 5분으로 줄이면 호출량이 두 배가 된다.
-
-### 진입 품질 가드
-
-실행 주기를 좁히는 것만으로는 **추격 매수**가 남는다. 분석이 "$150 진입"이라 한 뒤 가격이
-$180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석이 그대로 쓰여 매수 신호가 살아
-있기 때문이다. 손절선·목표가만 $150 기준인 포지션이 생긴다.
-
-- **`entry_out_of_zone`** — 현재가가 `actionRecommendation.entryPrices` 최대값 + 1%를 넘으면
-  매수/추가매수를 건너뛴다(`lib/strategy/entry-zone.ts`). **상단만** 본다 — 구간 아래는 매수에
-  불리하지 않다. `entryPrices`가 없으면 통과(fail-open). 사이징 게이트보다 앞이라 어차피 사지
-  않을 주문에 LLM 호출을 태우지 않는다. 매도에는 걸지 않는다.
-- **`entry_cooldown`** — 같은 심볼 재진입 최소 간격(`config.entry_cooldown_min`, 기본 60분,
-  0이면 off). 기준은 마지막 **체결**이다 — 매수뿐 아니라 **매도도 쿨다운을 건다.** 매수만 보면
-  손절이 마지막 매수보다 쿨다운 뒤에 일어났을 때 손절 10분 뒤 같은 분석으로 재매수가 가능했다
-  (`recentStopLossSymbols`는 실행 스코프라 다음 틱에 초기화된다). **설정 > 투자 관리**.
-- **`entry_not_recommended`** — 분석의 `entryRecommendation`이 `avoid`면 점수와 무관하게 매수를
-  막는다. core는 `avoid`에서도 "돌파 시 진입" **조건부** 구간을 채우므로 `entryPrices` 상단
-  검사로는 걸러지지 않는다.
-**노출 한도는 원가(투자 금액) 기준이다.** `max_position_size` / `max_total_exposure`는
-`avgPrice × quantity`로 계산한다 — 평가액 기준이면 가격이 내릴수록 예산이 커져 한도가
-아무것도 한정하지 못한다.
-
-**물타기는 규칙으로 막지 않는다.** 점수 ≥70 + 6축 합의 + 사이징 게이트를 통과했다면 그것이
-이미 AI의 추천이고, 규칙 엔진이 방향만 보고 뒤집는 것은 판단 층을 잘못 고른 것이다. 대신
-게이트가 **물타기인 줄 알고** 크기를 정하도록 프롬프트에 성격을 명시한다 — 특히 모델이 계산으로
-얻을 수 없는 사실 하나를 못박는다: 고정 손절선은 평단이 기준이므로 추가 매수가
-손절선을 함께 내린다 (진입 지침 5번).
-- **`entry_after_exit_blocked`** — 같은 틱에 부분 청산한 종목은 다시 늘리지 않는다.
-
-청산 쪽에는 대칭 게이트를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
-대신 빠져 있던 트리거를 채웠다: `actionRecommendation.stopLoss` / `takeProfitPrices`(core의
-`reconciledLevels` 보정값 우선)가 `evaluateExistingPosition`의 우선순위 1.5 / 4.5로 들어간다.
-`fixed_exit_enabled`가 기본 꺼짐이라, 그전까지 활성 손절 경로는 지지선 이탈·추세 반전·하락
-컨플루언스 같은 **간접** 신호뿐이었다.
-
-설계 근거: [`docs/specs/2026-08-16-execution-cadence-design.md`](docs/specs/2026-08-16-execution-cadence-design.md),
-감사 대응: [`docs/specs/2026-08-17-audit-fixes-design.md`](docs/specs/2026-08-17-audit-fixes-design.md).
-
-### Entry window (신규 진입 시간 창)
-
-신규 진입은 `config.entry_window`(기본 **ET 11:00–15:00**) 안에서만 열린다. **위 스케줄 표는
-바뀌지 않는다** — 창은 스케줄이 아니라 진입 게이트다. `execute` cron은 정규장 내내 그대로 돌고,
-창 밖에도 포지션 재평가·손절·청산·신호 매도는 전부 정상 동작한다. cron 창을 좁히면 마감 전
-손절 경로까지 같이 죽으므로, 원칙 7에 따라 진입만 막는다.
-
-창은 **ET에 고정**한다. 회피 대상(개장 갭, 첫 30분 변동성, 마감 MOC 임밸런스)이 전부 ET 기준
-현상이라, UTC/KST에 고정하면 서머타임마다 창이 한 시간씩 밀려 목적이 반년마다 깨진다.
-
-일일 손실/거래 한도가 쓰는 `entryBlock` 메커니즘을 그대로 재사용하되, 창은 리스크 사건이
-아니므로 이메일도 `forceFullExit`도 없다. 두 사유가 동시에 성립하면 감사 로그에는 리스크 쪽이
-남는다.
-
-**설정 > 진입 시간 창**에서 조정한다. 시간 입력 두 개(ET)와 ON/OFF 토글이며, OFF가 곧
-`{ start: '00:00', end: '24:00' }`(= 제한 없음)이다. 재배포도 API 직접 호출도 필요 없다.
-
-`semi_auto` 승인은 창을 다시 보지 않는다 — 대기 주문 TTL(15분)만큼 창을 넘겨 체결될 수 있고,
-운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스러우므로 의도적으로 둔다.
-또한 기본 창(ET 4시간)은 실행 주기 10분 기준 하루 39틱 중 24틱만 덮으므로, AI 사이징 게이트의
-분할 진입과 겹치면 하루에 도달 가능한 포지션 크기가 줄어든다. 다만 실제 상한을 정하는 것은
-`entry_cooldown_min`(기본 60분)이라 심볼당 창 안에서 4회 — 실행 주기 도입 전과 같은 숫자다.
-`auto` 전환 시 `max_trades_per_day`와 함께 확인할 것.
-
-설계 근거: [`docs/specs/2026-08-15-entry-window-design.md`](docs/specs/2026-08-15-entry-window-design.md).
-
-### Quiet hours
-
-No email is sent between **00:00–09:59 KST**; anything raised in that window is queued
-(`notification_queue`) and delivered as one summary at 10:00 KST by the `digest` cron. The
-window is expressed in the operator's local time on purpose — the point is that they are
-asleep, and the US session runs through the middle of it.
-
-The per-event gate still wins over queueing: if the channel or the event is off, nothing is
-sent *or* queued, so turning email off really turns it off. If email is off when the digest
-runs, queued rows are marked consumed without sending, so a disabled channel cannot grow the
-queue without bound. A failed send leaves rows unsent so the next run retries — duplicate
-delivery is preferable to a silently lost fill notification.
-
-UTC `13-21` covers the US regular session across both EDT (13:30–20:00 UTC) and EST (14:30–21:00 UTC); the `isEtRegularSessionOpen` runtime gate skips out-of-session fires.
+**진입만 막고 청산은 절대 막지 않는다** — 진입 시간 창도, 일일 손실/거래 한도도 마찬가지다
+(원칙 7). 이 규칙은 어느 디렉터리에서 작업하든 유효하므로 여기 남긴다.
 
 ---
 
 ## Commands
 
+전체 목록은 `package.json`의 `scripts`. 이름만으로는 알 수 없는 것들:
+
 ```bash
-yarn dev              # Vite dev server (port 6270)
-yarn dev:mock         # Vite dev with MSW mocking (no backend needed)
-yarn build            # tsc -b && vite build (SPA only)
-yarn start            # tsx server/index.ts (Hono server + cron; what the container runs)
-yarn typecheck        # tsc --noEmit
-yarn lint             # ESLint
-yarn lint:fix         # ESLint --fix
-yarn lint:style       # Stylelint
-yarn lint:style-fix   # Stylelint --fix
-yarn test             # Vitest (all)
-yarn test:watch       # Vitest watch mode
-yarn test:coverage    # Vitest with coverage
-yarn format           # Prettier write
-yarn format:check     # Prettier check
-yarn db:generate      # Drizzle migration generate
-yarn db:migrate       # Run migrations
-yarn db:seed          # Insert mock data
-yarn db:clear         # Delete all data (with confirmation prompt)
+yarn dev              # Vite dev server — 포트 6270
+yarn dev:mock         # MSW 목킹으로 백엔드 없이 UI 개발
+yarn start            # tsx server/index.ts — Hono 서버 + cron. 컨테이너가 실제로 돌리는 것
+yarn db:seed-operator # 운영자 계정 생성 (OPERATOR_EMAIL / OPERATOR_PASSWORD). 가입 엔드포인트가 없으므로 유일한 계정 생성 경로
+yarn db:clear         # 전체 삭제 (확인 프롬프트 있음)
+yarn release --ci     # 릴리스 = 배포 트리거. v* 태그 푸시가 .github/workflows/deploy.yml을 돌린다
 ```
 
 ---
