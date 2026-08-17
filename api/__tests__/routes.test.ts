@@ -1206,7 +1206,8 @@ describe('POST /api/approve/[id]', () => {
             expect.objectContaining({
                 symbol: 'AAPL',
                 side: 'buy',
-                mode: 'semi_auto',
+                // dry_run 승인은 dry_run으로 기록된다 (실계좌 차단기 오염 방지).
+                mode: 'dry_run',
             }),
         );
         expect(mockOpenPosition).toHaveBeenCalledWith(
@@ -1314,12 +1315,12 @@ describe('POST /api/approve/[id]', () => {
         );
         expect(res.status).toBe(502);
         const data = await res.json();
-        expect(data.error).toContain('Toss API 주문 실행 실패');
+        expect(data.error).toContain('결과 미확정');
         // No phantom trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
-        // Order should be reverted for retry
-        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 52);
+        // 결말 미확정이므로 되살리지 않는다 (재승인 = 두 번째 실주문 위험).
+        expect(mockRevertPendingOrder).not.toHaveBeenCalled();
     });
 
     it('averages into existing position for duplicate buy', async () => {
@@ -1534,12 +1535,14 @@ describe('POST /api/approve/[id]', () => {
             makeRequest('https://example.com/api/approve/85', 'POST', { action: 'approve' }),
         );
         expect(res.status).toBe(200);
+        // dry_run 승인은 dry_run으로 기록된다 — 종전에는 'semi_auto' 하드코딩이라
+        // 시뮬레이션 손익이 실계좌 일일 손실 차단기에 섞였다.
         expect(mockInsertTrade).toHaveBeenCalledWith(
             fakeDb,
             expect.objectContaining({
                 symbol: 'NVDA',
                 side: 'sell',
-                mode: 'semi_auto',
+                mode: 'dry_run',
             }),
         );
         expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 99, 900);
@@ -1547,7 +1550,7 @@ describe('POST /api/approve/[id]', () => {
         expect(mockExecuteSellOrder).not.toHaveBeenCalled();
     });
 
-    it('returns 502 and reverts order to pending when Toss API throws', async () => {
+    it('returns 502 and does NOT revert the order when the Toss call outcome is unknown', async () => {
         mockGetPendingOrderById.mockResolvedValue({
             id: 86,
             symbol: 'META',
@@ -1569,12 +1572,12 @@ describe('POST /api/approve/[id]', () => {
         );
         expect(res.status).toBe(502);
         const data = await res.json();
-        expect(data.error).toContain('Toss API 주문 실행 실패');
+        expect(data.error).toContain('결과 미확정');
         // No trade should be recorded
         expect(mockInsertTrade).not.toHaveBeenCalled();
         expect(mockOpenPosition).not.toHaveBeenCalled();
-        // Order should be reverted to pending for retry
-        expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 86);
+        // 되살리지 않는다 — 재승인은 토스 멱등키(10분) 밖에서 두 번째 실주문이 된다.
+        expect(mockRevertPendingOrder).not.toHaveBeenCalled();
     });
 
     it('rejects a pending order', async () => {

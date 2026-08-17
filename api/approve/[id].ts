@@ -22,6 +22,7 @@ import {
     getTodayTradeCount,
 } from '../../lib/db/queries.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
+import { getSellableQuantity } from '../../lib/trading/account.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
@@ -148,7 +149,11 @@ async function handler(req: Request): Promise<Response> {
         const idempotencyKey = `approve-${id}`;
         const bookingClientOrderId = shouldPlaceLiveOrder ? idempotencyKey : undefined;
         let filledTossOrderId: string | undefined;
-        const bookedMode = shouldPlaceLiveOrder ? tradingMode : 'semi_auto';
+        // 실제 모드를 기록한다. 종전 `shouldPlaceLiveOrder ? tradingMode : 'semi_auto'`는
+        // dry_run에서 누른 승인까지 `semi_auto`로 남겨, 시뮬레이션 손익이
+        // `getTodayRealizedPnl`(mode NOT IN ('skipped','dry_run'))에 섞여 **실계좌 손실
+        // 차단기**를 오염시켰다. `positions/[id]/close.ts`에서 이미 고친 것과 같은 버그.
+        const bookedMode = tradingMode;
 
         const markFilledInTracking = async (tx: Parameters<typeof updateOrderTracking>[0]) => {
             if (!shouldPlaceLiveOrder) return;
@@ -162,17 +167,36 @@ async function handler(req: Request): Promise<Response> {
 
         if (shouldPlaceLiveOrder) {
             try {
+                // 매도는 브로커 보유 수량으로 클램프한다. 대기 주문은 큐잉 후 승인까지 최대
+                // 15분이 비는데, 그 사이 execute의 재평가 루프가 같은 포지션을 부분 청산했으면
+                // 승인된 수량이 실제 보유를 넘는다. execute의 두 매도 경로와 같은 가드.
+                if (order.side === 'sell') {
+                    const sellable = await getSellableQuantity(order.symbol).catch(() => null);
+                    if (sellable != null) {
+                        const clamped = Math.min(actualQuantity, Math.floor(sellable));
+                        if (clamped <= 0) {
+                            return Response.json(
+                                {
+                                    error: `${order.symbol} 매도 가능 수량이 없습니다 (브로커 보유 ${sellable}).`,
+                                },
+                                { status: 422 },
+                            );
+                        }
+                        actualQuantity = clamped;
+                    }
+                }
+
                 await createOrderTracking(db, {
                     idempotencyKey,
                     clientOrderId: idempotencyKey,
                     symbol: order.symbol,
                     side: order.side,
-                    quantity: order.quantity,
+                    quantity: actualQuantity,
                     status: 'submitted',
                 });
 
                 const orderFn = order.side === 'buy' ? executeBuyOrder : executeSellOrder;
-                const result = await orderFn(order.symbol, order.quantity, idempotencyKey);
+                const result = await orderFn(order.symbol, actualQuantity, idempotencyKey);
 
                 if (result.status === 'rejected' || result.status === 'canceled') {
                     await updateOrderTracking(db, idempotencyKey, {
@@ -206,12 +230,12 @@ async function handler(req: Request): Promise<Response> {
                 }
                 // result.status === 'filled' — only auto-book a clean full fill.
                 // If NOT clean (null price, fractional qty, or short fill) → needs_review + alert.
-                const filledQ = result.filledQuantity ?? order.quantity;
+                const filledQ = result.filledQuantity ?? actualQuantity;
                 const cleanFullFill =
                     // 0을 통과시키면 체결가 0으로 기록되어 실현 손익이 왜곡된다.
                     isFinitePositive(result.avgFilledPrice) &&
-                    Number.isInteger(order.quantity) &&
-                    Math.abs(filledQ - order.quantity) < 1e-6;
+                    Number.isInteger(actualQuantity) &&
+                    Math.abs(filledQ - actualQuantity) < 1e-6;
                 if (!cleanFullFill) {
                     await updateOrderTracking(db, idempotencyKey, {
                         status: 'needs_review',
@@ -221,7 +245,7 @@ async function handler(req: Request): Promise<Response> {
                     await dispatcher
                         .notifyError(
                             `체결 수동확인 필요: ${order.symbol}`,
-                            `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${order.quantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
+                            `${order.symbol} 주문이 예상과 다르게 체결됨 (의도 ${actualQuantity}주, 체결 ${filledQ}, 체결가 ${result.avgFilledPrice ?? '없음'}). 수동 기록 필요.`,
                         )
                         .catch((e) => console.error('[email]', e));
                     return Response.json(
@@ -234,25 +258,28 @@ async function handler(req: Request): Promise<Response> {
                     );
                 }
                 filledPrice = result.avgFilledPrice!; // cleanFullFill이 유한 양수를 보장한다
-                actualQuantity = order.quantity; // integer, == filledQ
                 filledTossOrderId = result.orderId || undefined;
             } catch (err) {
-                // Toss API failed — mark order tracking as error and revert pending status
+                // 예외는 "주문이 나가지 않았다"가 아니라 **결말을 모른다**는 뜻이다
+                // (타임아웃·5xx·멱등키 충돌은 브로커가 이미 주문을 갖고 있다는 신호에 가깝다).
+                // 그래서 `error`(= in-flight)로 남기고 **대기 주문을 되살리지 않는다.**
+                // 되살리면 운영자가 재승인할 수 있는데, 토스 멱등키 유효기간은 10분이라
+                // 그 뒤의 재승인은 같은 키가 새 주문으로 처리되어 **실주문 2건**이 된다.
+                // 확정은 reconcile이 브로커에 물어서 한다.
                 await updateOrderTracking(db, idempotencyKey, {
                     status: 'error',
                     resolvedAt: new Date(),
                 }).catch(() => {});
-                await revertPendingOrder(db, id).catch(() => {});
 
                 await dispatcher
                     .notifyError(
-                        `주문 실행 실패: ${order.symbol}`,
-                        `승인된 주문의 실제 실행에 실패했습니다. 재시도하거나 수동으로 처리해주세요.\n오류: ${String(err)}`,
+                        `주문 결과 미확정: ${order.symbol}`,
+                        `승인된 주문의 실행 결과를 확인하지 못했습니다. **브로커에 주문이 남아 있을 수 있으므로 재승인하지 마세요.** reconcile이 확정하며, 그 전에 브로커 계좌를 직접 확인하세요.\n오류: ${String(err)}`,
                     )
                     .catch((e) => console.error('[email] send failed:', e));
                 return Response.json(
                     {
-                        error: 'Toss API 주문 실행 실패. 거래가 기록되지 않았습니다.',
+                        error: 'Toss API 주문 결과 미확정. 브로커에 주문이 남아 있을 수 있어 거래를 기록하지 않았습니다. 재승인하지 말고 reconcile 결과를 확인하세요.',
                         detail: String(err),
                     },
                     { status: 502 },

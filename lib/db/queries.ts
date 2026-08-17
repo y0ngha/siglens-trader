@@ -307,6 +307,35 @@ export async function getRecentTrades(db: Db, limit = 50) {
     return db.select().from(trades).orderBy(desc(trades.executedAt)).limit(limit);
 }
 
+/**
+ * 심볼별 마지막 **실제 체결** 시각 (`since` 이후). 재진입 쿨다운 전용.
+ *
+ * 종전에는 `getRecentTrades(db, 200)`를 받아 `mode='skipped'` 행을 코드에서 걸렀다.
+ * 그런데 그 감사 행들은 200 슬롯을 그대로 차지한다 — 예산 0인 매수 신호는 종목마다
+ * 매 틱 `quantity:0, mode:'skipped'` 행을 남기므로, 종목이 여럿이면 한 시간도 안 돼
+ * 진짜 체결이 조회 창 밖으로 밀리고 쿨다운이 **조용히 꺼진다.** 집계를 DB로 내려
+ * 슬롯 경쟁 자체를 없앤다.
+ */
+export async function getLastFillTimeBySymbol(db: Db, since: Date): Promise<Map<string, number>> {
+    const rows = await db
+        .select({
+            symbol: trades.symbol,
+            lastAt: sql<string>`max(${trades.executedAt})`,
+        })
+        .from(trades)
+        .where(
+            sql`${trades.mode} != 'skipped' AND ${trades.quantity} > 0 AND ${trades.executedAt} >= ${since}`,
+        )
+        .groupBy(trades.symbol);
+
+    const map = new Map<string, number>();
+    for (const row of rows) {
+        const at = new Date(row.lastAt).getTime();
+        if (Number.isFinite(at)) map.set(row.symbol, at);
+    }
+    return map;
+}
+
 export async function dismissTrade(db: Db, id: number) {
     return db.update(trades).set({ dismissedAt: new Date() }).where(eq(trades.id, id));
 }
@@ -605,6 +634,25 @@ export async function updateOrderTracking(
  * 확정될 때까지는 in-flight로 취급하는 쪽이 양쪽 모두를 막는다.
  */
 export const INFLIGHT_ORDER_STATUSES = ['submitted', 'pending', 'partial', 'error'] as const;
+
+/**
+ * 최근 `needs_review`로 종결된 주문의 심볼 목록.
+ *
+ * `needs_review`는 "브로커와 장부가 어긋났고 자동으로는 못 맞춘다"는 뜻이다 — 부분 체결
+ * 타임아웃, 체결가 없는 복구 실패 등. 이 상태는 in-flight가 아니므로 다음 execute 틱은
+ * 그 심볼을 **아무 주문도 없었던 것처럼** 본다: `existingSymbolExposure`가 0이고 체결 행이
+ * 없어 `entry_cooldown`도 걸리지 않아, 이미 브로커에 주식이 있는 종목에 종목 예산 전액으로
+ * 다시 매수한다. 사람이 정리할 때까지 신규 진입만 막는다(청산은 막지 않는다).
+ */
+export async function getNeedsReviewSymbols(db: Db, since: Date): Promise<string[]> {
+    const rows = await db
+        .selectDistinct({ symbol: orderTracking.symbol })
+        .from(orderTracking)
+        .where(
+            sql`${orderTracking.status} = 'needs_review' AND ${orderTracking.submittedAt} >= ${since}`,
+        );
+    return rows.map((r) => r.symbol);
+}
 
 export async function getPendingSubmittedOrders(db: Db) {
     // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.

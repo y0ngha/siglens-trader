@@ -28,7 +28,8 @@ const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockGetTodayRealizedPnl = vi.fn();
-const mockGetRecentTrades = vi.fn();
+const mockGetLastFillTimeBySymbol = vi.fn();
+const mockGetNeedsReviewSymbols = vi.fn();
 const mockExpireOldPendingOrders = vi.fn();
 const mockCreateOrderTracking = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
@@ -58,7 +59,9 @@ vi.mock('../../../lib/db/queries', () => ({
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
     getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
-    getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
+    getLastFillTimeBySymbol: (...args: unknown[]) => mockGetLastFillTimeBySymbol(...args),
+    getNeedsReviewSymbols: (...args: unknown[]) => mockGetNeedsReviewSymbols(...args),
+    INFLIGHT_ORDER_STATUSES: ['submitted', 'pending', 'partial', 'error'],
     expireOldPendingOrders: (...args: unknown[]) => mockExpireOldPendingOrders(...args),
     createOrderTracking: (...args: unknown[]) => mockCreateOrderTracking(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
@@ -322,7 +325,8 @@ function setupDefaults() {
     mockGetTodayInflightOrderCount.mockResolvedValue(0);
     mockGetTodayRealizedPnl.mockResolvedValue(0);
     // 재진입 쿨다운이 보는 최근 체결 이력. 기본은 비어 있음 = 쿨다운 미적용.
-    mockGetRecentTrades.mockResolvedValue([]);
+    mockGetLastFillTimeBySymbol.mockResolvedValue(new Map<string, number>());
+    mockGetNeedsReviewSymbols.mockResolvedValue([]);
     mockExpireOldPendingOrders.mockResolvedValue([]);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
     mockSendApprovalRequestEmail.mockResolvedValue(undefined);
@@ -8230,19 +8234,11 @@ describe('execute cron handler', () => {
         });
 
         describe('재진입 쿨다운 (entry_cooldown)', () => {
-            const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+            const minutesAgo = (m: number) => Date.now() - m * 60_000;
 
-            it('기본 60분 안에 매수한 종목은 다시 매수하지 않는다', async () => {
+            it('쿨다운 창 안에 체결이 있으면 다시 매수하지 않는다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(20),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['AAPL', minutesAgo(20)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
@@ -8254,21 +8250,28 @@ describe('execute cron handler', () => {
 
             it('쿨다운이 지났으면 매수한다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(61),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['AAPL', minutesAgo(61)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
                 );
+            });
+
+            it('조회 창은 쿨다운 길이만큼만 본다 — skipped 감사 행이 실체결을 밀어내지 못한다', async () => {
+                buySetup(150);
+
+                await handler(makeRequest(true));
+
+                // 종전에는 `getRecentTrades(db, 200)` 최신 200행을 읽고 메모리에서 걸렀다.
+                // `recordUnfundedBuy`가 매 틱 종목마다 남기는 `mode:'skipped'` 행이 그 200
+                // 슬롯을 차지해, 종목이 여럿이면 한 시간도 안 돼 진짜 체결이 창 밖으로 밀리고
+                // 쿨다운이 조용히 꺼졌다.
+                const since = mockGetLastFillTimeBySymbol.mock.calls[0]![1] as Date;
+                const windowMs = Date.now() - since.getTime();
+                expect(windowMs).toBeGreaterThan(59 * 60_000);
+                expect(windowMs).toBeLessThan(61 * 60_000);
             });
 
             it('0이면 꺼진다 — 이력 조회 자체를 하지 않는다', async () => {
@@ -8276,26 +8279,7 @@ describe('execute cron handler', () => {
 
                 const body = await (await handler(makeRequest(true))).json();
 
-                expect(mockGetRecentTrades).not.toHaveBeenCalled();
-                expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
-                );
-            });
-
-            it('잔고 부족으로 기록된 행(mode: skipped)은 체결이 아니므로 쿨다운을 걸지 않는다', async () => {
-                buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'buy',
-                        mode: 'skipped',
-                        quantity: 0,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
-
-                const body = await (await handler(makeRequest(true))).json();
-
+                expect(mockGetLastFillTimeBySymbol).not.toHaveBeenCalled();
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
                 );
@@ -8303,7 +8287,7 @@ describe('execute cron handler', () => {
 
             it('이력 조회가 실패해도 실행을 멈추지 않는다 — 쿼리 하나가 청산 경로까지 죽이면 안 된다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockRejectedValue(new Error('db down'));
+                mockGetLastFillTimeBySymbol.mockRejectedValue(new Error('db down'));
 
                 const res = await handler(makeRequest(true));
                 const body = await res.json();
@@ -8314,43 +8298,14 @@ describe('execute cron handler', () => {
                 );
             });
 
-            it('다른 종목의 최근 매수는 영향을 주지 않는다', async () => {
+            it('다른 종목의 최근 체결은 영향을 주지 않는다', async () => {
                 buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'TSLA',
-                        side: 'buy',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
+                mockGetLastFillTimeBySymbol.mockResolvedValue(new Map([['TSLA', minutesAgo(5)]]));
 
                 const body = await (await handler(makeRequest(true))).json();
 
                 expect(body.decisions).toContainEqual(
                     expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
-                );
-            });
-
-            it('매도 이력도 쿨다운을 건다 — 손절 직후 재매수를 막기 위해서다', async () => {
-                buySetup(150);
-                mockGetRecentTrades.mockResolvedValue([
-                    {
-                        symbol: 'AAPL',
-                        side: 'sell',
-                        mode: 'dry_run',
-                        quantity: 5,
-                        executedAt: minutesAgo(5),
-                    },
-                ]);
-
-                const body = await (await handler(makeRequest(true))).json();
-
-                // 종전에는 매수 체결만 봐서, 손절이 마지막 매수보다 쿨다운 뒤에 일어나면
-                // 손절 10분 뒤 같은 분석으로 재매수가 가능했다.
-                expect(body.decisions).toContainEqual(
-                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_cooldown' }),
                 );
             });
         });

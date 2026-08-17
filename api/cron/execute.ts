@@ -16,11 +16,13 @@ import {
     getTodayTradeCount,
     getTodayInflightOrderCount,
     getTodayRealizedPnl,
-    getRecentTrades,
+    getLastFillTimeBySymbol,
+    getNeedsReviewSymbols,
     expireOldPendingOrders,
     createOrderTracking,
     updateOrderTracking,
     getPendingSubmittedOrders,
+    INFLIGHT_ORDER_STATUSES,
     averageIntoPosition,
     getNotificationConfig,
     enqueueNotification,
@@ -275,6 +277,14 @@ async function handler(req: Request): Promise<Response> {
     const startedAt = new Date();
     const startedMs = startedAt.getTime();
     const cronRunId = `exec-${crypto.randomUUID()}`;
+    /**
+     * 실행이 락 TTL을 넘겨 살아 있으면 다음 틱과 동시 실행된다. 그 전에 멈춘다.
+     *
+     * 매매 루프뿐 아니라 **그보다 앞선 시세 루프들**도 이 마감을 본다 — FMP가 계속
+     * 429를 내면 포지션·워치리스트 시세 조회만으로 락 TTL(1800초)을 넘길 수 있고,
+     * 그러면 마감 검사가 있는 루프에 닿기도 전에 두 실행이 겹친다.
+     */
+    const runDeadlineMs = startedMs + RUN_DEADLINE_MS;
     const db = getDb();
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
@@ -538,6 +548,16 @@ async function handler(req: Request): Promise<Response> {
                 // being read.
                 const priceDivergences: string[] = [];
                 for (const pos of preCheckPositions) {
+                    if (Date.now() > runDeadlineMs) {
+                        // 남은 포지션을 빼면 미실현 손실이 **과소** 집계되어 차단기가 늦게
+                        // 걸린다. 다만 이 시점에 실행은 이미 마감을 넘겨 아래 매매 루프가
+                        // 전부 `run_deadline`으로 빠지므로, 잘못된 강제청산보다 아무것도 하지
+                        // 않는 쪽이 맞다. 다음 틱이 처음부터 다시 잰다.
+                        console.warn(
+                            '[execute] 미실현 손익 사전점검이 실행 마감으로 잘렸다 — 손실 차단기 입력 불완전',
+                        );
+                        break;
+                    }
                     try {
                         const livePreCheck = await fetchLivePrice(pos.symbol).catch(() => null);
 
@@ -730,6 +750,15 @@ async function handler(req: Request): Promise<Response> {
             // falling back to avgPrice when no analysis data exists.
             const openPositions = await getOpenPositions(db);
             const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
+            // 장부와 브로커가 어긋난 채 사람 손을 기다리는 심볼 — 신규 진입만 막는다.
+            // 조회 실패는 삼킨다(가드가 없으면 종전 동작). 24시간은 reconcile의 복구 조회
+            // 창과 같다.
+            const needsReviewSymbols = new Set(
+                await getNeedsReviewSymbols(db, new Date(startedMs - 86_400_000)).catch((err) => {
+                    console.error('[execute] needs_review 조회 실패 — 진입 가드 미적용', err);
+                    return [];
+                }),
+            );
 
             if (watchlistItems.length === 0 && openPositions.length === 0) {
                 finishState = { status: 'skipped', outcome: 'empty_watchlist', ...elapsed() };
@@ -775,9 +804,10 @@ async function handler(req: Request): Promise<Response> {
 
             // 심볼별 마지막 실체결 시각 (재진입 쿨다운용).
             //
-            // 전용 쿼리 대신 기존 `getRecentTrades`를 한 번 읽어 메모리에서 접는다 — 쿨다운이
-            // 보는 범위는 길어야 몇 시간이고, `max_trades_per_day` 기본값 20이면 100행은
-            // 며칠치다. `mode: 'skipped'` 행(잔고 부족 기록, 수량 0)은 체결이 아니므로 뺀다.
+            // 쿨다운 창 안의 실체결만 DB에서 심볼별로 집계한다. 종전에는 `getRecentTrades`
+            // 최신 200행을 읽어 메모리에서 `mode:'skipped'`를 걸렀는데, 그 감사 행들이 200
+            // 슬롯을 차지해 종목이 여럿이면 진짜 체결이 창 밖으로 밀리고 쿨다운이 조용히
+            // 꺼졌다(`recordUnfundedBuy`가 매 틱 종목마다 한 행씩 넣는다).
             // 조회 실패는 삼킨다. 쿨다운은 체결 빈도 제한이지 리스크 통제가 아니라서,
             // 이 쿼리 하나 때문에 실행 전체가 죽으면 **청산 경로까지** 같이 죽는다 —
             // 원칙 7이 막으라는 바로 그 형태다. 이력이 없으면 쿨다운 없이 진행한다.
@@ -788,20 +818,15 @@ async function handler(req: Request): Promise<Response> {
             // 다음 틱(기본 10분 뒤)에 초기화된다. 실제로 "손절 10분 뒤 같은 분석으로 재매수"가
             // 가능했다. 매도를 기준에 넣으면 익절 후 재진입도 같이 늦춰지는데, 방금 정리한
             // 종목을 몇 분 만에 되사지 않는 쪽이 맞다.
-            const lastTradeAtBySymbol = new Map<string, number>();
+            let lastTradeAtBySymbol = new Map<string, number>();
             if (entryCooldownMs > 0) {
-                const recentTrades = await getRecentTrades(db, 200).catch((err) => {
+                lastTradeAtBySymbol = await getLastFillTimeBySymbol(
+                    db,
+                    new Date(Date.now() - entryCooldownMs),
+                ).catch((err) => {
                     console.error('[execute] 최근 체결 조회 실패 — 재진입 쿨다운 미적용', err);
-                    return [];
+                    return new Map<string, number>();
                 });
-                for (const t of recentTrades) {
-                    if (t.mode === 'skipped' || t.quantity <= 0) continue;
-                    const at = new Date(t.executedAt).getTime();
-                    if (!Number.isFinite(at)) continue;
-                    if (at > (lastTradeAtBySymbol.get(t.symbol) ?? 0)) {
-                        lastTradeAtBySymbol.set(t.symbol, at);
-                    }
-                }
             }
 
             // --- Price cache: batch fetch all needed symbols once ---
@@ -812,6 +837,12 @@ async function handler(req: Request): Promise<Response> {
             for (const w of watchlistItems) allSymbols.add(w.symbol);
             for (const order of pendingSubmittedOrders) allSymbols.add(order.symbol);
             for (const sym of allSymbols) {
+                if (Date.now() > runDeadlineMs) {
+                    // 남은 심볼은 시세 없이 간다(`skipped_no_price`). 여기서 계속 도는 것은
+                    // 락 TTL을 넘겨 다음 틱과 겹치는 것과 같다.
+                    console.warn('[execute] 시세 프리페치가 실행 마감으로 잘렸다');
+                    break;
+                }
                 const detail = await fetchLivePriceDetail(sym).catch((err) => ({
                     source: 'fmp_quote' as const,
                     price: null,
@@ -828,9 +859,11 @@ async function handler(req: Request): Promise<Response> {
             let pendingBuyExposure = 0;
             const pendingBuyExposureMissingPrice: string[] = [];
             for (const order of pendingSubmittedOrders) {
+                // `error`(결말 미확정)도 노출로 센다 — 브로커가 그 주문을 갖고 있을 수 있고,
+                // 빼면 미확정 주문만큼 `max_total_exposure`를 초과한다.
                 if (
                     order.side !== 'buy' ||
-                    !['submitted', 'pending', 'partial'].includes(order.status)
+                    !(INFLIGHT_ORDER_STATUSES as readonly string[]).includes(order.status)
                 ) {
                     continue;
                 }
@@ -873,8 +906,6 @@ async function handler(req: Request): Promise<Response> {
             let remainingBuyingPower: number | null = usdBuyingPower;
 
             // --- Position re-evaluation ---
-            /** 실행이 락 TTL을 넘겨 살아 있으면 다음 틱과 동시 실행된다. 그 전에 멈춘다. */
-            const runDeadlineMs = startedMs + RUN_DEADLINE_MS;
             let deadlineHit = false;
             for (const position of openPositions) {
                 if (Date.now() > runDeadlineMs) {
@@ -1993,19 +2024,34 @@ async function handler(req: Request): Promise<Response> {
 
                     // Pending buy guard: skip buy/average_in if an in-flight buy order exists
                     // for this symbol. With per-run random clientOrderIds, re-submitting an
-                    // unfilled (pending/partial/submitted) buy would double-submit.
+                    // unfilled buy would double-submit.
+                    //
+                    // `error`까지 in-flight로 본다(`INFLIGHT_ORDER_STATUSES`). POST 타임아웃이나
+                    // 멱등키 충돌은 "브로커가 주문을 받지 않았다"가 아니라 **결말을 모른다**는
+                    // 뜻이고, 특히 후자는 이미 갖고 있다는 신호다. 세 상태만 보던 종전 코드는
+                    // 그 주문을 없는 셈 치고 다음 틱에 새 clientOrderId로 두 번째 매수를 냈다
+                    // (체결이 없으니 `entry_cooldown`도 걸리지 않는다). reconcile이 30분 뒤
+                    // 확정할 때까지 매 틱 반복됐다.
                     if (decision.action === 'buy' || decision.action === 'average_in') {
                         const hasPendingBuy = pendingSubmittedOrders.some(
                             (o) =>
                                 o.symbol === item.symbol &&
                                 o.side === 'buy' &&
-                                ['submitted', 'pending', 'partial'].includes(o.status),
+                                (INFLIGHT_ORDER_STATUSES as readonly string[]).includes(o.status),
                         );
-                        if (hasPendingBuy) {
+                        // 사람이 정리해야 하는 불일치가 남은 심볼도 같은 이유로 막는다:
+                        // 브로커에 있는 미기록 주식이 노출 계산에서 빠져 예산이 통째로 다시
+                        // 열린다.
+                        const needsReview = needsReviewSymbols.has(item.symbol);
+                        if (hasPendingBuy || needsReview) {
                             decisions.push({
                                 symbol: item.symbol,
                                 action: 'pending_order_in_progress',
                                 score: decision.score,
+                                detail:
+                                    needsReview && !hasPendingBuy
+                                        ? { needsReview: true }
+                                        : undefined,
                             });
                             continue;
                         }
@@ -2483,7 +2529,13 @@ async function handler(req: Request): Promise<Response> {
                                             .catch((err) =>
                                                 console.error('[email] send failed:', err),
                                             );
-                                        currentExposure -= currentPrice * decision.quantity;
+                                        // 노출은 원가 단위다 — 재평가 루프와 같이 판 가격이
+                                        // 아니라 그 주식의 원가만큼 줄인다. 매도가로 빼면
+                                        // 오른 종목을 팔 때 실제보다 크게 차감되어 같은 실행의
+                                        // 다음 심볼이 총노출 여유를 과대평가한다.
+                                        currentExposure -=
+                                            safeNumber(Number(existingSellPos.avgPrice), 0) *
+                                            decision.quantity;
                                         if (currentExposure < 0) currentExposure = 0;
                                     } catch (txErr) {
                                         if (
@@ -2893,7 +2945,10 @@ async function handler(req: Request): Promise<Response> {
                                                 resolvedAt: new Date(),
                                             });
                                         });
-                                        currentExposure -= filledPrice * actualQuantity;
+                                        // 위와 같은 이유 — 체결가가 아니라 원가로 차감한다.
+                                        currentExposure -=
+                                            safeNumber(Number(existingSellPos.avgPrice), 0) *
+                                            actualQuantity;
                                         if (currentExposure < 0) currentExposure = 0;
                                     } catch (txErr) {
                                         if (

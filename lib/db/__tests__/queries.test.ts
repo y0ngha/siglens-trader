@@ -25,6 +25,8 @@ import {
     averageIntoPosition,
     insertTrade,
     getRecentTrades,
+    getLastFillTimeBySymbol,
+    getNeedsReviewSymbols,
     getTodayTradeCount,
     getTodayInflightOrderCount,
     getTodayRealizedPnl,
@@ -65,6 +67,7 @@ function createMockDb(resolvedValue: unknown = []) {
         from: vi.fn().mockReturnThis(),
         where: vi.fn().mockReturnThis(),
         orderBy: vi.fn().mockReturnThis(),
+        groupBy: vi.fn().mockReturnThis(),
         limit: vi.fn().mockResolvedValue(resolvedValue),
         values: vi.fn().mockReturnThis(),
         set: vi.fn().mockReturnThis(),
@@ -86,6 +89,7 @@ function createMockDb(resolvedValue: unknown = []) {
 
     const db = {
         select: vi.fn().mockReturnValue(chainMethods),
+        selectDistinct: vi.fn().mockReturnValue(chainMethods),
         selectDistinctOn: vi.fn().mockReturnValue(chainMethods),
         insert: vi.fn().mockReturnValue(chainMethods),
         update: vi.fn().mockReturnValue(chainMethods),
@@ -95,6 +99,23 @@ function createMockDb(resolvedValue: unknown = []) {
     };
 
     return db as unknown as Db & { _chain: typeof chainMethods; execute: ReturnType<typeof vi.fn> };
+}
+
+/**
+ * drizzle `sql` 조각의 **리터럴 텍스트만** 이어 붙인다.
+ * 컬럼 객체는 순환 참조라 `JSON.stringify`가 던진다.
+ */
+function renderSqlText(fragment: unknown): string {
+    const chunks = (fragment as { queryChunks?: unknown[] }).queryChunks ?? [];
+    return chunks
+        .map((chunk) =>
+            typeof chunk === 'string'
+                ? chunk
+                : (chunk as { value?: unknown }).value instanceof Array
+                  ? ((chunk as { value: unknown[] }).value as string[]).join('')
+                  : '',
+        )
+        .join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +818,66 @@ describe('Trades queries', () => {
             await getRecentTrades(db as unknown as Db, 10);
 
             expect(db._chain.limit).toHaveBeenCalledWith(10);
+        });
+    });
+
+    describe('getLastFillTimeBySymbol', () => {
+        it('심볼별 마지막 체결 시각을 ms로 접어 돌려준다', async () => {
+            const db = createMockDb([
+                { symbol: 'AAPL', lastAt: '2026-08-18T13:20:00.000Z' },
+                { symbol: 'TSLA', lastAt: '2026-08-18T14:05:00.000Z' },
+            ]);
+
+            const result = await getLastFillTimeBySymbol(
+                db as unknown as Db,
+                new Date('2026-08-18T13:00:00.000Z'),
+            );
+
+            expect(db._chain.groupBy).toHaveBeenCalled();
+            expect(result.get('AAPL')).toBe(Date.parse('2026-08-18T13:20:00.000Z'));
+            expect(result.get('TSLA')).toBe(Date.parse('2026-08-18T14:05:00.000Z'));
+        });
+
+        it('집계는 SQL에서 skipped·수량0 행을 빼고 창을 자른다 — 감사 행이 실체결을 밀어내지 못한다', async () => {
+            const db = createMockDb([]);
+
+            await getLastFillTimeBySymbol(
+                db as unknown as Db,
+                new Date('2026-08-18T13:00:00.000Z'),
+            );
+
+            const sqlText = renderSqlText(db._chain.where.mock.calls[0]![0]);
+            expect(sqlText).toContain('skipped');
+            expect(sqlText).toContain('> 0');
+        });
+
+        it('파싱 불가한 시각은 버린다', async () => {
+            const db = createMockDb([{ symbol: 'AAPL', lastAt: 'not-a-date' }]);
+
+            const result = await getLastFillTimeBySymbol(db as unknown as Db, new Date());
+
+            expect(result.size).toBe(0);
+        });
+    });
+
+    describe('getNeedsReviewSymbols', () => {
+        it('needs_review 상태의 심볼만 중복 없이 돌려준다', async () => {
+            const db = createMockDb([{ symbol: 'AAPL' }, { symbol: 'NVDA' }]);
+
+            const result = await getNeedsReviewSymbols(
+                db as unknown as Db,
+                new Date('2026-08-17T00:00:00.000Z'),
+            );
+
+            expect(db.selectDistinct).toHaveBeenCalled();
+            expect(result).toEqual(['AAPL', 'NVDA']);
+            expect(renderSqlText(db._chain.where.mock.calls[0]![0])).toContain('needs_review');
+        });
+
+        it('없으면 빈 배열', async () => {
+            const db = createMockDb([]);
+
+            expect(await getNeedsReviewSymbols(db as unknown as Db, new Date())).toEqual([]);
         });
     });
 
