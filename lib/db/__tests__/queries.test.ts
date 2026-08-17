@@ -640,6 +640,18 @@ describe('Positions queries', () => {
             expect(result).toBe(false);
         });
 
+        it('동수량은 매칭하지 않는다 (`>`) — 수량 0짜리 open 행을 남기지 않는다', async () => {
+            const db = createMockDb({ rowCount: 1 } as any);
+
+            await reducePositionQuantity(db as unknown as Db, 1, 3);
+
+            // `>=`면 경합으로 동수량이 됐을 때 quantity 0인 open 행이 남고,
+            // `planExit`이 항상 0을 돌려줘 `exit_deferred`가 영구 반복된다.
+            const sqlText = renderSqlText(db.execute.mock.calls[0]![0]);
+            expect(sqlText).toContain('quantity >');
+            expect(sqlText).not.toContain('quantity >=');
+        });
+
         it('returns false when rowCount is undefined (defensive)', async () => {
             const db = createMockDb({} as any);
 
@@ -849,6 +861,10 @@ describe('Trades queries', () => {
             const sqlText = renderSqlText(db._chain.where.mock.calls[0]![0]);
             expect(sqlText).toContain('skipped');
             expect(sqlText).toContain('> 0');
+            // side 필터가 없어야 한다 — **매도도 쿨다운을 건다.** 매수만 보면 손절
+            // 10분 뒤 같은 분석으로 재매수가 가능하다.
+            expect(sqlText).not.toContain("'buy'");
+            expect(sqlText).not.toContain("'sell'");
         });
 
         it('파싱 불가한 시각은 버린다', async () => {

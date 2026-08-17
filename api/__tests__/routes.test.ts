@@ -1611,10 +1611,32 @@ describe('GET /api/health', () => {
 
         const data = await res.json();
         expect(data.status).toBe('ok');
-        // 이미지 빌드가 심는 값 (`APP_VERSION`). 없으면 'unknown' — 하드코딩된 '0.1.0'은
-        // 실제 배포 버전과 무관해 "어떤 빌드가 도는지"를 말해주지 못했다.
-        expect(data.version).toBe(process.env.APP_VERSION ?? 'unknown');
         expect(typeof data.timestamp).toBe('string');
+    });
+
+    it('version은 이미지 태그(APP_VERSION)를 그대로 낸다', async () => {
+        // 하드코딩된 '0.1.0'은 실제 배포 버전과 무관해 "어떤 빌드가 도는지"를 말해주지
+        // 못했다 — 배포 검증이 "포트가 열렸다" 이상을 확인하지 못한 이유의 절반.
+        const original = process.env.APP_VERSION;
+        process.env.APP_VERSION = 'v9.9.9-test';
+        try {
+            const res = await handler(makeRequest('https://example.com/api/health'));
+            expect((await res.json()).version).toBe('v9.9.9-test');
+        } finally {
+            if (original === undefined) delete process.env.APP_VERSION;
+            else process.env.APP_VERSION = original;
+        }
+    });
+
+    it('APP_VERSION이 없으면 unknown', async () => {
+        const original = process.env.APP_VERSION;
+        delete process.env.APP_VERSION;
+        try {
+            const res = await handler(makeRequest('https://example.com/api/health'));
+            expect((await res.json()).version).toBe('unknown');
+        } finally {
+            if (original !== undefined) process.env.APP_VERSION = original;
+        }
     });
 
     it('rejects non-GET methods', async () => {

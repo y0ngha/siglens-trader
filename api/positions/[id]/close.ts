@@ -71,17 +71,33 @@ async function handler(req: Request): Promise<Response> {
      * (`=== 'auto'`)은 그 사실과 어긋나 semi_auto에 유령 보유를 그대로 남겨 뒀다.
      * `dry_run`만 시뮬레이션이므로 DB만 기록한다.
      */
-    const placesLiveOrder = tradingMode !== 'dry_run';
+    // `{ force: true }` — 브로커 주문 없이 DB 포지션만 닫는 관리자 경로.
+    //
+    // 브로커에는 이미 없는데 DB에만 남은 행(과거 유령 보유, 수동 매도)을 정리할 방법이
+    // 있어야 한다. 아래 매도가능 수량 가드가 그 행을 영구히 닫지 못하게 만들기 때문에
+    // 명시적 탈출구를 둔다. 기본은 false — 실수로 장부만 닫는 일이 없게.
+    const forceDbOnly = (body as Record<string, unknown>)?.force === true;
+    const placesLiveOrder = tradingMode !== 'dry_run' && !forceDbOnly;
     let clientOrderId: string | undefined;
     let sellQuantity = position.quantity;
     /** 체결이 확정된 주문의 멱등키. 트랜잭션 안에서 `filled`로 확정하기 위해 들고 나온다. */
     let filledOrderKey: string | undefined;
     if (placesLiveOrder) {
-        // 같은 심볼의 매도가 이미 브로커에 떠 있으면 두 번째 전량 매도를 내지 않는다.
-        // 결말이 확정되지 않은 주문(`error` 포함)까지 in-flight로 보는 것이 핵심 —
+        // 같은 심볼의 매도가 이미 브로커에 떠 있으면 두 번째 전량 매도를 내지 않는다 —
         // 버튼 더블클릭이나 미체결 상태의 재클릭이 그대로 네이키드 숏이 된다.
+        //
+        // 판정 범위는 execute의 **매도** 가드와 같은 세 상태로 좁힌다. `error`(결말 미확정)를
+        // 포함하면 브로커 조회가 막힌 30분 동안 수동 청산이 통째로 불가능해진다 — 진입을
+        // 막는 것과 달리 청산을 막는 것은 원칙 7 위반이다. 매수 쪽만 `error`를 센다.
         const inflight = await getPendingSubmittedOrders(db);
-        if (inflight.some((o) => o.symbol === position.symbol && o.side === 'sell')) {
+        if (
+            inflight.some(
+                (o) =>
+                    o.symbol === position.symbol &&
+                    o.side === 'sell' &&
+                    ['submitted', 'pending', 'partial'].includes(o.status),
+            )
+        ) {
             return Response.json(
                 {
                     error: `${position.symbol} 매도 주문이 이미 진행 중입니다. 체결/취소가 확정된 뒤 다시 시도하세요.`,
@@ -98,7 +114,7 @@ async function handler(req: Request): Promise<Response> {
             if (clamped <= 0) {
                 return Response.json(
                     {
-                        error: `${position.symbol} 매도 가능 수량이 없습니다 (브로커 보유 ${sellable}).`,
+                        error: `${position.symbol} 매도 가능 수량이 없습니다 (브로커 보유 ${sellable}). 브로커에 실제로 없는 포지션이면 { "force": true }로 장부만 닫으세요.`,
                     },
                     { status: 409 },
                 );
@@ -196,7 +212,7 @@ async function handler(req: Request): Promise<Response> {
                 quantity: sellQuantity,
                 price: closePrice,
                 executedAt: new Date(),
-                reason: '수동 청산',
+                reason: forceDbOnly ? '수동 청산 (강제 — 브로커 주문 없음)' : '수동 청산',
                 // 실제 모드를 기록한다. 종전에는 `'semi_auto'` 하드코딩이라 dry_run에서 누른
                 // 청산까지 `getTodayRealizedPnl`에 섞여 실계좌 손실 차단기를 오염시켰다.
                 mode: tradingMode,

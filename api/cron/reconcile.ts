@@ -26,6 +26,16 @@ import { isUsTradingDay } from '@y0ngha/siglens-core';
 /** Orders older than 30 minutes are considered timed out. */
 const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
 
+/**
+ * 취소가 계속 실패하는 주문을 사람에게 넘기는 나이 상한 (6시간).
+ *
+ * 취소 성공을 확인하기 전에는 종료 상태로 넘기지 않는 것이 원칙이지만, 브로커 조회와
+ * 취소가 **같은 이유로** 계속 실패하면(엔드포인트 변경, 계정 잠금) 그 행은 영원히
+ * in-flight로 남아 그 심볼의 신규 매수를 무기한 막고 10분마다 메일을 보낸다.
+ * 한 세션(6.5시간)에 못 풀면 자동화가 할 수 있는 일은 없다.
+ */
+const CANCEL_RETRY_LIMIT_MS = 6 * 60 * 60 * 1000;
+
 /** Quantity comparison tolerance for holdings reconciliation (fractional US shares). */
 const HOLDINGS_QTY_EPSILON = 0.01;
 
@@ -115,6 +125,33 @@ async function handler(req: Request): Promise<Response> {
 
             await notifyError(subject, body);
             results.push({ id: order.id, symbol: order.symbol, action: 'timeout', detail });
+        };
+
+        /**
+         * 취소 실패 처리. 기본은 **상태 유지 + 다음 실행 재시도** — 살아 있을지 모르는
+         * 주문을 종료 상태로 넘기지 않는다. 다만 `CANCEL_RETRY_LIMIT_MS`를 넘기면
+         * `needs_review`로 종결한다: 그때까지 안 풀린 것은 자동화가 풀 수 없고, 영원히
+         * in-flight로 두면 그 심볼의 신규 매수가 무기한 막히고 메일이 10분마다 나간다.
+         */
+        const handleCancelFailure = async (order: (typeof submitted)[number], age: number) => {
+            const giveUp = age > CANCEL_RETRY_LIMIT_MS;
+            if (giveUp) {
+                await updateOrderTracking(db, order.idempotencyKey, {
+                    status: 'needs_review',
+                    resolvedAt: new Date(),
+                });
+            }
+            await notifyError(
+                `주문 취소 실패: ${order.symbol}`,
+                giveUp
+                    ? `${order.side} 주문 ${order.tossOrderId} 취소가 ${Math.round(age / 3_600_000)}시간째 실패해 수동 확인(needs_review)으로 넘깁니다. 브로커 계좌를 직접 확인하세요.`
+                    : `${order.side} 주문 ${order.tossOrderId} 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다.`,
+            );
+            results.push({
+                id: order.id,
+                symbol: order.symbol,
+                action: giveUp ? 'needs_review' : 'cancel_failed',
+            });
         };
 
         let brokerPollFailures = 0;
@@ -313,15 +350,7 @@ async function handler(req: Request): Promise<Response> {
                                 return false;
                             });
                         if (!canceled) {
-                            await notifyError(
-                                `주문 취소 실패: ${order.symbol}`,
-                                `${order.side} 주문 ${order.tossOrderId} 취소에 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다.`,
-                            );
-                            results.push({
-                                id: order.id,
-                                symbol: order.symbol,
-                                action: 'cancel_failed',
-                            });
+                            await handleCancelFailure(order, age);
                             continue;
                         }
                         await timeoutOrder(order, age);
@@ -349,15 +378,7 @@ async function handler(req: Request): Promise<Response> {
                             return false;
                         });
                     if (!canceled) {
-                        await notifyError(
-                            `주문 취소 실패: ${order.symbol}`,
-                            `${order.side} 주문 ${order.tossOrderId} 는 조회도 취소도 실패했습니다. 상태를 유지하고 다음 실행에서 다시 시도합니다. 브로커 계좌를 직접 확인하세요.`,
-                        );
-                        results.push({
-                            id: order.id,
-                            symbol: order.symbol,
-                            action: 'cancel_failed',
-                        });
+                        await handleCancelFailure(order, age);
                         continue;
                     }
                 }

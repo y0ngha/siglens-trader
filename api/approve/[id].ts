@@ -175,6 +175,16 @@ async function handler(req: Request): Promise<Response> {
                     if (sellable != null) {
                         const clamped = Math.min(actualQuantity, Math.floor(sellable));
                         if (clamped <= 0) {
+                            // 주문을 내기 **전**이라 결말이 확정돼 있다(아무것도 안 나갔다).
+                            // 되살리지 않으면 `approved` 상태로 고착돼 재승인도
+                            // (`status !== 'pending'` 409) 만료도(`expireOldPendingOrders`는
+                            // `pending`만 본다) 불가능해진다. 킬 스위치·한도 분기와 같은 처리.
+                            await revertPendingOrder(db, id).catch((err) =>
+                                console.error(
+                                    `[approve] Failed to revert pending order ${id}:`,
+                                    err,
+                                ),
+                            );
                             return Response.json(
                                 {
                                     error: `${order.symbol} 매도 가능 수량이 없습니다 (브로커 보유 ${sellable}).`,

@@ -384,15 +384,40 @@ describe('POST /api/positions/[id]/close — auto 모드', () => {
         expect(mockExecuteSellOrder).not.toHaveBeenCalled();
     });
 
-    it('결말 미확정(error) 주문도 in-flight로 본다', async () => {
+    it('결말 미확정(error) 매도는 청산을 막지 않는다 — 청산을 막는 가드는 원칙 7 위반', async () => {
+        // execute의 매도 가드와 같은 세 상태만 본다. `error`까지 막으면 브로커 조회가
+        // 실패한 30분 동안 수동 청산이 통째로 불가능해진다.
         mockGetPendingSubmittedOrders.mockResolvedValue([
             { symbol: 'AAPL', side: 'sell', status: 'error' },
         ]);
+        mockExecuteSellOrder.mockResolvedValue({
+            orderId: 'ord-12',
+            clientOrderId: 'coid-12',
+            status: 'filled',
+            avgFilledPrice: 150,
+            filledQuantity: 10,
+        });
 
         const res = await handler(makeRequest('https://example.com/api/positions/1/close'));
 
-        expect(res.status).toBe(409);
+        expect(res.status).toBe(200);
+        expect(mockExecuteSellOrder).toHaveBeenCalled();
+    });
+
+    it('force: true면 브로커 주문 없이 장부만 닫는다 — 매도가능 0에 갇힌 유령 행 정리용', async () => {
+        mockGetSellableQuantity.mockResolvedValue(0);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/positions/1/close', 'POST', { force: true }),
+        );
+
+        expect(res.status).toBe(200);
         expect(mockExecuteSellOrder).not.toHaveBeenCalled();
+        expect(mockClosePosition).toHaveBeenCalledWith(fakeDb, 1, 150);
+        expect(mockInsertTrade).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ reason: '수동 청산 (강제 — 브로커 주문 없음)' }),
+        );
     });
 });
 

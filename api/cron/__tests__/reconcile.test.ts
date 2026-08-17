@@ -790,6 +790,25 @@ describe('reconcile cron handler', () => {
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'cancel_failed' }]);
         });
 
+        it('취소 실패가 6시간을 넘으면 needs_review로 종결한다 — 영구 in-flight를 만들지 않는다', async () => {
+            // 계속 in-flight로 두면 그 심볼의 신규 매수가 무기한 막히고 10분마다 메일이 나간다.
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                oldOrderWith({ submittedAt: new Date(Date.now() - 7 * 60 * 60 * 1000) }),
+            ]);
+            mockGetOrder.mockRejectedValue(new Error('broker down'));
+            mockCancelOrder.mockRejectedValue(new Error('cancel failed'));
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'needs_review' }]);
+        });
+
         it('getOrder throws (null) → 취소를 확인한 뒤에만 age-based timeout으로 확정한다', async () => {
             mockGetPendingSubmittedOrders.mockResolvedValue([oldOrderWith()]);
             mockGetOrder.mockRejectedValue(new Error('broker down'));

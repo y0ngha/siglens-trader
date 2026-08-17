@@ -5595,6 +5595,84 @@ describe('execute cron handler', () => {
             expect(mockCreateOrderTracking).not.toHaveBeenCalled();
         });
 
+        it('결말 미확정(error) 매수도 in-flight로 본다 — 두 번째 매수를 내지 않는다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            // POST 타임아웃·멱등키 충돌은 "브로커가 안 받았다"가 아니라 "결말을 모른다"다.
+            // 종전에는 이 행을 없는 셈 치고 새 clientOrderId로 두 번째 매수를 냈다.
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'AAPL', side: 'buy', status: 'error' },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual({
+                symbol: 'AAPL',
+                action: 'pending_order_in_progress',
+                score: 80,
+            });
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+        });
+
+        it('needs_review가 남은 심볼은 신규 매수를 막는다 — 미기록 보유분에 예산이 다시 열린다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([]);
+            mockGetNeedsReviewSymbols.mockResolvedValue(['AAPL']);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(body.decisions).toContainEqual(
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    action: 'pending_order_in_progress',
+                }),
+            );
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            // 사유는 감사 행에 남는다 — 응답은 `publicDecision`이 detail을 떼고 낸다.
+            const auditRows = mockInsertCronDecisions.mock.calls.at(-1)?.[3] as Array<{
+                action: string;
+                detail?: unknown;
+            }>;
+            expect(auditRows).toContainEqual(
+                expect.objectContaining({
+                    action: 'pending_order_in_progress',
+                    detail: { needsReview: true },
+                }),
+            );
+        });
+
+        it('needs_review 조회가 실패해도 실행은 계속된다', async () => {
+            mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+            mockMakeTradeDecision.mockReturnValue({
+                action: 'buy',
+                symbol: 'AAPL',
+                score: 80,
+                reason: 'Score 80/100 — BUY',
+                quantity: 5,
+            });
+            mockGetPendingSubmittedOrders.mockResolvedValue([]);
+            mockGetNeedsReviewSymbols.mockRejectedValue(new Error('db down'));
+
+            const res = await handler(makeRequest(true));
+
+            expect(res.status).toBe(200);
+        });
+
         it('skips watchlist BUY when a partial buy order is in flight', async () => {
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({

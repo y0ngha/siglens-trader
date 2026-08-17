@@ -22,7 +22,6 @@ import {
     createOrderTracking,
     updateOrderTracking,
     getPendingSubmittedOrders,
-    INFLIGHT_ORDER_STATUSES,
     averageIntoPosition,
     getNotificationConfig,
     enqueueNotification,
@@ -871,12 +870,11 @@ async function handler(req: Request): Promise<Response> {
             let pendingBuyExposure = 0;
             const pendingBuyExposureMissingPrice: string[] = [];
             for (const order of pendingSubmittedOrders) {
-                // `error`(결말 미확정)도 노출로 센다 — 브로커가 그 주문을 갖고 있을 수 있고,
-                // 빼면 미확정 주문만큼 `max_total_exposure`를 초과한다.
-                if (
-                    order.side !== 'buy' ||
-                    !(INFLIGHT_ORDER_STATUSES as readonly string[]).includes(order.status)
-                ) {
+                // `getPendingSubmittedOrders`가 `INFLIGHT_ORDER_STATUSES`(= `error` 포함)로
+                // 이미 걸러 온다. `error`(결말 미확정) 매수도 노출로 세는 것이 핵심 —
+                // 브로커가 그 주문을 갖고 있을 수 있어서, 빼면 그만큼 `max_total_exposure`를
+                // 넘긴다. 종전에는 여기서 세 상태로 다시 좁혀 그 주문이 빠졌다.
+                if (order.side !== 'buy') {
                     continue;
                 }
 
@@ -2046,10 +2044,7 @@ async function handler(req: Request): Promise<Response> {
                     // 확정할 때까지 매 틱 반복됐다.
                     if (decision.action === 'buy' || decision.action === 'average_in') {
                         const hasPendingBuy = pendingSubmittedOrders.some(
-                            (o) =>
-                                o.symbol === item.symbol &&
-                                o.side === 'buy' &&
-                                (INFLIGHT_ORDER_STATUSES as readonly string[]).includes(o.status),
+                            (o) => o.symbol === item.symbol && o.side === 'buy',
                         );
                         // 사람이 정리해야 하는 불일치가 남은 심볼도 같은 이유로 막는다:
                         // 브로커에 있는 미기록 주식이 노출 계산에서 빠져 예산이 통째로 다시

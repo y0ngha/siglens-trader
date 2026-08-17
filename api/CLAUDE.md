@@ -264,9 +264,13 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
 `semi_auto`도 승인 경로(`shouldPlaceLiveOrder = semi_auto || auto`)가 실주문을 내므로 그 모드의
 포지션은 실계좌에 실재한다 — DB만 닫으면 손절·강제청산 어디에도 닿지 않는 유령 보유가 된다.
 같은 이유로 이 엔드포인트는 execute의 매도 경로와 같은 가드를 갖는다: 같은 심볼의 in-flight
-매도가 있으면 409(더블클릭이 곧 네이키드 숏이다), `getSellableQuantity` 클램프, 그리고
-체결 확정(`filled`) 기록은 booking 트랜잭션 **안에서** — 밖에 두면 booking이 경합으로 롤백됐을
-때 "trade 없는 filled" 행이 남고 reconcile 자동 복구가 그 행을 근거로 다른 포지션을 건드린다.
+매도(`submitted`/`pending`/`partial` — **`error`는 제외**, 결말 미확정 한 건이 30분 동안 수동
+청산을 막는 것은 원칙 7 위반이다)가 있으면 409, `getSellableQuantity` 클램프, 그리고 체결
+확정(`filled`) 기록은 booking 트랜잭션 **안에서** — 밖에 두면 booking이 경합으로 롤백됐을 때
+"trade 없는 filled" 행이 남고 reconcile 자동 복구가 그 행을 근거로 다른 포지션을 건드린다.
+
+매도가능 수량이 0이면 409지만, 브로커에 실제로 없는 유령 행을 정리할 길이 막히므로
+`{ "force": true }`가 **주문 없이 장부만 닫는** 관리자 경로로 남아 있다(거래 사유에 명시된다).
 
 `POST /api/approve/:id`:
 
@@ -286,7 +290,10 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
    (urgent for sells). This holds on the broker-poll-failure path too: a failed `getOrder` says
    nothing about whether the order is still live, and a terminal `timeout` takes it out of the
    in-flight set forever — a later fill would never reach the books and the next execute tick
-   would place a second order. A failed cancel keeps the row in flight (`cancel_failed`)
+   would place a second order. A failed cancel keeps the row in flight (`cancel_failed`) and is
+   retried, but only for 6 hours: past that the row moves to `needs_review`, because a cancel
+   that has failed for a whole session will not start working, and an eternal in-flight row
+   blocks that symbol's entries forever while mailing every 10 minutes
 4. Run DB consistency check (`checkConsistency`) — find filled orders without matching trades
 5. If inconsistencies found, send alert email
 
@@ -530,6 +537,6 @@ createOrderTracking(submitted) → API call → updateOrderTracking(filled/rejec
   in parallel (`Promise.all`), so its run time is the slowest single symbol, not the sum.
 - Position close uses atomic DB update (`WHERE status = 'open'`) — returns 409 on race condition.
 - Execute and reconcile crons use distributed locks (Redis SETNX) — concurrent invocations return `{ skipped: true }`.
-- Cron runs write a `cron_runs` audit row (`running` → `completed`/`skipped`/`error`). A row stuck in `running` past `CRON_STALE_AFTER_MS` (15 min) belongs to an invocation that timed out before writing its finish row; the next cron invocation finalizes it to `error`/`timeout` via `finalizeStaleCronRuns` (never deletes).
+- Cron runs write a `cron_runs` audit row (`running` → `completed`/`skipped`/`error`). A row stuck in `running` past `CRON_STALE_AFTER_MS` (45 min — must exceed both the longest run and the analysis lock TTL of 30 min, or the sweeper stomps a live run's row) belongs to an invocation that timed out before writing its finish row; the next cron invocation finalizes it to `error`/`timeout` via `finalizeStaleCronRuns` (never deletes).
 - Trade + position mutations are wrapped in DB transactions for atomicity.
 - `health.ts` requires no authentication — designed for uptime monitoring services.

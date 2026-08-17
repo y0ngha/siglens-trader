@@ -292,7 +292,13 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
  * 그건 각 runner의 AbortSignal 몫이고, 이건 실행이 영영 반환하지 않는 것만 막는다.
  */
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
-    if (!Number.isFinite(ms) || ms <= 0) return Promise.reject(new Error('run_deadline'));
+    if (!Number.isFinite(ms) || ms <= 0) {
+        // 인자로 받은 promise에 핸들러를 붙이고 버린다. 안 붙이면 나중에 reject될 때
+        // 미처리 rejection이 되어 Node 22 기본 설정(`--unhandled-rejections=throw`)에서
+        // 프로세스가 죽는다 — 인프로세스 크론이 통째로 멈춘다.
+        void promise.catch(() => {});
+        return Promise.reject(new Error('run_deadline'));
+    }
     let timer: ReturnType<typeof setTimeout>;
     return Promise.race([
         promise,
