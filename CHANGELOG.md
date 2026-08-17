@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.22.0](https://github.com/y0ngha/siglens-trader/compare/v0.21.1...v0.22.0) (2026-08-17)
+
+
+### Features
+
+* technical 분석 추론을 다시 켠다 + 실행 컷오프·락 TTL 재산정 ([4b02207](https://github.com/y0ngha/siglens-trader/commit/4b02207fc337763b21485be983e80977b932dbb3))
+
 ## [0.21.1](https://github.com/y0ngha/siglens-trader/compare/v0.21.0...v0.21.1) (2026-08-17)
 
 
