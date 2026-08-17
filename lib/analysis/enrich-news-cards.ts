@@ -12,7 +12,9 @@ export const NEWS_ENRICH_LIMIT = 10;
 export const NEWS_ENRICH_CONCURRENCY = 3;
 // 풀 전반의 누적 실패 상한(성공해도 리셋되지 않는 합산 카운터). LLM down/rate-limit storm 시 조기 종료.
 export const ENRICH_TOTAL_FAILURE_LIMIT = 6;
-export const CARD_MODEL_ID = 'gemini-2.5-flash-lite';
+// core의 NEWS_CARD_MODEL_ID와 같은 값. core가 루트에서 export하지 않아 여기 복제한다
+// (news_cards.model_id 라벨 용도 — core가 모델을 바꾸면 이 값도 따라가야 한다).
+export const CARD_MODEL_ID = 'deepseek-v4-flash';
 
 export async function enrichNewsCards(
     store: NewsCardStore,
@@ -46,9 +48,9 @@ export async function enrichNewsCards(
             ? AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()))
             : undefined;
         try {
+            // reasoning off는 core 0.47이 내부에서 강제한다 (구 `thinkingBudget: 0` 자리).
             const outcome = await runNewsCardAnalysis({
                 item,
-                thinkingBudget: 0,
                 signal: cardSignal,
             });
             if (outcome.status !== 'done') {

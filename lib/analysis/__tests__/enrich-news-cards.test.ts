@@ -234,12 +234,16 @@ describe('enrichNewsCards', () => {
         errorSpy.mockRestore();
     });
 
-    it('run 호출 시 thinkingBudget: 0 전달', async () => {
+    // reasoning off는 core 0.47이 내부에서 강제한다. 호출부가 다시 인자로 넘기면
+    // deepseek 분기에서 조용히 무시되므로, 되돌아오는 것을 여기서 막는다.
+    it('run 호출에 thinkingBudget을 넘기지 않는다', async () => {
         mockGetCards.mockResolvedValueOnce(new Map());
         mockRun.mockImplementation(async () => ({ status: 'done', result: card('ok') }));
         const { enrichNewsCards } = await import('../enrich-news-cards');
         await enrichNewsCards(fakeStore, 'NVDA', [makeNews('n1')], { deadlineMs: Infinity });
-        expect(mockRun).toHaveBeenCalledWith(expect.objectContaining({ thinkingBudget: 0 }));
+        expect(mockRun).toHaveBeenCalledWith(
+            expect.not.objectContaining({ thinkingBudget: expect.anything() }),
+        );
     });
 
     it('빈 news 입력 → 빈 배열, run/upsert 모두 호출 없음', async () => {
