@@ -733,21 +733,25 @@ async function handler(req: Request): Promise<Response> {
                 return Response.json({ skipped: true, reason: 'empty_watchlist' });
             }
 
+            /**
+             * 포지션의 **투입 원가**. 노출 한도(`max_position_size` / `max_total_exposure`)의
+             * 단위는 평가액이 아니라 투자 금액이다.
+             *
+             * 종전에는 현재가 × 수량이었다. 그러면 가격이 내릴수록 남은 예산이 커진다 —
+             * 한도 $1,000에 $100로 10주를 산 뒤 주가가 $50이 되면 평가액이 $500이 되어
+             * "예산 $500이 남았다"가 되고, 원가로는 이미 $1,000을 다 쓴 상태인데 10주를
+             * 더 살 수 있다. $25에서 또 반복하면 한도 $1,000짜리 종목에 원가 $2,000 이상이
+             * 들어간다. 한도가 실제로는 아무것도 한정하지 못했다.
+             *
+             * 원가 기준이면 그 경로가 산술적으로 닫힌다. 부수 효과로 이 루프의 시세 조회가
+             * 통째로 사라진다 — 원가는 DB에 이미 있다.
+             */
+            const costBasisOf = (p: { avgPrice: unknown; quantity: number }) =>
+                safeNumber(Number(p.avgPrice), 0) * p.quantity;
+
             let currentExposure = 0;
             for (const p of openPositions) {
-                let priceForExposure = safeNumber(Number(p.avgPrice), 0);
-                try {
-                    const liveExposure = await fetchLivePrice(p.symbol).catch(() => null);
-                    if (liveExposure && liveExposure > 0) {
-                        priceForExposure = liveExposure;
-                    } else {
-                        const marketPrice = await snapshotPriceOf(p.symbol);
-                        if (marketPrice > 0) priceForExposure = marketPrice;
-                    }
-                } catch {
-                    // Fall back to avgPrice when analysis data is unavailable
-                }
-                currentExposure += priceForExposure * p.quantity;
+                currentExposure += costBasisOf(p);
             }
 
             // Track symbols closed by stop-loss in this cron run to prevent immediate re-buy
@@ -1097,7 +1101,9 @@ async function handler(req: Request): Promise<Response> {
                             account: {
                                 availableCashUsd: remainingBuyingPower,
                                 maxPositionSize,
-                                symbolExposure: currentPrice * position.quantity,
+                                // 예산 단위와 같아야 모델이 `## 계좌 상태`와 `## 예산`을
+                                // 대조할 수 있다 — 둘이 다른 단위면 숫자가 서로 어긋나 보인다.
+                                symbolExposure: costBasisOf(position),
                                 currentExposure,
                                 maxTotalExposure,
                                 todayRealizedPnl: todayPnl,
@@ -1275,7 +1281,9 @@ async function handler(req: Request): Promise<Response> {
                                         )
                                         .catch((err) => console.error('[email] send failed:', err));
                                 }
-                                currentExposure -= currentPrice * exitQty;
+                                // 노출은 원가 단위이므로 판 가격이 아니라 그 주식의 원가만큼 줄인다.
+                                currentExposure -=
+                                    safeNumber(Number(position.avgPrice), 0) * exitQty;
                                 if (currentExposure < 0) currentExposure = 0;
                             } catch (txErr) {
                                 if (
@@ -1532,7 +1540,9 @@ async function handler(req: Request): Promise<Response> {
                                         resolvedAt: new Date(),
                                     });
                                 });
-                                currentExposure -= filledSellPrice * actualExitQty;
+                                // 위와 같은 이유 — 체결가가 아니라 원가만큼 줄인다.
+                                currentExposure -=
+                                    safeNumber(Number(position.avgPrice), 0) * actualExitQty;
                             } catch (txErr) {
                                 if (
                                     txErr instanceof Error &&
@@ -1595,19 +1605,11 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
-            // Recalculate exposure after position closures using cached market prices
+            // Recalculate exposure after position closures (cost basis — see `costBasisOf`).
             const updatedPositions = await getOpenPositions(db);
             currentExposure = 0;
             for (const p of updatedPositions) {
-                let priceForRecalc = safeNumber(Number(p.avgPrice), 0);
-                const cachedRecalc = priceCache.get(p.symbol);
-                if (cachedRecalc && cachedRecalc > 0) {
-                    priceForRecalc = cachedRecalc;
-                } else {
-                    const recalcPrice = await snapshotPriceOf(p.symbol);
-                    if (recalcPrice > 0) priceForRecalc = recalcPrice;
-                }
-                currentExposure += priceForRecalc * p.quantity;
+                currentExposure += costBasisOf(p);
             }
             currentExposure += pendingBuyExposure;
 
@@ -1746,8 +1748,9 @@ async function handler(req: Request): Promise<Response> {
                     // planEntry folds in the per-symbol cap, the total-exposure cap and (auto
                     // only) real cash, which is why the old average_in-specific cap block that
                     // used to live further down is gone — it was the same arithmetic twice.
+                    // 종목 노출도 원가다. 현재가 기준이면 가격이 내릴수록 예산이 늘어난다.
                     const existingSymbolExposure = existingPosition
-                        ? currentPrice * existingPosition.quantity
+                        ? costBasisOf(existingPosition)
                         : 0;
                     const entryPlanInputs = {
                         price: currentPrice,

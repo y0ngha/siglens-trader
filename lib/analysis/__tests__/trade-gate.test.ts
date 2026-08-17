@@ -1879,15 +1879,16 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
 });
 
 describe('buildTradeGatePrompt — 추가 매수 방향', () => {
-    it('평단 아래 진입이면 물타기임과 예산이 커진 이유를 못박는다', () => {
+    it('평단 아래 진입이면 물타기임과 손절선이 함께 내려간다는 사실을 못박는다', () => {
         const { user } = buildTradeGatePrompt(
             baseInput({ price: 80, position: { quantity: 10, avgPrice: 100 } }),
         );
 
         expect(user).toContain('평단 아래 추가 매수(물타기)');
-        // 모델이 계산으로 얻을 수 없는 사실 — 예산 증가는 기회가 아니라 평가액 감소의 결과다.
-        expect(user).toContain('예산 증가는 기회의 증가가 아니라');
+        // 모델이 계산으로 얻을 수 없는 사실 — 고정 손절선의 기준이 평단이라는 것.
         expect(user).toContain('손절선을 함께 아래로 옮긴다');
+        // 노출 한도가 원가 기준이 된 뒤로는 "가격이 내려 예산이 늘었다"가 사실이 아니다.
+        expect(user).not.toContain('예산이 늘어나지는 않는다면');
     });
 
     it('평단 위 진입이면 불타기로 표기한다', () => {

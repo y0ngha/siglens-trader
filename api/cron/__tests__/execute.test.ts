@@ -2189,7 +2189,7 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('exposure calculation', () => {
-        it('calculates currentExposure using current market prices', async () => {
+        it('calculates currentExposure from cost basis, not market value', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 // High loss limit so unrealized PnL check does not short-circuit
                 if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
@@ -2200,7 +2200,6 @@ describe('execute cron handler', () => {
                 { symbol: 'MSFT', quantity: 5, avgPrice: '300', status: 'open' },
                 { symbol: 'GOOG', quantity: 2, avgPrice: '150', status: 'open' },
             ]);
-            // All symbols return currentPrice: 150 from fakeTechResult
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
@@ -2213,12 +2212,11 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // currentExposure uses current market price (150) for each position:
-            // MSFT: 5*150 + GOOG: 2*150 = 1050. The sizing gate is the observable that
-            // carries it now that planEntry replaced calculatePositionSize.
+            // 노출은 투입 원가다: MSFT 5×$300 + GOOG 2×$150 = 1800.
+            // 시가 기준이면 가격이 내릴수록 남은 예산이 커져 한도가 아무것도 한정하지 못한다.
             expect(mockRunTradeGate).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    account: expect.objectContaining({ currentExposure: 1050 }),
+                    account: expect.objectContaining({ currentExposure: 1800 }),
                 }),
             );
         });
@@ -2298,7 +2296,8 @@ describe('execute cron handler', () => {
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
             mockGetOpenPositions.mockResolvedValue([
-                { symbol: 'MSFT', quantity: 10, avgPrice: '500', status: 'open' },
+                // 원가 $1,500 — total cap($5,000)이 아니라 종목 예산이 구속조건이 되도록.
+                { symbol: 'MSFT', quantity: 10, avgPrice: '150', status: 'open' },
             ]);
         });
 
@@ -4675,7 +4674,7 @@ describe('execute cron handler', () => {
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // currentPrice = 150
-            // Existing position: 10 shares, currentPrice=150 → exposure = $1500
+            // Existing position: 10 shares @ avg $100 → **원가** 노출 $1,000
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -4695,13 +4694,13 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // maxPositionSize=2000, existingExposure=150*10=1500, remaining=500
-            // 500/150=3.33 → cappedSize=3
+            // maxPositionSize=2000, 원가노출=100*10=1000, remaining=1000
+            // 1000/150=6.67 → cappedSize=6 (게이트 fraction 1 기준)
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
                     symbol: 'AAPL',
-                    quantity: 3, // capped from 5 to 3
+                    quantity: 6, // capped from 5 to 3
                 }),
             );
         });
@@ -4964,17 +4963,16 @@ describe('execute cron handler', () => {
     // -----------------------------------------------------------------------
 
     describe('average-in cap uses currentPrice', () => {
-        it('uses currentPrice for existing exposure calculation', async () => {
+        it('uses cost basis for existing exposure calculation', async () => {
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
                 if (key === 'trading_mode') return Promise.resolve('dry_run');
                 if (key === 'max_position_size') return Promise.resolve(2000);
                 return Promise.resolve(null);
             });
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // price 150
-            // Existing position: 8 shares, avgPrice=$100 but currentPrice=$150
-            // With currentPrice: exposure = 150*8 = $1200 (over $2000 limit - remaining = $800)
-            // With avgPrice: exposure = 100*8 = $800 (remaining = $1200) -- wrong, overstates budget
+            mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult); // 현재가 150
+            // 8주 @ 원가 $100. 노출은 투입 원가 $800이고, 현재가($150) 기준 $1,200이 아니다 —
+            // 한도의 단위가 "투자 금액"이므로 평가액이 오르내려도 이미 쓴 예산은 변하지 않는다.
             mockGetOpenPositionBySymbol.mockResolvedValue({
                 id: 1,
                 symbol: 'AAPL',
@@ -4994,13 +4992,13 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            // maxPositionSize=2000, existingExposure=150*8=1200, remaining=800
-            // 800/150=5.33 → cappedSize=5
+            // maxPositionSize=2000, 원가노출=100*8=800, remaining=1200
+            // 1200/150=8 → cappedSize=8
             expect(mockInsertTrade).toHaveBeenCalledWith(
                 fakeDb,
                 expect.objectContaining({
                     symbol: 'AAPL',
-                    quantity: 5, // capped using currentPrice exposure
+                    quantity: 8, // 원가 기준 잔여 예산으로 캡
                 }),
             );
         });
@@ -8469,5 +8467,104 @@ describe('execute cron handler', () => {
                 );
             });
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 노출 단위 = 투입 원가
+// ---------------------------------------------------------------------------
+
+describe('execute cron — 노출은 원가 기준', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-24T15:30:00.000Z'));
+        setupDefaults();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('가격이 반토막나도 종목 예산이 늘어나지 않는다', async () => {
+        // 한도 $1,000 / 원가 $100 × 10주 = 예산 소진. 현재가가 $50이 되어도 그대로다.
+        // 시가 기준이던 시절에는 평가액이 $500으로 줄며 예산 $500이 "생겨" 10주를 더 살 수
+        // 있었고, $25에서 반복하면 한도 $1,000짜리 종목에 원가 $2,000 이상이 들어갔다.
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+            if (key === 'trading_mode') return Promise.resolve('dry_run');
+            if (key === 'max_position_size') return Promise.resolve(1000);
+            if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
+            return Promise.resolve(null);
+        });
+        setLivePrice(50);
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+        mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+        mockGetOpenPositionBySymbol.mockResolvedValue({
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        });
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+        ]);
+        mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+        mockMakeTradeDecision.mockReturnValue({
+            action: 'average_in',
+            symbol: 'AAPL',
+            score: 80,
+            reason: 'AVERAGE_IN',
+            quantity: 10,
+        });
+
+        const body = await (await handler(makeRequest(true))).json();
+
+        // 원가 노출 $1,000 = 한도 → 예산 0. 게이트는 호출조차 되지 않는다(예산 0이면
+        // 어차피 주문이 안 나가므로 LLM 호출을 태우지 않는 기존 설계).
+        expect(mockRunTradeGate).not.toHaveBeenCalled();
+        expect(body.decisions).toContainEqual(
+            expect.objectContaining({ symbol: 'AAPL', action: 'symbol_limit_reached' }),
+        );
+    });
+
+    it('가격이 올라도 종목 예산이 줄어들지 않는다', async () => {
+        // 대칭 확인 — 평가액이 커졌다고 이미 쓴 예산이 늘어나는 것도 아니다.
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+            if (key === 'trading_mode') return Promise.resolve('dry_run');
+            if (key === 'max_position_size') return Promise.resolve(2000);
+            if (key === 'max_daily_loss_usd') return Promise.resolve(999_999);
+            return Promise.resolve(null);
+        });
+        setLivePrice(200);
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+        mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+        mockGetOpenPositionBySymbol.mockResolvedValue({
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 5,
+            avgPrice: '100',
+            status: 'open',
+        });
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 1, symbol: 'AAPL', quantity: 5, avgPrice: '100', status: 'open' },
+        ]);
+        mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+        mockMakeTradeDecision.mockReturnValue({
+            action: 'average_in',
+            symbol: 'AAPL',
+            score: 80,
+            reason: 'AVERAGE_IN',
+            quantity: 5,
+        });
+
+        await handler(makeRequest(true));
+
+        // 원가 $500 (시가라면 $1,000). 남은 예산 $1,500 / $200 = 7주.
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ symbolExposure: 500 }),
+                budget: expect.objectContaining({ maxQuantity: 7 }),
+            }),
+        );
     });
 });

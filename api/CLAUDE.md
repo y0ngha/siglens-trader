@@ -249,10 +249,16 @@ real buying power (`auto` only), which `calculatePositionSize` never did — e.g
 cash $250 used to be `skipped_insufficient_cash` (no order) and now buys 2 shares. This is
 intentional (fewer broker rejections) and applies with the gate off too.
 
-**종목당 최대 투자 금액 (`max_position_size`) is a market-value cap, not a cost cap.**
-`existingSymbolExposure` is `currentPrice × quantity`, so a falling price frees budget back up
-and total cost basis can exceed the configured limit (e.g. buying at $100 → $50 → $25 under a
-$1000 cap reaches $2000 of cost). Pre-existing arithmetic, deliberately unchanged.
+**노출 한도는 투입 원가 기준이다 (2026-08-17 변경).** `existingSymbolExposure`와
+`currentExposure`는 `avgPrice × quantity`, 즉 **투자 금액**이다. 종전에는 `currentPrice ×
+quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이 커진다: 한도 $1,000에 $100로 10주를
+산 뒤 주가가 $50이 되면 평가액 $500 → "예산 $500 남음"이 되어 10주를 더 살 수 있고, $25에서
+반복하면 한도 $1,000짜리 종목에 원가 $2,000 이상이 들어갔다. 한도가 실제로 아무것도 한정하지
+못한 것이다. 설정 라벨("종목당 최대 **투자 금액**")과도 어긋났다.
+
+부수 효과로 노출 계산 루프의 시세 조회가 사라졌다 — 원가는 DB에 이미 있다. 청산 시에도 판
+가격이 아니라 그 주식의 **원가**만큼 노출을 줄인다. 미실현 손익 차단기는 별개다: 그쪽은
+평가액을 봐야 하므로 여전히 실시간 시세를 쓴다.
 
 ## Reconcile Cron Flow
 
