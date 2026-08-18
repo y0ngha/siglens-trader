@@ -6,7 +6,7 @@ import { enrichNewsCards } from './enrich-news-cards.js';
 import {
     ANALYSIS_TIER,
     DEFAULT_ANALYSIS_REASONING,
-    PER_SYMBOL_MAX_MS,
+    symbolSignal,
     toErrStr,
     type AnalysisRunResult,
     type RunAnalysisOptions,
@@ -42,11 +42,8 @@ export async function runNewsAnalysis(options: RunAnalysisOptions): Promise<Anal
             lastUpdated: r.lastUpdated ?? new Date().toISOString(),
         }));
 
-        // 심볼 단위 타임아웃: 남은 deadline과 PER_SYMBOL_MAX_MS 중 작은 값.
-        const remaining = Number.isFinite(deadlineMs)
-            ? Math.max(0, deadlineMs - Date.now())
-            : PER_SYMBOL_MAX_MS;
-        const signal = AbortSignal.timeout(Math.min(remaining, PER_SYMBOL_MAX_MS));
+        // 심볼 단위 상한은 없다 — 실행 마감까지가 이 호출의 예산이다.
+        const signal = symbolSignal(options.deadlineMs);
 
         const outcome = await coreRunNewsAnalysis({
             symbol: options.symbol,

@@ -93,6 +93,14 @@ describe('runTechnicalAnalysis', () => {
         expect(result).toEqual({ status: 'error', error: 'BYOK API key required for this model' });
     });
 
+    it('마감이 있으면 그 시각까지를 예산으로 하는 signal을 넘긴다', async () => {
+        mockedRun.mockResolvedValue({ status: 'cached', result: {}, lockedInfoDepth: [] } as any);
+
+        await runTechnicalAnalysis({ ...baseOptions, deadlineMs: Date.now() + 600_000 });
+
+        expect(mockedRun.mock.calls[0]![5]!.signal).toBeInstanceOf(AbortSignal);
+    });
+
     it('passes correct arguments to runAnalysis', async () => {
         mockedRun.mockResolvedValue({ status: 'cached', result: {}, lockedInfoDepth: [] } as any);
 
@@ -107,8 +115,9 @@ describe('runTechnicalAnalysis', () => {
             marketDataProvider: mockProvider,
             tierContext: { userId: null, tier: 'pro' },
             reasoning: true,
-            // B2: 심볼 단위 AbortSignal이 전달되어야 한다.
-            signal: expect.any(AbortSignal),
+            // 마감이 없는 호출(baseOptions)은 signal도 없다 — 심볼당 상한을 두지 않는다.
+            // 종전 150초 상한은 추론 ON 축에서 타임아웃이 아니라 실패 그 자체였다.
+            signal: undefined,
         });
     });
 });

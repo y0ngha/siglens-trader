@@ -121,10 +121,18 @@ export type TradeGateOutcome =
     | { status: 'error'; error: string; model: string };
 
 /**
- * 호출당 타임아웃 기본값. execute cron은 한 패스에서 최대 ~10회 게이트를 호출하므로
- * 10 × 25s = 250s이고, 기존 execute 작업(가격 조회·주문·DB)과 합쳐도 락 TTL 780s 안에 든다.
+ * 호출당 타임아웃 기본값.
+ *
+ * 25초였다가 추론을 켜면서 올렸다(2026-08-17). 추론 ON 호출은 25초 안에 끝나지 않고,
+ * 그 중단은 예외가 아니라 `finish_reason` 없는 응답으로 돌아와 `AI_SERVER_UNSTABLE`이
+ * 된다 — 분석 축에서 하루 종일 벌어진 그 실패다. 게이트에서 그게 나면 **진입은
+ * fail-closed(주문 없음), 청산은 fail-open(전량 청산)** 이라 더 비싸다.
+ *
+ * 총량은 이 값이 아니라 execute의 게이트 마감(`gateDeadlineMs`, cron 시작 + 600초)이
+ * 정한다. 마감을 넘긴 뒤의 호출은 `gate_skipped_deadline`으로 건너뛰므로, 이 값을 올려도
+ * 실행이 락 TTL(1800초)이나 실행 마감(900초)을 넘기지 않는다.
  */
-const DEFAULT_GATE_TIMEOUT_MS = 25_000;
+const DEFAULT_GATE_TIMEOUT_MS = 120_000;
 
 /** 모델이 아무리 장황해도 감사 로그/메일 본문이 터지지 않도록 자르는 상한. */
 const REASON_MAX_LENGTH = 300;
@@ -1095,11 +1103,15 @@ export async function runTradeGate(input: TradeGateInput): Promise<TradeGateOutc
             // pro tier: free면 서버 키 라우팅이 깨진다(기존 분석 축과 동일).
             tier: ANALYSIS_TIER,
             userApiKey: input.userApiKey,
-            // reasoning:false — execute cron은 780s 락 안에서 게이트를 최대 ~10회 호출한다.
-            // technical/options를 끈 것과 같은 이유로, 추론 ON이면 호출당 수 분까지 늘어나
-            // 한 심볼이 감사 마감을 잡아먹는다. 사이징은 이미 정리된 요약 위에서 내리는
-            // 한 줄짜리 판단이라 장문 추론이 결론을 바꾸지 않는다.
-            reasoning: false,
+            // reasoning:true (2026-08-17). 게이트는 6축 요약·계좌 상태·예산·보유 맥락을
+            // 한꺼번에 놓고 "얼마나"를 정하는 **유일한 판단 지점**이다. 사이징이 한 줄짜리
+            // 결론이라는 것과 그 결론에 이르는 검토가 짧아도 된다는 것은 다른 말이라,
+            // 여기서 아낀 추론이 곧 근거 없는 분수(fraction)가 된다.
+            //
+            // 켠 대가는 지연이고, 그 지연은 위 `DEFAULT_GATE_TIMEOUT_MS`와 execute의
+            // 게이트 마감이 함께 막는다. deepseek 스펙은 `callAnalysisAi`가 오버라이드하므로
+            // 모델이 flash든 pro든 이 플래그가 thinking 여부를 정한다.
+            reasoning: true,
             signal: AbortSignal.timeout(input.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS),
             correlationId: input.correlationId,
             // responseSchema는 쓰지 않는다 — provider마다 스키마 형식이 달라 이식성이 없다.

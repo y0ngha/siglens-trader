@@ -3,20 +3,15 @@ import { fetchOptionsSnapshot } from '../data/yahoo-options.js';
 import {
     ANALYSIS_TIER,
     DEFAULT_ANALYSIS_REASONING,
-    PER_SYMBOL_MAX_MS,
+    symbolSignal,
     toErrStr,
     type AnalysisRunResult,
     type RunAnalysisOptions,
 } from './types.js';
 
 export async function runOptionsAnalysis(options: RunAnalysisOptions): Promise<AnalysisRunResult> {
-    // 심볼 단위 타임아웃: 남은 deadline과 PER_SYMBOL_MAX_MS 중 작은 값.
-    // deadlineMs 미지정 시 PER_SYMBOL_MAX_MS(150s)를 기본 상한으로 사용.
-    const remaining =
-        options.deadlineMs !== undefined && Number.isFinite(options.deadlineMs)
-            ? Math.max(0, options.deadlineMs - Date.now())
-            : PER_SYMBOL_MAX_MS;
-    const signal = AbortSignal.timeout(Math.min(remaining, PER_SYMBOL_MAX_MS));
+    // 심볼 단위 상한은 없다 — 실행 마감까지가 이 호출의 예산이다({@link symbolSignal}).
+    const signal = symbolSignal(options.deadlineMs);
 
     try {
         const snapshot = await fetchOptionsSnapshot(options.symbol);
