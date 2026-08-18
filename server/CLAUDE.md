@@ -75,9 +75,24 @@ symbol then refreshes at 2× the window.
 
 ### Reasoning (상세 분석) policy
 
-Per-type, in `ANALYSIS_REASONING` (`lib/analysis/types.ts`): **options only** runs with reasoning
-off; technical, news, fundamental and congress keep it on. Reasoning is expensive — measured on
-deepseek-v4-flash it pushed a single technical symbol to ~7 minutes (a 148s call truncated to zero
-output, then a 269s retry) — which is what parallel symbols and the 1200s run deadline are sized
-against. Options stays off because its snapshots are hash-keyed and the narrative adds nothing a
-re-analysis before the next bar would use.
+Per-type, in `ANALYSIS_REASONING` (`lib/analysis/types.ts`). **All five axes run with reasoning
+on** as of 2026-08-17 (options was the last holdout).
+
+**There is no per-symbol timeout any more** — the run deadline (`cron start + 1200s`) is the only
+budget, and `symbolSignal()` derives the AbortSignal from it.
+
+The removed 150s cap was not a timeout, it was the failure: it cut the call at ~148s, DeepSeek
+returned a response with **no `finish_reason` instead of throwing**, and core classified that as
+retryable and blew its 240s retry budget — surfacing as `AI_SERVER_UNSTABLE` for a full day. The
+2026-08-10 note that blamed "truncation at 148s" was reading its own timeout: the same call
+finishing in 58s came back `finish_reason: stop` and saved normally. It was not replaced with a
+bigger number because there is no evidence for what that number should be; one budget is easier to
+reason about than two, and `withDeadline` in `_run-analysis-cron.ts` already guarantees the run
+ends.
+
+That cap was **ours, not core's** — core's DeepSeek adapter allows an hour. That is why the
+identical model + reasoning combination works in the siglens web app and failed here.
+
+`reasoning: true` overrides the model spec (`callAnalysisAi`), so `deepseek-v4-flash`
+(`spec.thinking: false`) does think when the policy says so — the model choice and the reasoning
+switch are independent knobs.

@@ -3,13 +3,36 @@ import type { ModelId, Tier, Timeframe, NewsCardAnalysis } from '@y0ngha/siglens
 export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental';
 
 /**
- * 심볼 단위 LLM 타임아웃 상한 (ms).
+ * 이번 심볼에 줄 AbortSignal. **실행 마감 외에 별도 상한을 두지 않는다.**
  *
- * 구 poll-until-done.ts의 MAX_POLL_TIME_MS (150_000) 복원.
- * 직렬 최대 5심볼 × 150s = 750s < lock TTL 780s / maxDuration 800s
- * 각 runner는 남은 deadlineMs와 이 값 중 작은 쪽을 AbortSignal로 전달한다.
+ * 종전에는 심볼당 150초 상한이 따로 있었고, 그게 추론 ON인 축에서 타임아웃이 아니라
+ * 실패 그 자체였다. 2026-08-17 프로덕션 로그:
+ *
+ *   Response time:  58192ms  finish_reason: stop        ← 정상 완료, 저장됨
+ *   Response time: 147395ms  finish_reason: undefined   ← 실패
+ *   Response time: 148596ms  finish_reason: undefined   ← 실패
+ *
+ * 실패가 147.4~148.6초에 몰렸다 — 프로바이더가 끝낸 값이 아니라 우리가 끊은 값이다
+ * (봉 조회 오버헤드를 뺀 150초). DeepSeek 스트림은 중단 시 예외 대신 `finish_reason` 없는
+ * 응답을 돌려주고(같은 8시간 로그에 `AbortError` 0건), core는 그걸 retryable로 분류해
+ * 재시도하려다 예산(240초)에 걸려 `AI_SERVER_UNSTABLE`을 던진다. 프로바이더 장애로
+ * 보이던 것이 전부 자기 타임아웃이었다.
+ *
+ * 상한을 다시 "적당한 큰 값"으로 고쳐 잡지 않는 이유: 그 값이 얼마여야 하는지 알 방법이
+ * 없다. 실측은 58초 성공과 강제중단뿐이라 진짜 필요한 시간의 분포를 모른다. 그래서 예산을
+ * **하나로** 줄인다 — 실행 마감(`analysisDeadlineMs`, cron 시작 + 1200초). 그 마감은
+ * `_run-analysis-cron.ts`의 `withDeadline`이 런 레벨에서도 강제하므로, 심볼 하나가
+ * 매달려도 런은 반드시 끝나고 이 signal이 인플라이트 호출까지 취소한다.
+ *
+ * 마감이 없으면(테스트/수동 호출) signal도 없다 — core의 자체 예산(DeepSeek 어댑터 1시간,
+ * 재시도 wall-clock 240초)만 남는다.
  */
-export const PER_SYMBOL_MAX_MS = 150_000;
+export function symbolSignal(deadlineMs: number | undefined): AbortSignal | undefined {
+    if (deadlineMs === undefined || !Number.isFinite(deadlineMs)) return undefined;
+    // 이미 지났어도 0을 주지 않는다 — 0은 즉시 중단이라 호출이 무의미한 실패로 기록된다.
+    // 마감 판정은 호출부(`withDeadline`)가 한다.
+    return AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
+}
 
 /**
  * Convert any core error value to a plain human-readable string.
@@ -77,18 +100,24 @@ export const DEFAULT_ANALYSIS_REASONING = true;
  *   않으므로 매매는 그대로 돈다. execute는 10분마다 최신 분석을 다시 읽으므로 늦게 도착한
  *   신호도 최대 10분 안에 반영된다.
  *
- * 남는 실질 위험은 truncation 하나다 — 잘린 호출은 시간만 쓰고 출력이 0이다. 재시도
- * 경로가 있고 위 측정에서도 재시도는 성공했지만, 재시도까지 잘리면 그 종목은 그 패스에서
- * 신호를 못 낸다. 그건 주기 저하와 달리 degrade가 아니라 손실이므로, 켠 뒤
- * `cron_runs.durationMs`와 심볼별 `status`를 한 세션 확인할 것.
+ * **위 측정의 "truncation"은 truncation이 아니었다 (2026-08-17 확인).** 프로덕션 로그의
+ * 실패는 전부 147.4~148.6초에서 `finish_reason: undefined`로 끝났다 — 토큰이 넘쳐 잘린
+ * 것이 아니라 트레이더 자신의 150초 `AbortSignal`이 끊은 것이다(같은 8시간 로그에
+ * `AbortError` 0건, 58초에 끝난 호출은 `finish_reason: stop`으로 정상 저장됐다).
+ * DeepSeek 스트림은 중단 시 예외 대신 finish_reason 없는 응답을 돌려주고, core는 그것을
+ * retryable로 분류해 재시도하려다 예산(240초)에 걸려 `AI_SERVER_UNSTABLE`을 던진다.
+ * 그래서 심볼당 상한을 아예 없앴다({@link symbolSignal}) — 추론을 켜는 결정과 그 추론이
+ * 끝날 시간을 주는 결정은 하나여야 하고, 필요한 시간을 모르는 채 정한 숫자는 그 자체가
+ * 실패 원인이 된다. 남은 예산은 실행 마감 하나다.
  *
- * options는 끈 채로 둔다. 옵션 체인 요약은 만기별 OI/IV 집계라 장문 추론이 결론을 바꾸기
- * 어렵고, 한 번에 둘 다 바꾸면 어느 쪽이 원인인지 가릴 수 없다. 시간~일 단위로 도는
- * 축(news/fundamental/congress)은 지연 여유가 있고 서술 품질이 판단에 기여하므로 계속 ON이다.
+ * options도 2026-08-17에 켰다. 옵션 체인 요약은 만기별 OI/IV 집계라 장문 추론이 결론을
+ * 크게 바꾸지 않는다고 봤지만, 축을 하나만 끄고 두면 "왜 이 축만 다른가"를 매번 설명해야
+ * 하고 실제로 판단 근거의 두께가 얇아진다. 켜는 비용은 시간뿐이고(심볼 상한이 사라져
+ * 그 시간이 실패로 바뀌지 않는다), 옵션 cron은 15분마다 돌되 케이던스 창이 잉여 틱을 접는다.
  */
 export const ANALYSIS_REASONING: Readonly<Record<string, boolean>> = {
     technical: true,
-    options: false,
+    options: true,
     news: true,
     fundamental: true,
     congress: true,

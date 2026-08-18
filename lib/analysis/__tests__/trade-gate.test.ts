@@ -1652,7 +1652,7 @@ describe('runTradeGate — 호출 파라미터', () => {
         mockedCall.mockResolvedValue('{"fraction":0.5,"confidence":70,"reason":"x"}');
     });
 
-    it('reasoning:false, tier:pro, model/userApiKey/signal/correlationId를 전달한다', async () => {
+    it('reasoning:true, tier:pro, model/userApiKey/signal/correlationId를 전달한다', async () => {
         await runTradeGate(baseInput({ userApiKey: 'sk-123', correlationId: 'run1-AAPL-entry' }));
 
         expect(mockedCall).toHaveBeenCalledTimes(1);
@@ -1662,7 +1662,9 @@ describe('runTradeGate — 호출 파라미터', () => {
             model: 'deepseek-v4-flash',
             tier: 'pro',
             userApiKey: 'sk-123',
-            reasoning: false,
+            // 사이징은 6축 요약을 한꺼번에 놓고 내리는 유일한 판단이라 추론을 켠다.
+            // deepseek 스펙은 `callAnalysisAi`가 오버라이드하므로 모델과 무관하게 이 값이 정한다.
+            reasoning: true,
             signal: expect.any(AbortSignal),
             correlationId: 'run1-AAPL-entry',
         });
@@ -1674,14 +1676,18 @@ describe('runTradeGate — 호출 파라미터', () => {
         expect(mockedCall.mock.calls[0][0]).not.toHaveProperty('responseSchema');
     });
 
-    it('timeoutMs가 없으면 기본 25s AbortSignal을 만든다', async () => {
+    it('timeoutMs가 없으면 기본 120s AbortSignal을 만든다 — 추론 ON 호출이 25s 안에 끝나지 않는다', async () => {
         vi.useFakeTimers();
         try {
             await runTradeGate(baseInput());
             const signal = mockedCall.mock.calls[0][0].signal!;
 
             expect(signal.aborted).toBe(false);
-            vi.advanceTimersByTime(24_999);
+            // 종전 기본값(25s)에서는 이미 끊겼을 시점 — 그 중단이 예외가 아니라
+            // finish_reason 없는 응답으로 돌아와 `AI_SERVER_UNSTABLE`이 된다.
+            vi.advanceTimersByTime(30_000);
+            expect(signal.aborted).toBe(false);
+            vi.advanceTimersByTime(89_999);
             expect(signal.aborted).toBe(false);
             vi.advanceTimersByTime(2);
             expect(signal.aborted).toBe(true);

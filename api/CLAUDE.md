@@ -199,6 +199,12 @@ broken check.
 `fraction` that `lib/strategy/trade-plan.ts` turns into a share count. Design:
 [`docs/specs/2026-08-12-ai-trade-gate-design.md`](../docs/specs/2026-08-12-ai-trade-gate-design.md) §8–9.
 
+The gate runs with **reasoning on** and a **120s** per-call timeout (2026-08-17). It is the only
+place where the six axes, the account state and the budget are weighed together, so the review that
+produces the fraction is worth paying for; the total is bounded by the gate deadline (cron start +
+600s), not by this timeout. It was 25s with reasoning off, which would now abort mid-thought — and
+a gate abort is expensive in both directions (entry fails closed, exit fails open).
+
 `runTradeGate` **never throws**; branch on the returned `status`, never wrap it in try/catch.
 Config comes from `analysis_model_config['trade_gate']`, which defaults to enabled — the gate
 is live on deploy, and switching it off in 설정 > 분석 설정 restores the old behavior with no

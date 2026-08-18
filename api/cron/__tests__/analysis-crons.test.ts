@@ -450,11 +450,12 @@ describe('createAnalysisCronHandler', () => {
         await handler(makeRequest(true));
         expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
 
-        // options: OFF — 축마다 정책이 다르다는 것이 이 테스트의 대상이다.
+        // 정책 표에 없는 타입은 기본값(ON)을 따른다 — 핸들러가 축 이름으로 정책을
+        // 조회한다는 것이 이 테스트의 대상이다.
         mockRunner.mockClear();
         const optionsHandler = createAnalysisCronHandler('options', mockRunner);
         await optionsHandler(makeRequest(true));
-        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
     });
 
     it('passes a deadlineMs of start + 1200s to the runner', async () => {

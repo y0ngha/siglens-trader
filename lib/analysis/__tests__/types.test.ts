@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { DEFAULT_ANALYSIS_REASONING, getAnalysisReasoning, toErrStr } from '../types';
+import { describe, it, expect, vi } from 'vitest';
+import { DEFAULT_ANALYSIS_REASONING, getAnalysisReasoning, symbolSignal, toErrStr } from '../types';
 
 describe('toErrStr', () => {
     it('plain string → 그대로 반환', () => {
@@ -47,16 +47,47 @@ describe('getAnalysisReasoning', () => {
         expect(getAnalysisReasoning('technical')).toBe(true);
     });
 
-    it('options는 추론을 끈 채로 둔다', () => {
-        // 옵션 체인 요약은 만기별 OI/IV 집계라 장문 추론이 결론을 바꾸기 어렵고,
-        // 한 번에 둘 다 바꾸면 어느 쪽이 원인인지 가릴 수 없다.
-        expect(getAnalysisReasoning('options')).toBe(false);
+    it('options도 추론을 켠다 (2026-08-17)', () => {
+        // 축 하나만 꺼 두면 "왜 이 축만 다른가"를 매번 설명해야 하고, 실제로 판단 근거의
+        // 두께가 얇아진다. 상한이 추론 정책을 따라오므로(getPerSymbolMaxMs) 켜는 비용은
+        // 시간뿐이고, 케이던스 창이 잉여 틱을 접는다.
+        expect(getAnalysisReasoning('options')).toBe(true);
     });
 
-    it('keeps reasoning on where latency is affordable', () => {
-        expect(getAnalysisReasoning('news')).toBe(true);
-        expect(getAnalysisReasoning('fundamental')).toBe(true);
-        expect(getAnalysisReasoning('congress')).toBe(true);
+    describe('symbolSignal', () => {
+        it('마감이 없으면 signal도 없다 — 심볼당 상한을 두지 않는다', () => {
+            // 150초 상한은 추론 ON 축에서 타임아웃이 아니라 실패 그 자체였다: 우리가 끊은
+            // 응답이 finish_reason 없이 돌아와 core에서 AI_SERVER_UNSTABLE이 됐다.
+            expect(symbolSignal(undefined)).toBeUndefined();
+            expect(symbolSignal(Number.POSITIVE_INFINITY)).toBeUndefined();
+        });
+
+        it('마감이 있으면 그 시각까지가 예산이다', () => {
+            vi.useFakeTimers();
+            try {
+                const signal = symbolSignal(Date.now() + 600_000)!;
+                expect(signal.aborted).toBe(false);
+                // 종전 상한(150초)에서는 이미 끊겼을 시점
+                vi.advanceTimersByTime(300_000);
+                expect(signal.aborted).toBe(false);
+                vi.advanceTimersByTime(300_001);
+                expect(signal.aborted).toBe(true);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('이미 마감을 넘겼어도 즉시 중단시키지 않는다 — 0은 무의미한 실패로 기록된다', () => {
+            vi.useFakeTimers();
+            try {
+                const signal = symbolSignal(Date.now() - 60_000)!;
+                expect(signal.aborted).toBe(false);
+                vi.advanceTimersByTime(2);
+                expect(signal.aborted).toBe(true);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
     });
 
     it('falls back to the default for an unpolicied type', () => {
