@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.24.0](https://github.com/y0ngha/siglens-trader/compare/v0.23.0...v0.24.0) (2026-08-18)
+
+
+### Bug Fixes
+
+* 심볼당 타임아웃을 없앤다 — AI_SERVER_UNSTABLE의 정체는 자기 타임아웃이었다 ([#46](https://github.com/y0ngha/siglens-trader/issues/46)) ([0aca0bf](https://github.com/y0ngha/siglens-trader/commit/0aca0bf60ba81a7ad761c55331be3523ecbe09e5))
+
 # [0.23.0](https://github.com/y0ngha/siglens-trader/compare/v0.22.1...v0.23.0) (2026-08-18)
 
 
