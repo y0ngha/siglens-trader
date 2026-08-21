@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.25.0](https://github.com/y0ngha/siglens-trader/compare/v0.24.0...v0.25.0) (2026-08-21)
+
+
+### Bug Fixes
+
+* 진입·청산 파라미터 감사 수정 5건 + 게이트 프롬프트 감사 테이블 ([#47](https://github.com/y0ngha/siglens-trader/issues/47)) ([719def0](https://github.com/y0ngha/siglens-trader/commit/719def003e3ec776cbb4c3a42760191162a652b3))
+
 # [0.24.0](https://github.com/y0ngha/siglens-trader/compare/v0.23.0...v0.24.0) (2026-08-18)
 
 
