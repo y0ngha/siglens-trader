@@ -92,12 +92,12 @@ vi.mock('../../../lib/analysis/confluence', () => ({
 
 const mockCalculatePositionSize = vi.fn();
 const mockEvaluateExistingPosition = vi.fn();
-vi.mock('../../../lib/strategy/risk-manager', () => ({
+// 두 함수만 갈아끼우고 나머지(상수 포함)는 실제 모듈을 그대로 쓴다. 상수를 팩토리에
+// 하드코딩하면 소스가 바뀌어도 테스트는 옛 값을 영원히 들고 가고, 그 드리프트는 조용하다.
+vi.mock('../../../lib/strategy/risk-manager', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../lib/strategy/risk-manager')>()),
     calculatePositionSize: (...args: unknown[]) => mockCalculatePositionSize(...args),
     evaluateExistingPosition: (...args: unknown[]) => mockEvaluateExistingPosition(...args),
-    // 상수는 mock하지 않고 실제 값을 그대로 노출한다 — 진입 가드(`hasStopRoom`)가 이 값을
-    // 읽으므로 여기서 0이나 undefined가 새면 가드가 조용히 꺼진 채로 테스트가 통과한다.
-    SUPPORT_BREAK_BUFFER: 0.005,
 }));
 
 const mockMakeTradeDecision = vi.fn();
@@ -8289,6 +8289,54 @@ describe('execute cron handler', () => {
                 );
             });
 
+            it('min_stop_room_pct로 완화할 수 있다 — 재배포 없이', async () => {
+                // 이 값이 너무 크면 매수가 전부 막히는데 로그에는 `entry_no_stop_room`만
+                // 쌓여 "신호 없는 날"과 구분되지 않는다. 조정이 재배포 뒤에 숨으면 안 된다.
+                buySetup(150, { min_stop_room_pct: 0.1 }, 149.5);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('min_stop_room_pct로 조일 수도 있다', async () => {
+                buySetup(150, { min_stop_room_pct: 5 }, 145);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_no_stop_room' }),
+                );
+            });
+
+            it('min_stop_room_pct = 0이면 가드가 꺼진다', async () => {
+                buySetup(150, { min_stop_room_pct: 0 }, 149.5);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('설정 조회가 실패해도 기본값으로 계속 판정한다 — 조용히 꺼지지 않는다', async () => {
+                buySetup(150, {}, 149.5);
+                const failing = mockGetConfigValue.getMockImplementation()!;
+                mockGetConfigValue.mockImplementation((db: unknown, key: string) =>
+                    key === 'min_stop_room_pct'
+                        ? Promise.reject(new Error('db down'))
+                        : failing(db, key),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_no_stop_room' }),
+                );
+            });
+
             it('레벨이 없으면 통과시킨다 (fail-open)', async () => {
                 buySetup(150);
                 mockGetLatestAnalysisResult.mockImplementation(
@@ -8713,6 +8761,7 @@ describe('execute cron — 게이트 원문 감사 (trade_audit)', () => {
                 fraction: 1,
                 confidence: 80,
                 cronRunId: expect.any(String),
+                correlationId: expect.stringContaining('AAPL-entry'),
             }),
         );
     });
@@ -8788,6 +8837,56 @@ describe('execute cron — 게이트 원문 감사 (trade_audit)', () => {
         mockInsertTradeAudit.mockImplementationOnce(() => {
             throw new Error('audit table gone');
         });
+
+        const body = await (await handler(makeRequest(true))).json();
+
+        expect(body.decisions).toContainEqual(
+            expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+        );
+        expect(mockInsertTrade).toHaveBeenCalled();
+    });
+
+    it('시그널 매도 게이트도 적재하고, 재평가 청산과 다른 correlationId를 쓴다', async () => {
+        // `(cron_run_id, symbol, kind)`만으로는 유일하지 않다 — 재평가 청산이 미뤄지면
+        // 같은 런에서 같은 심볼이 시그널 매도로 다시 게이트를 타고, `kind: 'exit'` 행이
+        // 두 개가 되어 문서화된 조인이 팬아웃한다.
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+        );
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+        mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+        mockGetOpenPositionBySymbol.mockResolvedValue({
+            id: 1,
+            symbol: 'AAPL',
+            quantity: 10,
+            avgPrice: '100',
+            status: 'open',
+        });
+        mockScoreSignals.mockReturnValue({ ...fakeBuySignalScore, signal: 'sell', total: 20 });
+        mockMakeTradeDecision.mockReturnValue({
+            action: 'sell',
+            symbol: 'AAPL',
+            score: 20,
+            reason: 'SELL',
+            quantity: 10,
+        });
+
+        await handler(makeRequest(true));
+
+        expect(mockInsertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                symbol: 'AAPL',
+                kind: 'exit',
+                correlationId: expect.stringContaining('AAPL-signal-sell'),
+            }),
+        );
+    });
+
+    it('적재가 rejection으로 실패해도 매매는 그대로 진행된다', async () => {
+        // 동기 throw보다 흔한 실패다 (Neon 오류, 테이블 없음). 둘 다 잡혀야 한다.
+        buySetup();
+        mockInsertTradeAudit.mockRejectedValueOnce(new Error('relation does not exist'));
 
         const body = await (await handler(makeRequest(true))).json();
 

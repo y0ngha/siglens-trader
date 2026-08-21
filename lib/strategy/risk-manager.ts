@@ -98,8 +98,10 @@ export function shouldTakeProfit(
  *
  * `ENTRY_ZONE_TOLERANCE`(1%)와 같은 이유로 존재한다 — 선은 근사치이고 가격은 틱이다.
  * 익절 쪽 버퍼(2%·5%)보다 좁은 것은 의도적이다: 손절이 늦게 서면 그만큼 손실이 커진다.
- * 진입 게이트(`hasStopRoom`)가 이 값을 읽어 "손절선이 노이즈 안에 있는" 진입을 막으므로,
- * 여기를 바꾸면 진입 문턱도 함께 움직인다.
+ *
+ * 진입 게이트(`hasStopRoom`)는 이 값을 **읽지 않는다.** 그쪽은 명목 지지선까지의 거리를
+ * 재는데, 두 상수를 곱하면 한쪽을 조정할 때 다른 쪽 문턱이 조용히 따라 움직인다. 청산
+ * 트리거는 여기서, 진입 여유는 `MIN_STOP_ROOM`에서 — 각각 독립으로 조정한다.
  */
 export const SUPPORT_BREAK_BUFFER = 0.005;
 
@@ -250,6 +252,16 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return {
             action: 'take_profit',
             reason: `분석 익절가 도달 (익절: $${params.aiTakeProfit})`,
+            // 손실 구간이면 `structural`을 세운다 — 1.5번의 거울상이다.
+            //
+            // 분석 익절가는 손절가와 마찬가지로 **우리 매수가와 무관한 절대 가격**이라,
+            // 분석이 그린 그림보다 비싸게 산 포지션은 미실현 손실 상태에서 이 선에 닿는다
+            // (실측 2026-08-13: 178.53에 사고 레벨은 ~174 기준). 그때 게이트에 `take_profit`
+            // 트리거가 그대로 가면 프롬프트가 "목표 달성형"으로 읽고 일부만 덜어낸 뒤
+            // 나머지를 태운다 — 손실 포지션에 정확히 반대되는 사이징이다.
+            // 라벨을 `stop_loss`로 바꾸지는 않는다: 그러면 재진입 쿨다운과 손절 이력이
+            // 오염된다(1.5번 주석과 같은 이유).
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 
@@ -271,6 +283,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return {
             action: 'take_profit',
             reason: `저항선 근접 (저항: $${params.resistanceLevel})`,
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 
@@ -278,6 +291,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return {
             action: 'take_profit',
             reason: `목표가 근접 (목표: $${params.targetPrice})`,
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 

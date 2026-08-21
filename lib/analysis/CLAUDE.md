@@ -236,6 +236,11 @@ separately so tests (and prompt audits) can assert on the exact strings.
   because this layer must not reach the DB. `rawResponse: null` means the call failed
   **before any response**, which is a different fault from "responded but unparseable" —
   keep the two distinguishable, that distinction is the point of storing it.
+- **`confidence` is rounded to an integer.** `trade_audit.confidence` is an `integer` column, so
+  a fractional value raises `22P02` — and that failure is swallowed by the cron's `auditGate`,
+  which means the **entire audit row vanishes silently**. The range check alone does not save it:
+  a model answering on a 0–1 scale (`0.85`) or with `92.5` passes it. The value never enters
+  sizing arithmetic, so rounding costs nothing.
 
 ## Testing
 

@@ -1117,13 +1117,19 @@ function parseGateResponse(
     }
 
     // confidence는 사이징 산술에 들어가지 않고 감사 로그용이라 관대하게 처리한다.
+    //
+    // **다만 정수로 반올림한다.** `trade_audit.confidence`가 `integer` 컬럼이라 소수가 그대로
+    // 가면 Postgres가 `22P02 invalid input syntax for type integer`를 내고, 그 실패는
+    // `auditGate`가 삼키므로 **감사 행 전체가 조용히 사라진다.** 모델이 0~1 척도로 읽어
+    // `0.85`를 내거나 `92.5`를 내는 건 둘 다 범위 안이라 위 검사를 통과한다 — 즉 관대함이
+    // 그대로 데이터 유실이 되는 조합이었다. 사이징에 쓰이지 않는 값이라 반올림 손실은 없다.
     const rawConfidence = obj.confidence;
     const confidence =
         typeof rawConfidence === 'number' &&
         Number.isFinite(rawConfidence) &&
         rawConfidence >= 0 &&
         rawConfidence <= 100
-            ? rawConfidence
+            ? Math.round(rawConfidence)
             : DEFAULT_CONFIDENCE;
 
     const reason = (safeString(obj.reason) ?? '').slice(0, REASON_MAX_LENGTH);

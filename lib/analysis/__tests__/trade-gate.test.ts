@@ -1604,6 +1604,42 @@ describe('runTradeGate — 파싱 및 검증', () => {
         if (out.status === 'ok') expect(out.reason).toHaveLength(300);
     });
 
+    it('파싱에 실패해도 응답 원문은 그대로 실어 보낸다', async () => {
+        // `rawResponse: null`(응답 못 받음)과의 **구분**이 이 필드의 존재 이유다.
+        // 파싱 실패 쪽이 null이면 두 고장이 감사에서 같아 보이고, 정작 "모델이 뭐라고
+        // 했길래 못 읽었나"를 볼 수 없다.
+        const garbage = '죄송합니다. JSON을 만들 수 없습니다.';
+        mockedCall.mockResolvedValue(garbage);
+
+        const out = await runTradeGate(baseInput());
+
+        expect(out.status).toBe('error');
+        expect(out.transcript.rawResponse).toBe(garbage);
+    });
+
+    it('fraction이 범위를 벗어나도 원문을 남긴다', async () => {
+        const raw = '{"fraction":1.4,"confidence":90}';
+        mockedCall.mockResolvedValue(raw);
+
+        const out = await runTradeGate(baseInput());
+
+        expect(out.status).toBe('error');
+        expect(out.transcript.rawResponse).toBe(raw);
+    });
+
+    it('소수 confidence는 정수로 반올림한다 — integer 컬럼이라 그대로 가면 행이 통째로 사라진다', async () => {
+        // `trade_audit.confidence`가 integer라 68.5가 그대로 가면 Postgres가 22P02를 내고,
+        // 그 실패는 `auditGate`가 삼켜 감사 행 전체가 조용히 유실된다. 0~1 척도로 읽은
+        // `0.85`도 범위 검사를 통과하므로 관대함이 곧 데이터 유실이 되는 조합이었다.
+        mockedCall.mockResolvedValue('{"fraction":0.5,"confidence":68.5}');
+        const out = await runTradeGate(baseInput());
+        expect(out.status === 'ok' && out.confidence).toBe(69);
+
+        mockedCall.mockResolvedValue('{"fraction":0.5,"confidence":0.85}');
+        const out2 = await runTradeGate(baseInput());
+        expect(out2.status === 'ok' && out2.confidence).toBe(1);
+    });
+
     it('callAnalysisAi가 throw하면 error를 돌려주고 다시 던지지 않는다', async () => {
         mockedCall.mockRejectedValue(new Error('provider 500'));
 

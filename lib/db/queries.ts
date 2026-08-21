@@ -333,6 +333,7 @@ export async function insertTradeAudit(
         fraction?: number;
         confidence?: number;
         cronRunId?: string;
+        correlationId?: string;
     },
 ) {
     return db.insert(tradeAudit).values({
@@ -347,6 +348,7 @@ export async function insertTradeAudit(
         fraction: params.fraction != null ? String(params.fraction) : undefined,
         confidence: params.confidence,
         cronRunId: params.cronRunId,
+        correlationId: params.correlationId,
     });
 }
 

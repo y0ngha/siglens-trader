@@ -654,6 +654,36 @@ describe('POST /api/config', () => {
         }
     });
 
+    it('accepts min_stop_room_pct within range, including 0 (off)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        for (const value of [0, 0.5, 1, 5]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'min_stop_room_pct',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+    });
+
+    it('rejects min_stop_room_pct above 5 — 그보다 크면 가드가 아니라 매수 정지 버튼이다', async () => {
+        // 분석의 폴백 손절가는 진입가 − 1.5×ATR이라, 요구 여유가 그 거리를 상시 넘으면
+        // 모든 매수가 `entry_no_stop_room`으로 빠지고 로그상 "신호 없음"과 구분되지 않는다.
+        for (const value of [5.1, 100, -1, 'wide', null]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'min_stop_room_pct',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+        }
+    });
+
     it('rejects an interval/entry_window combination with no overlapping tick', async () => {
         mockGetConfigValue.mockResolvedValue(60);
 

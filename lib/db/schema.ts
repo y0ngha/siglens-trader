@@ -282,7 +282,11 @@ export const newsCards = pgTable(
  *   SELECT t.*, a.user_prompt, a.raw_response
  *   FROM trades t JOIN trade_audit a
  *     ON a.cron_run_id = t.cron_run_id AND a.symbol = t.symbol
+ *    AND a.kind = CASE WHEN t.side = 'buy' THEN 'entry' ELSE 'exit' END
  *   WHERE t.realized_pnl::numeric < 0;
+ *
+ * 한 런에서 같은 심볼이 `exit` 게이트를 두 번 탈 수 있으므로(아래 `correlationId` 참고)
+ * 정확히 1:1로 묶어야 하면 `correlation_id`로 조인한다.
  */
 export const tradeAudit = pgTable(
     'trade_audit',
@@ -303,12 +307,24 @@ export const tradeAudit = pgTable(
         fraction: numeric('fraction'),
         confidence: integer('confidence'),
         cronRunId: text('cron_run_id'),
+        /**
+         * 게이트 호출 1건의 유일 키 (`<runId>-<symbol>-entry|exit|signal-sell`).
+         *
+         * `(cron_run_id, symbol, kind)`만으로는 유일하지 않다 — 재평가 청산이 `fraction 0`으로
+         * 미뤄지면 그 심볼은 `exitedSymbols`에 기록되지 않아 같은 런의 시그널 매도가 다시
+         * 게이트를 태울 수 있고, `kind: 'exit'` 행이 둘이 되어 아래 조인이 팬아웃한다.
+         * 두 행을 구분할 값은 execute가 이미 게이트에 넘기고 있었고, 여기 같이 저장한다.
+         */
+        correlationId: text('correlation_id'),
         userId: ownerUserId(),
         createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     },
     (table) => [
         index('idx_trade_audit_run_symbol').on(table.cronRunId, table.symbol),
         index('idx_trade_audit_symbol_created').on(table.symbol, table.createdAt),
+        // 보존 정책이 생기면 `WHERE created_at < …`가 이 인덱스를 탄다. TOAST된 테이블을
+        // seq-scan하는 것과 차이가 크고, 인덱스 하나 값이 그보다 싸다.
+        index('idx_trade_audit_created').on(table.createdAt),
     ],
 );
 

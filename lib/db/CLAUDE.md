@@ -26,7 +26,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `analysis_results` | Latest analysis snapshots (JSONB) |
 | `positions` | Open/closed positions (unique index on symbol+open status) |
 | `trades` | Execution history (with reason + mode + cronRunId) |
-| `trade_audit` | 사이징 게이트 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. `cron_run_id` + `symbol` + `kind`로 `trades`/`cron_decisions`와 조인 |
+| `trade_audit` | 사이징 게이트 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. `cron_run_id` + `symbol` + `kind`로 `trades`/`cron_decisions`와 조인하고, 정확히 1:1이어야 하면 `correlation_id`를 쓴다 (한 런에서 같은 심볼이 `exit` 게이트를 두 번 탈 수 있다) |
 | `pending_orders` | Approval queue (semi_auto mode) |
 | `config` | Key-value settings (JSONB value) |
 | `order_tracking` | Order lifecycle tracking (unique idempotency key, `client_order_id` Toss idempotency key, status transitions) |

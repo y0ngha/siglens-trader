@@ -6,13 +6,13 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 
 | File | Responsibility |
 |------|---------------|
-| `types.ts` | Type definitions (SignalScore — including `totalWithoutConfluence`, the confluence-excluded weighted average that is the real basis of a corrected `sell` and equals `total` whenever confluence doesn't vote; ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:3}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
+| `types.ts` | Type definitions (SignalScore — including `totalWithoutConfluence`, the confluence-excluded weighted average that is the real basis of a corrected `sell` and equals `total` whenever confluence doesn't vote; ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:0}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
 | `confluence.ts` | `ConfluenceSnapshot` type + `scoreConfluence` / `isConfluenceExit`. Scores the backtest's rule (3+ bullish types, ≥1 fresh, close > SMA(50)) from a snapshot the analysis layer computed. Constants: `CONFLUENCE_MIN` 3, `CONFLUENCE_SPAN` 30, `CONFLUENCE_SHRINK` 1, `CONFLUENCE_TRIGGER_SCORE` 92, `CONFLUENCE_EXIT_SCORE` 8. |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |
 | `trade-plan.ts` | Fraction (0~1) → order quantity for split entries/exits. `clampFraction` (built on `safeNumber`) normalizes any value to 0~1 without ever producing NaN, and also clamps its own `fallback`. `planEntry` sanitizes every budget input with `safeNumber` before the min/max chain (a NaN budget must never silently disable the per-symbol/total-exposure circuit breaker), clamps a tranche against symbol/total/cash budgets (with a high-price 1-share correction that also realigns `trancheBudget`), and refuses to return a non-`Number.isSafeInteger` quantity. `planExit` turns a liquidation fraction into a share count, `hard: true` bypassing it for absolute risk exits. `fallbackEntryFraction` is a deterministic 3-rung sizing ladder, exported and tested but not currently wired into any caller — see its docstring. |
 | `entry-window.ts` | 신규 진입 허용 시간 창 (ET 고정). `parseEntryWindow` / `formatEntryWindow` / `isWithinEntryWindow` / `parseTimeOfDay`, `DEFAULT_ENTRY_WINDOW` (ET 11:00–15:00) / `ENTRY_WINDOW_ALL_DAY` (제한 없음). 진입만 막고 청산은 건드리지 않는다. 창 밖·시각 판독 실패는 둘 다 **차단**(fail-closed). ET 환산에 `Intl.DateTimeFormat`을 쓴다 — JS 표준 빌트인이고 결정론적이므로 I/O 금지 규칙에 걸리지 않는다. |
-| `entry-zone.ts` | 권장 진입 구간 상단 게이트. `exceedsEntryZone` / `formatEntryZone`, `ENTRY_ZONE_TOLERANCE` 1%. **상단만** 본다 (구간 아래는 매수에 불리하지 않다), 구간 정보가 없으면 통과(fail-open). 추격 매수 차단 전용 — 매도에는 쓰지 않는다. |
+| `entry-zone.ts` | 진입 품질 게이트 둘. (1) 권장 진입 구간 상단: `exceedsEntryZone` / `formatEntryZone`, `ENTRY_ZONE_TOLERANCE` 1% — **상단만** 본다. (2) 손절 여유: `hasStopRoom` / `formatStopRoom`, `MIN_STOP_ROOM` 0.5% — 진입가가 `max(지지선, 분석 손절가)`보다 그만큼 위인가. 둘 다 재료가 없으면 통과(fail-open)이고 **매수 전용** — 매도에는 쓰지 않는다(원칙 7). |
 | `execute-interval.ts` | execute cron 실행 간격. `EXECUTE_INTERVALS` (5·10·15·20·30·60, 전부 60의 약수), `DEFAULT_EXECUTE_INTERVAL_MIN` 10, `EXECUTE_BASE_MINUTE` 7, `isExecuteInterval` / `parseExecuteInterval` / `isExecuteTick`. 게이트는 `(분 − 7) mod 간격 === 0` — 60분이면 종전 `7 13-21` 스케줄과 실행 시각이 같다. |
 | `decision.ts` | Combines signal score + position state → buy/sell/hold/average_in. Generates human-readable `reason` string with component breakdown. |
 | `safe-extract.ts` | Defensive extraction helpers for untyped AI analysis JSON. `safeAnalysisTrend`, `safeAnalysisSentiment`, `safeAnalysisSupport`, `safeAnalysisResistance`, `safeAnalysisPriceScenario`, `safeAnalysisTargetPrice`, `safeActionRecommendation`, `safeAnalysisEntryPrices` / `safeAnalysisStopLoss` / `safeAnalysisTakeProfit` (the three `actionRecommendation` prices the rule engine reads; the latter two prefer core's `reconciledLevels`), `safeAnalysisIndicators` (technical `indicatorResults[].signals[]`), `safeAnalysisPatterns` (`patternSummaries` + `strategyResults` + `candlePatterns`, with core's `confidenceWeight`), `safeFundamentalCategories` (fundamental `categoryAssessments[]`). Returns safe defaults instead of throwing on unexpected shapes. Imports `isFinitePositive` from `lib/validation`. `safeAnalysisSupport`/`safeAnalysisResistance` extract via `safePriceLevelArray`, which accepts **both** a bare `number[]` and siglens-core's real `{ price: number; reason: string }[]` `KeyLevel[]` shape — the object shape used to make both functions always return `undefined` in production, since the old `safeNumberArray`-based extractor only kept `typeof v === 'number'` elements. `safeNumberArray` stays a plain-number filter and is no longer the price-level extractor. |
@@ -48,11 +48,11 @@ shape core never emits.
 
 ## Signal Scoring
 
-Priority-weighted average of 6 analysis axes (weights sum to 38 on the default `1Hour` profile):
+Priority-weighted average of 6 analysis axes (weights sum to 35 on the default `1Hour` profile):
 - Confluence (12): the only rule-based axis — no LLM anywhere in it. Continuous 20..80 from the
   shrunk bullish/bearish type ratio (same pseudo-count trick as options), snapping to ≥92 when the
   backtest entry rule holds exactly and ≤8 when its bearish inverse does. 92 is deliberately below
-  what a lone axis needs to cross the buy threshold: trigger + everything else neutral = 63 → hold.
+  what a lone axis needs to cross the buy threshold: trigger + everything else neutral = 64 → hold.
 - Technical (8): the **mean of three readings** — (1) strength-weighted `indicatorResults`
   aggregate, (2) confidence-weighted aggregate of `patternSummaries` + `strategyResults` +
   `candlePatterns` (`safeAnalysisPatterns`; `detected: false` items abstain), (3) the LLM's overall
@@ -69,7 +69,9 @@ Priority-weighted average of 6 analysis axes (weights sum to 38 on the default `
 - News (6): overallSentiment (bullish 80 / neutral 50 / bearish 20)
 - Options (5): directional (bullish/bearish) signal ratio with shrinkage (pseudo-count k=1) so a lone signal doesn't snap to 0/100; neutral/volatility kinds ignored
 - Fundamental (4): mean of `categoryAssessments` sentiments (continuous, 50 ± 30), falling back to overallSentiment when no categories exist
-- Congress (3): `overallSentiment` through the same `scoreSentiment` as news — the shape is identical
+- Congress (**0**): `overallSentiment` through the same `scoreSentiment` as news. 축은 계산되지만
+  점수에는 투표하지 않는다 — 프로덕션 실측 31/31 전부 `bullish`(분산 0)라 투표가 아니라 상수
+  가산점이었다. 근거는 `types.ts`의 `DEFAULT_WEIGHTS` 독스트링.
 
 **Confluence can block a buy but never a sell.** Adding a sixth axis widens the denominator, which
 raises the buy *and* sell thresholds symmetrically. The first half is the point; the second half is
@@ -108,7 +110,9 @@ When evaluating an existing position, checks fire in this order:
    cut. It sits *behind* the trend reversal so it never re-handles a case step 3 already caught.
 5. Fixed take profit % reached → take_profit (**only when `fixedExitEnabled` is true**)
 5.5. 분석 익절가 도달 (`aiTakeProfit`) → take_profit (always active)
-6. Approaching resistance (98%) or target price (95%) → take_profit (always active)
+6. Approaching resistance (±2% **밴드**) or target price (95%, 상한 없음) → take_profit (always active).
+   저항선만 상한이 있다 — 목표가 위는 "도달"이지만 저항선 위는 "돌파"이고 그건 파는 이유가
+   아니다. 5·5.5·6번이 **손실 구간**에서 서면 `structural: true`가 붙는다(사유는 0번 참고).
 7. Bearish news + non-bullish trend + profit zone → take_profit (always active)
 8. None of the above → hold
 

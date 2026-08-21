@@ -39,28 +39,38 @@ export function exceedsEntryZone(
 }
 
 /**
- * 진입가와 손절 트리거 사이에 있어야 할 최소 간격 (1%).
+ * 진입가와 손절 레벨 사이에 있어야 할 최소 간격 (기본 0.5%).
  *
- * `SUPPORT_BREAK_BUFFER`(0.5%)가 노이즈 한 틱을 걸러 주지만, 손절선이 진입가 바로 아래면
- * 그 버퍼조차 몇 틱이면 먹힌다. 이 값은 손실 크기를 제한하는 장치가 **아니다** — 손절선이
- * 노이즈 대역 밖에 있는지를 본다. 1%는 30분봉에서 손절선까지의 정상적인 거리이고,
- * 그보다 좁은 진입은 방향이 맞아도 흔들림에 먼저 털린다.
+ * 손실 크기를 제한하는 장치가 **아니다** — 손절선이 노이즈 대역 밖에 있는지를 본다.
+ *
+ * 값의 근거는 양쪽에서 온다. 아래로는 실측 3건(2026-08-19~20, 여유 0.03~0.2%, 전건 손실)이
+ * 확실히 걸려야 하고, 위로는 **분석이 실제로 그어 주는 손절선까지의 거리**를 넘으면 안 된다 —
+ * siglens-core의 폴백 손절가는 `진입가 − 1.5×ATR`이라 확보 가능한 여유가 곧 `1.5×ATR/가격`이다.
+ * 1%로 잡으면 ATR이 가격의 0.667% 미만인 종목은 매 틱 영구 차단되는데, 30분봉에서는 흔한
+ * 영역이라 게이트가 아니라 정지 버튼이 된다. 0.5%는 실측 실패의 2.5~16배이면서
+ * ATR ≥ 가격의 0.333%면 통과시킨다.
+ *
+ * 운영 중 조정은 `POST /api/config`의 `min_stop_room_pct`(퍼센트 단위, 0이면 off).
+ * 재배포가 필요 없어야 하는 값이다 — 시장 국면에 따라 조여야 할지 풀어야 할지가 바뀐다.
  */
-export const MIN_STOP_ROOM = 0.01;
+export const MIN_STOP_ROOM = 0.005;
 
 /**
- * 진입가가 손절 트리거보다 충분히 위인가 — 즉 손절선이 노이즈 대역 밖인가.
+ * 진입가가 손절 레벨보다 충분히 위인가 — 즉 손절선이 노이즈 대역 밖인가.
  *
  * 없어서 생긴 손실이 실측으로 3건이다(2026-08-19~20, 전건 손실). 예: PLTR을 175.65에
- * 사는데 지지선이 175.60 — 여유 **0.03%**. 10분 뒤 지지선을 0.037% 이탈해 전량 청산.
- * 방향이 틀려서 진 게 아니라 손절선이 호가 스프레드 안에 있어서 졌다.
+ * 사는데 지지선이 175.60 — 여유 **0.03%**. 10분 뒤 지지선을 이탈해 전량 청산. 방향이
+ * 틀려서 진 게 아니라 손절선이 호가 스프레드 안에 있어서 졌다.
  *
  * `exceedsEntryZone`이 못 잡는 층이다. 그쪽은 "분석이 말한 구간보다 비싸게 사는가"를 보고
- * 이쪽은 "손절선까지 여유가 있는가"를 본다. 셋 다 통과한 진입만 주문이 된다.
+ * 이쪽은 "손절선까지 여유가 있는가"를 본다. 실측 3건은 전부 진입 구간 **안**이었다.
  *
- * **위에서 가장 먼저 서는 트리거를 기준으로 한다.** 청산 규칙은 분석 손절가(1.5)와
- * 지지선 이탈(2)을 각각 보므로, 둘 중 **높은** 쪽이 실제로 먼저 걸린다. 낮은 쪽을 쓰면
- * 있지도 않은 여유를 계산하게 된다.
+ * **레벨 중 가장 높은 쪽을 본다.** 청산 규칙은 분석 손절가(1.5)와 지지선 이탈(2)을 각각
+ * 보므로, 높은 쪽이 먼저 걸린다. 지지선 쪽 실제 트리거는 `SUPPORT_BREAK_BUFFER`만큼
+ * 아래지만 그 버퍼를 여기서 다시 빼지는 않는다 — 두 상수를 곱하면 한쪽을 조정할 때마다
+ * 다른 쪽 문턱이 조용히 움직이고, 실제로 그 결합 때문에 `SUPPORT_BREAK_BUFFER`가 이
+ * 계산에서 아무 일도 하지 않는 구간이 생겼다. 명목 레벨까지의 거리를 재는 쪽이 0.5%만큼
+ * 더 보수적이고, 이 축은 정확한 트리거 계산이 아니라 거리 휴리스틱이다.
  *
  * 판단할 재료가 없으면 통과시킨다(fail-open) — `exceedsEntryZone`과 같은 정책이다.
  * 이 축은 진입 품질 장치이지 매수의 전제조건이 아니다.
@@ -68,41 +78,32 @@ export const MIN_STOP_ROOM = 0.01;
 export function hasStopRoom(
     price: number,
     levels: { supportLevel?: number; aiStopLoss?: number },
-    supportBuffer: number,
     minRoom: number = MIN_STOP_ROOM,
 ): boolean {
     if (!isFinitePositive(price)) return true;
+    const safeRoom = Number.isFinite(minRoom) && minRoom >= 0 ? minRoom : MIN_STOP_ROOM;
 
-    const safeBuffer = Number.isFinite(supportBuffer) && supportBuffer >= 0 ? supportBuffer : 0;
-    const safeRoom = Number.isFinite(minRoom) && minRoom >= 0 ? minRoom : 0;
+    const level = highestStopLevel(levels);
+    if (level === null) return true;
 
-    const triggers: number[] = [];
-    if (isFinitePositive(levels.supportLevel)) {
-        triggers.push(levels.supportLevel * (1 - safeBuffer));
-    }
-    if (isFinitePositive(levels.aiStopLoss)) triggers.push(levels.aiStopLoss);
-    if (triggers.length === 0) return true;
-
-    // 가장 높은 트리거가 가장 먼저 선다.
-    return price >= Math.max(...triggers) * (1 + safeRoom);
+    return price >= level * (1 + safeRoom);
 }
 
-/** 감사 로그·이메일에 남길 진입가–손절 트리거 간격 표기. 판단 재료가 없으면 `undefined`. */
+/** 가장 먼저 걸리는(=가장 높은) 손절 레벨. 쓸 수 있는 값이 없으면 `null`. */
+function highestStopLevel(levels: { supportLevel?: number; aiStopLoss?: number }): number | null {
+    const candidates = [levels.supportLevel, levels.aiStopLoss].filter(isFinitePositive);
+    return candidates.length === 0 ? null : Math.max(...candidates);
+}
+
+/** 감사 로그·이메일에 남길 진입가–손절 레벨 간격 표기. 판단 재료가 없으면 `undefined`. */
 export function formatStopRoom(
     price: number,
     levels: { supportLevel?: number; aiStopLoss?: number },
-    supportBuffer: number,
 ): string | undefined {
     if (!isFinitePositive(price)) return undefined;
-    const safeBuffer = Number.isFinite(supportBuffer) && supportBuffer >= 0 ? supportBuffer : 0;
-    const triggers: number[] = [];
-    if (isFinitePositive(levels.supportLevel)) {
-        triggers.push(levels.supportLevel * (1 - safeBuffer));
-    }
-    if (isFinitePositive(levels.aiStopLoss)) triggers.push(levels.aiStopLoss);
-    if (triggers.length === 0) return undefined;
-    const trigger = Math.max(...triggers);
-    return `${(((price - trigger) / price) * 100).toFixed(2)}% (트리거 $${trigger.toFixed(2)})`;
+    const level = highestStopLevel(levels);
+    if (level === null) return undefined;
+    return `${(((price - level) / price) * 100).toFixed(2)}% (손절 레벨 $${level.toFixed(2)})`;
 }
 
 /** 감사 로그·이메일에 남길 구간 표기. 값이 없으면 `undefined`. */
