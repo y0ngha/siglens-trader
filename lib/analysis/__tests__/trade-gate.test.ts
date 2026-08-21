@@ -1450,6 +1450,12 @@ describe('runTradeGate — 파싱 및 검증', () => {
             confidence: 72,
             reason: '예산 절반만 집행한다',
             model: 'deepseek-v4-flash',
+            transcript: {
+                systemPrompt: expect.stringContaining('포지션 사이징 게이트'),
+                userPrompt: expect.stringContaining('## 결정 요청'),
+                // 파싱 전 원문 그대로 — `trade_audit`가 이 값을 적재한다.
+                rawResponse: '{"fraction":0.5,"confidence":72,"reason":"예산 절반만 집행한다"}',
+            },
         });
     });
 
@@ -1607,6 +1613,9 @@ describe('runTradeGate — 파싱 및 검증', () => {
             status: 'error',
             error: 'provider 500',
             model: 'deepseek-v4-flash',
+            // 호출 자체가 실패했으므로 응답이 없다. `rawResponse: null`은 "받아서 파싱에
+            // 실패한" 경우와 구분되며, 감사 기록에서 그 구분이 고장 원인을 가른다.
+            transcript: expect.objectContaining({ rawResponse: null }),
         });
     });
 
@@ -1634,6 +1643,9 @@ describe('runTradeGate — 파싱 및 검증', () => {
             status: 'error',
             error: 'Unknown model: bogus-model',
             model: 'bogus-model',
+            // 호출 자체가 실패했으므로 응답이 없다. `rawResponse: null`은 "받아서 파싱에
+            // 실패한" 경우와 구분되며, 감사 기록에서 그 구분이 고장 원인을 가른다.
+            transcript: expect.objectContaining({ rawResponse: null }),
         });
     });
 

@@ -24,6 +24,7 @@ import {
     reducePositionQuantity,
     averageIntoPosition,
     insertTrade,
+    insertTradeAudit,
     getRecentTrades,
     getLastFillTimeBySymbol,
     getNeedsReviewSymbols,
@@ -689,6 +690,84 @@ describe('Positions queries', () => {
 // ---------------------------------------------------------------------------
 
 describe('Trades queries', () => {
+    describe('insertTradeAudit', () => {
+        it('게이트 원문을 그대로 적재하고 fraction만 문자열로 바꾼다', async () => {
+            const db = createMockDb(undefined);
+
+            await insertTradeAudit(db as unknown as Db, {
+                symbol: 'AAPL',
+                kind: 'entry',
+                modelId: 'deepseek-v4-pro',
+                systemPrompt: 'SYS',
+                userPrompt: 'USER',
+                rawResponse: '{"fraction":0.3}',
+                status: 'ok',
+                fraction: 0.3,
+                confidence: 60,
+                cronRunId: 'exec-1',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith({
+                symbol: 'AAPL',
+                kind: 'entry',
+                modelId: 'deepseek-v4-pro',
+                systemPrompt: 'SYS',
+                userPrompt: 'USER',
+                rawResponse: '{"fraction":0.3}',
+                status: 'ok',
+                gateError: undefined,
+                // numeric 컬럼 — 다른 금액 컬럼과 같은 규칙이다.
+                fraction: '0.3',
+                confidence: 60,
+                cronRunId: 'exec-1',
+            });
+        });
+
+        it('fraction 0도 적재한다 — 0과 미상은 다르다', async () => {
+            const db = createMockDb(undefined);
+
+            await insertTradeAudit(db as unknown as Db, {
+                symbol: 'AAPL',
+                kind: 'entry',
+                modelId: 'm',
+                systemPrompt: 'S',
+                userPrompt: 'U',
+                rawResponse: 'R',
+                status: 'ok',
+                fraction: 0,
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({ fraction: '0' }),
+            );
+        });
+
+        it('호출 자체가 실패한 경우 rawResponse는 null로 남는다', async () => {
+            const db = createMockDb(undefined);
+
+            await insertTradeAudit(db as unknown as Db, {
+                symbol: 'TSLA',
+                kind: 'exit',
+                modelId: 'm',
+                systemPrompt: 'S',
+                userPrompt: 'U',
+                rawResponse: null,
+                status: 'error',
+                gateError: 'provider 500',
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    rawResponse: null,
+                    status: 'error',
+                    gateError: 'provider 500',
+                    fraction: undefined,
+                    confidence: undefined,
+                }),
+            );
+        });
+    });
+
     describe('insertTrade', () => {
         it('inserts trade with price converted to string', async () => {
             const executedAt = new Date('2026-01-15T10:00:00Z');
@@ -1448,6 +1527,35 @@ describe('Cron audit log queries', () => {
                     status: 'skipped',
                     outcome: 'market_closed',
                     finishedAt,
+                }),
+            );
+        });
+
+        it('persists a summary on an error run', async () => {
+            // 실패한 런이야말로 사후 조사가 필요한 유일한 런이다. 종전에는 summary 쓰기가
+            // `else` 안에 있어 호출부가 채워 보내도 조용히 버려졌고, 실측(2026-08-19)에서
+            // analysis cron 9회 연속 전면 실패가 "모든 심볼 실패 (4/4)"로만 남았다.
+            const finishedAt = new Date('2026-08-19T19:45:04Z');
+            const db = createMockDb(undefined);
+
+            await finishCronRun(db as unknown as Db, 'technical-all-failed', {
+                status: 'error',
+                error: '모든 심볼 실패 (4/4)',
+                summary: {
+                    processed: 4,
+                    saved: 0,
+                    results: [{ symbol: 'AAPL', status: 'error', error: 'AI_SERVER_UNSTABLE' }],
+                },
+                finishedAt,
+            });
+
+            expect(db._chain.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'error',
+                    error: '모든 심볼 실패 (4/4)',
+                    summary: expect.objectContaining({
+                        results: [{ symbol: 'AAPL', status: 'error', error: 'AI_SERVER_UNSTABLE' }],
+                    }),
                 }),
             );
         });

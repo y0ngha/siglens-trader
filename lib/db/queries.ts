@@ -8,6 +8,7 @@ import {
     analysisResults,
     positions,
     trades,
+    tradeAudit,
     pendingOrders,
     config,
     notificationConfig,
@@ -307,6 +308,46 @@ export async function insertTrade(
             realizedPnl: params.realizedPnl != null ? String(params.realizedPnl) : undefined,
         })
         .returning();
+}
+
+/**
+ * 사이징 게이트 호출 1건의 원문을 남긴다 — 나간 프롬프트, 받은 응답, 파싱 결과.
+ *
+ * 주문이 나가지 않은 호출(fraction 0, 게이트 오류, 브로커 거절)도 기록한다. 그쪽이
+ * "왜 안 샀나"를 되짚을 때 유일한 단서이고, 트레이드 행이 없다는 이유로 버릴 근거가 없다.
+ * 상관 키는 `cronRunId` + `symbol` + `kind` — `trades.cron_run_id`와 같은 값이다.
+ *
+ * **호출부는 실패를 삼켜야 한다.** 감사 기록이 실패해서 매매가 막히면 본말전도다.
+ */
+export async function insertTradeAudit(
+    db: DbOrTx,
+    params: {
+        symbol: string;
+        kind: 'entry' | 'exit';
+        modelId: string;
+        systemPrompt: string;
+        userPrompt: string;
+        rawResponse: string | null;
+        status: 'ok' | 'error';
+        gateError?: string;
+        fraction?: number;
+        confidence?: number;
+        cronRunId?: string;
+    },
+) {
+    return db.insert(tradeAudit).values({
+        symbol: params.symbol,
+        kind: params.kind,
+        modelId: params.modelId,
+        systemPrompt: params.systemPrompt,
+        userPrompt: params.userPrompt,
+        rawResponse: params.rawResponse,
+        status: params.status,
+        gateError: params.gateError,
+        fraction: params.fraction != null ? String(params.fraction) : undefined,
+        confidence: params.confidence,
+        cronRunId: params.cronRunId,
+    });
 }
 
 export async function getRecentTrades(db: Db, limit = 50) {
@@ -790,6 +831,15 @@ export type CronRunFinish =
           error: string;
           /** `timeout`(스톨 종료) 외에 `locked`(락 백엔드 장애)도 실패로 기록된다. */
           outcome?: CronOutcome;
+          /**
+           * 실패한 런에도 구조화된 내역을 남긴다.
+           *
+           * 종전에는 이 변형에만 `summary`가 없었는데, 그게 곧 "사후 조사가 필요한 유일한
+           * 런에 조사할 재료가 없다"였다. `error` 문자열 한 줄은 집계치라 심볼별 원인을
+           * 담지 못한다 — 실측(2026-08-19)에서 analysis cron 9회 연속 전면 실패가
+           * "모든 심볼 실패 (4/4)"로만 남아 원인 규명이 불가능했다.
+           */
+          summary?: unknown;
           durationMs?: number;
           finishedAt: Date;
       };
@@ -807,9 +857,12 @@ export async function finishCronRun(db: Db, runId: string, p: CronRunFinish) {
         if (p.outcome !== undefined) set.outcome = p.outcome;
     } else {
         set.outcome = p.outcome;
-        if (p.summary !== undefined) {
-            set.summary = p.summary as (typeof cronRuns.$inferInsert)['summary'];
-        }
+    }
+    // summary는 상태와 무관하게 쓴다. 종전에는 `else` 안에 있어 실패한 런의 내역이
+    // 조용히 버려졌다 — 호출부가 채워 보내도 저장되지 않는 쪽이라, 타입만 열고 여기를
+    // 안 고치면 같은 증상이 그대로 남는다.
+    if (p.summary !== undefined) {
+        set.summary = p.summary as (typeof cronRuns.$inferInsert)['summary'];
     }
     return db.update(cronRuns).set(set).where(eq(cronRuns.runId, runId));
 }

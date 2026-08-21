@@ -168,12 +168,18 @@ broken check.
      about an unfunded buy on a run that could not have placed an order anyway
    - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
      with an unanswered approval burned a 25s LLM call whose answer was discarded
-   - Three entry guards share one `isEntryDecision` condition (buy / average_in / unfunded buy):
+   - The entry guards share one `isEntryDecision` condition (buy / average_in / unfunded buy):
      - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols — the
        zero-budget buy case is included because it decides as 'hold' and would otherwise slip
        past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
      - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
        (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
+     - `entry_no_stop_room`: the entry price sits less than `MIN_STOP_ROOM` (1%) above the
+       first stop trigger — `max(supportLevel × (1 − SUPPORT_BREAK_BUFFER), aiStopLoss)`
+       (`hasStopRoom`). Fail-open when the analysis carries neither level. **Not the same layer
+       as `entry_out_of_zone`**: that one asks "are we paying more than the analysis said",
+       this one asks "is the stop outside the noise band". The three losing entries of
+       2026-08-19~20 passed the first and failed the second (여유 0.03~0.2%)
      - `entry_not_recommended`: the analysis says `entryRecommendation: 'avoid'`. Enforced here
        rather than as a score penalty, and `entry_out_of_zone` cannot substitute — core fills a
        *contingent* `entryPrices` range even on `avoid`, usually **above** the current price
@@ -229,9 +235,9 @@ carries `modelId: 'rule-engine'` and the bar time as `analyzedAt` — it is not 
 prompt says so, telling the model to weigh it more heavily when the axes disagree. It comes from the
 same run-scoped cache as the scoring path, so entering the gate costs no extra fetch.
 
-Decision actions from the entry guards: `entry_out_of_zone`, `entry_cooldown` (both carry a
-`detail` block naming the price/zone or the last fill time, so "why didn't it buy" is
-answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
+Decision actions from the entry guards: `entry_out_of_zone`, `entry_no_stop_room`,
+`entry_cooldown` (all carry a `detail` block naming the price/zone, the stop room and its
+trigger, or the last fill time, so "why didn't it buy" is answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
 `exit_already_handled` (the re-evaluation loop already sold this symbol this tick),
 `entry_blocked` (a risk breaker is up and this symbol's signal is not a sell).
 Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
@@ -247,6 +253,14 @@ gate's sizing decision has to survive a broker rejection to be auditable.
 acted on; the watchlist sell path skips those with `exit_already_handled`. The two loops also
 use distinct idempotency keys (`…-reeval-sell` vs `…-signal-sell`) since a partial exit leaves
 a position behind and `order_tracking.idempotency_key` is unique.
+
+**게이트 호출 원문은 `trade_audit`에 남는다.** `runTradeGate`의 결과에 실린
+`transcript`(system/user 프롬프트 + 파싱 전 응답 원문)를 호출 **직후** 적재한다 — 주문 성사
+여부와 무관하게. 트레이드 행에 매달면 fraction 0·게이트 오류·브로커 거절처럼 주문이 안 나간
+호출이 통째로 사라지는데, "왜 안 샀나"를 되짚을 때 필요한 게 정확히 그 행들이다.
+`cron_decisions.detail.gate`는 *결론*(fraction·confidence·reason)을 남기고 이쪽이 *입력*을
+남긴다 — 수 KB짜리 프롬프트를 모든 결정 행의 jsonb에 넣지 않으려는 분리다.
+적재 실패는 삼킨다(`auditGate`의 자체 try/catch): 감사 기록이 매매를 막으면 본말전도다.
 
 **Gate OFF is not byte-identical to the pre-gate build.** `planEntry` clamps the budget by
 real buying power (`auto` only), which `calculatePositionSize` never did — e.g. price $100 /
@@ -313,6 +327,7 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
 | Entry zone | — (analysis-driven) | +1% over `entryPrices` max | Blocks buy/average_in only — `entry_out_of_zone`. Not a breaker row in the audit: it is per-symbol, so it decides inside the watchlist loop rather than setting `entryBlock` |
+| Stop room | — (analysis-driven) | ≥1% above the first stop trigger | Blocks buy/average_in only — `entry_no_stop_room`. Per-symbol, same as above. Fail-open with no support/stop level |
 | Re-entry cooldown | `entry_cooldown_min` | 60 min | Blocks buy/average_in only — `entry_cooldown`. Per-symbol, same as above. 0 disables |
 | Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
@@ -455,6 +470,14 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
   매수/추가매수를 건너뛴다(`lib/strategy/entry-zone.ts`). **상단만** 본다 — 구간 아래는 매수에
   불리하지 않다. `entryPrices`가 없으면 통과(fail-open). 사이징 게이트보다 앞이라 어차피 사지
   않을 주문에 LLM 호출을 태우지 않는다. 매도에는 걸지 않는다.
+- **`entry_no_stop_room`** — 진입가와 **가장 먼저 서는 손절 트리거** 사이가 1%
+  (`MIN_STOP_ROOM`) 미만이면 매수/추가매수를 건너뛴다(`lib/strategy/entry-zone.ts`의
+  `hasStopRoom`). 트리거는 `max(지지선 × (1 − SUPPORT_BREAK_BUFFER), 분석 손절가)` — 청산
+  규칙이 둘을 각각 보므로 **높은** 쪽이 먼저 걸린다. 레벨이 없으면 통과(fail-open).
+  손실 크기를 제한하는 장치가 아니라 **손절선이 노이즈 대역 밖인지**를 보는 장치다.
+  실측(2026-08-19~20) 3건이 전부 여유 0.03~0.2%에서 진입해 전건 손실로 끝났다 — 방향이
+  틀려서가 아니라 손절선이 호가 스프레드 안이라서 털렸다. `entry_out_of_zone`은 이걸 못
+  잡는다: 그 셋은 전부 권장 진입 구간 **안**이었다. 매도에는 걸지 않는다(원칙 7).
 - **`entry_cooldown`** — 같은 심볼 재진입 최소 간격(`config.entry_cooldown_min`, 기본 60분,
   0이면 off). 기준은 마지막 **체결**이다 — 매수뿐 아니라 **매도도 쿨다운을 건다.** 매수만 보면
   손절이 마지막 매수보다 쿨다운 뒤에 일어났을 때 손절 10분 뒤 같은 분석으로 재매수가 가능했다
@@ -474,7 +497,13 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
 얻을 수 없는 사실 하나를 못박는다: 고정 손절선은 평단이 기준이므로 추가 매수가
 손절선을 함께 내린다 (진입 지침 5번).
 
-청산 쪽에는 대칭 게이트를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
+청산 트리거 자체의 오차도 같이 잡았다 — **지지선 이탈에는 0.5% 버퍼**(`SUPPORT_BREAK_BUFFER`),
+**저항선 근접은 ±2% 밴드**다. 종전에는 손절만 오차 0(`< supportLevel`)이고 익절은 2%·5%로
+관대해, 그 비대칭이 승률을 깎는 방향으로만 작동했다. 저항선 쪽은 상한이 없어 **돌파를 저항
+거부로 오독**했다(실측: 저항 172.33에 현재가 176.375를 "저항선 근접"으로 청산). 목표가는
+상한을 두지 않는다 — 목표가 위는 "도달"이지만 저항선 위는 "돌파"라 뜻이 다르다.
+
+청산 쪽에는 대칭 **진입 게이트**를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
 대신 빠져 있던 트리거를 채웠다: `actionRecommendation.stopLoss` / `takeProfitPrices`(core의
 `reconciledLevels` 보정값 우선)가 `evaluateExistingPosition`의 우선순위 1.5 / 4.5로 들어간다.
 `fixed_exit_enabled`가 기본 꺼짐이라, 그전까지 활성 손절 경로는 지지선 이탈·추세 반전·하락

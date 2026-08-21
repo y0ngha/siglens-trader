@@ -21,7 +21,7 @@ lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry poli
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
 lib/auth/         → Application: login/session lifecycle (bcrypt, session cookie, login throttle)
-lib/db/           → Infrastructure: Neon PostgreSQL I/O (15 tables, DB transactions, consistency checker)
+lib/db/           → Infrastructure: Neon PostgreSQL I/O (16 tables, DB transactions, consistency checker)
 lib/lock.ts       → Distributed lock (Redis SETNX + UUID owner + Lua script release)
 lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 ```
@@ -115,14 +115,15 @@ useQuery({
 
 ## Signal Scoring
 
-Priority-weighted average (weights sum to 38 on the `1Hour` profile; `15Min` sums to 39 — a
+Priority-weighted average (weights sum to 35 on `1Hour`, 36 on `30Min`, 38 on `15Min` — a
 weighted average, so the sum itself carries no meaning):
 - Confluence: 12
 - Technical: 8
 - News: 6
 - Options: 5
 - Fundamental: 4
-- Congress: 3
+- Congress: **0** — 축은 돌지만 점수에 투표하지 않는다. 프로덕션 실측 31/31 `bullish`
+  (분산 0)로, 투표가 아니라 상수 가산점이었다. 근거와 되돌리는 법은 `DEFAULT_WEIGHTS` 독스트링.
 
 Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
 `WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises
@@ -142,13 +143,14 @@ LLM's 61.5% over the same window, which is what the weight of 12 is paying for. 
   **sells and holds** behaving exactly as they did before this axis existed; new entries are
   blocked (see the abstention bullet below), which is the intended asymmetry, not a regression.
 - **A trigger alone cannot buy.** Trigger (92) with every other axis neutral scores
-  `(92×12 + 50×26)/38 = 63` — hold. It takes the rest at a mild 60 to reach 70.
+  `(92×12 + 50×23)/35 = 64` — hold. It takes the rest at a mild 60 to reach 70.
 - **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
-  `(72×26 + 50×12)/38 = 65`, below the buy threshold, so fill count drops. That is the point —
+  `(72×23 + 50×12)/35 = 64`, below the buy threshold, so fill count drops. That is the point —
   *no entry the indicators do not back* — not a regression to tune away.
 - **Confluence abstention blocks a buy too.** A `null` snapshot drops the axis's weight, which
-  is *looser*, not neutral: with the other five fixed, the same symbol scores 65 (hold) at a
-  genuinely neutral confluence and **72 (buy)** when FMP simply failed to serve bars. An axis
+  is *looser*, not neutral: with the other five fixed, the same symbol scores 64 (hold) at a
+  genuinely neutral confluence and **72 (buy)** when FMP simply failed to serve bars (실측 3건이
+  그 반대편을 증명했다 — 컨플루언스가 **혼자** 만든 매수 3건은 전건 손실이었다). An axis
   added to stop entries the indicators don't back was opening the gate exactly when the
   indicators were unreadable. So a `buy` verdict is downgraded to `hold` when the snapshot is
   absent; sells are untouched. The downgrade is scoped to a **live** axis: with

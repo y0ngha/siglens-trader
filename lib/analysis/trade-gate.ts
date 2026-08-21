@@ -116,9 +116,30 @@ export interface TradeGateInput {
     correlationId?: string;
 }
 
+/**
+ * 호출에 실제로 나간 프롬프트와 돌아온 원문. `trade_audit`에 그대로 적재된다.
+ *
+ * 결론(fraction·confidence·reason)만으로는 "왜 이렇게 판단했나"를 되짚을 수 없다 —
+ * 입력이 없으면 모델 교체·프롬프트 수정의 효과를 사후에 비교할 방법도 없다. 여기 실어
+ * 보내는 것은 순수 값이고 I/O는 호출부가 한다(`lib/analysis/`는 DB를 모른다).
+ */
+export interface TradeGateTranscript {
+    systemPrompt: string;
+    userPrompt: string;
+    /** null = 호출이 응답 전에 실패했다 (타임아웃·provider 오류). */
+    rawResponse: string | null;
+}
+
 export type TradeGateOutcome =
-    | { status: 'ok'; fraction: number; confidence: number; reason: string; model: string }
-    | { status: 'error'; error: string; model: string };
+    | {
+          status: 'ok';
+          fraction: number;
+          confidence: number;
+          reason: string;
+          model: string;
+          transcript: TradeGateTranscript;
+      }
+    | { status: 'error'; error: string; model: string; transcript: TradeGateTranscript };
 
 /**
  * 호출당 타임아웃 기본값.
@@ -1043,12 +1064,21 @@ export function buildTradeGatePrompt(input: TradeGateInput): { system: string; u
  * 모델은 펜스 밖에 머리말을 붙이기도 하고, provider가 바뀌면 정규화 동작도 바뀐다.
  * 첫 `{`부터 마지막 `}`까지를 잘라 파싱하는 것이 여기서 필요한 전부다.
  */
-function parseGateResponse(raw: unknown, model: string): TradeGateOutcome {
+function parseGateResponse(
+    raw: unknown,
+    model: string,
+    transcript: TradeGateTranscript,
+): TradeGateOutcome {
     const text = typeof raw === 'string' ? raw : '';
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start === -1 || end <= start) {
-        return { status: 'error', error: '응답에서 JSON 객체를 찾지 못했다', model };
+        return {
+            status: 'error',
+            error: '응답에서 JSON 객체를 찾지 못했다',
+            model,
+            transcript,
+        };
     }
 
     // slice가 `{`로 시작해 `}`로 끝나므로 파싱에 성공하면 반드시 객체다 — 배열/스칼라 분기는 없다.
@@ -1056,7 +1086,12 @@ function parseGateResponse(raw: unknown, model: string): TradeGateOutcome {
     try {
         obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
     } catch (err) {
-        return { status: 'error', error: `JSON 파싱 실패: ${toErrStr(err)}`, model };
+        return {
+            status: 'error',
+            error: `JSON 파싱 실패: ${toErrStr(err)}`,
+            model,
+            transcript,
+        };
     }
 
     const fraction = obj.fraction;
@@ -1065,6 +1100,7 @@ function parseGateResponse(raw: unknown, model: string): TradeGateOutcome {
             status: 'error',
             error: `fraction이 유한한 숫자가 아니다: ${String(fraction)}`,
             model,
+            transcript,
         };
     }
     // 범위 밖은 **클램프하지 않고 실패로 돌린다.** 0~1을 벗어난 값은 모델이 fraction의
@@ -1072,7 +1108,12 @@ function parseGateResponse(raw: unknown, model: string): TradeGateOutcome {
     // 응답"이 "확신에 찬 전액 집행"으로 둔갑한다. 실패로 두면 §8의 fail-closed(진입)/
     // fail-open(청산) 정책이 대신 결정하고 운영자에게 메일이 간다.
     if (fraction < 0 || fraction > 1) {
-        return { status: 'error', error: `fraction이 0~1 범위를 벗어났다: ${fraction}`, model };
+        return {
+            status: 'error',
+            error: `fraction이 0~1 범위를 벗어났다: ${fraction}`,
+            model,
+            transcript,
+        };
     }
 
     // confidence는 사이징 산술에 들어가지 않고 감사 로그용이라 관대하게 처리한다.
@@ -1087,12 +1128,17 @@ function parseGateResponse(raw: unknown, model: string): TradeGateOutcome {
 
     const reason = (safeString(obj.reason) ?? '').slice(0, REASON_MAX_LENGTH);
 
-    return { status: 'ok', fraction, confidence, reason, model };
+    return { status: 'ok', fraction, confidence, reason, model, transcript };
 }
 
 /** 프롬프트 빌드 → callAnalysisAi → 파싱·검증. 절대 throw하지 않는다. */
 export async function runTradeGate(input: TradeGateInput): Promise<TradeGateOutcome> {
     const { system, user } = buildTradeGatePrompt(input);
+    const transcript: TradeGateTranscript = {
+        systemPrompt: system,
+        userPrompt: user,
+        rawResponse: null,
+    };
 
     let raw: string;
     try {
@@ -1120,8 +1166,11 @@ export async function runTradeGate(input: TradeGateInput): Promise<TradeGateOutc
     } catch (err) {
         // 타임아웃(AbortError), provider 오류, MODEL_SPECS에 없는 모델 ID가 전부 여기로 온다.
         // 호출부(execute cron)가 try/catch 없이 쓸 수 있어야 하므로 절대 다시 던지지 않는다.
-        return { status: 'error', error: toErrStr(err), model: input.modelId };
+        // `transcript.rawResponse`는 null로 남는다 — 응답이 아예 없었다는 뜻이고, 그 구분이
+        // 감사에서 중요하다(응답을 못 받은 것과 받아서 파싱에 실패한 것은 다른 고장이다).
+        return { status: 'error', error: toErrStr(err), model: input.modelId, transcript };
     }
 
-    return parseGateResponse(raw, input.modelId);
+    transcript.rawResponse = raw;
+    return parseGateResponse(raw, input.modelId, transcript);
 }

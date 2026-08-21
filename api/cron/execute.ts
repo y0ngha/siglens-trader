@@ -11,6 +11,7 @@ import {
     closePosition,
     reducePositionQuantity,
     insertTrade,
+    insertTradeAudit,
     insertPendingOrder,
     getPendingOrders,
     getTodayTradeCount,
@@ -43,14 +44,20 @@ import {
     isWithinEntryWindow,
     parseEntryWindow,
 } from '../../lib/strategy/entry-window.js';
-import { exceedsEntryZone, formatEntryZone } from '../../lib/strategy/entry-zone.js';
+import {
+    exceedsEntryZone,
+    formatEntryZone,
+    formatStopRoom,
+    hasStopRoom,
+    MIN_STOP_ROOM,
+} from '../../lib/strategy/entry-zone.js';
 import {
     DEFAULT_EXECUTE_INTERVAL_MIN,
     isExecuteTick,
     parseExecuteInterval,
 } from '../../lib/strategy/execute-interval.js';
 import { scoreSignals } from '../../lib/strategy/signal-scorer.js';
-import { evaluateExistingPosition } from '../../lib/strategy/risk-manager.js';
+import { evaluateExistingPosition, SUPPORT_BREAK_BUFFER } from '../../lib/strategy/risk-manager.js';
 import { planEntry, planExit } from '../../lib/strategy/trade-plan.js';
 import type { EntryPlan, ExitTrigger } from '../../lib/strategy/trade-plan.js';
 import { runTradeGate } from '../../lib/analysis/trade-gate.js';
@@ -287,6 +294,40 @@ async function handler(req: Request): Promise<Response> {
     const db = getDb();
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
+
+    /**
+     * 게이트 호출 1건의 원문(프롬프트·응답)을 `trade_audit`에 남긴다.
+     *
+     * **주문 성사 여부와 무관하게, 호출 직후에 쓴다.** 트레이드 행에 매달면 fraction 0·게이트
+     * 오류·브로커 거절처럼 주문이 안 나간 호출이 통째로 사라지는데, "왜 안 샀나"를 되짚을 때
+     * 필요한 게 정확히 그 행들이다. `cron_decisions`가 run_id+symbol로 묶이는 것과 같은
+     * 상관 키를 쓰고, `trades.cron_run_id`도 같은 값을 들고 있어 셋이 한 런에서 조인된다.
+     *
+     * `safe()`로 감싸는 이유 — 감사 기록 실패가 매매를 막으면 본말전도다.
+     */
+    const auditGate = async (outcome: TradeGateOutcome, kind: 'entry' | 'exit', symbol: string) => {
+        // `safe()`가 아니라 자체 try/catch인 이유: `safe()`는 **이미 만들어진 Promise**만
+        // 받으므로 `insertTradeAudit(...)` 호출이 동기적으로 던지면 그대로 빠져나가
+        // 심볼 루프의 catch에 걸린다 — 감사 기록 실패가 매매를 죽이는, 이 함수가 막으려던
+        // 바로 그 일이다. async 함수 안의 try/catch는 동기 throw와 rejection을 같이 잡는다.
+        try {
+            await insertTradeAudit(db, {
+                symbol,
+                kind,
+                modelId: outcome.model,
+                systemPrompt: outcome.transcript.systemPrompt,
+                userPrompt: outcome.transcript.userPrompt,
+                rawResponse: outcome.transcript.rawResponse,
+                status: outcome.status,
+                gateError: outcome.status === 'error' ? outcome.error : undefined,
+                fraction: outcome.status === 'ok' ? outcome.fraction : undefined,
+                confidence: outcome.status === 'ok' ? outcome.confidence : undefined,
+                cronRunId,
+            });
+        } catch (e) {
+            console.error('[cron-audit] trade_audit', symbol, kind, e);
+        }
+    };
 
     // 실행 간격 게이트. node-cron은 5분마다 이 핸들러를 부르고, 실제로 돌지 여부는
     // `execute_interval_min` 설정이 정한다 (`lib/strategy/execute-interval.ts`).
@@ -1186,6 +1227,7 @@ async function handler(req: Request): Promise<Response> {
                             userApiKey: gateApiKey,
                             correlationId: `${cronRunId}-${position.symbol}-exit`,
                         });
+                        await auditGate(exitOutcome, 'exit', position.symbol);
                         if (exitOutcome.status === 'ok') {
                             exitFraction = exitOutcome.fraction;
                             exitGateSource = 'ai';
@@ -1949,6 +1991,38 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // 손절선까지 여유가 없는 진입 차단.
+                    //
+                    // 위 게이트가 "분석이 말한 구간보다 비싸게 사는가"를 봤다면 이건 "손절선이
+                    // 노이즈 대역 밖인가"를 본다. 둘은 서로를 대신하지 못한다 — 실측 3건
+                    // (2026-08-19~20, 전건 손실)은 전부 진입 구간 안이면서 손절선까지 여유가
+                    // 0.03~0.2%였다. 방향이 틀려서가 아니라 손절선이 스프레드 안이라서 털렸다.
+                    const stopLevels = {
+                        supportLevel: safeAnalysisSupport(tech?.result),
+                        aiStopLoss: safeAnalysisStopLoss(tech?.result),
+                    };
+                    if (
+                        isEntryDecision &&
+                        !hasStopRoom(currentPrice, stopLevels, SUPPORT_BREAK_BUFFER)
+                    ) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_no_stop_room',
+                            score: decision.score,
+                            detail: {
+                                price: currentPrice,
+                                stopRoom: formatStopRoom(
+                                    currentPrice,
+                                    stopLevels,
+                                    SUPPORT_BREAK_BUFFER,
+                                ),
+                                minStopRoom: MIN_STOP_ROOM,
+                                ...stopLevels,
+                            },
+                        });
+                        continue;
+                    }
+
                     // 분석이 명시적으로 "진입하지 마라"고 한 종목은 사지 않는다.
                     //
                     // 종전에는 `avoid`가 기술 축 감점으로만 표현됐는데, 가중치 8/38을 거치면
@@ -2269,6 +2343,7 @@ async function handler(req: Request): Promise<Response> {
                                 exit: null,
                                 correlationId: `${cronRunId}-${item.symbol}-entry`,
                             });
+                            await auditGate(entryOutcome, 'entry', item.symbol);
                             if (entryOutcome.status === 'ok') {
                                 entryFraction = entryOutcome.fraction;
                                 entrySource = 'ai';
@@ -2353,6 +2428,7 @@ async function handler(req: Request): Promise<Response> {
                                 exit: { trigger: 'signal_sell', ruleReason: decision.reason },
                                 correlationId: `${cronRunId}-${item.symbol}-signal-sell`,
                             });
+                            await auditGate(sellOutcome, 'exit', item.symbol);
                             if (sellOutcome.status === 'ok') {
                                 sellFraction = sellOutcome.fraction;
                                 sellSource = 'ai';

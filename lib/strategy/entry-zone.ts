@@ -38,6 +38,73 @@ export function exceedsEntryZone(
     return price > Math.max(...levels) * (1 + safeTolerance);
 }
 
+/**
+ * 진입가와 손절 트리거 사이에 있어야 할 최소 간격 (1%).
+ *
+ * `SUPPORT_BREAK_BUFFER`(0.5%)가 노이즈 한 틱을 걸러 주지만, 손절선이 진입가 바로 아래면
+ * 그 버퍼조차 몇 틱이면 먹힌다. 이 값은 손실 크기를 제한하는 장치가 **아니다** — 손절선이
+ * 노이즈 대역 밖에 있는지를 본다. 1%는 30분봉에서 손절선까지의 정상적인 거리이고,
+ * 그보다 좁은 진입은 방향이 맞아도 흔들림에 먼저 털린다.
+ */
+export const MIN_STOP_ROOM = 0.01;
+
+/**
+ * 진입가가 손절 트리거보다 충분히 위인가 — 즉 손절선이 노이즈 대역 밖인가.
+ *
+ * 없어서 생긴 손실이 실측으로 3건이다(2026-08-19~20, 전건 손실). 예: PLTR을 175.65에
+ * 사는데 지지선이 175.60 — 여유 **0.03%**. 10분 뒤 지지선을 0.037% 이탈해 전량 청산.
+ * 방향이 틀려서 진 게 아니라 손절선이 호가 스프레드 안에 있어서 졌다.
+ *
+ * `exceedsEntryZone`이 못 잡는 층이다. 그쪽은 "분석이 말한 구간보다 비싸게 사는가"를 보고
+ * 이쪽은 "손절선까지 여유가 있는가"를 본다. 셋 다 통과한 진입만 주문이 된다.
+ *
+ * **위에서 가장 먼저 서는 트리거를 기준으로 한다.** 청산 규칙은 분석 손절가(1.5)와
+ * 지지선 이탈(2)을 각각 보므로, 둘 중 **높은** 쪽이 실제로 먼저 걸린다. 낮은 쪽을 쓰면
+ * 있지도 않은 여유를 계산하게 된다.
+ *
+ * 판단할 재료가 없으면 통과시킨다(fail-open) — `exceedsEntryZone`과 같은 정책이다.
+ * 이 축은 진입 품질 장치이지 매수의 전제조건이 아니다.
+ */
+export function hasStopRoom(
+    price: number,
+    levels: { supportLevel?: number; aiStopLoss?: number },
+    supportBuffer: number,
+    minRoom: number = MIN_STOP_ROOM,
+): boolean {
+    if (!isFinitePositive(price)) return true;
+
+    const safeBuffer = Number.isFinite(supportBuffer) && supportBuffer >= 0 ? supportBuffer : 0;
+    const safeRoom = Number.isFinite(minRoom) && minRoom >= 0 ? minRoom : 0;
+
+    const triggers: number[] = [];
+    if (isFinitePositive(levels.supportLevel)) {
+        triggers.push(levels.supportLevel * (1 - safeBuffer));
+    }
+    if (isFinitePositive(levels.aiStopLoss)) triggers.push(levels.aiStopLoss);
+    if (triggers.length === 0) return true;
+
+    // 가장 높은 트리거가 가장 먼저 선다.
+    return price >= Math.max(...triggers) * (1 + safeRoom);
+}
+
+/** 감사 로그·이메일에 남길 진입가–손절 트리거 간격 표기. 판단 재료가 없으면 `undefined`. */
+export function formatStopRoom(
+    price: number,
+    levels: { supportLevel?: number; aiStopLoss?: number },
+    supportBuffer: number,
+): string | undefined {
+    if (!isFinitePositive(price)) return undefined;
+    const safeBuffer = Number.isFinite(supportBuffer) && supportBuffer >= 0 ? supportBuffer : 0;
+    const triggers: number[] = [];
+    if (isFinitePositive(levels.supportLevel)) {
+        triggers.push(levels.supportLevel * (1 - safeBuffer));
+    }
+    if (isFinitePositive(levels.aiStopLoss)) triggers.push(levels.aiStopLoss);
+    if (triggers.length === 0) return undefined;
+    const trigger = Math.max(...triggers);
+    return `${(((price - trigger) / price) * 100).toFixed(2)}% (트리거 $${trigger.toFixed(2)})`;
+}
+
 /** 감사 로그·이메일에 남길 구간 표기. 값이 없으면 `undefined`. */
 export function formatEntryZone(entryPrices: readonly number[] | undefined): string | undefined {
     const levels = (entryPrices ?? []).filter(isFinitePositive);

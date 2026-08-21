@@ -264,6 +264,55 @@ export const newsCards = pgTable(
 );
 
 /**
+ * 사이징 게이트 호출 1건의 원문 기록 — 나간 프롬프트와 받은 응답 그대로.
+ *
+ * **왜 별도 테이블인가.** `cron_decisions.detail.gate`는 이미 게이트의 *결론*
+ * (fraction·confidence·reason)을 남긴다. 없는 것은 그 결론이 나온 *입력*이다. 프롬프트는
+ * 6축 요약·계좌 상태·예산·보유 맥락을 다 담아 수 KB이고, 그걸 모든 결정 행의 jsonb에 넣으면
+ * 매 틱 모든 종목이 그 비용을 낸다. 실제로 읽는 시점은 "이 매매는 왜 이렇게 됐나"를 되짚을
+ * 때뿐이라 조회 빈도와 크기가 정확히 반대다.
+ *
+ * **왜 `trade_id` FK가 아닌가.** 게이트는 주문이 나가기 전에 호출되고, 그 호출이 트레이드
+ * 행으로 이어지지 않는 경우(fraction 0, 게이트 오류로 진입 취소, 브로커 거절)가 오히려 더
+ * 알고 싶은 케이스다. FK를 걸면 그 행들이 기록될 자리가 없다. 대신 이 스키마가 이미 쓰는
+ * 상관 키를 따른다 — `cron_decisions`가 `run_id` + `symbol`로 묶이는 것과 같은 방식이고,
+ * `trades.cron_run_id`도 같은 값을 들고 있어 셋이 한 런에서 조인된다.
+ *
+ * 조인 예:
+ *   SELECT t.*, a.user_prompt, a.raw_response
+ *   FROM trades t JOIN trade_audit a
+ *     ON a.cron_run_id = t.cron_run_id AND a.symbol = t.symbol
+ *   WHERE t.realized_pnl::numeric < 0;
+ */
+export const tradeAudit = pgTable(
+    'trade_audit',
+    {
+        id: serial('id').primaryKey(),
+        symbol: text('symbol').notNull(),
+        /** 'entry' | 'exit' — 같은 런·같은 종목에서 둘 다 나올 수 있어 상관 키의 일부다. */
+        kind: text('kind').notNull(),
+        modelId: text('model_id').notNull(),
+        systemPrompt: text('system_prompt').notNull(),
+        userPrompt: text('user_prompt').notNull(),
+        /** NULL = 호출 자체가 실패해 응답이 없었다 (타임아웃·provider 오류). */
+        rawResponse: text('raw_response'),
+        /** 'ok' | 'error' — 파싱까지 성공했는가. 실패 사유는 `gateError`. */
+        status: text('status').notNull(),
+        gateError: text('gate_error'),
+        /** 파싱된 결론. 실패면 NULL — 그때 무엇이 대신 결정했는지는 `cron_decisions`에 있다. */
+        fraction: numeric('fraction'),
+        confidence: integer('confidence'),
+        cronRunId: text('cron_run_id'),
+        userId: ownerUserId(),
+        createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    },
+    (table) => [
+        index('idx_trade_audit_run_symbol').on(table.cronRunId, table.symbol),
+        index('idx_trade_audit_symbol_created').on(table.symbol, table.createdAt),
+    ],
+);
+
+/**
  * Notifications deferred during quiet hours (00:00–09:59 Asia/Seoul).
  * The morning digest cron (01:00 UTC = 10:00 KST) drains this table and
  * sends one consolidated email. Rows whose sentAt is NULL are "pending".

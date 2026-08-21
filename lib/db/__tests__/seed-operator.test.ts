@@ -135,7 +135,7 @@ describe('claimExistingData', () => {
         }
     });
 
-    it('backfills and sets the DEFAULT for all eight owned tables in one transaction', async () => {
+    it('backfills and sets the DEFAULT for every owned table in one transaction', async () => {
         const { db, ops, statements } = createFakeDb();
 
         const claimed = await claimExistingData(db, OPERATOR_ID);
@@ -148,6 +148,7 @@ describe('claimExistingData', () => {
             'analysis_model_config',
             'positions',
             'trades',
+            'trade_audit',
             'pending_orders',
             'config',
             'order_tracking',

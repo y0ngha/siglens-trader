@@ -25,8 +25,13 @@ describe('weightsForTimeframe', () => {
 
         // Congressional disclosures surface weeks late and fundamentals move on quarters —
         // both must matter less to a 15-minute decision than to an hourly one.
-        expect(quarter.congress).toBeLessThan(half.congress);
-        expect(half.congress).toBeLessThan(hour.congress);
+        //
+        // congress는 그 논리의 끝인 0이다 — 어떤 프로파일에서도 투표하지 않는다. 실측에서
+        // 31/31 bullish(분산 0)로, 축이 아니라 상수 가산점이었다. 프로파일 간 대소 비교
+        // 대신 "어디서도 투표하지 않는다"를 지킨다.
+        expect(quarter.congress).toBe(0);
+        expect(half.congress).toBe(0);
+        expect(hour.congress).toBe(0);
         expect(quarter.fundamental).toBeLessThan(half.fundamental);
         expect(half.fundamental).toBeLessThan(hour.fundamental);
 

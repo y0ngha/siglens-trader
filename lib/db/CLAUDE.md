@@ -6,7 +6,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 
 | File | Responsibility |
 |------|---------------|
-| `schema.ts` | Drizzle table definitions (15 tables) |
+| `schema.ts` | Drizzle table definitions (16 tables) |
 | `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
@@ -26,6 +26,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `analysis_results` | Latest analysis snapshots (JSONB) |
 | `positions` | Open/closed positions (unique index on symbol+open status) |
 | `trades` | Execution history (with reason + mode + cronRunId) |
+| `trade_audit` | 사이징 게이트 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. `cron_run_id` + `symbol` + `kind`로 `trades`/`cron_decisions`와 조인 |
 | `pending_orders` | Approval queue (semi_auto mode) |
 | `config` | Key-value settings (JSONB value) |
 | `order_tracking` | Order lifecycle tracking (unique idempotency key, `client_order_id` Toss idempotency key, status transitions) |
@@ -37,8 +38,8 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 
 ## Data Ownership
 
-`watchlist`, `analysis_model_config`, `positions`, `trades`, `pending_orders`, `config`,
-`order_tracking` and `notification_config` carry a `user_id` FK to `users`.
+`watchlist`, `analysis_model_config`, `positions`, `trades`, `trade_audit`, `pending_orders`,
+`config`, `order_tracking` and `notification_config` carry a `user_id` FK to `users`.
 `db:seed-operator` backfills existing rows and sets the column DEFAULT to the operator,
 so the query helpers here **do not pass an owner** — Postgres fills it in.
 
@@ -53,6 +54,7 @@ DEFAULT, and indexing `user_id`. See the comment on `ownerUserId` in `schema.ts`
 | `averageIntoPosition(db, positionId, qty, price)` | Atomic weighted-average price update via SQL (no read-then-write) |
 | `reducePositionQuantity(db, id, soldQty)` | Atomic position quantity reduction for partial sells |
 | `getTodayTradeCount(db)` | Count today's non-skipped trades (NY timezone) |
+| `insertTradeAudit(db, params)` | 게이트 호출 1건의 프롬프트·원문 응답 적재. 주문이 나가지 않은 호출도 기록한다 — 호출부는 실패를 삼켜야 한다 |
 | `getTodayRealizedPnl(db)` | Sums per-sell `realized_pnl` (recorded at execution as (sellPrice − cost basis) × qty) for today's non-dry/non-skipped sells |
 | `createOrderTracking(db, params)` | Insert order tracking record with idempotency key |
 | `updateOrderTracking(db, key, updates)` | Update order status/price by idempotency key |

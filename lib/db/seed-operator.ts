@@ -25,6 +25,7 @@ const OWNED_TABLES = [
     'analysis_model_config',
     'positions',
     'trades',
+    'trade_audit',
     'pending_orders',
     'config',
     'order_tracking',

@@ -24,6 +24,7 @@ const mockOpenPosition = vi.fn();
 const mockClosePosition = vi.fn();
 const mockReducePositionQuantity = vi.fn();
 const mockInsertTrade = vi.fn();
+const mockInsertTradeAudit = vi.fn().mockResolvedValue(undefined);
 const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
@@ -54,6 +55,7 @@ vi.mock('../../../lib/db/queries', () => ({
     closePosition: (...args: unknown[]) => mockClosePosition(...args),
     reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
+    insertTradeAudit: (...args: unknown[]) => mockInsertTradeAudit(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
@@ -93,6 +95,9 @@ const mockEvaluateExistingPosition = vi.fn();
 vi.mock('../../../lib/strategy/risk-manager', () => ({
     calculatePositionSize: (...args: unknown[]) => mockCalculatePositionSize(...args),
     evaluateExistingPosition: (...args: unknown[]) => mockEvaluateExistingPosition(...args),
+    // 상수는 mock하지 않고 실제 값을 그대로 노출한다 — 진입 가드(`hasStopRoom`)가 이 값을
+    // 읽으므로 여기서 0이나 undefined가 새면 가드가 조용히 꺼진 채로 테스트가 통과한다.
+    SUPPORT_BREAK_BUFFER: 0.005,
 }));
 
 const mockMakeTradeDecision = vi.fn();
@@ -316,6 +321,11 @@ function setupDefaults() {
         confidence: 80,
         reason: '게이트 기본 응답',
         model: 'deepseek-v4-flash',
+        transcript: {
+            systemPrompt: 'SYS',
+            userPrompt: 'USER',
+            rawResponse: 'RAW',
+        },
     });
     mockEvaluateExistingPosition.mockReturnValue({ action: 'hold', reason: '유지 (조건 미충족)' });
     mockMakeTradeDecision.mockReturnValue({
@@ -1070,6 +1080,11 @@ describe('execute cron handler', () => {
                 confidence: 70,
                 reason: '게이트 판단',
                 model: 'deepseek-v4-flash',
+                transcript: {
+                    systemPrompt: 'SYS',
+                    userPrompt: 'USER',
+                    rawResponse: 'RAW',
+                },
             });
 
             await handler(makeRequest(true));
@@ -6092,6 +6107,11 @@ describe('execute cron handler', () => {
                 confidence,
                 reason: '게이트 판단',
                 model: 'deepseek-v4-flash',
+                transcript: {
+                    systemPrompt: 'SYS',
+                    userPrompt: 'USER',
+                    rawResponse: 'RAW',
+                },
             });
         }
 
@@ -6197,6 +6217,11 @@ describe('execute cron handler', () => {
                 status: 'error',
                 error: 'fraction이 0~1 범위를 벗어났다: 1.4',
                 model: 'deepseek-v4-flash',
+                transcript: {
+                    systemPrompt: 'SYS',
+                    userPrompt: 'USER',
+                    rawResponse: 'RAW',
+                },
             });
 
             const res = await handler(makeRequest(true));
@@ -6457,6 +6482,11 @@ describe('execute cron handler', () => {
                 status: 'error',
                 error: 'timeout',
                 model: 'deepseek-v4-flash',
+                transcript: {
+                    systemPrompt: 'SYS',
+                    userPrompt: 'USER',
+                    rawResponse: 'RAW',
+                },
             });
             mockClosePosition.mockResolvedValue(true);
 
@@ -6780,6 +6810,11 @@ describe('execute cron handler', () => {
                 confidence,
                 reason: '게이트 판단',
                 model: 'deepseek-v4-flash',
+                transcript: {
+                    systemPrompt: 'SYS',
+                    userPrompt: 'USER',
+                    rawResponse: 'RAW',
+                },
             });
         }
 
@@ -8153,24 +8188,32 @@ describe('execute cron handler', () => {
 
     describe('진입 품질 가드', () => {
         /** 권장 진입 구간 $148~$152를 실은 기술 분석 결과. */
-        const techWithZone = (currentPrice: number) => ({
+        const techWithZone = (currentPrice: number, stop = 140) => ({
             result: {
                 trend: 'bullish',
                 riskLevel: 'low',
-                keyLevels: { currentPrice, support: [140], resistance: [200] },
+                keyLevels: { currentPrice, support: [stop], resistance: [200] },
                 actionRecommendation: {
                     positionAnalysis: '',
                     entry: '',
                     exit: '',
                     riskReward: '',
                     entryPrices: [148, 152],
-                    stopLoss: 140,
+                    // `stop`을 파라미터로 뺀 이유: 손절 여유 가드(`entry_no_stop_room`)가
+                    // 진입가와 이 값의 간격을 보므로, 진입가가 낮은 케이스에서 고정 140을
+                    // 쓰면 손절선이 진입가 **위**가 되어 다른 가드를 검증하려던 테스트가
+                    // 손절 여유 가드에 걸린다.
+                    stopLoss: stop,
                     takeProfitPrices: [170, 185],
                 },
             },
         });
 
-        function buySetup(currentPrice: number, extraConfig: Record<string, unknown> = {}) {
+        function buySetup(
+            currentPrice: number,
+            extraConfig: Record<string, unknown> = {},
+            stop = 140,
+        ) {
             // 가격은 이제 호가(또는 컨플루언스 종가)에서 온다 — 분석 결과에는 현재가가 없다.
             setLivePrice(currentPrice);
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
@@ -8181,7 +8224,7 @@ describe('execute cron handler', () => {
             mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
             mockGetLatestAnalysisResult.mockImplementation(
                 (_db: unknown, _sym: string, type: string) =>
-                    Promise.resolve(type === 'technical' ? techWithZone(currentPrice) : null),
+                    Promise.resolve(type === 'technical' ? techWithZone(currentPrice, stop) : null),
             );
             mockScoreSignals.mockReturnValue(fakeBuySignalScore);
             mockMakeTradeDecision.mockReturnValue({
@@ -8192,6 +8235,102 @@ describe('execute cron handler', () => {
                 quantity: 5,
             });
         }
+
+        describe('손절 여유 가드 (entry_no_stop_room)', () => {
+            it('손절선이 진입가 바로 아래면 매수하지 않는다', () => {
+                // 실측 회귀: PLTR 175.65 매수 / 지지 175.60 = 여유 0.03%. 10분 뒤 청산.
+                buySetup(150, {}, 149.5);
+
+                return handler(makeRequest(true))
+                    .then((r) => r.json())
+                    .then((body) => {
+                        expect(body.decisions).toContainEqual(
+                            expect.objectContaining({
+                                symbol: 'AAPL',
+                                action: 'entry_no_stop_room',
+                            }),
+                        );
+                        expect(mockInsertTrade).not.toHaveBeenCalled();
+                        // 게이트보다 앞이어야 한다 — 어차피 안 살 주문에 LLM을 태우지 않는다.
+                        expect(mockRunTradeGate).not.toHaveBeenCalled();
+                    });
+            });
+
+            it('여유가 있으면 그대로 매수한다', async () => {
+                buySetup(150, {}, 130);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('감사 로그에 간격과 트리거를 남긴다 — "왜 안 샀나"에 답할 수 있어야 한다', async () => {
+                buySetup(150, {}, 149.5);
+
+                await handler(makeRequest(true));
+
+                expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                    fakeDb,
+                    expect.any(String),
+                    'execute',
+                    expect.arrayContaining([
+                        expect.objectContaining({
+                            action: 'entry_no_stop_room',
+                            detail: expect.objectContaining({
+                                price: 150,
+                                supportLevel: 149.5,
+                                aiStopLoss: 149.5,
+                                stopRoom: expect.any(String),
+                            }),
+                        }),
+                    ]),
+                );
+            });
+
+            it('레벨이 없으면 통과시킨다 (fail-open)', async () => {
+                buySetup(150);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) =>
+                        Promise.resolve(
+                            type === 'technical'
+                                ? { result: { trend: 'bullish', keyLevels: {} } }
+                                : null,
+                        ),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('매도에는 걸지 않는다 — 진입만 막는다 (원칙 7)', async () => {
+                buySetup(150, {}, 149.5);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '160',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'sell',
+                    symbol: 'AAPL',
+                    score: 20,
+                    reason: 'SELL',
+                    quantity: 5,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).not.toContainEqual(
+                    expect.objectContaining({ action: 'entry_no_stop_room' }),
+                );
+            });
+        });
 
         describe('권장 진입 구간 이탈 (entry_out_of_zone)', () => {
             it('구간 위로 달아난 가격은 매수하지 않는다', async () => {
@@ -8239,7 +8378,9 @@ describe('execute cron handler', () => {
             });
 
             it('구간 아래는 막지 않는다 — 상단만 본다', async () => {
-                buySetup(120);
+                // 구간($148~$152) 아래이면서 손절 트리거($140)보다는 1% 넘게 위 — 진입 구간
+                // 게이트만 단독으로 보려면 손절 여유 가드에 걸리지 않아야 한다.
+                buySetup(145);
 
                 const body = await (await handler(makeRequest(true))).json();
 
@@ -8431,7 +8572,9 @@ describe('execute cron handler', () => {
             });
 
             it('물타기는 규칙으로 막지 않는다 — 점수와 게이트가 이미 AI 판단이다', async () => {
-                buySetup(80);
+                // 평단($100) 아래에서의 추가 매수. 손절선은 진입가보다 아래여야 이 테스트가
+                // 검증하려는 것(규칙이 물타기를 막지 않는다)만 남는다.
+                buySetup(80, {}, 70);
                 mockGetOpenPositionBySymbol.mockResolvedValue({
                     id: 1,
                     symbol: 'AAPL',
@@ -8462,7 +8605,7 @@ describe('execute cron handler', () => {
             });
 
             it('평단 위 추가매수(불타기)도 그대로 진행한다', async () => {
-                buySetup(120);
+                buySetup(120, {}, 100);
                 mockGetOpenPositionBySymbol.mockResolvedValue({
                     id: 1,
                     symbol: 'AAPL',
@@ -8514,6 +8657,162 @@ describe('execute cron handler', () => {
 // 노출 단위 = 투입 원가
 // ---------------------------------------------------------------------------
 
+describe('execute cron — 게이트 원문 감사 (trade_audit)', () => {
+    beforeEach(() => {
+        // `setupDefaults()`는 mock을 비우지 않는다 — 호출 횟수를 단언하는 테스트가 있으므로
+        // 이 describe는 직접 비운다.
+        vi.clearAllMocks();
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-24T15:30:00.000Z'));
+        setupDefaults();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function buySetup() {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+            if (key === 'trading_mode') return Promise.resolve('dry_run');
+            if (key === 'max_position_size') return Promise.resolve(1500);
+            return Promise.resolve(null);
+        });
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+        mockGetLatestAnalysisResult.mockResolvedValue({
+            result: {
+                trend: 'bullish',
+                riskLevel: 'low',
+                keyLevels: { support: [{ price: 120, reason: '직전 저점' }], resistance: [] },
+            },
+        });
+        mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+        mockMakeTradeDecision.mockReturnValue({
+            action: 'buy',
+            symbol: 'AAPL',
+            score: 80,
+            reason: 'Score 80/100 — BUY',
+            quantity: 5,
+        });
+    }
+
+    it('진입 게이트의 프롬프트와 원문 응답을 적재한다', async () => {
+        buySetup();
+
+        await handler(makeRequest(true));
+
+        expect(mockInsertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                symbol: 'AAPL',
+                kind: 'entry',
+                modelId: 'deepseek-v4-flash',
+                systemPrompt: 'SYS',
+                userPrompt: 'USER',
+                rawResponse: 'RAW',
+                status: 'ok',
+                fraction: 1,
+                confidence: 80,
+                cronRunId: expect.any(String),
+            }),
+        );
+    });
+
+    it('게이트 실패도 적재한다 — 주문이 안 나간 호출이 오히려 알고 싶은 쪽이다', async () => {
+        buySetup();
+        mockRunTradeGate.mockResolvedValue({
+            status: 'error',
+            error: 'provider 500',
+            model: 'deepseek-v4-flash',
+            transcript: { systemPrompt: 'SYS', userPrompt: 'USER', rawResponse: null },
+        });
+
+        await handler(makeRequest(true));
+
+        expect(mockInsertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                kind: 'entry',
+                status: 'error',
+                gateError: 'provider 500',
+                // 응답을 못 받은 것과 받아서 파싱에 실패한 것은 다른 고장이다.
+                rawResponse: null,
+                fraction: undefined,
+            }),
+        );
+        // fail-closed: 감사는 남고 실제 매수는 나가지 않는다.
+        expect(mockInsertTrade).not.toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ side: 'buy', mode: 'dry_run' }),
+        );
+    });
+
+    it('청산 게이트는 kind: exit으로 적재한다', async () => {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+        );
+        mockGetEnabledWatchlist.mockResolvedValue([]);
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 1, symbol: 'AAPL', quantity: 10, avgPrice: '100', status: 'open' },
+        ]);
+        // 기술 분석이 신선해야 재평가 루프가 게이트까지 간다 (stale이면 그 전에 빠진다).
+        mockGetLatestAnalysisResult.mockImplementation((_db: unknown, _sym: string, type: string) =>
+            Promise.resolve(
+                type === 'technical'
+                    ? {
+                          result: {
+                              trend: 'bearish',
+                              riskLevel: 'high',
+                              keyLevels: { support: [90], resistance: [110] },
+                          },
+                      }
+                    : null,
+            ),
+        );
+        mockEvaluateExistingPosition.mockReturnValue({
+            action: 'stop_loss',
+            reason: '지지선 이탈',
+            structural: true,
+        });
+
+        await handler(makeRequest(true));
+
+        expect(mockInsertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ symbol: 'AAPL', kind: 'exit', status: 'ok' }),
+        );
+    });
+
+    it('감사 적재가 실패해도 매매는 그대로 진행된다', async () => {
+        buySetup();
+        // 동기 throw — `safe()`만 썼을 때 심볼 루프의 catch로 새어 매매를 죽이던 경로다.
+        mockInsertTradeAudit.mockImplementationOnce(() => {
+            throw new Error('audit table gone');
+        });
+
+        const body = await (await handler(makeRequest(true))).json();
+
+        expect(body.decisions).toContainEqual(
+            expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+        );
+        expect(mockInsertTrade).toHaveBeenCalled();
+    });
+
+    it('게이트가 꺼져 있으면 적재할 원문이 없다', async () => {
+        buySetup();
+        mockGetAnalysisConfig.mockResolvedValue({
+            analysisType: 'trade_gate',
+            enabled: false,
+            modelId: 'deepseek-v4-flash',
+            useByok: false,
+        });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).not.toHaveBeenCalled();
+        expect(mockInsertTradeAudit).not.toHaveBeenCalled();
+    });
+});
+
 describe('execute cron — 노출은 원가 기준', () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -8537,7 +8836,15 @@ describe('execute cron — 노출은 원가 기준', () => {
         });
         setLivePrice(50);
         mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-        mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+        // 지지선을 현재가($50) 아래로 내린다. `fakeTechResult`의 기본 지지선은 $140이라
+        // 손절 여유 가드(`entry_no_stop_room`)가 먼저 걸려, 이 테스트가 보려는 예산 계산에
+        // 도달하지 못한다 — 손절선이 진입가 위인 상황은 그 가드가 막는 게 맞다.
+        mockGetLatestAnalysisResult.mockResolvedValue({
+            result: {
+                ...fakeTechResult.result,
+                keyLevels: { support: [{ price: 45, reason: '직전 저점' }], resistance: [] },
+            },
+        });
         mockGetOpenPositionBySymbol.mockResolvedValue({
             id: 1,
             symbol: 'AAPL',

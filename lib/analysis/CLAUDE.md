@@ -230,6 +230,12 @@ separately so tests (and prompt audits) can assert on the exact strings.
   contract, and silently rewriting 1.4 → 1.0 turns "didn't understand" into "confident full size".
 - `runTradeGate` **never throws**; the execute cron calls it without try/catch. Failure policy
   (entry fail-closed / exit fail-open) lives in the cron, per design §8.
+- **Both outcome variants carry a `transcript`** (`systemPrompt` / `userPrompt` /
+  `rawResponse`) so the caller can persist what actually went out and came back — the
+  execute cron writes it to `trade_audit`. It is a pure value; the I/O stays in the cron
+  because this layer must not reach the DB. `rawResponse: null` means the call failed
+  **before any response**, which is a different fault from "responded but unparseable" —
+  keep the two distinguishable, that distinction is the point of storing it.
 
 ## Testing
 
