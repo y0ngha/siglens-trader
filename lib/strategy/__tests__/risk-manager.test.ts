@@ -4,6 +4,9 @@ import {
     shouldStopLoss,
     shouldTakeProfit,
     evaluateExistingPosition,
+    RESISTANCE_APPROACH_BAND,
+    RESISTANCE_BREAKOUT_BAND,
+    SUPPORT_BREAK_BUFFER,
 } from '../risk-manager';
 import type { EvaluatePositionParams } from '../risk-manager';
 
@@ -614,6 +617,169 @@ describe('evaluateExistingPosition', () => {
                 technicalTrend: 'bullish',
             });
             expect(result.action).toBe('hold');
+        });
+    });
+
+    describe('지지선 이탈 버퍼 — 노이즈 한 틱에 청산되지 않는다', () => {
+        // 2026-08-19 PLTR 실측: 175.65 매수, 지지 175.60, 10분 뒤 175.5357(0.037% 이탈)에
+        // 전량 청산 -0.57. 방향 판단이 아니라 반올림 오차로 나간 손절이었다.
+        it('버퍼 안쪽의 미세 이탈은 청산하지 않는다', () => {
+            const support = 100;
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100.05,
+                currentPrice: support * (1 - SUPPORT_BREAK_BUFFER / 2),
+                supportLevel: support,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('버퍼를 넘긴 이탈은 그대로 청산한다 — 가드지 무력화가 아니다', () => {
+            const support = 100;
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 101,
+                currentPrice: support * (1 - SUPPORT_BREAK_BUFFER) - 0.01,
+                supportLevel: support,
+            });
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('지지선 이탈');
+        });
+
+        it('경계값: 정확히 버퍼선이면 아직 청산하지 않는다', () => {
+            const support = 100;
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100.5,
+                currentPrice: support * (1 - SUPPORT_BREAK_BUFFER),
+                supportLevel: support,
+            });
+            expect(result.action).toBe('hold');
+        });
+    });
+
+    describe('저항선 근접은 밴드다 — 돌파는 익절 사유가 아니다', () => {
+        // 2026-08-13 PLTR 실측: 저항 172.33에 현재가 176.375(2.3% **위**)를 "저항선 근접"
+        // 으로 청산. 매수가 178.53이라 저항선이 진입가 아래였고, 포지션이 열린 순간부터
+        // 조건이 서 있었다.
+        it('저항선을 크게 돌파한 가격은 익절하지 않는다', () => {
+            const resistance = 100;
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 105,
+                currentPrice: resistance * (1 + RESISTANCE_BREAKOUT_BAND) + 1,
+                resistanceLevel: resistance,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('저항선이 매수가보다 아래여도 즉시 익절하지 않는다 — 실측 회귀', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 178.53,
+                currentPrice: 176.375,
+                resistanceLevel: 172.33,
+            });
+            expect(result.action).not.toBe('take_profit');
+        });
+
+        it('밴드 안(저항선 살짝 위)은 그대로 익절한다', () => {
+            const resistance = 100;
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 95,
+                currentPrice: resistance * (1 + RESISTANCE_BREAKOUT_BAND / 2),
+                resistanceLevel: resistance,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('저항선 근접');
+        });
+
+        it('목표가는 상한을 두지 않는다 — 도달과 돌파가 같은 뜻이다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100,
+                currentPrice: 500,
+                targetPrice: 120,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('목표가 근접');
+        });
+
+        it('밴드 하한은 종전 2% 근접 그대로', () => {
+            expect(RESISTANCE_APPROACH_BAND).toBe(0.02);
+        });
+    });
+
+    describe('익절 트리거가 손실 구간에서 서면 structural이다', () => {
+        // 익절 레벨은 전부 **우리 매수가와 무관한 절대 가격**이다. 분석이 그린 그림보다
+        // 비싸게 산 포지션은 미실현 손실 상태에서 그 선에 닿는다(실측 2026-08-13: 178.53에
+        // 사고 레벨은 ~174 기준). 그때 게이트에 `take_profit` 트리거가 그대로 가면 프롬프트가
+        // "목표 달성형"으로 읽고 일부만 덜어낸 뒤 나머지를 태운다 — 정반대 사이징이다.
+        it('분석 익절가: 손실 구간이면 structural', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 178.53,
+                currentPrice: 175,
+                aiTakeProfit: 174,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBe(true);
+        });
+
+        it('분석 익절가: 수익 구간이면 structural이 아니다 — 진짜 목표 달성이다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100,
+                currentPrice: 120,
+                aiTakeProfit: 115,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBeUndefined();
+        });
+
+        it('저항선 근접: 손실 구간이면 structural', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 110,
+                currentPrice: 100,
+                resistanceLevel: 100,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBe(true);
+        });
+
+        it('저항선 근접: 수익 구간이면 structural이 아니다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 90,
+                currentPrice: 100,
+                resistanceLevel: 100,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBeUndefined();
+        });
+
+        it('목표가 근접: 손실 구간이면 structural', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 110,
+                currentPrice: 100,
+                targetPrice: 100,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBe(true);
+        });
+
+        it('목표가 근접: 수익 구간이면 structural이 아니다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 90,
+                currentPrice: 100,
+                targetPrice: 100,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.structural).toBeUndefined();
         });
     });
 

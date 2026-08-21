@@ -11,6 +11,7 @@ import {
     closePosition,
     reducePositionQuantity,
     insertTrade,
+    insertTradeAudit,
     insertPendingOrder,
     getPendingOrders,
     getTodayTradeCount,
@@ -43,7 +44,13 @@ import {
     isWithinEntryWindow,
     parseEntryWindow,
 } from '../../lib/strategy/entry-window.js';
-import { exceedsEntryZone, formatEntryZone } from '../../lib/strategy/entry-zone.js';
+import {
+    exceedsEntryZone,
+    formatEntryZone,
+    formatStopRoom,
+    hasStopRoom,
+    MIN_STOP_ROOM,
+} from '../../lib/strategy/entry-zone.js';
 import {
     DEFAULT_EXECUTE_INTERVAL_MIN,
     isExecuteTick,
@@ -287,6 +294,59 @@ async function handler(req: Request): Promise<Response> {
     const db = getDb();
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
+
+    /**
+     * 게이트 호출 1건의 원문(프롬프트·응답)을 `trade_audit`에 남긴다.
+     *
+     * **주문 성사 여부와 무관하게, 호출 직후에 쓴다.** 트레이드 행에 매달면 fraction 0·게이트
+     * 오류·브로커 거절처럼 주문이 안 나간 호출이 통째로 사라지는데, "왜 안 샀나"를 되짚을 때
+     * 필요한 게 정확히 그 행들이다. `cron_decisions`가 run_id+symbol로 묶이는 것과 같은
+     * 상관 키를 쓰고, `trades.cron_run_id`도 같은 값을 들고 있어 셋이 한 런에서 조인된다.
+     *
+     * `safe()`로 감싸는 이유 — 감사 기록 실패가 매매를 막으면 본말전도다.
+     */
+    const auditGate = (
+        outcome: TradeGateOutcome,
+        kind: 'entry' | 'exit',
+        symbol: string,
+        /**
+         * 게이트 호출에 쓴 것과 **같은** 값을 넘긴다. `(cron_run_id, symbol, kind)`만으로는
+         * 유일하지 않다 — 재평가 청산이 `fraction 0`으로 미뤄지면 `exitedSymbols`에 기록되지
+         * 않아 같은 런에서 시그널 매도가 같은 심볼을 다시 게이트에 태울 수 있고, 그러면
+         * `kind: 'exit'` 행이 두 개가 되어 문서화된 조인이 팬아웃한다.
+         */
+        correlationId: string,
+    ) => {
+        // **await하지 않는다.** 이 호출은 게이트 응답과 주문 사이에 있고, 청산 경로에서는
+        // 그 사이가 곧 손절이 나가기까지의 지연이다. Neon HTTP 쓰기가 한 번 늘어지면
+        // 감사 로그 한 줄 때문에 리스크 축소가 밀린다 — 원칙 7이 막으라는 방향이다.
+        // 프로세스는 장수 서버라 응답 이후에도 프라미스는 그대로 완주한다.
+        //
+        // `safe()`가 아니라 async IIFE + try/catch인 이유: `safe()`는 **이미 만들어진
+        // Promise**만 받으므로 `insertTradeAudit(...)` 호출이 동기적으로 던지면 그대로
+        // 빠져나가 심볼 루프의 catch에 걸린다 — 감사 기록 실패가 매매를 죽이는, 이 함수가
+        // 막으려던 바로 그 일이다. IIFE 안의 try/catch는 동기 throw와 rejection을 같이 잡는다.
+        void (async () => {
+            try {
+                await insertTradeAudit(db, {
+                    symbol,
+                    kind,
+                    modelId: outcome.model,
+                    systemPrompt: outcome.transcript.systemPrompt,
+                    userPrompt: outcome.transcript.userPrompt,
+                    rawResponse: outcome.transcript.rawResponse,
+                    status: outcome.status,
+                    gateError: outcome.status === 'error' ? outcome.error : undefined,
+                    fraction: outcome.status === 'ok' ? outcome.fraction : undefined,
+                    confidence: outcome.status === 'ok' ? outcome.confidence : undefined,
+                    cronRunId,
+                    correlationId,
+                });
+            } catch (e) {
+                console.error('[cron-audit] trade_audit', symbol, kind, e);
+            }
+        })();
+    };
 
     // 실행 간격 게이트. node-cron은 5분마다 이 핸들러를 부르고, 실제로 돌지 여부는
     // `execute_interval_min` 설정이 정한다 (`lib/strategy/execute-interval.ts`).
@@ -693,6 +753,22 @@ async function handler(req: Request): Promise<Response> {
             const entryCooldownMs =
                 ((await getConfigValue<number>(db, 'entry_cooldown_min')) ?? 60) * 60_000;
 
+            // 진입가–손절 레벨 최소 간격. DB에는 퍼센트로 저장하고 여기서 비율로 바꾼다
+            // (`stop_loss_percent` 등 나머지 퍼센트 키와 같은 규약).
+            //
+            // 설정으로 뺀 이유: 이 값이 너무 크면 매수가 **전부** 막히는데, 로그에는
+            // `entry_no_stop_room`만 쌓여 "신호가 없는 날"과 구분되지 않는다. 조이거나 푸는
+            // 판단이 시장 국면에 따라 바뀌는 값을 재배포 뒤로 숨겨 두면 안 된다.
+            // 읽기 실패는 기본값으로 진행한다 — DB 일시 장애로 가드가 조용히 꺼지는(0) 것도,
+            // 매수가 통째로 막히는 것도 둘 다 나쁘다.
+            const storedStopRoomPct = await getConfigValue<number>(db, 'min_stop_room_pct').catch(
+                () => null,
+            );
+            const minStopRoom =
+                typeof storedStopRoomPct === 'number' && Number.isFinite(storedStopRoomPct)
+                    ? Math.max(0, storedStopRoomPct) / 100
+                    : MIN_STOP_ROOM;
+
             // Weights start from the profile for the timeframe being traded (slow signals
             // count for less the shorter the horizon), then any dashboard-configured value
             // overrides per key — an explicit setting must always win.
@@ -750,7 +826,7 @@ async function handler(req: Request): Promise<Response> {
             // all-or-nothing behavior with no redeploy.
             const gateConfig = await getAnalysisConfig(db, 'trade_gate');
             const gateApiKey = gateConfig.useByok ? resolveApiKey(gateConfig.modelId) : undefined;
-            // Hard cutoff at start+600s. The lock TTL is 780s and the audit rows are written
+            // Hard cutoff at start+600s. The lock TTL is 1800s and the audit rows are written
             // after the loops, so a few slow gate calls late in a run must not eat the budget
             // that finalizing the audit needs — past this point we decide without the model.
             const gateDeadlineMs = startedMs + 600_000;
@@ -1186,6 +1262,12 @@ async function handler(req: Request): Promise<Response> {
                             userApiKey: gateApiKey,
                             correlationId: `${cronRunId}-${position.symbol}-exit`,
                         });
+                        auditGate(
+                            exitOutcome,
+                            'exit',
+                            position.symbol,
+                            `${cronRunId}-${position.symbol}-exit`,
+                        );
                         if (exitOutcome.status === 'ok') {
                             exitFraction = exitOutcome.fraction;
                             exitGateSource = 'ai';
@@ -1949,6 +2031,31 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // 손절선까지 여유가 없는 진입 차단.
+                    //
+                    // 위 게이트가 "분석이 말한 구간보다 비싸게 사는가"를 봤다면 이건 "손절선이
+                    // 노이즈 대역 밖인가"를 본다. 둘은 서로를 대신하지 못한다 — 실측 3건
+                    // (2026-08-19~20, 전건 손실)은 전부 진입 구간 안이면서 손절선까지 여유가
+                    // 0.03~0.2%였다. 방향이 틀려서가 아니라 손절선이 스프레드 안이라서 털렸다.
+                    const stopLevels = {
+                        supportLevel: safeAnalysisSupport(tech?.result),
+                        aiStopLoss: safeAnalysisStopLoss(tech?.result),
+                    };
+                    if (isEntryDecision && !hasStopRoom(currentPrice, stopLevels, minStopRoom)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_no_stop_room',
+                            score: decision.score,
+                            detail: {
+                                price: currentPrice,
+                                stopRoom: formatStopRoom(currentPrice, stopLevels),
+                                minStopRoom,
+                                ...stopLevels,
+                            },
+                        });
+                        continue;
+                    }
+
                     // 분석이 명시적으로 "진입하지 마라"고 한 종목은 사지 않는다.
                     //
                     // 종전에는 `avoid`가 기술 축 감점으로만 표현됐는데, 가중치 8/38을 거치면
@@ -2269,6 +2376,12 @@ async function handler(req: Request): Promise<Response> {
                                 exit: null,
                                 correlationId: `${cronRunId}-${item.symbol}-entry`,
                             });
+                            auditGate(
+                                entryOutcome,
+                                'entry',
+                                item.symbol,
+                                `${cronRunId}-${item.symbol}-entry`,
+                            );
                             if (entryOutcome.status === 'ok') {
                                 entryFraction = entryOutcome.fraction;
                                 entrySource = 'ai';
@@ -2353,6 +2466,12 @@ async function handler(req: Request): Promise<Response> {
                                 exit: { trigger: 'signal_sell', ruleReason: decision.reason },
                                 correlationId: `${cronRunId}-${item.symbol}-signal-sell`,
                             });
+                            auditGate(
+                                sellOutcome,
+                                'exit',
+                                item.symbol,
+                                `${cronRunId}-${item.symbol}-signal-sell`,
+                            );
                             if (sellOutcome.status === 'ok') {
                                 sellFraction = sellOutcome.fraction;
                                 sellSource = 'ai';

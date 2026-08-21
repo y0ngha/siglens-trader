@@ -245,6 +245,24 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     finishState = {
                         status: 'error',
                         error: `모든 심볼 실패 (${byStatus.error}/${results.length})`,
+                        // 성공 경로와 **같은** summary를 남긴다.
+                        //
+                        // 종전에는 이 분기만 summary 없이 조기 return이라, 정작 사후 조사가
+                        // 필요한 유일한 케이스가 원인이 하나도 안 남는 케이스였다. 심볼별
+                        // 오류 문자열은 `results`에 이미 들어 있고 HTTP 응답으로 나가기까지
+                        // 하는데 DB에만 안 들어갔다. 실측(2026-08-19 18:30~19:45): technical
+                        // 6회 + news 3회 연속 전면 실패, 남은 기록은 "모든 심볼 실패 (4/4)"
+                        // 한 줄뿐이라 원인 규명 불가.
+                        summary: {
+                            processed: results.length,
+                            saved: 0,
+                            byStatus,
+                            results: results.map((r) => ({
+                                symbol: r.symbol,
+                                status: r.status,
+                                ...(r.error ? { error: r.error } : {}),
+                            })),
+                        },
                         ...elapsed(),
                     };
                     return Response.json({ cronRunId, results });

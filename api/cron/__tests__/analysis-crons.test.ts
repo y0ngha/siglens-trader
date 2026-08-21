@@ -189,6 +189,32 @@ describe('createAnalysisCronHandler', () => {
         );
     });
 
+    it('전면 실패의 심볼별 원인을 summary에 남긴다 — 실측 회귀', async () => {
+        // 2026-08-19 18:30~19:45: technical 6회 + news 3회 연속 전면 실패. 남은 기록은
+        // "모든 심볼 실패 (4/4)" 한 줄뿐이라 원인 규명이 불가능했다. 성공 경로는 이미
+        // 심볼별 오류를 남기고 있었고, 이 분기만 summary 없이 조기 return이었다.
+        mockRunner.mockResolvedValue({ status: 'error', error: 'AI_SERVER_UNSTABLE' });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({
+                status: 'error',
+                summary: expect.objectContaining({
+                    saved: 0,
+                    results: expect.arrayContaining([
+                        expect.objectContaining({
+                            status: 'error',
+                            error: 'AI_SERVER_UNSTABLE',
+                        }),
+                    ]),
+                }),
+            }),
+        );
+    });
+
     it('일부만 실패하면 completed를 유지한다', async () => {
         mockRunner
             .mockResolvedValueOnce({ status: 'error', error: 'provider down' })

@@ -4,6 +4,7 @@ import * as readline from 'node:readline';
 import {
     analysisResults,
     trades,
+    tradeAudit,
     pendingOrders,
     positions,
     watchlist,
@@ -48,6 +49,7 @@ export async function clear() {
         { table: cronDecisions, name: 'cron_decisions' },
         { table: cronRuns, name: 'cron_runs' },
         { table: analysisResults, name: 'analysis_results' },
+        { table: tradeAudit, name: 'trade_audit' },
         { table: trades, name: 'trades' },
         { table: pendingOrders, name: 'pending_orders' },
         { table: orderTracking, name: 'order_tracking' },

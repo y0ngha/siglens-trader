@@ -94,6 +94,29 @@ export function shouldTakeProfit(
 }
 
 /**
+ * 지지선 이탈 손절의 허용 오차 (0.5%).
+ *
+ * `ENTRY_ZONE_TOLERANCE`(1%)와 같은 이유로 존재한다 — 선은 근사치이고 가격은 틱이다.
+ * 익절 쪽 버퍼(2%·5%)보다 좁은 것은 의도적이다: 손절이 늦게 서면 그만큼 손실이 커진다.
+ *
+ * 진입 게이트(`hasStopRoom`)는 이 값을 **읽지 않는다.** 그쪽은 명목 지지선까지의 거리를
+ * 재는데, 두 상수를 곱하면 한쪽을 조정할 때 다른 쪽 문턱이 조용히 따라 움직인다. 청산
+ * 트리거는 여기서, 진입 여유는 `MIN_STOP_ROOM`에서 — 각각 독립으로 조정한다.
+ */
+export const SUPPORT_BREAK_BUFFER = 0.005;
+
+/** 저항선 "근접" 밴드 하한 — 저항선 2% 아래부터 익절 후보. */
+export const RESISTANCE_APPROACH_BAND = 0.02;
+
+/**
+ * 저항선 "근접" 밴드 상한 — 저항선 2% 위까지만 익절이고 그 위는 돌파다.
+ *
+ * 밴드를 벗어난 상승에서 익절이 서지 않는 것이 이 상수의 목적이다. 갭으로 밴드를
+ * 건너뛴 포지션은 분석 익절가·목표가·구조 훼손 청산이 받는다.
+ */
+export const RESISTANCE_BREAKOUT_BAND = 0.02;
+
+/**
  * Evaluates an existing open position using dynamic analysis-derived levels
  * (and optionally fixed thresholds) to decide whether to hold, take profit, or stop loss.
  *
@@ -160,7 +183,15 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
     }
 
     // 2. Dynamic stop loss: price broke below key support
-    if (params.supportLevel && currentPrice < params.supportLevel) {
+    //
+    // 지지선은 AI가 낸 근사치이고 현재가는 틱 단위로 움직인다. 버퍼 없이 `< supportLevel`로
+    // 보면 0.03% 이탈 한 틱에 전량 청산이 나간다 — 실측(2026-08-19 PLTR): 175.65 매수,
+    // 지지 175.60, 10분 뒤 175.5357에 청산. 시장 판단이 아니라 반올림 오차다.
+    //
+    // 익절 쪽은 이미 저항 `*0.98`(2%)·목표가 `*0.95`(5%)로 관대한데 손절만 오차 0이었다.
+    // 그 비대칭이 곧 "익절은 일찍, 손절은 노이즈에" — 승률을 깎는 방향으로만 작동한다.
+    // 익절 버퍼보다 좁게 잡는 이유는 손절이 더 늦게 서면 손실이 그만큼 커지기 때문이다.
+    if (params.supportLevel && currentPrice < params.supportLevel * (1 - SUPPORT_BREAK_BUFFER)) {
         const gainPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
         if (gainPercent >= 0) {
             return {
@@ -221,14 +252,38 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return {
             action: 'take_profit',
             reason: `분석 익절가 도달 (익절: $${params.aiTakeProfit})`,
+            // 손실 구간이면 `structural`을 세운다 — 1.5번의 거울상이다.
+            //
+            // 분석 익절가는 손절가와 마찬가지로 **우리 매수가와 무관한 절대 가격**이라,
+            // 분석이 그린 그림보다 비싸게 산 포지션은 미실현 손실 상태에서 이 선에 닿는다
+            // (실측 2026-08-13: 178.53에 사고 레벨은 ~174 기준). 그때 게이트에 `take_profit`
+            // 트리거가 그대로 가면 프롬프트가 "목표 달성형"으로 읽고 일부만 덜어낸 뒤
+            // 나머지를 태운다 — 손실 포지션에 정확히 반대되는 사이징이다.
+            // 라벨을 `stop_loss`로 바꾸지는 않는다: 그러면 재진입 쿨다운과 손절 이력이
+            // 오염된다(1.5번 주석과 같은 이유).
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 
     // 5. Dynamic take profit: approaching resistance or target
-    if (params.resistanceLevel && currentPrice >= params.resistanceLevel * 0.98) {
+    //
+    // **밴드다 — 하한만 두면 돌파가 저항 거부로 오독된다.** 종전 조건은 `>= r*0.98`뿐이라
+    // 가격이 저항선을 아무리 크게 넘어도 계속 참이었다. 실측(2026-08-13 PLTR): 저항 172.33에
+    // 현재가 176.375(2.3% **위**)를 "저항선 근접"으로 청산. 게다가 매수가가 178.53이라
+    // 저항선이 진입가보다 아래였고, 그래서 포지션이 열린 순간부터 이 조건이 서 있었다.
+    //
+    // 저항선은 목표가와 다르다. 목표가 위는 "도달했다"이므로 익절이 맞지만(아래 분기는
+    // 그대로 상한 없이 둔다), 저항선 위는 "뚫었다"이고 그건 파는 이유가 아니다. 뚫고 올라간
+    // 포지션은 4.5(분석 익절가)·5b(목표가)·구조 훼손 청산이 받는다.
+    if (
+        params.resistanceLevel &&
+        currentPrice >= params.resistanceLevel * (1 - RESISTANCE_APPROACH_BAND) &&
+        currentPrice <= params.resistanceLevel * (1 + RESISTANCE_BREAKOUT_BAND)
+    ) {
         return {
             action: 'take_profit',
             reason: `저항선 근접 (저항: $${params.resistanceLevel})`,
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 
@@ -236,6 +291,7 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         return {
             action: 'take_profit',
             reason: `목표가 근접 (목표: $${params.targetPrice})`,
+            ...(currentPrice < avgPrice ? { structural: true } : {}),
         };
     }
 

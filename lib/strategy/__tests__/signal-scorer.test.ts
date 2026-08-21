@@ -926,7 +926,7 @@ describe('scoreSignals', () => {
             expect(result.signal).toBe('hold');
         });
 
-        it('bullish congress raises the weighted total above neutral-only baseline', () => {
+        it('bullish congress does not move the total under the default weights (weight 0)', () => {
             const withoutCongress = scoreSignals(
                 {
                     technical: { trend: 'neutral', riskLevel: 'medium' },
@@ -953,8 +953,11 @@ describe('scoreSignals', () => {
                 DEFAULT_SELL_THRESHOLD,
             );
 
-            // null congress scores 50 (neutral). bullish scores 80. The weighted sum must increase.
-            expect(withBullishCongress.total).toBeGreaterThan(withoutCongress.total);
+            // 기본 가중치에서 congress는 **투표하지 않는다**(weight 0) — 프로덕션 실측
+            // 31/31 bullish, 분산 0. 상수 축이 점수를 밀어 올리던 것을 막은 것이므로,
+            // 이 테스트는 "올라간다"가 아니라 "움직이지 않는다"를 지킨다.
+            // 축 자체는 살아 있어 컴포넌트 점수는 그대로 계산된다(대시보드·게이트 프롬프트용).
+            expect(withBullishCongress.total).toBe(withoutCongress.total);
             expect(withBullishCongress.components.congress).toBe(80);
         });
 

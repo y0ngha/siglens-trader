@@ -78,6 +78,7 @@ async function handler(req: Request): Promise<Response> {
             'entry_window',
             'execute_interval_min',
             'entry_cooldown_min',
+            'min_stop_room_pct',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -90,6 +91,7 @@ async function handler(req: Request): Promise<Response> {
             'max_trades_per_day',
             'max_daily_loss_usd',
             'entry_cooldown_min',
+            'min_stop_room_pct',
         ]);
 
         const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
@@ -282,6 +284,16 @@ async function handler(req: Request): Promise<Response> {
                 if (key === 'entry_cooldown_min' && (value as number) > 1440) {
                     return Response.json(
                         { error: 'entry_cooldown_min must be between 0 and 1440' },
+                        { status: 400 },
+                    );
+                }
+                // 진입가–손절 레벨 최소 간격. 0은 "가드 off"라서 허용하고, 상한은 5%다 —
+                // 그보다 크면 분석이 그어 주는 손절선(폴백은 진입가 − 1.5×ATR)을 상시
+                // 넘어서므로 가드가 아니라 매수 정지 버튼이 된다. 무필 상태는 "신호 없음"과
+                // 로그상 구분되지 않으므로, 그렇게 되는 값은 애초에 저장하지 않는다.
+                if (key === 'min_stop_room_pct' && (value as number) > 5) {
+                    return Response.json(
+                        { error: 'min_stop_room_pct must be between 0 and 5' },
                         { status: 400 },
                     );
                 }
