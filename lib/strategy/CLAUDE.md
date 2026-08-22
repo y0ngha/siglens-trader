@@ -7,7 +7,7 @@ Pure business logic for trading decisions. **No external dependencies. No I/O.**
 | File | Responsibility |
 |------|---------------|
 | `types.ts` | Type definitions (SignalScore — including `totalWithoutConfluence`, the confluence-excluded weighted average that is the real basis of a corrected `sell` and equals `total` whenever confluence doesn't vote; ScoreWeights, TradingSignal including `average_in`) + constants (DEFAULT_WEIGHTS: `{confluence:12, technical:8, news:6, options:5, fundamental:4, congress:0}`, `WEIGHTS_BY_TIMEFRAME` (15Min/30Min override the default profile), DEFAULT_BUY_THRESHOLD: 70, DEFAULT_SELL_THRESHOLD: 30) |
-| `confluence.ts` | `ConfluenceSnapshot` type + `scoreConfluence` / `isConfluenceExit`. Scores the backtest's rule (3+ bullish types, ≥1 fresh, close > SMA(50)) from a snapshot the analysis layer computed. Constants: `CONFLUENCE_MIN` 3, `CONFLUENCE_SPAN` 30, `CONFLUENCE_SHRINK` 1, `CONFLUENCE_TRIGGER_SCORE` 92, `CONFLUENCE_EXIT_SCORE` 8. |
+| `confluence.ts` | **core 재수출 한 겹, 로직 없음.** 룰과 채점은 siglens-core의 `domain/signals/confluence`가 소유한다 (`evaluateConfluence` / `scoreConfluence` / `isConfluenceExit` / `confluenceFamilyWeight` / `signalFamily` + 상수). 같은 룰이 siglens 백테스트와 trader에 따로 구현돼 조용히 갈라지던 것을 한 곳으로 모았다 — 이제 백테스트와 실거래가 같은 함수를 부른다. 봉 조회는 `lib/analysis/confluence.ts`. |
 | `signal-scorer.ts` | Converts analysis results → 0-100 weighted score. Maps trend/sentiment/signals to component scores, then computes weighted average. |
 | `risk-manager.ts` | Position sizing (fixed ratio based on maxPositionSize/maxTotalExposure), stop loss, take profit. Includes `evaluateExistingPosition()` for dynamic exit based on analysis. `PositionEvaluation.hard` marks exits the AI trade gate must never override (see below). |
 | `trade-plan.ts` | Fraction (0~1) → order quantity for split entries/exits. `clampFraction` (built on `safeNumber`) normalizes any value to 0~1 without ever producing NaN, and also clamps its own `fallback`. `planEntry` sanitizes every budget input with `safeNumber` before the min/max chain (a NaN budget must never silently disable the per-symbol/total-exposure circuit breaker), clamps a tranche against symbol/total/cash budgets (with a high-price 1-share correction that also realigns `trancheBudget`), and refuses to return a non-`Number.isSafeInteger` quantity. `planExit` turns a liquidation fraction into a share count, `hard: true` bypassing it for absolute risk exits. `fallbackEntryFraction` is a deterministic 3-rung sizing ladder, exported and tested but not currently wired into any caller — see its docstring. |
@@ -49,10 +49,14 @@ shape core never emits.
 ## Signal Scoring
 
 Priority-weighted average of 6 analysis axes (weights sum to 35 on the default `1Hour` profile):
-- Confluence (12): the only rule-based axis — no LLM anywhere in it. Continuous 20..80 from the
-  shrunk bullish/bearish type ratio (same pseudo-count trick as options), snapping to ≥92 when the
-  backtest entry rule holds exactly and ≤8 when its bearish inverse does. 92 is deliberately below
-  what a lone axis needs to cross the buy threshold: trigger + everything else neutral = 64 → hold.
+- Confluence (12): the only rule-based axis — no LLM anywhere in it. **core가 소유한다**
+  (`evaluateConfluence`). 연속 35..65는 강세/약세 **가중 지표 계열** 비율의 축소값이고
+  (타입 수가 아니다 — 36종은 지표 14개의 변형이라 타입을 세면 같은 종가의 변형을 독립
+  투표로 취급한다), 진입 룰이 정확히 성립하면 ≥92, 약세 역이면 ≤8로 스냅된다. 92는 단독으로
+  매수 임계를 넘지 못하도록 고른 값이다: 트리거 + 나머지 중립 = 64 → hold.
+  `expected` phase는 반표(위치 상태와 확정 교차를 같은 무게로 셀 수 없다).
+  진입 트리거에는 **상위 시간축 정렬**과 **거래량 확인**이 추가로 걸리고, 청산에는 걸리지
+  않는다 — 둘 다 트리거를 어렵게 만드는 조건이라 청산에 걸면 원칙 7 위반이다.
 - Technical (8): the **mean of three readings** — (1) strength-weighted `indicatorResults`
   aggregate, (2) confidence-weighted aggregate of `patternSummaries` + `strategyResults` +
   `candlePatterns` (`safeAnalysisPatterns`; `detected: false` items abstain), (3) the LLM's overall

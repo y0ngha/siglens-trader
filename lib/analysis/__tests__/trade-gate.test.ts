@@ -1803,6 +1803,8 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         bearish: [],
         freshBullish: ['cci_bullish_cross'],
         freshBearish: [],
+        htfTrend: null,
+        params: { min: 3, span: 15, expectedWeight: 0.5, htf: null, requireVolume: false },
         entryTrigger: true,
         exitTrigger: false,
     } satisfies ConfluenceSnapshot;
@@ -1973,6 +1975,8 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
             timeframe: evil,
             bullish: [evil],
             freshBearish: [evil],
+            htfTrend: null,
+            params: { min: 3, span: 15, expectedWeight: 0.5, htf: null, requireVolume: false },
         });
 
         expect(headers(user)).toEqual(SECTION_ORDER);

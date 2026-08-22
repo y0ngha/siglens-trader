@@ -12,7 +12,7 @@ Calls siglens-core's direct `run*` functions (no polling loop) with per-symbol A
 | `run-options.ts` | Fetches options from Yahoo → `runOptionsAnalysis` |
 | `run-fundamental.ts` | Injects `FmpFundamentalClient` → `runFundamentalAnalysis` |
 | `run-congress.ts` | Congressional disclosure trend analysis (`runCongressTrendAnalysis`) |
-| `confluence.ts` | **No LLM.** FMP bars → siglens-core `calculateIndicators`/`detectSignals` → `ConfluenceSnapshot` (see below) |
+| `confluence.ts` | **No LLM, and no rule either.** FMP 봉(본 봉 + 상위 시간축)을 구해 core의 `evaluateConfluence`에 넘긴다. 판정·채점은 core 소유 — 봉 조회는 소비자 책임, 도메인 계산은 core 책임 |
 | `enrich-news-cards.ts` | Per-symbol news card enrichment via fixed worker pool (see below) |
 | `cadence.ts` | Per-type clock windows the analysis crons use to skip an already-covered symbol |
 | `timeframe.ts` | `analysis_timeframe` contract + per-timeframe technical staleness limits |
@@ -72,30 +72,30 @@ analysis is skipped.
 
 ## Indicator Confluence (`confluence.ts`)
 
-The one file here that never calls an LLM. It fetches OHLC bars for the configured
-`analysis_timeframe`, runs siglens-core's indicator engine locally, and returns the
-`ConfluenceSnapshot` that `lib/strategy/confluence.ts` scores. The rule it detects is siglens'
-backtest winner: **3+ distinct bullish signal types active, ≥1 of them newly lit since the
-previous bar, close > SMA(50)** — and its bearish inverse as an exit trigger.
+이 파일은 **봉을 구해 오는 일만** 한다. 룰과 채점은 siglens-core의 `evaluateConfluence`가
+소유한다 — 봉 조회는 소비자 책임, 도메인 계산은 core 책임이라는 분업이다. 같은 룰이
+siglens 백테스트와 여기에 따로 구현돼 있던 것을 한 곳으로 모은 결과이고, 이제 백테스트와
+실거래가 같은 함수를 부른다.
 
-- **`MIN_BARS = 120`** (the check is `length <= MIN_BARS`, so 121 bars is the real minimum, matching
-  the backtest). Below it the `bollinger_squeeze_*` detectors read a 120-bar bandwidth percentile
-  and structurally stay silent, so a "3 bearish types" count taken on 80 bars is not a weaker
-  reading — it is a differently-defined one. Short history abstains rather than scoring.
-- **`detectSignals` runs twice** — once on `bars`, once on `bars.slice(0, -1)`. Core evaluates only
-  the tail of the array it is given, so there is no "state at bar N−1" to read out of a single call;
-  recomputing on the truncated array is the only way to get it. That diff is what "fresh" means, and
-  freshness is what separates a new signal from one that has been on for twenty bars.
-- **SMA(50) is computed here, not by core** — core does not export `calculateMA` from its root and
-  50 is not in its `MA_DEFAULT_PERIODS`. Fifty closes and a loop is cheaper than either fork.
-- **Every failure is `null`, never a throw** — bad bars, too few bars, a non-finite close, an FMP
-  outage. `scoreSignals` reads `null` as weight 0, so the axis abstains and the system scores
-  exactly as it did before this file existed. Abstention paths `console.warn`: the snapshot is
-  `null` in `cron_decisions.detail` either way, so without a log a symbol permanently short on bars
-  is indistinguishable from a dead vendor.
-- **The last bar may still be forming.** FMP's intraday tail is the in-progress candle, so a trigger
-  can flicker before the bar closes. Kept on purpose — dropping it costs a full timeframe of
-  latency. Fix by truncating the last bar (and firing a tick late) only if flicker becomes real.
+trader가 소유한 층은 넷이다:
+
+- **`MIN_BARS`(120) 게이트** — 미달이면 core를 부르지도 않고 기권한다. 조용한 기권은
+  "이 축이 영구히 꺼진 심볼"을 관측 불가능하게 만들므로 `console.warn`을 남긴다.
+- **봉 신선도** — 마지막 봉이 타임프레임 × 3보다 낡으면 기권. `Date.now()`를 읽으므로
+  순수 함수가 아니고, 피드 건강은 소비자 관심사다. 이게 없으면 FMP 지연 시 **전 세션
+  종가**로 진입 트리거가 서고, 같은 스냅샷의 `close`가 execute의 시세 폴백으로도 쓰여
+  손절 판정가·dry_run 체결가가 된다.
+- **상위 시간축 봉 조회 + 캐시** — 일봉은 마감 후에만 바뀌는데 execute는 10분마다 돈다.
+  성공 1시간 / **실패 5분** 캐시: 실패를 길게 캐시하면 FMP 딸꾹질 한 번이 정렬 게이트를
+  6틱 동안 끈다. 캐시 키는 `symbol:htf`.
+- **튜너블 전달** — `config`에서 읽은 값만 core로 넘긴다. 미지정 키는 넘기지 않아 core
+  기본값이 살아 있게 한다.
+
+실패는 전부 `null`이다 — 이 축은 추가 정보이지 매매의 전제조건이 아니고, `scoreSignals`가
+`null`을 가중치 0으로 처리해 도입 이전과 동일하게 동작한다.
+
+**마지막 봉은 형성 중일 수 있다.** FMP 인트라데이 응답의 꼬리는 진행 중인 봉이라 봉이 닫히기
+전 트리거가 번복될 수 있다. 버리면 최대 1타임프레임만큼 늦게 반응하므로 그대로 쓴다.
 
 ## Trade Gate (`trade-gate.ts`)
 
