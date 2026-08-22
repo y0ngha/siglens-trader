@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
+import { getAvailableCashUsd } from '../_lib/cash.js';
 import {
     getEnabledWatchlist,
     getConfigValue,
@@ -12,7 +13,6 @@ import {
     reducePositionQuantity,
     insertTrade,
     insertTradeAudit,
-    getDryRunCashFlowUsd,
     insertPendingOrder,
     getPendingOrders,
     getTodayTradeCount,
@@ -74,7 +74,7 @@ import type {
 import { resolveApiKey } from './_run-analysis-cron.js';
 import { makeTradeDecision } from '../../lib/strategy/decision.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
-import { getBuyingPower, getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
+import { getSellableQuantity, isUsMarketOpen } from '../../lib/trading/account.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import {
@@ -196,18 +196,6 @@ const RUN_DEADLINE_MS = 900_000;
 
 /** 락 TTL. `RUN_DEADLINE_MS` + 최악 잔여 작업보다 크게 잡는다. */
 const LOCK_TTL_SEC = 1800;
-
-/**
- * `dry_run` 모의 계좌의 **초기 예치금** (USD). `config.dry_run_cash_usd`로 덮어쓴다.
- *
- * 잔고가 아니라 시작 자본이다 — 현재 잔고는 여기에 체결 원장의 순현금흐름을 더한 값이고,
- * 그래서 모의 계좌도 손익에 따라 늘고 준다. 값을 바꾸면 과거 체결까지 그 예치금 기준으로
- * 재계산된다(원장은 그대로이므로 손익은 보존된다).
- *
- * 시뮬레이션 전용 — `auto`/`semi_auto`는 브로커 실잔고를 쓴다. 실계좌로 넘어가기 전에 이
- * 값을 실제 예치금과 맞춰 두면 리허설이 그만큼 정확해진다.
- */
-const DEFAULT_DRY_RUN_CASH_USD = 5000;
 
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
@@ -1044,16 +1032,7 @@ async function handler(req: Request): Promise<Response> {
             // 종전 dry_run은 null이었다. 그 결과 게이트 프롬프트에 "매수 가능 현금: 미상"이
             // 찍혀 사이징의 1차 제약이 모델에게 보이지 않았고, `planEntry`의 현금 클램프도
             // 걸리지 않아 노출 한도까지 쌓는 것을 아무도 막지 않았다.
-            const usdBuyingPower =
-                tradingMode === 'dry_run'
-                    ? Math.max(
-                          0,
-                          ((await getConfigValue<number>(db, 'dry_run_cash_usd').catch(
-                              () => null,
-                          )) ?? DEFAULT_DRY_RUN_CASH_USD) +
-                              (await getDryRunCashFlowUsd(db).catch(() => 0)),
-                      )
-                    : await getBuyingPower('USD').catch(() => null);
+            const usdBuyingPower = await getAvailableCashUsd(db, tradingMode);
             // Running balance: optimistically decremented after each live buy so multiple
             // buys in one run don't all authorize against the same un-decremented cash.
             // null => guard disabled. Reconcile/next-run corrects against broker reality.
