@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from 'react-error-boundary';
 import { App } from './App';
 import { ErrorFallback } from './components/ErrorFallback';
+import { clearChunkRecoveryFlag, installChunkRecovery } from './lib/chunk-recovery';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -15,6 +16,9 @@ const queryClient = new QueryClient({
         },
     },
 });
+
+// 앱 렌더보다 먼저 — 첫 청크가 실패하면 `startApp`이 끝나기도 전에 오류가 난다.
+installChunkRecovery();
 
 async function startApp() {
     if (import.meta.env.VITE_API_MOCK === 'true') {
@@ -34,6 +38,10 @@ async function startApp() {
             </ErrorBoundary>
         </StrictMode>,
     );
+
+    // 여기까지 왔으면 이 문서는 온전하다. 표식을 지워 다음 배포에서 다시 한 번
+    // 복구할 수 있게 한다.
+    clearChunkRecoveryFlag();
 }
 
 startApp();
