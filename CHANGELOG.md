@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.27.0](https://github.com/y0ngha/siglens-trader/compare/v0.26.0...v0.27.0) (2026-08-22)
+
+
+### Features
+
+* 컨플루언스를 30분봉 실전 기준으로 재설계 + 룰을 core로 이관 ([#49](https://github.com/y0ngha/siglens-trader/issues/49)) ([a1148b7](https://github.com/y0ngha/siglens-trader/commit/a1148b796b4e129c1fa2a0edac4795ceb29d8f4a))
+
 # [0.26.0](https://github.com/y0ngha/siglens-trader/compare/v0.25.0...v0.26.0) (2026-08-22)
 
 
