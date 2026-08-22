@@ -352,6 +352,39 @@ export async function insertTradeAudit(
     });
 }
 
+/**
+ * `dry_run` 모의 계좌의 **순현금흐름** (매도 대금 − 매수 대금).
+ *
+ * 잔고를 컬럼에 저장하지 않고 체결 원장에서 매번 도출한다. 저장 잔고는 (1) 갱신 누락이나
+ * 롤백으로 원장과 어긋날 수 있고, (2) 동시 갱신에 경합이 있으며, (3) 한 번 틀어지면 스스로
+ * 복구되지 않는다. 도출값은 셋 다 구조적으로 없다 — `trades`가 이미 유일한 진실이다.
+ *
+ * **노출을 따로 빼면 안 된다.** 매수는 이 합계에서 이미 차감됐고, 노출은 그 현금이 형태를
+ * 바꾼 것이다. 둘 다 빼면 같은 돈을 두 번 세는 셈이다.
+ * (예치금 $5,000 → $1,000어치 매수 → 현금 $4,000 + 노출 $1,000 = 총액 $5,000.)
+ *
+ * 손익이 반영된다는 점이 종전 `예치금 − 노출` 공식과의 실질적 차이다. 그 공식은 현금이
+ * 예치금을 넘을 수 없어 이익이 난 계좌를 표현하지 못했다.
+ *
+ * `mode='dry_run'` 행만 센다 — `skipped`(예산 0 감사 행)·`auto`·`semi_auto`는 모의 계좌와
+ * 무관하다.
+ */
+export async function getDryRunCashFlowUsd(db: Db): Promise<number> {
+    const rows = await db
+        .select({
+            flow: sql<string>`coalesce(sum(
+                case when ${trades.side} = 'sell'
+                     then ${trades.price}::numeric * ${trades.quantity}
+                     else -${trades.price}::numeric * ${trades.quantity}
+                end
+            ), 0)`,
+        })
+        .from(trades)
+        .where(eq(trades.mode, 'dry_run'));
+    const flow = Number(rows[0]?.flow ?? 0);
+    return Number.isFinite(flow) ? flow : 0;
+}
+
 export async function getRecentTrades(db: Db, limit = 50) {
     return db.select().from(trades).orderBy(desc(trades.executedAt)).limit(limit);
 }

@@ -52,7 +52,7 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
 `max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off).
+`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off), `dry_run_cash_usd`.
 
 `execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
 does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
@@ -265,6 +265,37 @@ a position behind and `order_tracking.idempotency_key` is unique.
 응답과 주문 사이에 있고, 청산 경로에서는 그 사이가 곧 손절이 나가기까지의 지연이다(원칙 7).
 `(cron_run_id, symbol, kind)`는 유일하지 않으므로(재평가 청산이 미뤄지면 같은 런에서 시그널
 매도가 같은 심볼을 다시 태운다) 게이트에 넘긴 `correlation_id`를 같이 저장한다.
+
+**매수 가능 현금은 세 모드 모두 같은 뜻의 숫자다 — "지금 쓸 수 있는 돈".**
+
+| 모드 | 출처 | 조회 실패 시 |
+|---|---|---|
+| `auto` | 브로커 실잔고 `getBuyingPower('USD')` | `null` → **fail closed** (그 런의 매수 전부 skip) |
+| `semi_auto` | 같음 — 승인 시점에 실주문이 나가므로 실계좌 현금으로 사이징해야 한다 | `null` → 클램프 없음 (승인이라는 사람 게이트가 뒤에 있다) |
+| `dry_run` | `dry_run_cash_usd`(예치금, 기본 $5,000) + **체결 원장 순현금흐름** | 원장 조회 실패 → 흐름 0, 예치금 그대로 |
+
+`dry_run` 잔고는 컬럼에 저장하지 않고 `trades`에서 도출한다(`getDryRunCashFlowUsd`) —
+저장 잔고는 갱신 누락·롤백으로 원장과 어긋날 수 있고 한 번 틀어지면 스스로 복구되지 않는다.
+매도가 현금을 되돌려주므로 **손익이 그대로 반영된다**: 이익 난 계좌는 현금이 예치금을 넘는다.
+
+**노출을 따로 빼지 않는다.** 매수는 원장에서 이미 차감됐고 노출은 그 현금이 형태를 바꾼
+것이다. 둘 다 빼면 같은 돈을 두 번 센다 (예치금 $5,000 → $1,000 매수 → 현금 $4,000 +
+노출 $1,000 = 총액 $5,000). 런 안에서는 매수마다 차감한다 — 그러지 않으면 한 런의 매수 여러
+건이 전부 같은 잔고를 보고 승인된다.
+
+종전 `dry_run`은 `null`이었고, 그 결과 두 가지가 동시에 죽어 있었다: 게이트 프롬프트에
+"매수 가능 현금: 미상"이 찍혀 사이징의 1차 제약이 모델에게 안 보였고, `planEntry`의 현금
+클램프도 걸리지 않았다.
+
+**프롬프트의 현금 줄은 모드별로 갈리지 않는다.** 출처는 바로 위 `매매 모드` 줄이 이미
+말하고, 문구를 갈라 두면 같은 결정에 서로 다른 사이징 습관이 붙는다. 이제 `미상`은
+"조회하지 않는 모드"가 아니라 **조회 실패**를 뜻한다.
+
+> **운영 주의 — Toss는 IP 허용목록을 쓴다.** 로컬에서 `/oauth2/token`을 호출하면
+> `403 access_denied / "IP address not allowed"`가 난다(2026-08-22 확인). 프로덕션 EC2의 IP만
+> 등록돼 있다는 뜻이고, **그 IP가 바뀌면(인스턴스 교체·EIP 변경) `auto`는 매 런 fail closed로
+> 매수가 전부 막힌다.** 증상은 `skipped_no_buying_power` 감사 행뿐이라 조용하다.
+> 실거래 전환 전에 EC2에서 `getBuyingPower('USD')`가 실제로 값을 내는지 확인할 것.
 
 **Gate OFF is not byte-identical to the pre-gate build.** `planEntry` clamps the budget by
 real buying power (`auto` only), which `calculatePositionSize` never did — e.g. price $100 /

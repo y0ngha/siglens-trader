@@ -684,6 +684,34 @@ describe('POST /api/config', () => {
         }
     });
 
+    it('accepts dry_run_cash_usd as a numeric key', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        for (const value of [0, 5000, 100000]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'dry_run_cash_usd',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(200);
+        }
+    });
+
+    it('rejects a non-numeric or out-of-range dry_run_cash_usd', async () => {
+        for (const value of [-1, 1_000_001, 'lots', null]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'dry_run_cash_usd',
+                    value,
+                }),
+            );
+            expect(res.status).toBe(400);
+        }
+    });
+
     it('rejects an interval/entry_window combination with no overlapping tick', async () => {
         mockGetConfigValue.mockResolvedValue(60);
 

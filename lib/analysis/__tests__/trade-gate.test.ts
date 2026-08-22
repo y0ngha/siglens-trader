@@ -293,8 +293,43 @@ describe('buildTradeGatePrompt — 계좌 상태', () => {
         );
 
         expect(user).toContain('매수 가능 현금: 미상');
-        expect(user).toContain('브로커 잔고를 조회하지 않는다');
+        // 이제 세 모드 모두 잔고를 구하므로, null은 "조회하지 않는 모드"가 아니라
+        // **조회 실패**를 뜻한다. 문구가 그 사실을 말해야 모델이 옳게 읽는다.
+        expect(user).toContain('브로커 잔고 조회 실패');
         expect(user).toContain('보수적 요인');
+    });
+
+    it('현금 줄은 세 모드가 동일하다 — 출처는 매매 모드 줄이 이미 말한다', () => {
+        // 모드별로 문구를 갈라 두면 같은 결정에 서로 다른 사이징 습관이 붙는다.
+        // dry_run 잔고도 체결 원장에서 도출된 실제 값이고 `planEntry`를 실제로 제약한다.
+        for (const tradingMode of ['dry_run', 'semi_auto', 'auto']) {
+            const { user } = buildTradeGatePrompt(
+                baseInput({
+                    account: { ...baseInput().account, availableCashUsd: 4200, tradingMode },
+                }),
+            );
+            expect(user).toContain('- 매수 가능 현금: $4,200.00');
+            expect(user).not.toContain('모의 잔고');
+            expect(user).toContain(`매매 모드: ${tradingMode}`);
+        }
+    });
+
+    it('청산 프롬프트에는 dry_run이어도 현금이 등장하지 않는다', () => {
+        // 매수 여력과 청산 크기 사이에 인과가 없다. 모의 잔고라고 예외일 이유도 없다.
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                kind: 'exit',
+                account: {
+                    ...baseInput().account,
+                    availableCashUsd: 4200,
+                    tradingMode: 'dry_run',
+                },
+            }),
+        );
+
+        expect(user).not.toContain('모의 잔고');
+        expect(user).not.toContain('매수 가능 현금');
+        expect(user).toContain('이번 결정과 무관');
     });
 
     it('전체 노출 잔여와 일일 손실 한도 잔여를 계산해 적는다', () => {

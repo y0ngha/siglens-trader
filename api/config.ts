@@ -79,6 +79,7 @@ async function handler(req: Request): Promise<Response> {
             'execute_interval_min',
             'entry_cooldown_min',
             'min_stop_room_pct',
+            'dry_run_cash_usd',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -92,6 +93,7 @@ async function handler(req: Request): Promise<Response> {
             'max_daily_loss_usd',
             'entry_cooldown_min',
             'min_stop_room_pct',
+            'dry_run_cash_usd',
         ]);
 
         const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);

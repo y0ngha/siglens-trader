@@ -25,6 +25,8 @@ const mockClosePosition = vi.fn();
 const mockReducePositionQuantity = vi.fn();
 const mockInsertTrade = vi.fn();
 const mockInsertTradeAudit = vi.fn().mockResolvedValue(undefined);
+// dry_run 모의 잔고의 체결 원장 순현금흐름. 기본 0 = 예치금 그대로.
+const mockGetDryRunCashFlowUsd = vi.fn().mockResolvedValue(0);
 const mockInsertPendingOrder = vi.fn();
 const mockGetPendingOrders = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
@@ -56,6 +58,7 @@ vi.mock('../../../lib/db/queries', () => ({
     reducePositionQuantity: (...args: unknown[]) => mockReducePositionQuantity(...args),
     insertTrade: (...args: unknown[]) => mockInsertTrade(...args),
     insertTradeAudit: (...args: unknown[]) => mockInsertTradeAudit(...args),
+    getDryRunCashFlowUsd: (...args: unknown[]) => mockGetDryRunCashFlowUsd(...args),
     insertPendingOrder: (...args: unknown[]) => mockInsertPendingOrder(...args),
     getPendingOrders: (...args: unknown[]) => mockGetPendingOrders(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
@@ -291,6 +294,8 @@ function makeRequest(authorized: boolean, query = '?force=1'): Request {
 
 function setupDefaults() {
     mockGetDb.mockReturnValue(fakeDb);
+    // dry_run 모의 잔고: 체결 원장 순현금흐름 기본 0 (= 예치금 그대로).
+    mockGetDryRunCashFlowUsd.mockResolvedValue(0);
     mockVerifyCronSecret.mockReturnValue(true);
     mockIsEtRegularSessionOpen.mockReturnValue(true);
     mockAcquireLock.mockResolvedValue('test-lock-token');
@@ -8704,6 +8709,233 @@ describe('execute cron handler', () => {
 // ---------------------------------------------------------------------------
 // 노출 단위 = 투입 원가
 // ---------------------------------------------------------------------------
+
+describe('execute cron — dry_run 모의 잔고', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-24T15:30:00.000Z'));
+        setupDefaults();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** 손절 여유 가드를 통과하도록 지지선을 현재가($150) 한참 아래로 둔 기술 분석. */
+    const techBelow = {
+        result: {
+            trend: 'bullish',
+            riskLevel: 'low',
+            keyLevels: { support: [{ price: 120, reason: '직전 저점' }], resistance: [] },
+        },
+    };
+
+    function buySetup(mode: string, extra: Record<string, unknown> = {}) {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+            if (key === 'trading_mode') return Promise.resolve(mode);
+            if (key in extra) return Promise.resolve(extra[key]);
+            return Promise.resolve(null);
+        });
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+        mockGetLatestAnalysisResult.mockResolvedValue(techBelow);
+        mockScoreSignals.mockReturnValue(fakeBuySignalScore);
+        mockMakeTradeDecision.mockReturnValue({
+            action: 'buy',
+            symbol: 'AAPL',
+            score: 80,
+            reason: 'BUY',
+            quantity: 5,
+        });
+    }
+
+    it('기본 $5,000을 게이트 프롬프트에 넘긴다 — 종전에는 미상이었다', async () => {
+        buySetup('dry_run');
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'entry',
+                account: expect.objectContaining({
+                    availableCashUsd: 5000,
+                    tradingMode: 'dry_run',
+                }),
+            }),
+        );
+    });
+
+    it('dry_run_cash_usd 설정이 기본값을 덮는다', async () => {
+        buySetup('dry_run', { dry_run_cash_usd: 1200 });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 1200 }),
+            }),
+        );
+    });
+
+    it('체결 원장의 순현금흐름을 더한다 — 노출을 따로 빼지 않는다', async () => {
+        // 매수는 원장에서 이미 차감됐고 노출은 그 현금이 형태를 바꾼 것이다. 둘 다 빼면
+        // 같은 돈을 두 번 센다. 예치금 $5,000 + 흐름 −$1,000 = 현금 $4,000이고,
+        // 노출 $1,000이 따로 잡혀 있어도 그대로 $4,000이어야 한다.
+        buySetup('dry_run');
+        mockGetDryRunCashFlowUsd.mockResolvedValue(-1000);
+        mockGetOpenPositions.mockResolvedValue([
+            { id: 1, symbol: 'MSFT', quantity: 10, avgPrice: '100', status: 'open' },
+        ]);
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 4000 }),
+            }),
+        );
+    });
+
+    it('이익이 나면 현금이 예치금을 넘어선다 — 종전 공식이 표현하지 못하던 상태', async () => {
+        buySetup('dry_run');
+        mockGetDryRunCashFlowUsd.mockResolvedValue(750);
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 5750 }),
+            }),
+        );
+    });
+
+    it('원장이 예치금보다 크게 마이너스여도 0에서 멈추고 잔고 부족으로 빠진다', async () => {
+        buySetup('dry_run', { dry_run_cash_usd: 400 });
+        mockGetDryRunCashFlowUsd.mockResolvedValue(-500);
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).not.toHaveBeenCalled();
+        expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+            fakeDb,
+            expect.any(String),
+            'execute',
+            expect.arrayContaining([
+                expect.objectContaining({
+                    symbol: 'AAPL',
+                    detail: expect.objectContaining({
+                        budget: expect.objectContaining({ limitedBy: 'cash', fullBudget: 0 }),
+                    }),
+                }),
+            ]),
+        );
+    });
+
+    it('원장 조회가 실패하면 흐름 0으로 보고 예치금을 쓴다', async () => {
+        buySetup('dry_run');
+        mockGetDryRunCashFlowUsd.mockRejectedValue(new Error('db down'));
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 5000 }),
+            }),
+        );
+    });
+
+    it('설정 조회가 실패해도 기본값으로 진행한다', async () => {
+        buySetup('dry_run');
+        const base = mockGetConfigValue.getMockImplementation()!;
+        mockGetConfigValue.mockImplementation((db: unknown, key: string) =>
+            key === 'dry_run_cash_usd' ? Promise.reject(new Error('db down')) : base(db, key),
+        );
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 5000 }),
+            }),
+        );
+    });
+
+    it('semi_auto도 브로커 실잔고를 조회한다 — 그 포지션은 실계좌에 실재한다', async () => {
+        // 승인 시점에 실주문이 나가므로 모의 잔고로 사이징하면 없는 돈을 있다고 하는 것이다.
+        buySetup('semi_auto');
+        mockGetBuyingPower.mockResolvedValue(3300);
+
+        await handler(makeRequest(true));
+
+        expect(mockGetBuyingPower).toHaveBeenCalledWith('USD');
+        expect(mockGetDryRunCashFlowUsd).not.toHaveBeenCalled();
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 3300 }),
+            }),
+        );
+    });
+
+    it('semi_auto에서 브로커 조회가 실패하면 미상으로 남는다', async () => {
+        buySetup('semi_auto');
+        mockGetBuyingPower.mockRejectedValue(new Error('broker down'));
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: null }),
+            }),
+        );
+    });
+
+    it('auto는 모의 원장을 건드리지 않는다', async () => {
+        buySetup('auto', { dry_run_cash_usd: 999 });
+        mockGetBuyingPower.mockResolvedValue(7777);
+
+        await handler(makeRequest(true));
+
+        expect(mockGetBuyingPower).toHaveBeenCalledWith('USD');
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                account: expect.objectContaining({ availableCashUsd: 7777 }),
+            }),
+        );
+    });
+
+    it('한 런에서 매수가 여러 건이면 잔고를 차감해 가며 본다', async () => {
+        // 차감하지 않으면 종목 수만큼 같은 현금이 중복 승인돼 한도가 뻥튀기된다.
+        // 현금 $1,000, 가격 $150 × 5주 = $750 → 첫 종목이 먹고 나면 $250만 남는다.
+        buySetup('dry_run', { dry_run_cash_usd: 1000 });
+        mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0], fakeWatchlist[1]]);
+        mockMakeTradeDecision.mockImplementation((...args: unknown[]) => {
+            const symbol = (args[0] as { symbol?: string })?.symbol ?? 'AAPL';
+            return { action: 'buy', symbol, score: 80, reason: 'BUY', quantity: 5 };
+        });
+
+        await handler(makeRequest(true));
+
+        const budgets = mockRunTradeGate.mock.calls.map(
+            (c) => (c[0] as { budget?: { fullBudget?: number } }).budget?.fullBudget,
+        );
+        // 두 번째 호출이 있었다면 첫 번째보다 예산이 작아야 한다.
+        if (budgets.length > 1) expect(budgets[1]!).toBeLessThan(budgets[0]!);
+        expect(budgets[0]).toBe(1000);
+    });
+
+    it('planEntry의 현금 클램프가 실제로 걸린다 — 프롬프트에만 적히는 숫자가 아니다', async () => {
+        // 현금 $300, 가격 $150 → 2주까지만. 종목 한도(기본 $5,000)보다 현금이 먼저 묶인다.
+        buySetup('dry_run', { dry_run_cash_usd: 300 });
+
+        await handler(makeRequest(true));
+
+        expect(mockRunTradeGate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                budget: expect.objectContaining({ limitedBy: 'cash', fullBudget: 300 }),
+            }),
+        );
+    });
+});
 
 describe('execute cron — 게이트 원문 감사 (trade_audit)', () => {
     beforeEach(() => {
