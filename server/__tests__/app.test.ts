@@ -137,6 +137,19 @@ describe('정적 자산 서빙 — 청크 로드 실패 방지', () => {
         }
     });
 
+    ifDist('응답 본문이 비어 있지 않다 — 헤더만 보다 0바이트 응답을 놓쳤다', async () => {
+        // 실제 사고: `c.res`를 갈아끼워 캐시 헤더를 얹었더니 본문 스트림이 소비돼 모든
+        // 응답이 0바이트가 됐다. 상태 코드와 헤더는 멀쩡해 보였고, Cloudflare 520으로
+        // 프로덕션에서야 드러났다. 헤더 단언만으로는 못 잡는다.
+        const doc = await app.request('/');
+        expect(doc.status).toBe(200);
+        expect((await doc.text()).length).toBeGreaterThan(100);
+
+        const asset = readdirSync('./dist/assets').find((f) => f.endsWith('.js'))!;
+        const js = await app.request(`/assets/${asset}`);
+        expect((await js.text()).length).toBeGreaterThan(0);
+    });
+
     ifDist('실재하는 자산은 영구 캐시된다 — 파일명에 콘텐츠 해시가 있다', async () => {
         const asset = readdirSync('./dist/assets').find((f) => f.endsWith('.js'));
         expect(asset, 'dist/assets에 js가 있어야 한다').toBeDefined();
