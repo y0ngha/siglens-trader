@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { Context } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import cron, { type ScheduledTask } from 'node-cron';
 
@@ -104,58 +104,56 @@ for (const { name, handler } of CRON_JOBS) app.get(`/api/cron/${name}`, fwd(hand
 // source `/((?!api/).*)` likewise excluded api paths from the index.html fallback.
 app.all('/api/*', (c) => c.notFound());
 
-/**
- * 이미 만들어진 응답에 `Cache-Control`을 얹는다.
- *
- * `c.header()`가 아니라 `c.res` 교체인 이유는 아래 `onFound` 주석 참고 — 응답 객체가
- * `onFound` 호출 전에 생성되므로 헤더 API로는 닿지 않는다.
- */
-function setCacheControl(c: Context, value: string): void {
-    const headers = new Headers(c.res.headers);
-    headers.set('Cache-Control', value);
-    c.res = new Response(c.res.body, { status: c.res.status, headers });
-}
-
 // 캐시 정책은 **명시한다.** 종전에는 아무 헤더도 붙이지 않아 Cloudflare가 스스로
 // 판단했고(자산에 `max-age=14400`), 그 결과 SPA 폴백이 잘못 내려준 HTML 응답까지 4시간
 // 캐시됐다 — 서버 결함이 CDN에 각인돼 배포를 해도 낫지 않는 상태가 됐다.
 //
-// 헤더는 `onFound`에서 **`c.res`를 직접 고쳐** 얹는다. 세 가지 자연스러운 방법이 전부
-// 실패한다: (1) 정적 서빙 앞의 `c.header()`는 `serveStatic`이 자체 응답을 만들며 버리고,
-// (2) `await next()` 뒤의 사후 처리는 아예 실행되지 않으며(serveStatic이 체인을 끝낸다),
-// (3) `onFound` 안의 `c.header()`도 응답 객체가 그 호출 **전에** 이미 만들어져 무시된다.
-// `c.res`를 갈아끼우는 것만이 `app.request()`(테스트)와 실제 HTTP 양쪽에서 동작한다.
+// 헤더는 `serveStatic`을 부르기 **전에** 예약한다. 그쪽도 `Content-Type`을 같은 방식으로
+// 세운다(`c.header()` → 그 다음 `c.body()`). `onFound`에서 얹으려던 첫 시도는 응답이 이미
+// 만들어진 뒤라 반영되지 않았고, `c.res`를 갈아끼우는 우회는 **본문 스트림을 소비해
+// 응답을 0바이트로 만들었다** — 프로덕션에서 Cloudflare 520으로 드러났다.
+const withCacheControl = (value: string, inner: MiddlewareHandler): MiddlewareHandler =>
+    async function cached(c, next) {
+        c.header('Cache-Control', value);
+        return inner(c, next);
+    };
+
+// Static SPA: serve built assets, else fall back to index.html (client-side routing).
+//
+// 자산은 파일명에 콘텐츠 해시가 있으므로 같은 이름이면 같은 내용이다. 영구 캐시가
+// 안전하고 `immutable`이 재검증까지 없앤다.
 app.get(
-    '/*',
-    serveStatic({
-        root: './dist',
-        onFound: (path, c) => {
-            // 파일명에 콘텐츠 해시가 있는 자산만 영구 캐시한다 — 같은 이름이면 같은
-            // 내용이므로 안전하고, `immutable`이 재검증까지 없앤다. 나머지(문서·매니페스트)는
-            // 캐시하지 않는다.
-            setCacheControl(
-                c,
-                path.includes('/assets/')
-                    ? 'public, max-age=31536000, immutable'
-                    : 'no-cache, must-revalidate',
-            );
-        },
-    }),
+    '/assets/*',
+    withCacheControl('public, max-age=31536000, immutable', serveStatic({ root: './dist' })),
 );
+// `/`는 여기서 `dist/index.html`을 찾아 나간다(디렉터리 인덱스). 아래 폴백까지 안 가므로
+// 캐시 정책을 여기에도 걸어야 한다 — 문서가 캐시되면 옛 청크를 영영 붙잡는다.
+app.get('/', withCacheControl('no-cache, must-revalidate', serveStatic({ root: './dist' })));
+// 나머지 정적 파일(매니페스트·아이콘 등). 해시가 없으므로 보수적으로 재검증시킨다.
+app.get('/*', withCacheControl('no-cache, must-revalidate', serveStatic({ root: './dist' })));
 
-app.get('/assets/*', (c) => c.notFound());
+// 해시가 박힌 자산은 **폴백에서 제외한다.**
+//
+// 없는 자산까지 `index.html`을 돌려주면 브라우저는 200 + `text/html`을 받고,
+// `import()`는 "Failed to fetch dynamically imported module"로 실패한다. 실제로 그렇게
+// 샜다 — 배포 후 옛 문서를 들고 있던 탭이 사라진 청크를 요청했고, 서버가 HTML을 주는
+// 바람에 원인이 "청크 없음"이 아니라 "모듈 파싱 실패"로 위장됐다.
+//
+// 404를 주면 브라우저가 그 사실을 그대로 보고, `src/lib/chunk-recovery.ts`가 한 번
+// 새로고침해 새 문서를 받는다. 파일명에 해시가 있으므로 404는 언제나 "이 빌드에 없는
+// 파일"이고, SPA 라우트로 오인될 여지가 없다.
+app.get('/assets/*', (c) => {
+    // 위에서 예약한 `immutable`을 지운다 — 없는 파일을 1년 캐시하면 그 사이 배포된
+    // 같은 이름의 자산(있을 수 없지만)은 물론이고 CDN이 404를 오래 들고 있게 된다.
+    c.header('Cache-Control', 'no-store');
+    return c.notFound();
+});
 
-// SPA 문서는 **절대 캐시하지 않는다.** 이 문서가 어떤 청크를 부를지 결정하므로, 옛
-// 문서가 살아 있으면 새 배포의 자산을 영영 못 찾는다 — 청크 로드 실패의 근원이다.
-// `/`뿐 아니라 `/positions` 같은 클라이언트 라우트도 같은 문서를 받으므로 여기서 건다.
+// SPA 문서는 **절대 캐시하지 않는다.** 이 문서가 어떤 청크를 부를지 정하므로, 옛 문서가
+// 살아 있으면 새 배포의 자산을 영영 못 찾는다 — 청크 로드 실패의 근원이다.
 app.get(
     '/*',
-    serveStatic({
-        path: './dist/index.html',
-        // SPA 문서는 **절대 캐시하지 않는다.** 이 문서가 어떤 청크를 부를지 정하므로,
-        // 옛 문서가 살아 있으면 새 배포의 자산을 영영 못 찾는다 — 청크 로드 실패의 근원.
-        onFound: (_path, c) => setCacheControl(c, 'no-cache, must-revalidate'),
-    }),
+    withCacheControl('no-cache, must-revalidate', serveStatic({ path: './dist/index.html' })),
 );
 
 /**
