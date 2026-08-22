@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import cron, { type ScheduledTask } from 'node-cron';
 
@@ -103,9 +104,59 @@ for (const { name, handler } of CRON_JOBS) app.get(`/api/cron/${name}`, fwd(hand
 // source `/((?!api/).*)` likewise excluded api paths from the index.html fallback.
 app.all('/api/*', (c) => c.notFound());
 
-// Static SPA: serve built assets, else fall back to index.html (client-side routing).
-app.get('/*', serveStatic({ root: './dist' }));
-app.get('/*', serveStatic({ path: './dist/index.html' }));
+/**
+ * 이미 만들어진 응답에 `Cache-Control`을 얹는다.
+ *
+ * `c.header()`가 아니라 `c.res` 교체인 이유는 아래 `onFound` 주석 참고 — 응답 객체가
+ * `onFound` 호출 전에 생성되므로 헤더 API로는 닿지 않는다.
+ */
+function setCacheControl(c: Context, value: string): void {
+    const headers = new Headers(c.res.headers);
+    headers.set('Cache-Control', value);
+    c.res = new Response(c.res.body, { status: c.res.status, headers });
+}
+
+// 캐시 정책은 **명시한다.** 종전에는 아무 헤더도 붙이지 않아 Cloudflare가 스스로
+// 판단했고(자산에 `max-age=14400`), 그 결과 SPA 폴백이 잘못 내려준 HTML 응답까지 4시간
+// 캐시됐다 — 서버 결함이 CDN에 각인돼 배포를 해도 낫지 않는 상태가 됐다.
+//
+// 헤더는 `onFound`에서 **`c.res`를 직접 고쳐** 얹는다. 세 가지 자연스러운 방법이 전부
+// 실패한다: (1) 정적 서빙 앞의 `c.header()`는 `serveStatic`이 자체 응답을 만들며 버리고,
+// (2) `await next()` 뒤의 사후 처리는 아예 실행되지 않으며(serveStatic이 체인을 끝낸다),
+// (3) `onFound` 안의 `c.header()`도 응답 객체가 그 호출 **전에** 이미 만들어져 무시된다.
+// `c.res`를 갈아끼우는 것만이 `app.request()`(테스트)와 실제 HTTP 양쪽에서 동작한다.
+app.get(
+    '/*',
+    serveStatic({
+        root: './dist',
+        onFound: (path, c) => {
+            // 파일명에 콘텐츠 해시가 있는 자산만 영구 캐시한다 — 같은 이름이면 같은
+            // 내용이므로 안전하고, `immutable`이 재검증까지 없앤다. 나머지(문서·매니페스트)는
+            // 캐시하지 않는다.
+            setCacheControl(
+                c,
+                path.includes('/assets/')
+                    ? 'public, max-age=31536000, immutable'
+                    : 'no-cache, must-revalidate',
+            );
+        },
+    }),
+);
+
+app.get('/assets/*', (c) => c.notFound());
+
+// SPA 문서는 **절대 캐시하지 않는다.** 이 문서가 어떤 청크를 부를지 결정하므로, 옛
+// 문서가 살아 있으면 새 배포의 자산을 영영 못 찾는다 — 청크 로드 실패의 근원이다.
+// `/`뿐 아니라 `/positions` 같은 클라이언트 라우트도 같은 문서를 받으므로 여기서 건다.
+app.get(
+    '/*',
+    serveStatic({
+        path: './dist/index.html',
+        // SPA 문서는 **절대 캐시하지 않는다.** 이 문서가 어떤 청크를 부를지 정하므로,
+        // 옛 문서가 살아 있으면 새 배포의 자산을 영영 못 찾는다 — 청크 로드 실패의 근원.
+        onFound: (_path, c) => setCacheControl(c, 'no-cache, must-revalidate'),
+    }),
+);
 
 /**
  * Register the cron schedules. Each tick invokes the handler in-process with a synthetic

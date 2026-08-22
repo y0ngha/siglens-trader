@@ -91,3 +91,39 @@ describe('app routing', () => {
         expect(res.status).toBe(401);
     });
 });
+
+describe('정적 자산 서빙 — 청크 로드 실패 방지', () => {
+    /**
+     * 프로덕션 사고 재현: 배포 후 옛 문서를 든 탭이 사라진 청크를 요청하면, SPA 폴백이
+     * `index.html`을 200 + `text/html`로 돌려줬다. 브라우저는 JS를 기대했으므로
+     * "Failed to fetch dynamically imported module"로 실패했고, 원인이 "청크 없음"이
+     * 아니라 "모듈 파싱 실패"로 위장됐다. 게다가 Cloudflare가 그 HTML 응답을 4시간
+     * 캐시해(`max-age=14400`) 재배포로도 낫지 않았다.
+     */
+    it('없는 해시 자산은 404다 — index.html로 폴백하지 않는다', async () => {
+        const res = await app.request('/assets/Status-DOESNOTEXIST.js');
+
+        expect(res.status).toBe(404);
+        // 200 + text/html이면 브라우저가 JS로 파싱하려다 실패한다.
+        expect(res.headers.get('content-type') ?? '').not.toContain('text/html');
+    });
+
+    it('알 수 없는 /api/*는 여전히 404 — SPA로 새지 않는다', async () => {
+        const res = await app.request('/api/does-not-exist');
+        expect(res.status).toBe(404);
+    });
+
+    it('SPA 라우트는 index.html을 받는다', async () => {
+        const res = await app.request('/positions');
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type') ?? '').toContain('text/html');
+    });
+
+    it('SPA 문서는 캐시하지 않는다 — 옛 문서가 살면 새 청크를 못 찾는다', async () => {
+        for (const path of ['/', '/positions']) {
+            const res = await app.request(path);
+            expect(res.headers.get('cache-control'), path).toContain('no-cache');
+        }
+    });
+});
