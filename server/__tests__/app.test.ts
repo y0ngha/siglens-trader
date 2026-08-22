@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, afterEach } from 'vitest';
+import { existsSync, readdirSync } from 'node:fs';
 import { app, CRON_JOBS, startCron } from '../app.js';
 
 describe('CRON_JOBS', () => {
@@ -113,17 +114,37 @@ describe('정적 자산 서빙 — 청크 로드 실패 방지', () => {
         expect(res.status).toBe(404);
     });
 
-    it('SPA 라우트는 index.html을 받는다', async () => {
+    /**
+     * 아래 둘은 **빌드 산출물(`dist/`)이 있어야** 의미가 있다. CI의 test-gate는
+     * `yarn build` 없이 `yarn test`만 돌리므로 그 환경에서는 건너뛴다 — 없는 파일에
+     * 404가 나는 것은 이 라우팅의 결함이 아니라 전제 부재다. 실제 서빙은 Docker 빌드가
+     * `yarn build` 뒤에 이미지를 만들고, 배포 스텝의 온박스 헬스체크가 확인한다.
+     */
+    const hasDist = existsSync('./dist/index.html');
+    const ifDist = hasDist ? it : it.skip;
+
+    ifDist('SPA 라우트는 index.html을 받는다', async () => {
         const res = await app.request('/positions');
 
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type') ?? '').toContain('text/html');
     });
 
-    it('SPA 문서는 캐시하지 않는다 — 옛 문서가 살면 새 청크를 못 찾는다', async () => {
+    ifDist('SPA 문서는 캐시하지 않는다 — 옛 문서가 살면 새 청크를 못 찾는다', async () => {
         for (const path of ['/', '/positions']) {
             const res = await app.request(path);
             expect(res.headers.get('cache-control'), path).toContain('no-cache');
         }
+    });
+
+    ifDist('실재하는 자산은 영구 캐시된다 — 파일명에 콘텐츠 해시가 있다', async () => {
+        const asset = readdirSync('./dist/assets').find((f) => f.endsWith('.js'));
+        expect(asset, 'dist/assets에 js가 있어야 한다').toBeDefined();
+
+        const res = await app.request(`/assets/${asset}`);
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control') ?? '').toContain('immutable');
+        expect(res.headers.get('content-type') ?? '').toContain('javascript');
     });
 });
