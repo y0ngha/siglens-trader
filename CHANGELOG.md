@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.28.0](https://github.com/y0ngha/siglens-trader/compare/v0.27.1...v0.28.0) (2026-08-22)
+
+
+### Features
+
+* 손익비 진입 가드 + 웹에 배포 버전 표기 ([#51](https://github.com/y0ngha/siglens-trader/issues/51)) ([bd4bd07](https://github.com/y0ngha/siglens-trader/commit/bd4bd0784dc77e0f2bac3e21ae5e02881d589046))
+
 ## [0.27.1](https://github.com/y0ngha/siglens-trader/compare/v0.27.0...v0.27.1) (2026-08-22)
 
 
