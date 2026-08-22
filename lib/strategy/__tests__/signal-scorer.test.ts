@@ -137,13 +137,13 @@ describe('scoreSignals', () => {
 
             // technical = 95, news = 50, options = 50, fundamental = 80; congress is absent,
             // so its weight drops out entirely rather than voting a neutral 50.
-            // 컨플루언스는 중립 스냅샷(트리거 없음)이라 50 근처를 투표하고 가중치 12가 살아 있다.
-            // weighted: (conf*12 + 95*8 + 50*6 + 50*5 + 80*4) / 35 → 69 → hold 아래로 내려가지 않는다.
+            // 컨플루언스는 강세 1계열(macd, confirmed)이라 50 + (1/2)×15 = 58을 투표한다.
+            // weighted: (58*12 + 95*8 + 50*6 + 50*5 + 80*4) / 35 = 2326/35 = 66.5 → 66.
             expect(result.components.technical).toBe(95);
             expect(result.components.news).toBe(50);
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(80);
-            expect(result.total).toBe(69);
+            expect(result.total).toBe(66);
             expect(result.signal).toBe('hold');
         });
 
@@ -212,9 +212,10 @@ describe('scoreSignals', () => {
                 30,
             );
 
-            // 중립 스냅샷은 약세 없이 강세 1종이라 50보다 약간 위(55)를 투표한다.
-            // threshold 50 이상이므로 여전히 buy — 경계 판정 자체가 이 테스트의 대상이다.
-            expect(result.total).toBe(55);
+            // 중립 스냅샷은 약세 없이 강세 1계열이라 50보다 약간 위(58)를 투표한다.
+            // (58*12 + 50*23) / 35 = 1846/35 = 52.7 → 53. threshold 50 이상이므로 여전히 buy —
+            // 경계 판정 자체가 이 테스트의 대상이다.
+            expect(result.total).toBe(53);
             expect(result.signal).toBe('buy');
         });
     });
@@ -1108,10 +1109,10 @@ describe('confluence 축', () => {
             70,
             30,
         );
-        // bull 3 / bear 0 → 73. 나머지 축은 모두 50이고, congress는 null이라 기존 규칙대로
-        // 분모에서 빠진다. (73*12 + 50*(8+6+5+4)) / (12+8+6+5+4) = 2026/35 = 57.9 → 58
-        expect(bull.components.confluence).toBe(73);
-        expect(bull.total).toBe(58);
+        // 계열 3 / 0 → net = 3/4 → 50 + 0.75×15 = 61. 나머지 축은 모두 50이고 congress는
+        // 가중치 0이라 분모에서 빠진다. (61*12 + 50*(8+6+5+4)) / 35 = 1882/35 = 53.8 → 54
+        expect(bull.components.confluence).toBe(61);
+        expect(bull.total).toBe(54);
     });
 
     it('진입 트리거 단독으로는 매수 임계(70)를 넘지 못한다', () => {

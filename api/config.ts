@@ -80,6 +80,11 @@ async function handler(req: Request): Promise<Response> {
             'entry_cooldown_min',
             'min_stop_room_pct',
             'dry_run_cash_usd',
+            'confluence_min',
+            'confluence_span',
+            'confluence_expected_weight',
+            'confluence_htf',
+            'confluence_require_volume',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -94,9 +99,16 @@ async function handler(req: Request): Promise<Response> {
             'entry_cooldown_min',
             'min_stop_room_pct',
             'dry_run_cash_usd',
+            'confluence_min',
+            'confluence_span',
+            'confluence_expected_weight',
         ]);
 
-        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
+        const BOOLEAN_CONFIG_KEYS = new Set([
+            'trading_enabled',
+            'fixed_exit_enabled',
+            'confluence_require_volume',
+        ]);
 
         switch (payload.type) {
             case 'config': {
@@ -296,6 +308,36 @@ async function handler(req: Request): Promise<Response> {
                 if (key === 'min_stop_room_pct' && (value as number) > 5) {
                     return Response.json(
                         { error: 'min_stop_room_pct must be between 0 and 5' },
+                        { status: 400 },
+                    );
+                }
+                // 컨플루언스 튜너블 범위. 상한은 "그 값을 넘으면 축이 제 기능을 잃는" 지점이다.
+                // `min`이 계열 수 상한(14)을 넘으면 트리거가 영원히 안 서고, `span`이 50을
+                // 넘으면 연속 점수만으로 매수 임계를 넘길 수 있어 트리거의 의미가 사라진다.
+                if (key === 'confluence_min' && (value as number) > 14) {
+                    return Response.json(
+                        { error: 'confluence_min must be between 0 and 14' },
+                        { status: 400 },
+                    );
+                }
+                if (key === 'confluence_span' && (value as number) > 50) {
+                    return Response.json(
+                        { error: 'confluence_span must be between 0 and 50' },
+                        { status: 400 },
+                    );
+                }
+                if (key === 'confluence_expected_weight' && (value as number) > 1) {
+                    return Response.json(
+                        { error: 'confluence_expected_weight must be between 0 and 1' },
+                        { status: 400 },
+                    );
+                }
+                if (
+                    key === 'confluence_htf' &&
+                    !['15Min', '30Min', '1Hour', '1Day', 'off'].includes(value as string)
+                ) {
+                    return Response.json(
+                        { error: 'confluence_htf must be one of 15Min/30Min/1Hour/1Day/off' },
                         { status: 400 },
                     );
                 }

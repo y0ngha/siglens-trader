@@ -712,6 +712,61 @@ describe('POST /api/config', () => {
         }
     });
 
+    it('accepts confluence tunables within range', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const cases: Array<[string, unknown]> = [
+            ['confluence_min', 0],
+            ['confluence_min', 3],
+            ['confluence_min', 14],
+            ['confluence_span', 0],
+            ['confluence_span', 15],
+            ['confluence_span', 50],
+            ['confluence_expected_weight', 0],
+            ['confluence_expected_weight', 0.5],
+            ['confluence_expected_weight', 1],
+            ['confluence_htf', '1Day'],
+            ['confluence_htf', '1Hour'],
+            ['confluence_htf', 'off'],
+            ['confluence_require_volume', true],
+            ['confluence_require_volume', false],
+        ];
+        for (const [key, value] of cases) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key,
+                    value,
+                }),
+            );
+            expect(res.status, `${key}=${String(value)}`).toBe(200);
+        }
+    });
+
+    it('rejects confluence tunables that would disable the axis outright', async () => {
+        // 상한은 "그 값을 넘으면 축이 제 기능을 잃는" 지점이다 — min > 계열 수(14)면 트리거가
+        // 영원히 안 서고, span > 50이면 연속 점수만으로 매수 임계를 넘겨 트리거가 무의미해진다.
+        const cases: Array<[string, unknown]> = [
+            ['confluence_min', 15],
+            ['confluence_min', -1],
+            ['confluence_span', 51],
+            ['confluence_expected_weight', 1.5],
+            ['confluence_expected_weight', -0.1],
+            ['confluence_htf', '5Min'],
+            ['confluence_htf', 'daily'],
+            ['confluence_require_volume', 'yes'],
+        ];
+        for (const [key, value] of cases) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key,
+                    value,
+                }),
+            );
+            expect(res.status, `${key}=${String(value)}`).toBe(400);
+        }
+    });
+
     it('rejects an interval/entry_window combination with no overlapping tick', async () => {
         mockGetConfigValue.mockResolvedValue(60);
 

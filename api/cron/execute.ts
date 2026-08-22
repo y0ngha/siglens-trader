@@ -462,13 +462,36 @@ async function handler(req: Request): Promise<Response> {
              * 캐시가 없으면 FMP 봉 조회가 심볼당 두 번 나간다. 한 실행 안에서 두 루프가
              * 서로 다른 스냅샷을 보는 것도 곤란하다 — 같은 틱의 판단은 같은 데이터에서 나와야 한다.
              */
+            // 컨플루언스 튜너블. 런당 한 번 읽어 모든 심볼에 같은 기준을 적용한다.
+            //
+            // 설정으로 뺀 이유: 이 축은 가중치 13(최상위)이고, 그 가중치를 정당화한 백테스트는
+            // **일봉·10일 보유**에서 측정됐다. 프로덕션은 30분봉·장중 보유라 같은 상수가 같은
+            // 뜻이 아니다. 기본값은 판단이지 측정이 아니므로, 재배포 없이 되돌릴 수 있어야
+            // 한다. siglens 백테스트도 같은 파라미터를 받게 되면 여기 값을 그대로 넣어
+            // 재현할 수 있다.
+            const confluenceOpts = await Promise.all([
+                getConfigValue<number>(db, 'confluence_min').catch(() => null),
+                getConfigValue<number>(db, 'confluence_span').catch(() => null),
+                getConfigValue<number>(db, 'confluence_expected_weight').catch(() => null),
+                getConfigValue<string>(db, 'confluence_htf').catch(() => null),
+                getConfigValue<boolean>(db, 'confluence_require_volume').catch(() => null),
+            ]).then(([min, span, expectedWeight, htf, requireVolume]) => ({
+                ...(typeof min === 'number' ? { min } : {}),
+                ...(typeof span === 'number' ? { span } : {}),
+                ...(typeof expectedWeight === 'number' ? { expectedWeight } : {}),
+                // 'off'는 상위 시간축 정렬 게이트를 끄는 문자열이다 — JSONB에 null을 저장하는
+                // 것과 "키가 없다"를 구분하기 어려워 명시 값을 쓴다.
+                ...(typeof htf === 'string' ? { htf: htf === 'off' ? null : htf } : {}),
+                ...(typeof requireVolume === 'boolean' ? { requireVolume } : {}),
+            }));
+
             const confluenceCache = new Map<string, ConfluenceSnapshot | null>();
             const getConfluence = async (symbol: string): Promise<ConfluenceSnapshot | null> => {
                 const cached = confluenceCache.get(symbol);
                 if (cached !== undefined) return cached;
                 let snapshot: ConfluenceSnapshot | null = null;
                 try {
-                    snapshot = await computeConfluence(symbol, analysisTimeframe);
+                    snapshot = await computeConfluence(symbol, analysisTimeframe, confluenceOpts);
                 } catch (err) {
                     // computeConfluence는 내부에서 이미 삼키지만, 이 조립부가 그 구현
                     // 세부에 의존하지 않게 한 겹 더 막는다. 컨플루언스 실패가 실행 전체를

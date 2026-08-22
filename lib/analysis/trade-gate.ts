@@ -706,7 +706,6 @@ function sectionSignal(input: TradeGateInput): string[] {
 
 function sectionAccount(input: TradeGateInput): string[] {
     const a = input.account;
-    const mode = sanitize(a.tradingMode, 20) || '미상';
     // 현금은 **진입에서만** 사이징 입력이다. 청산 크기와 매수 여력 사이에는 인과가 없고,
     // "미상 = 보수적으로"를 청산 프롬프트에 남기면 손절을 덜 하라는 지시가 된다.
     // **세 모드가 같은 줄을 쓴다.** dry_run은 모의 계좌의 체결 원장에서, auto/semi_auto는
