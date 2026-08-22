@@ -1,6 +1,12 @@
 # lib/strategy/ — Domain Layer
 
-Pure business logic for trading decisions. **No external dependencies. No I/O.**
+Pure business logic for trading decisions. **No I/O.**
+
+외부 패키지 import도 원칙적으로 없다. **예외는 `confluence.ts` 하나** — siglens-core의
+`domain/signals/confluence`를 재수출한다. 규칙의 목적은 이 계층을 순수하게 유지해 테스트
+가능하게 두는 것이고, core의 `domain/`은 그 자체가 "zero I/O, zero side effects"를 헌장으로
+갖는 계층이라 목적에 어긋나지 않는다. 시계를 읽는 봉 신선도 검사처럼 비순수한 부분은 일부러
+`lib/analysis/` 쪽에 남겼다.
 
 ## Files
 

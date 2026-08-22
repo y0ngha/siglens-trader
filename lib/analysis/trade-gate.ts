@@ -185,9 +185,19 @@ const BULLET_MAX_LENGTH = 80;
  * 모델이 규칙을 지켜 무시하거나(기능이 죽거나) 따르거나(위조 지시 방어가 약해지거나) 둘 다
  * 손해다. 가중치를 어떻게 취급할지에 대한 지시는 `## 판단 지침`(= 펜스 밖)에만 둔다.
  */
+/**
+ * 상위 시간축 추세 라벨. 키를 `string`으로 두는 이유는 `SESSION_LABEL`과 같다 —
+ * `TrendState`는 core 소유라 union을 고정하면 의존성 업그레이드가 빌드를 깬다.
+ */
+const TREND_LABEL: Record<string, string> = {
+    uptrend: '상승',
+    downtrend: '하락',
+    sideways: '횡보',
+};
+
 const CONFLUENCE_SOURCE_LINE: Record<TradeGateKind, string> = {
-    entry: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%를 기록했다.',
-    exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 진입 룰의 70% 승률은 이쪽에 적용되지 않는다.',
+    entry: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 원형 룰은 백테스트(2024.04–2026.04, 100케이스, **일봉·10일 보유**)에서 승률 70%였으나, 현재 룰은 그 뒤 30분봉 운용에 맞춰 수정됐고(지표 계열 단위 집계, 상위 시간축 정렬, 거래량 확인) 수정본은 백테스트로 검증된 적이 없다. 70%를 현재 룰의 승률로 읽지 마라.',
+    exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 원형 룰의 70% 승률은 이쪽에 적용되지 않는다.',
 };
 
 // 마감 시각은 이제 core의 거래소 캘린더가 답한다(`minutesUntilUsMarketClose`) —
@@ -829,6 +839,8 @@ function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind):
             const freshBullish = safeTypeList(s.freshBullish);
             const freshBearish = safeTypeList(s.freshBearish);
             const ma50 = typeof s.ma50 === 'number' && Number.isFinite(s.ma50) ? s.ma50 : null;
+            // 구 스냅샷에는 이 필드가 없다 — 없으면 정렬 게이트가 적용되지 않았다는 뜻이다.
+            const htfTrend = typeof s.htfTrend === 'string' ? s.htfTrend : null;
             const close = typeof s.close === 'number' && Number.isFinite(s.close) ? s.close : null;
             return [
                 CONFLUENCE_SOURCE_LINE[kind],
@@ -844,8 +856,19 @@ function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind):
                             : 'MA50 아래'
                         : '비교 불가'
                 })`,
-                `- 진입 트리거: ${s.entryTrigger === true ? '성립 (강세 3종 + 신규 + MA50 위)' : '미성립'}`,
-                `- 청산 트리거: ${s.exitTrigger === true ? '성립 (약세 3종 + 신규 + MA50 아래)' : '미성립'}`,
+                // 조건 문구를 하드코딩하지 않는다 — `confluence_min`이 설정이라 "3종"은
+                // 설정을 바꾸는 순간 거짓이 되고, 집계 단위도 타입이 아니라 지표 계열이다.
+                `- 상위 시간축 추세: ${TREND_LABEL[htfTrend ?? ''] ?? '미상 (정렬 게이트 미적용)'}`,
+                `- 진입 트리거: ${
+                    s.entryTrigger === true
+                        ? '성립 (강세 지표 계열 다수 + 신규 + MA50 위 + 상위 추세 상승 + 거래량 확인)'
+                        : '미성립'
+                }`,
+                `- 청산 트리거: ${
+                    s.exitTrigger === true
+                        ? '성립 (약세 지표 계열 다수 + 신규 + MA50 아래)'
+                        : '미성립'
+                }`,
             ];
         }
         case 'technical': {

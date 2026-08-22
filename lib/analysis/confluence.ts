@@ -103,6 +103,16 @@ export async function computeConfluence(
 ): Promise<ConfluenceSnapshot | null> {
     const htf = opts?.htf === null ? null : (opts?.htf ?? DEFAULT_HTF_TIMEFRAME);
     try {
+        // 본 봉과 상위 봉을 **동시에** 띄운다.
+        //
+        // 순차로 기다리면 FMP가 느려질 때 심볼당 지연이 두 배가 되고, execute의 두 루프는
+        // 순차라 그 지연이 곧 "런 마감 안에 평가받는 심볼 수"를 깎는다. 평가받지 못한
+        // 보유 종목은 그 틱에 **청산 판정 자체가 없다** — 진입 게이트를 추가하려고 청산
+        // 기회를 줄이는 셈이라 원칙 7에 어긋난다. 병렬이면 지연이 둘 중 큰 쪽으로 끝난다.
+        //
+        // 본 봉이 기권 조건에 걸리면 상위 봉은 버려진다. 캐시에 남으므로 다음 틱이 쓴다.
+        const htfPromise = htf === null ? Promise.resolve(null) : fetchHtfBars(symbol, htf);
+
         const from = isoDaysAgo(LOOKBACK_DAYS[timeframe]);
         const bars = await getMarketDataProvider().getBars({ symbol, timeframe, from });
 
@@ -141,7 +151,7 @@ export async function computeConfluence(
             return null;
         }
 
-        const htfBars = htf === null ? null : await fetchHtfBars(symbol, htf);
+        const htfBars = await htfPromise;
 
         return evaluateConfluence(bars, {
             timeframe,

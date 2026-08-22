@@ -715,7 +715,7 @@ describe('POST /api/config', () => {
     it('accepts confluence tunables within range', async () => {
         mockSetConfigValue.mockResolvedValue(undefined);
         const cases: Array<[string, unknown]> = [
-            ['confluence_min', 0],
+            ['confluence_min', 1],
             ['confluence_min', 3],
             ['confluence_min', 14],
             ['confluence_span', 0],
@@ -725,7 +725,6 @@ describe('POST /api/config', () => {
             ['confluence_expected_weight', 0.5],
             ['confluence_expected_weight', 1],
             ['confluence_htf', '1Day'],
-            ['confluence_htf', '1Hour'],
             ['confluence_htf', 'off'],
             ['confluence_require_volume', true],
             ['confluence_require_volume', false],
@@ -748,11 +747,18 @@ describe('POST /api/config', () => {
         const cases: Array<[string, unknown]> = [
             ['confluence_min', 15],
             ['confluence_min', -1],
+            // 0은 **청산** 트리거를 무장해제한다 — `bearish >= 0`은 항상 참이라
+            // 보유 종목이 평범한 눌림 신호 하나에 전량 청산된다.
+            ['confluence_min', 0],
             ['confluence_span', 51],
             ['confluence_expected_weight', 1.5],
             ['confluence_expected_weight', -0.1],
             ['confluence_htf', '5Min'],
             ['confluence_htf', 'daily'],
+            // 이름 그대로 **상위**여야 한다. analysis_timeframe 기본값이 1Hour이므로
+            // 같거나 낮은 축은 게이트의 전제를 뒤집는다.
+            ['confluence_htf', '1Hour'],
+            ['confluence_htf', '15Min'],
             ['confluence_require_volume', 'yes'],
         ];
         for (const [key, value] of cases) {

@@ -151,11 +151,14 @@ broken check.
      stop-loss blocks a same-run re-buy just like a full one
 7. Recalculate exposure after any closures (using market prices)
 8. Score signals for watchlist symbols
-   - The **confluence snapshot** (`computeConfluence`, FMP bars + local indicator math, no LLM) is
-     the heaviest axis (weight 12). It is memoized in a run-scoped `confluenceCache` shared by the
-     re-evaluation loop and the watchlist loop, so a held watchlist symbol costs one bar fetch per
-     run, not two. A `null` snapshot (FMP down, too few bars) drops the axis's weight to 0 rather
-     than voting neutral — unlike stale technical analysis it never blocks a trade
+   - The **confluence snapshot** (`computeConfluence`, no LLM) is the heaviest axis. 룰·채점은
+     **core가 소유**하고(`evaluateConfluence`) trader는 봉만 구해 넘긴다. 본 봉과 상위
+     시간축 봉(기본 일봉)을 **동시에** 띄운다 — 순차로 기다리면 FMP가 느려질 때 심볼당 지연이
+     두 배가 되고, 두 루프가 순차라 그 지연이 곧 런 마감 안에 평가받는 심볼 수를 깎는다.
+     평가받지 못한 보유 종목은 그 틱에 청산 판정 자체가 없으므로 원칙 7에 걸린다.
+     상위 봉은 모듈 캐시(성공 1시간 / **실패 5분**)를 타고, 본 봉은 run-scoped
+     `confluenceCache`가 두 루프 간에 공유한다. `null` 스냅샷(FMP 장애, 봉 부족, 봉 낡음)은
+     가중치를 0으로 떨어뜨릴 뿐 매매를 막지 않는다
    - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
 9. Make trade decisions (buy/sell/hold/average_in)
    - `planEntry` (not `calculatePositionSize`) computes the budget ceiling from the per-symbol
