@@ -31,7 +31,10 @@ lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 ```
 api/ → lib/strategy, lib/analysis, lib/trading, lib/notification, lib/db
 src/ → API calls only (NEVER import lib/ directly)
-lib/strategy/ → No external deps (pure functions only). Exception: safe-extract.ts and trade-plan.ts import lib/validation.
+lib/strategy/ → No external deps (pure functions only). Exceptions: safe-extract.ts and trade-plan.ts
+                import lib/validation; confluence.ts re-exports @y0ngha/siglens-core (그쪽 `domain/`이
+                "zero I/O, zero side effects"를 헌장으로 갖는 같은 성격의 순수 계층이라 규칙의 목적에
+                어긋나지 않는다 — 비순수한 부분은 lib/analysis/ 쪽에 남겼다).
 lib/analysis/ → @y0ngha/siglens-core, lib/data, lib/strategy (types + pure helpers only — the arrow never points back)
 lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
@@ -132,44 +135,57 @@ profile above. Stored `score_weights` overrides the profile key by key.
 
 ### Indicator Confluence
 
-The only axis that never calls an LLM, and the heaviest one. The rule is siglens' backtest
-winner (2024.04–2026.04, 100 cases): **3+ distinct bullish signal types active at once, at least
-one of them newly lit versus the previous bar, and close > SMA(50)**. Its 70% win rate beat the
-LLM's 61.5% over the same window, which is what the weight of 12 is paying for. Inverted
-(bearish 3종 + close < MA50) it is also an exit trigger — see `evaluateExistingPosition` step 3.5.
+여섯 축 중 **유일하게 LLM을 거치지 않는** 축이자 가장 무거운 축(가중치 12, 30Min 프로파일 13).
+룰과 채점은 **siglens-core가 소유한다** (`evaluateConfluence` / `scoreConfluence`) — 같은 룰이
+siglens 백테스트와 trader에 따로 구현돼 조용히 갈라지던 것을 한 곳으로 모았다. trader는 봉을
+구해 넘길 뿐이다(`lib/analysis/confluence.ts`).
 
-- **Conditional vote, like congress.** No snapshot (FMP down, fewer than 121 bars, or a last bar
-  older than 3× the timeframe) → weight 0, dropped from the denominator. An FMP outage leaves
-  **sells and holds** behaving exactly as they did before this axis existed; new entries are
-  blocked (see the abstention bullet below), which is the intended asymmetry, not a regression.
-- **A trigger alone cannot buy.** Trigger (92) with every other axis neutral scores
-  `(92×12 + 50×23)/35 = 64` — hold. It takes the rest at a mild 60 to reach 70.
-- **The entry bar rises on purpose.** A neutral confluence pulls a former 72 down to
-  `(72×23 + 50×12)/35 = 64`, below the buy threshold, so fill count drops. That is the point —
-  *no entry the indicators do not back* — not a regression to tune away.
-- **Confluence abstention blocks a buy too.** A `null` snapshot drops the axis's weight, which
-  is *looser*, not neutral: with the other five fixed, the same symbol scores 64 (hold) at a
-  genuinely neutral confluence and **72 (buy)** when FMP simply failed to serve bars (실측 3건이
-  그 반대편을 증명했다 — 컨플루언스가 **혼자** 만든 매수 3건은 전건 손실이었다). An axis
-  added to stop entries the indicators don't back was opening the gate exactly when the
-  indicators were unreadable. So a `buy` verdict is downgraded to `hold` when the snapshot is
-  absent; sells are untouched. The downgrade is scoped to a **live** axis: with
-  `score_weights.confluence = 0` the axis does not vote at all, so a missing snapshot changes
-  nothing — otherwise the documented off-switch would not actually switch it off.
-- **Confluence can block a buy but never a sell.** Adding an axis widens the denominator, which
-  raises *both* thresholds — intended for entries, backwards for exits. `scoreSignals` therefore
-  re-scores without confluence and keeps `sell` if that verdict was `sell`. Confluence may still
-  *create* a sell (its exit trigger dragging the score down); it just cannot cancel one.
-- **Turning it off** is `POST /api/config` with `score_weights.confluence = 0`. There is no
-  weight-editing UI — `src/` exposes thresholds and risk settings, not `score_weights`, so the
-  API call is the only path. No redeploy, no separate flag: the weight knob already existed.
-- **Stored `score_weights` overrides the timeframe profile key by key**, so a row carrying all
-  six keys pins the weights regardless of `analysis_timeframe`. `db:seed` therefore does **not**
-  seed that row — a seeded default is indistinguishable from an operator's explicit choice and
-  silently cancelled `WEIGHTS_BY_TIMEFRAME`. An existing deployment that never edited weights
-  should `DELETE FROM config WHERE key = 'score_weights'` to get the profile back.
+**원형 룰**은 siglens 백테스트 우승안이었다: 강세 시그널 3종 동시 활성 + 그중 1종 신규 +
+종가 > SMA(50). 승률 70%로 같은 구간 LLM(61.5%)을 이겼다. **다만 그 측정은 일봉·10일
+보유였고 여기서는 30분봉·장중 보유로 돌린다** — 같은 상수가 같은 뜻이 아니라서 룰을
+그에 맞게 고쳤고, **수정본은 백테스트로 검증된 적이 없다.** 게이트 프롬프트도 그렇게 적는다.
 
-Design: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md).
+수정 내역과 이유:
+
+- **타입이 아니라 지표 계열을 센다.** core의 36종은 지표 14개에서 파생된다(RSI 4, MACD 4,
+  볼린저 6). 타입을 세면 같은 종가 시계열의 변형을 독립 투표로 취급한다 — 실측에서 "3종"에
+  도달한 스냅샷의 16%가 지표 2개뿐이었다. 타입 수 ≥ 계열 수이므로 조이는 방향으로만 작동한다.
+- **`expected` phase는 반표.** `support_proximity_bullish`는 "지지선 근처"라는 상태이지 사건이
+  아니다. 확정 교차와 같은 무게를 줄 근거가 없다.
+- **연속 점수 폭 15** (35..65). 트리거 스냅(92/8)만 백테스트가 뒷받침하고 연속 구간은 아니다.
+  폭 30에서는 지표 하나 크로스로 65점이 나와 종합 +5.4점 — 중립에서 임계까지 거리의 27%를
+  오실레이터 하나가 먹었다.
+- **상위 시간축 정렬**(기본 일봉)과 **거래량 확인**(CMF/MFI)이 진입 트리거에 추가로 붙는다.
+  같은 30분봉의 MA50은 3.8거래일 평균이라 "중기 추세 필터"가 아니다 — 그 이름은 일봉
+  백테스트에서 온 것이다.
+
+**둘 다 진입 전용이다.** 청산 트리거는 정렬도 거래량도 요구하지 않는다 — 트리거를 어렵게
+만드는 조건이라 청산에 걸면 원칙 7 위반이다.
+
+- **조건부 투표, congress와 같다.** 스냅샷 없음(FMP 장애, 봉 121개 미만, 마지막 봉이
+  타임프레임 3배보다 낡음) → 가중치 0, 분모에서 제외. FMP 장애가 **매도와 보류**를 도입 전과
+  똑같이 두고 신규 진입만 막는다 — 의도된 비대칭이다.
+- **트리거만으로는 못 산다.** 트리거(92)에 나머지가 전부 중립 50이면 `(92×12 + 50×23)/35 = 64`
+  — 보류다. 나머지가 60 언저리는 돼야 70에 닿는다.
+- **컨플루언스 기권도 매수를 막는다.** `null`은 중립이 아니라 **더 느슨한** 상태라, 지표를
+  읽을 수 없을 때 오히려 문이 열리는 역설이 생긴다. 그래서 스냅샷이 없으면 `buy` 판정을
+  `hold`로 내린다. 매도는 건드리지 않는다.
+- **매수는 막아도 매도는 못 막는다.** 축을 더하면 분모가 커져 양쪽 문턱이 대칭으로 오르는데,
+  매수가 어려워지는 건 목적이고 매도가 어려워지는 건 정반대다. `scoreSignals`가 컨플루언스
+  없이 재계산해 그쪽이 `sell`이면 `sell`을 유지한다.
+- **끄는 법**은 `POST /api/config`로 `score_weights.confluence = 0`. UI는 없다.
+
+**튜너블 5개는 전부 설정이다** — 기본값이 측정이 아니라 판단이므로 재배포 없이 되돌릴 수
+있어야 한다. `confluence_min`(1~14) / `confluence_span`(0~50) /
+`confluence_expected_weight`(0~1) / `confluence_htf`(`analysis_timeframe`보다 상위여야 하며
+`off` 가능) / `confluence_require_volume`. 적용값은 스냅샷의 `params`에 기록되어 설정 변경
+전후를 사후 비교할 수 있다 — 이 축을 튜닝할 유일한 근거다.
+
+> `confluence_min` 하한이 1인 이유: 0이면 **청산** 트리거의 `bearish >= min` 비교가 항상
+> 참이 되어, 보유 종목이 평범한 눌림 신호 하나에 전량 청산된다.
+
+원형 설계: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md)
+(30분봉 재설계는 그 문서를 대체한다 — 위 내용이 현행이다).
 
 ---
 

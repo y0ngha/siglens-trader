@@ -8016,7 +8016,63 @@ describe('execute cron handler', () => {
 
             await handler(makeRequest(true));
 
-            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', '15Min');
+            // 3번째 인자는 컨플루언스 튜너블. 설정 행이 없으면 빈 객체이고 기본값이 적용된다.
+            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', '15Min', {});
+        });
+
+        it('컨플루언스 튜너블을 설정에서 읽어 넘긴다 — 재배포 없이 조정 가능해야 한다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) => {
+                const cfg: Record<string, unknown> = {
+                    trading_mode: 'dry_run',
+                    confluence_min: 4,
+                    confluence_span: 20,
+                    confluence_expected_weight: 0.25,
+                    confluence_htf: '1Hour',
+                    confluence_require_volume: false,
+                };
+                return Promise.resolve(cfg[key] ?? null);
+            });
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', expect.any(String), {
+                min: 4,
+                span: 20,
+                expectedWeight: 0.25,
+                htf: '1Hour',
+                requireVolume: false,
+            });
+        });
+
+        it("confluence_htf: 'off'는 상위 시간축 게이트를 끈다", async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode' ? 'dry_run' : key === 'confluence_htf' ? 'off' : null,
+                ),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith(
+                'AAPL',
+                expect.any(String),
+                expect.objectContaining({ htf: null }),
+            );
+        });
+
+        it('설정 조회가 실패해도 기본값으로 진행한다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                key.startsWith('confluence_')
+                    ? Promise.reject(new Error('db down'))
+                    : Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', expect.any(String), {});
         });
     });
 

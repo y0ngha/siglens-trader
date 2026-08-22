@@ -14,6 +14,17 @@ import {
     updateNotificationConfig,
 } from '../lib/db/queries.js';
 import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
+
+/**
+ * 시간축 정렬 순서. 값 자체는 의미 없고 **대소 비교**만 쓴다 —
+ * `confluence_htf`가 `analysis_timeframe`보다 실제로 상위인지 검증하는 용도.
+ */
+const TIMEFRAME_RANK: Record<string, number> = {
+    '15Min': 1,
+    '30Min': 2,
+    '1Hour': 3,
+    '1Day': 4,
+};
 import {
     formatEntryWindow,
     parseEntryWindow,
@@ -80,6 +91,11 @@ async function handler(req: Request): Promise<Response> {
             'entry_cooldown_min',
             'min_stop_room_pct',
             'dry_run_cash_usd',
+            'confluence_min',
+            'confluence_span',
+            'confluence_expected_weight',
+            'confluence_htf',
+            'confluence_require_volume',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -94,9 +110,16 @@ async function handler(req: Request): Promise<Response> {
             'entry_cooldown_min',
             'min_stop_room_pct',
             'dry_run_cash_usd',
+            'confluence_min',
+            'confluence_span',
+            'confluence_expected_weight',
         ]);
 
-        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'fixed_exit_enabled']);
+        const BOOLEAN_CONFIG_KEYS = new Set([
+            'trading_enabled',
+            'fixed_exit_enabled',
+            'confluence_require_volume',
+        ]);
 
         switch (payload.type) {
             case 'config': {
@@ -298,6 +321,58 @@ async function handler(req: Request): Promise<Response> {
                         { error: 'min_stop_room_pct must be between 0 and 5' },
                         { status: 400 },
                     );
+                }
+                // 컨플루언스 튜너블 범위. 양 끝 모두 "그 값을 넘으면 축이 제 기능을 잃는" 지점이다.
+                //
+                // **하한 1이 중요하다.** `min`은 진입뿐 아니라 **청산** 트리거의 문턱이기도
+                // 하다(`bearish 가중 계열 >= min`). 0이면 그 비교가 항상 참이라 청산 조건이
+                // `신규 약세 1종 + 종가 < MA50`으로 무너진다 — 보유 종목이 평범한 눌림 신호
+                // 하나에 전량 청산된다. 상한 14는 계열 수라, 넘으면 트리거가 영원히 안 선다.
+                if (key === 'confluence_min' && ((value as number) < 1 || (value as number) > 14)) {
+                    return Response.json(
+                        { error: 'confluence_min must be between 1 and 14' },
+                        { status: 400 },
+                    );
+                }
+                // `span` 상한: 50이면 강세 9계열에서 연속 점수가 95가 되어 트리거 스냅(92)을
+                // 넘어선다 — 트리거와 연속 구간의 구분이 사라지는 지점이다. (연속 점수만으로
+                // 매수 임계 70을 넘지는 못한다. 다른 축이 전부 중립이면 최대 66이다.)
+                if (key === 'confluence_span' && (value as number) > 50) {
+                    return Response.json(
+                        { error: 'confluence_span must be between 0 and 50' },
+                        { status: 400 },
+                    );
+                }
+                if (key === 'confluence_expected_weight' && (value as number) > 1) {
+                    return Response.json(
+                        { error: 'confluence_expected_weight must be between 0 and 1' },
+                        { status: 400 },
+                    );
+                }
+                if (
+                    key === 'confluence_htf' &&
+                    !['15Min', '30Min', '1Hour', '1Day', 'off'].includes(value as string)
+                ) {
+                    return Response.json(
+                        { error: 'confluence_htf must be one of 15Min/30Min/1Hour/1Day/off' },
+                        { status: 400 },
+                    );
+                }
+                // 이름 그대로 **상위** 시간축이어야 한다. `analysis_timeframe`이 1Hour인데
+                // htf를 15Min으로 두면 진입 봉보다 더 잡음이 많은 축에 정렬을 요구하는 것이라
+                // 게이트의 전제가 통째로 뒤집힌다. 두 키가 따로 저장되므로 여기서 교차 검증
+                // 한다 — `execute_interval_min` × `entry_window`와 같은 이유다.
+                if (key === 'confluence_htf' && value !== 'off') {
+                    const current =
+                        (await getConfigValue<string>(db, 'analysis_timeframe')) ?? '1Hour';
+                    if (TIMEFRAME_RANK[value as string] <= (TIMEFRAME_RANK[current] ?? 0)) {
+                        return Response.json(
+                            {
+                                error: `confluence_htf (${String(value)}) must be higher than analysis_timeframe (${current})`,
+                            },
+                            { status: 400 },
+                        );
+                    }
                 }
                 if (key === 'stop_loss_percent' && (value as number) < 1) {
                     return Response.json(

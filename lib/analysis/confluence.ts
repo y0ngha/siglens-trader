@@ -1,22 +1,34 @@
-import { calculateIndicators, detectSignals } from '@y0ngha/siglens-core';
-import type { Bar, Signal } from '@y0ngha/siglens-core';
+import { evaluateConfluence } from '@y0ngha/siglens-core';
+import type { Bar, ConfluenceSnapshot } from '@y0ngha/siglens-core';
 import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
-import { CONFLUENCE_MIN } from '../strategy/confluence.js';
-import type { ConfluenceSnapshot } from '../strategy/confluence.js';
+import { CONFLUENCE_MIN_BARS } from '../strategy/confluence.js';
 import type { AnalysisTimeframe } from './timeframe.js';
 import { isFinitePositive } from '../validation.js';
 
 /**
- * 시그널 카탈로그가 온전해지는 최소 봉 수 (백테스트 `MIN_BARS`와 동일).
- *
- * `bollinger_squeeze_*` 디텍터가 최근 120봉 밴드폭 백분위를 쓴다. 그 아래에서는
- * 일부 디텍터가 구조적으로 침묵하므로 "약세 3종" 같은 카운트가 왜곡된다.
- * 부족하면 점수를 내지 않고 기권한다.
+ * 시그널 카탈로그가 온전해지는 최소 봉 수. 판정 자체는 core가 하고
+ * (`CONFLUENCE_MIN_BARS`), 여기서는 조회량 판단과 기권 로그에 쓴다.
  */
-export const MIN_BARS = 120;
+export const MIN_BARS = CONFLUENCE_MIN_BARS;
 
-/** SMA 주기. core의 `MA_DEFAULT_PERIODS`에 50이 없어 직접 계산한다. */
-const MA_PERIOD = 50;
+/** 상위 시간축 기본값. 30분봉 진입을 일봉 추세에 정렬시킨다. */
+export const DEFAULT_HTF_TIMEFRAME = '1Day';
+
+/**
+ * 상위 시간축 봉 캐시 TTL.
+ *
+ * 일봉은 장 마감 후에만 바뀌는데 execute는 10분마다 돈다. 캐시가 없으면 종목당 하루
+ * ~39회 FMP를 더 부르게 되고, 그 호출의 답은 전부 같다.
+ */
+const HTF_CACHE_TTL_MS = 60 * 60_000;
+
+/**
+ * **실패**한 조회의 캐시 TTL. 성공보다 훨씬 짧다.
+ *
+ * 실패를 1시간 캐시하면 FMP가 한 번 딸꾹한 것으로 그 종목의 정렬 게이트가 execute
+ * 6틱 동안 꺼진다. fail-open이라 방향은 안전하지만 일시적 장애를 6배로 늘릴 이유가 없다.
+ */
+const HTF_FAILURE_CACHE_TTL_MS = 5 * 60_000;
 
 /**
  * 타임프레임별 봉 조회 룩백(일). 목표는 MIN_BARS의 2~4배 확보.
@@ -29,6 +41,10 @@ const LOOKBACK_DAYS: Record<AnalysisTimeframe, number> = {
     '1Hour': 120,
 };
 
+/** 상위 시간축 룩백(일). 일봉이면 EMA 워밍업까지 넉넉히 본다. */
+const HTF_LOOKBACK_DAYS: Record<string, number> = { '1Day': 400 };
+const HTF_LOOKBACK_DEFAULT_DAYS = 60;
+
 const MS_PER_DAY = 86_400_000;
 const ISO_DATE_LENGTH = 10;
 
@@ -36,7 +52,9 @@ const ISO_DATE_LENGTH = 10;
  * 마지막 봉이 이보다 낡으면 기권한다 (타임프레임 × 3).
  *
  * 마지막 봉은 형성 중일 수 있고 FMP가 한두 틱 밀리는 것은 정상이라 여유를 둔다.
- * 하루 지연 같은 실제 피드 장애만 걸러내는 것이 목적이다.
+ * 하루 지연 같은 실제 피드 장애만 걸러내는 것이 목적이다. 이 검사가 core가 아니라
+ * 여기 있는 이유 — `Date.now()`를 읽으므로 순수 함수가 아니고, 피드 건강은 소비자
+ * 관심사다.
  */
 const STALE_BAR_LIMIT_MS: Record<AnalysisTimeframe, number> = {
     '15Min': 45 * 60_000,
@@ -44,21 +62,57 @@ const STALE_BAR_LIMIT_MS: Record<AnalysisTimeframe, number> = {
     '1Hour': 180 * 60_000,
 };
 
+const htfCache = new Map<string, { at: number; bars: Bar[] | null }>();
+
+/** 테스트 전용 — 모듈 캐시를 비운다. */
+export function __clearHtfCache(): void {
+    htfCache.clear();
+}
+
+/** 튜너블. 전부 `config`에서 오고, 호출부(execute cron)가 읽어 넘긴다. */
+export interface ConfluenceOptions {
+    /** 트리거에 필요한 가중 계열 수. */
+    min?: number;
+    /** 연속 점수 폭. */
+    span?: number;
+    /** `expected` phase 표 가중치. */
+    expectedWeight?: number;
+    /** 상위 시간축. `null`이면 정렬 게이트를 끈다. 기본 {@link DEFAULT_HTF_TIMEFRAME}. */
+    htf?: string | null;
+    /** 강세 계열에 거래량 계열이 최소 하나 있어야 진입 트리거가 서는가. 기본 true. */
+    requireVolume?: boolean;
+}
+
 /**
  * 심볼의 현재 지표 컨플루언스 상태를 계산한다.
+ *
+ * **이 파일은 봉을 구해 오는 일만 한다.** 룰과 채점은 core의 `evaluateConfluence`가
+ * 소유한다 — 봉 조회는 소비자 책임, 도메인 계산은 core 책임이라는 분업이다. 덕분에
+ * siglens 백테스트와 실거래가 같은 함수를 부른다.
  *
  * 실패는 전부 `null`이다 — 이 축은 추가 정보이지 매매의 전제조건이 아니고,
  * `scoreSignals`가 `null`을 가중치 0으로 처리해 도입 이전과 동일하게 동작한다.
  *
  * ponytail: FMP 인트라데이 응답의 마지막 봉은 형성 중일 수 있어 봉이 닫히기 전
  * 신호가 번복될 수 있다. 버리면 최대 1타임프레임만큼 늦게 반응하므로 그대로 쓴다.
- * 플리커가 실제 문제가 되면 마지막 봉을 잘라내고 한 틱 늦게 트리거하도록 바꾼다.
  */
 export async function computeConfluence(
     symbol: string,
     timeframe: AnalysisTimeframe,
+    opts?: ConfluenceOptions,
 ): Promise<ConfluenceSnapshot | null> {
+    const htf = opts?.htf === null ? null : (opts?.htf ?? DEFAULT_HTF_TIMEFRAME);
     try {
+        // 본 봉과 상위 봉을 **동시에** 띄운다.
+        //
+        // 순차로 기다리면 FMP가 느려질 때 심볼당 지연이 두 배가 되고, execute의 두 루프는
+        // 순차라 그 지연이 곧 "런 마감 안에 평가받는 심볼 수"를 깎는다. 평가받지 못한
+        // 보유 종목은 그 틱에 **청산 판정 자체가 없다** — 진입 게이트를 추가하려고 청산
+        // 기회를 줄이는 셈이라 원칙 7에 어긋난다. 병렬이면 지연이 둘 중 큰 쪽으로 끝난다.
+        //
+        // 본 봉이 기권 조건에 걸리면 상위 봉은 버려진다. 캐시에 남으므로 다음 틱이 쓴다.
+        const htfPromise = htf === null ? Promise.resolve(null) : fetchHtfBars(symbol, htf);
+
         const from = isoDaysAgo(LOOKBACK_DAYS[timeframe]);
         const bars = await getMarketDataProvider().getBars({ symbol, timeframe, from });
 
@@ -97,70 +151,59 @@ export async function computeConfluence(
             return null;
         }
 
-        const current = detectSignals(bars, calculateIndicators(bars));
-        const prevBars = bars.slice(0, -1);
-        const previous = detectSignals(prevBars, calculateIndicators(prevBars));
+        const htfBars = await htfPromise;
 
-        const bullish = typesOf(current, 'bullish');
-        const bearish = typesOf(current, 'bearish');
-        const prevBullish = new Set(typesOf(previous, 'bullish'));
-        const prevBearish = new Set(typesOf(previous, 'bearish'));
-
-        const freshBullish = bullish.filter((t) => !prevBullish.has(t));
-        const freshBearish = bearish.filter((t) => !prevBearish.has(t));
-
-        const ma50 = simpleMovingAverage(bars, MA_PERIOD);
-
-        return {
+        return evaluateConfluence(bars, {
             timeframe,
-            barTime: last.time,
-            close: last.close,
-            ma50,
-            bullish,
-            bearish,
-            freshBullish,
-            freshBearish,
-            // 종가는 MA50보다 크거나 작거나 하나뿐이므로 두 트리거는 구조적으로 상호배타다.
-            entryTrigger:
-                bullish.length >= CONFLUENCE_MIN &&
-                freshBullish.length >= 1 &&
-                ma50 !== null &&
-                last.close > ma50,
-            exitTrigger:
-                bearish.length >= CONFLUENCE_MIN &&
-                freshBearish.length >= 1 &&
-                ma50 !== null &&
-                last.close < ma50,
-        };
+            htfBars,
+            htfLabel: htf,
+            minBars: MIN_BARS,
+            ...(typeof opts?.min === 'number' ? { min: opts.min } : {}),
+            ...(typeof opts?.span === 'number' ? { span: opts.span } : {}),
+            ...(typeof opts?.expectedWeight === 'number'
+                ? { expectedWeight: opts.expectedWeight }
+                : {}),
+            ...(typeof opts?.requireVolume === 'boolean'
+                ? { requireVolume: opts.requireVolume }
+                : {}),
+        });
     } catch (error) {
         console.warn('[confluence] 계산 실패:', symbol, timeframe, error);
         return null;
     }
 }
 
-/** 방향별 시그널 타입 목록. 중복 제거 후 정렬 — 스냅샷이 감사 로그로 남으므로 순서가 안정적이어야 한다. */
-function typesOf(signals: readonly Signal[], direction: 'bullish' | 'bearish'): string[] {
-    const set = new Set<string>();
-    for (const s of signals) {
-        if (s.direction === direction && typeof s.type === 'string') set.add(s.type);
+/**
+ * 상위 시간축 봉. 조회 실패는 `null`이고, core는 그때 정렬 게이트를 적용하지 않는다.
+ *
+ * 추세 판정 자체는 core가 한다 — 여기서는 봉만 구한다.
+ */
+async function fetchHtfBars(symbol: string, htf: string): Promise<Bar[] | null> {
+    const key = `${symbol}:${htf}`;
+    const hit = htfCache.get(key);
+    if (hit) {
+        const ttl = hit.bars === null ? HTF_FAILURE_CACHE_TTL_MS : HTF_CACHE_TTL_MS;
+        if (Date.now() - hit.at < ttl) return hit.bars;
     }
-    return [...set].sort();
+
+    let bars: Bar[] | null = null;
+    try {
+        const from = isoDaysAgo(HTF_LOOKBACK_DAYS[htf] ?? HTF_LOOKBACK_DEFAULT_DAYS);
+        const fetched = await getMarketDataProvider().getBars({
+            symbol,
+            timeframe: htf as AnalysisTimeframe,
+            from,
+        });
+        if (Array.isArray(fetched) && fetched.length > 0) bars = fetched;
+        else console.warn('[confluence] 상위 시간축 봉 없음:', symbol, htf);
+    } catch (error) {
+        console.warn('[confluence] 상위 시간축 조회 실패:', symbol, htf, error);
+    }
+    htfCache.set(key, { at: Date.now(), bars });
+    return bars;
 }
 
-/** 마지막 `period`개 종가의 단순 평균. 봉이 모자라거나 값이 비정상이면 null. */
-function simpleMovingAverage(bars: Bar[], period: number): number | null {
-    if (bars.length < period) return null;
-    let sum = 0;
-    for (let i = bars.length - period; i < bars.length; i++) {
-        const close = bars[i]!.close;
-        if (!Number.isFinite(close)) return null;
-        sum += close;
-    }
-    const ma = sum / period;
-    return Number.isFinite(ma) ? ma : null;
-}
-
-/** `days`일 전 날짜의 `YYYY-MM-DD`. provider가 앞 10자만 쓰므로 이 형태로 넘긴다. */
+/** `days`일 전 날짜의 `YYYY-MM-DD`. */
 function isoDaysAgo(days: number): string {
-    return new Date(Date.now() - days * MS_PER_DAY).toISOString().substring(0, ISO_DATE_LENGTH);
+    return new Date(Date.now() - days * MS_PER_DAY).toISOString().slice(0, ISO_DATE_LENGTH);
 }

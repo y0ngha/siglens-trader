@@ -1803,6 +1803,8 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         bearish: [],
         freshBullish: ['cci_bullish_cross'],
         freshBearish: [],
+        htfTrend: null,
+        params: { min: 3, span: 15, expectedWeight: 0.5, htf: null, requireVolume: false },
         entryTrigger: true,
         exitTrigger: false,
     } satisfies ConfluenceSnapshot;
@@ -1851,16 +1853,39 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         expect(user).toContain('- 신규 강세 신호: cci_bullish_cross');
         expect(user).toContain('- 신규 약세 신호: 없음');
         expect(user).toContain('- MA50: $180.25 / 종가 $190.50 (MA50 위)');
-        expect(user).toContain('- 진입 트리거: 성립 (강세 3종 + 신규 + MA50 위)');
+        // 조건 문구에 "3종"을 박지 않는다 — `confluence_min`이 설정이라 그 숫자는 언제든
+        // 거짓이 되고, 집계 단위도 타입이 아니라 지표 계열이다.
+        expect(user).toContain('- 진입 트리거: 성립 (강세 지표 계열 다수');
+        expect(user).toContain('상위 추세 상승 + 거래량 확인)');
+        expect(user).not.toContain('강세 3종');
         expect(user).toContain('- 청산 트리거: 미성립');
         // 이 축이 LLM 판단이 아니라는 사실을 모델이 알아야 가중치를 다르게 준다.
         expect(user).toContain('규칙 엔진의 결정론적 출력');
     });
 
-    it('승률 70%는 진입 프롬프트에만 나오고, 청산에는 미검증 고지가 대신 나온다', () => {
-        // 백테스트의 70%는 **진입 룰**의 수치다. 그 백테스트의 청산은 ATR SL/TP + 시간 청산이었고
-        // 하락 컨플루언스는 청산 룰로 검증된 적이 없다. 같은 문장을 양쪽에 쓰면 바로 아랫줄의
-        // `청산 트리거: 성립`이 70%의 보증을 받는 것처럼 읽힌다.
+    it('상위 시간축 추세를 프롬프트에 싣는다 — 계산해 놓고 안 보내면 없는 것과 같다', () => {
+        for (const [trend, label] of [
+            ['uptrend', '상승'],
+            ['downtrend', '하락'],
+            ['sideways', '횡보'],
+        ] as const) {
+            const user = withConfluence({ ...confluenceSnapshot, htfTrend: trend });
+            expect(user, trend).toContain(`- 상위 시간축 추세: ${label}`);
+        }
+    });
+
+    it('구 스냅샷(htfTrend 없음)은 미상으로 적는다 — 게이트 미적용을 숨기지 않는다', () => {
+        const legacy = { ...confluenceSnapshot };
+        delete (legacy as { htfTrend?: unknown }).htfTrend;
+
+        expect(withConfluence(legacy)).toContain('- 상위 시간축 추세: 미상 (정렬 게이트 미적용)');
+    });
+
+    it('70%는 **원형 룰**의 수치임을 밝히고, 현재 룰이 미검증임을 함께 적는다', () => {
+        // 70%는 일봉·10일 보유 백테스트의 수치인데, 현재 룰은 그 뒤 30분봉 운용에 맞춰
+        // 계열 집계·상위 추세 정렬·거래량 확인이 더해졌다. 그 상태로 "진입 룰은 승률
+        // 70%"라고 적으면 모델은 **지금 켜진 트리거**의 승률로 읽고 그만큼 크게 산다.
+        // 시스템 규칙 2가 "프롬프트에 적힌 값은 참"이라 선언하므로 이건 그냥 거짓말이다.
         const entry = withConfluence(confluenceSnapshot);
         const exit = exitWithConfluence({
             ...confluenceSnapshot,
@@ -1868,10 +1893,16 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
             exitTrigger: true,
         });
 
-        expect(entry).toContain('진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%');
-        expect(exit).not.toContain('승률 70%를 기록했다');
+        expect(entry).toContain('원형 룰은');
+        expect(entry).toContain('일봉·10일 보유');
+        expect(entry).toContain('수정본은 백테스트로 검증된 적이 없다');
+        expect(entry).toContain('70%를 현재 룰의 승률로 읽지 마라');
+        // 현재 룰이 그 수치를 물려받은 것처럼 읽히는 종전 문구는 사라져야 한다.
+        expect(entry).not.toContain('진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%');
+
+        expect(exit).not.toContain('원형 룰은 백테스트');
         expect(exit).toContain('백테스트로 검증된 적이 없다');
-        expect(exit).toContain('진입 룰의 70% 승률은 이쪽에 적용되지 않는다');
+        expect(exit).toContain('원형 룰의 70% 승률은 이쪽에 적용되지 않는다');
     });
 
     it('펜스 안에는 명령문이 없고, 가중치 지시는 판단 지침에만 있다', () => {
@@ -1922,7 +1953,8 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
 
         expect(user).toContain('- MA50: 미상 / 종가 $190.50 (비교 불가)');
         expect(user).toContain('- 진입 트리거: 미성립');
-        expect(user).toContain('- 청산 트리거: 성립 (약세 3종 + 신규 + MA50 아래)');
+        expect(user).toContain('- 청산 트리거: 성립 (약세 지표 계열 다수 + 신규 + MA50 아래)');
+        expect(user).not.toContain('약세 3종');
         expect(user).not.toContain('NaN');
     });
 
@@ -1973,6 +2005,8 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
             timeframe: evil,
             bullish: [evil],
             freshBearish: [evil],
+            htfTrend: null,
+            params: { min: 3, span: 15, expectedWeight: 0.5, htf: null, requireVolume: false },
         });
 
         expect(headers(user)).toEqual(SECTION_ORDER);
