@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.1](https://github.com/y0ngha/siglens-trader/compare/v0.28.0...v0.28.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* 대시보드 `보유 현금`이 항상 —로 뜨던 것 (서버가 보낸 적 없음) ([#52](https://github.com/y0ngha/siglens-trader/issues/52)) ([da9b80d](https://github.com/y0ngha/siglens-trader/commit/da9b80d933ba190cc96943500976d4494337ba4c))
+
 # [0.28.0](https://github.com/y0ngha/siglens-trader/compare/v0.27.1...v0.28.0) (2026-08-22)
 
 
