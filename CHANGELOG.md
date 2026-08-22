@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.4](https://github.com/y0ngha/siglens-trader/compare/v0.28.3...v0.28.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* 정적 응답이 0바이트로 나가던 것 (Cloudflare 520) ([#55](https://github.com/y0ngha/siglens-trader/issues/55)) ([52d71ee](https://github.com/y0ngha/siglens-trader/commit/52d71eec9f66e120bfd23ae29d1a1b5c0c65fd41))
+
 ## [0.28.3](https://github.com/y0ngha/siglens-trader/compare/v0.28.2...v0.28.3) (2026-08-22)
 
 
