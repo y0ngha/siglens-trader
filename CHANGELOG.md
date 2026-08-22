@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/y0ngha/siglens-trader/compare/v0.27.0...v0.27.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* 매수/매도 신호가 실제로 나오게 임계와 문턱을 실측으로 다시 잡는다 ([#50](https://github.com/y0ngha/siglens-trader/issues/50)) ([bd64811](https://github.com/y0ngha/siglens-trader/commit/bd648119b709fa329d23b977149b1e31398089c2))
+
 # [0.27.0](https://github.com/y0ngha/siglens-trader/compare/v0.26.0...v0.27.0) (2026-08-22)
 
 
