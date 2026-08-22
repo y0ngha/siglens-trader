@@ -293,45 +293,25 @@ describe('buildTradeGatePrompt — 계좌 상태', () => {
         );
 
         expect(user).toContain('매수 가능 현금: 미상');
-        expect(user).toContain('브로커 잔고를 조회하지 않는다');
+        // 이제 세 모드 모두 잔고를 구하므로, null은 "조회하지 않는 모드"가 아니라
+        // **조회 실패**를 뜻한다. 문구가 그 사실을 말해야 모델이 옳게 읽는다.
+        expect(user).toContain('브로커 잔고 조회 실패');
         expect(user).toContain('보수적 요인');
     });
 
-    it('dry_run 현금은 모의 잔고임을 밝힌다 — 값은 쓰되 실계좌인 척하지 않는다', () => {
-        // 시스템 규칙 2가 "프롬프트에 적힌 값은 참"이라 선언한다. 모의 잔고를 출처 없이
-        // 적으면 모델은 실계좌 조회 결과로 읽는다. 반대로 미상으로 두면 실제로 사이징을
-        // 제약하는 값을 숨기는 것이 된다 — 둘 다 틀렸다.
-        const { user } = buildTradeGatePrompt(
-            baseInput({
-                account: {
-                    ...baseInput().account,
-                    availableCashUsd: 4200,
-                    tradingMode: 'dry_run',
-                },
-            }),
-        );
-
-        expect(user).toContain('매수 가능 현금: $4,200.00');
-        expect(user).toContain('모의 잔고');
-        expect(user).toContain('실계좌 조회가 아니다');
-        // 제약으로는 실제와 같이 적용된다는 것도 말해야 모델이 무시하지 않는다.
-        expect(user).toContain('사이징 제약으로는 실제와 동일하게 적용된다');
-        expect(user).not.toContain('미상 (현재 매매 모드');
-    });
-
-    it('auto 현금에는 모의 잔고 딱지를 붙이지 않는다', () => {
-        const { user } = buildTradeGatePrompt(
-            baseInput({
-                account: {
-                    ...baseInput().account,
-                    availableCashUsd: 4200,
-                    tradingMode: 'auto',
-                },
-            }),
-        );
-
-        expect(user).toContain('매수 가능 현금: $4,200.00');
-        expect(user).not.toContain('모의 잔고');
+    it('현금 줄은 세 모드가 동일하다 — 출처는 매매 모드 줄이 이미 말한다', () => {
+        // 모드별로 문구를 갈라 두면 같은 결정에 서로 다른 사이징 습관이 붙는다.
+        // dry_run 잔고도 체결 원장에서 도출된 실제 값이고 `planEntry`를 실제로 제약한다.
+        for (const tradingMode of ['dry_run', 'semi_auto', 'auto']) {
+            const { user } = buildTradeGatePrompt(
+                baseInput({
+                    account: { ...baseInput().account, availableCashUsd: 4200, tradingMode },
+                }),
+            );
+            expect(user).toContain('- 매수 가능 현금: $4,200.00');
+            expect(user).not.toContain('모의 잔고');
+            expect(user).toContain(`매매 모드: ${tradingMode}`);
+        }
     });
 
     it('청산 프롬프트에는 dry_run이어도 현금이 등장하지 않는다', () => {

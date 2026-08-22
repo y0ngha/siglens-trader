@@ -25,6 +25,7 @@ import {
     averageIntoPosition,
     insertTrade,
     insertTradeAudit,
+    getDryRunCashFlowUsd,
     getRecentTrades,
     getLastFillTimeBySymbol,
     getNeedsReviewSymbols,
@@ -690,6 +691,28 @@ describe('Positions queries', () => {
 // ---------------------------------------------------------------------------
 
 describe('Trades queries', () => {
+    describe('getDryRunCashFlowUsd', () => {
+        it('SUM 결과를 숫자로 돌려준다 (numeric은 문자열로 온다)', async () => {
+            const db = createMockDb([{ flow: '-472.8013' }]);
+            await expect(getDryRunCashFlowUsd(db as unknown as Db)).resolves.toBeCloseTo(-472.8013);
+        });
+
+        it('체결이 없으면 0', async () => {
+            const db = createMockDb([{ flow: '0' }]);
+            await expect(getDryRunCashFlowUsd(db as unknown as Db)).resolves.toBe(0);
+        });
+
+        it('행이 없어도 0 — 잔고 계산이 NaN으로 번지면 안 된다', async () => {
+            const db = createMockDb([]);
+            await expect(getDryRunCashFlowUsd(db as unknown as Db)).resolves.toBe(0);
+        });
+
+        it('파싱 불가값도 0으로 흡수한다', async () => {
+            const db = createMockDb([{ flow: 'nonsense' }]);
+            await expect(getDryRunCashFlowUsd(db as unknown as Db)).resolves.toBe(0);
+        });
+    });
+
     describe('insertTradeAudit', () => {
         it('게이트 원문을 그대로 적재하고 fraction만 문자열로 바꾼다', async () => {
             const db = createMockDb(undefined);

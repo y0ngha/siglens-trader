@@ -109,10 +109,12 @@ separately so tests (and prompt audits) can assert on the exact strings.
 
 - **Every section always exists.** Missing values are printed as `미상` / `없음`, never omitted
   — a dropped section reads as "not applicable" to the model and invites it to invent a number.
-  `availableCashUsd: null` also states *why* it is unknown (semi_auto doesn't query the broker).
-  In `dry_run` the value is a **simulated** balance (`dry_run_cash_usd` − current exposure), and the
-  line says so: printing it bare would assert a broker balance that was never fetched, while
-  printing `미상` would hide the number that actually clamps `planEntry`. Both break rule 2.
+  `availableCashUsd: null` also states *why* it is unknown — it now means the **fetch failed**,
+  not "this mode doesn't ask", since all three modes supply a figure. The cash line is
+  **identical across modes** on purpose: `dry_run`'s balance comes from its own trade ledger and
+  clamps `planEntry` exactly like a broker balance does, so the number means the same thing in
+  all three. Mode-specific wording would attach different sizing habits to the same decision, and
+  the `매매 모드` line two rows up already names the source.
 - **`fraction` means different things per `kind`** and the system prompt says which: entry = share
   of the executable budget, exit = share of the held quantity.
 - **Entry and exit are different prompts, not one prompt with a flag.** Three things branch on

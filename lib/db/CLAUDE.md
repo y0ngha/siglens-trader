@@ -54,6 +54,7 @@ DEFAULT, and indexing `user_id`. See the comment on `ownerUserId` in `schema.ts`
 | `averageIntoPosition(db, positionId, qty, price)` | Atomic weighted-average price update via SQL (no read-then-write) |
 | `reducePositionQuantity(db, id, soldQty)` | Atomic position quantity reduction for partial sells |
 | `getTodayTradeCount(db)` | Count today's non-skipped trades (NY timezone) |
+| `getDryRunCashFlowUsd(db)` | `dry_run` 모의 계좌의 순현금흐름(매도 − 매수). 잔고를 저장하지 않고 체결 원장에서 도출한다 — 저장 잔고는 원장과 어긋나면 스스로 복구되지 않는다 |
 | `insertTradeAudit(db, params)` | 게이트 호출 1건의 프롬프트·원문 응답 적재. 주문이 나가지 않은 호출도 기록한다 — 호출부는 실패를 삼켜야 한다 |
 | `getTodayRealizedPnl(db)` | Sums per-sell `realized_pnl` (recorded at execution as (sellPrice − cost basis) × qty) for today's non-dry/non-skipped sells |
 | `createOrderTracking(db, params)` | Insert order tracking record with idempotency key |
