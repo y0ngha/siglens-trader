@@ -109,10 +109,37 @@ useQuery({
 4. **Configurable** — Models, weights, thresholds, watchlist all editable from dashboard
 5. **Security** — Config POST uses allowlist (`ALLOWED_CONFIG_KEYS`); position close uses atomic DB update (race condition guard)
 6. **MSW for dev** — `yarn dev:mock` enables Mock Service Worker for UI development without backend
-7. **Circuit breakers** — Kill switch, daily trade limit, daily loss limit (realized + unrealized), per-symbol exposure cap. Only the kill switch stops everything; the two limits block **new entries** and leave liquidation running, because a risk breaker that blocks the only risk-reducing path is itself a defect.
+7. **진입만 조인다** — 킬 스위치, 일일 거래·손실 한도, 종목별 노출 상한. 전부 멈추는 것은
+   킬 스위치뿐이고, 두 한도는 **신규 진입만** 막고 청산은 그대로 돌린다. 리스크를 줄이는
+   유일한 경로를 막는 리스크 차단기는 그 자체가 결함이기 때문이다.
+
+   **이 원칙은 차단기에만 적용되지 않는다.** 진입을 어렵게 만드는 **어떤 변경도** —
+   게이트든, 임계 상수든, 집계 방식이든 — 청산을 같이 어렵게 만들어서는 안 된다.
+   실제로 그렇게 샜다: 컨플루언스의 상위 시간축·거래량 게이트는 의도대로 진입 전용이었는데
+   두 트리거가 **같은 임계 상수**를 공유하는 바람에, 진입 문턱을 올리자 청산 신호가 실측
+   5건 → 1건으로 함께 줄었다. 게이트만 보고 상수를 놓친 것이다. 조이는 변경은 어느 쪽에
+   떨어지는지 **명시적으로 선언**해야 하고, 양쪽에 걸린다면 문턱을 분리해야 한다
+   (`CONFLUENCE_MIN` / `CONFLUENCE_EXIT_MIN`).
+
 8. **Order lifecycle** — Idempotency keys per order, order_tracking table, reconciliation cron for timeout detection
 9. **DB atomicity** — Trade + position changes wrapped in DB transactions to prevent inconsistent state
 10. **NaN defense** — `lib/validation.ts` guards + `lib/strategy/safe-extract.ts` for untyped AI JSON
+11. **관측 가능성도 안전 요건이다** — "조일수록 안전"은 리스크 차원에서만 참이다. 신호가
+    0에 수렴하면 시스템은 안전한 게 아니라 **꺼진 것**이고, 특히 `dry_run`에서는 데이터를
+    만들지 못해 개선 자체가 불가능해진다. 감사 테이블(`trade_audit`)과 스냅샷 `params`는
+    전후 비교를 위해 있는데, 파라미터를 "후"가 존재하지 않게 잡으면 그 장치가 무의미해진다.
+
+    실패 형태는 늘 같다 — **각각 정당한 조임 여러 개의 곱이 검토되지 않는 것.** 계열
+    집계·`expected` 반표·폭 축소·게이트 둘을 한꺼번에 켠 결과가 진입 트리거 12 → 2였고,
+    그 숫자는 아무도 의도하지 않았다. 조임을 추가할 때는 **결합 효과를 실측**하고, 신호율이
+    관측 가능한 수준으로 남는지 확인한다.
+
+12. **임계값은 분포의 꼬리에 맞춘다** — 종합 점수는 6축의 가중평균이라 개별 축의 극단이
+    상쇄돼 중앙으로 모인다. "축 하나가 70이면 매수" 같은 직관에서 온 숫자는 그 분포와
+    맞지 않는다. 실측에서 매수 임계 70은 p99 위(신호 0.8%), 매도 임계 30은 분포 최소값
+    아래(신호 **0%**)였다 — 매도 경로가 구조적으로 죽어 있었다. 지금 값(65/40)은 상·하위
+    3.4% 꼬리다. **축 산식이나 가중치를 바꾸면 분포가 움직이므로 임계값도 같이 재측정한다.**
+
 
 ---
 
@@ -128,7 +155,8 @@ weighted average, so the sum itself carries no meaning):
 - Congress: **0** — 축은 돌지만 점수에 투표하지 않는다. 프로덕션 실측 31/31 `bullish`
   (분산 0)로, 투표가 아니라 상수 가산점이었다. 근거와 되돌리는 법은 `DEFAULT_WEIGHTS` 독스트링.
 
-Buy threshold: 70, Sell threshold: 30 (configurable via dashboard).
+Buy threshold: **65**, Sell threshold: **40** (configurable via dashboard). 두 값은 축 하나의
+크기가 아니라 **종합 점수 분포의 상·하위 3.4% 꼬리**를 가리킨다 — 근거는 원칙 12.
 `WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises
 confluence to 14 and technical to 10 while cutting fundamental/congress); `1Hour` is the default
 profile above. Stored `score_weights` overrides the profile key by key.
@@ -176,13 +204,14 @@ siglens 백테스트와 trader에 따로 구현돼 조용히 갈라지던 것을
 - **끄는 법**은 `POST /api/config`로 `score_weights.confluence = 0`. UI는 없다.
 
 **튜너블 5개는 전부 설정이다** — 기본값이 측정이 아니라 판단이므로 재배포 없이 되돌릴 수
-있어야 한다. `confluence_min`(1~14) / `confluence_span`(0~50) /
-`confluence_expected_weight`(0~1) / `confluence_htf`(`analysis_timeframe`보다 상위여야 하며
-`off` 가능) / `confluence_require_volume`. 적용값은 스냅샷의 `params`에 기록되어 설정 변경
+있어야 한다. `confluence_min`(진입, 1~14) / `confluence_exit_min`(**청산, 진입과 독립**, 1~14) /
+`confluence_span`(0~50) / `confluence_expected_weight`(0~1) /
+`confluence_htf`(`analysis_timeframe`보다 상위여야 하며 `off` 가능) / `confluence_require_volume`. 적용값은 스냅샷의 `params`에 기록되어 설정 변경
 전후를 사후 비교할 수 있다 — 이 축을 튜닝할 유일한 근거다.
 
-> `confluence_min` 하한이 1인 이유: 0이면 **청산** 트리거의 `bearish >= min` 비교가 항상
-> 참이 되어, 보유 종목이 평범한 눌림 신호 하나에 전량 청산된다.
+> 진입·청산 문턱이 **분리돼 있는** 이유는 원칙 7 참고 — 하나로 묶여 있던 탓에 진입을
+> 조이자 청산 신호가 실측 5건 → 1건으로 같이 줄었다. 하한이 1인 이유: 0이면 `>= 0` 비교가
+> 항상 참이라 눌림 신호 하나에 전량 청산된다.
 
 원형 설계: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md)
 (30분봉 재설계는 그 문서를 대체한다 — 위 내용이 현행이다).

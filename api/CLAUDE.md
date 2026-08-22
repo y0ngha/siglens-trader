@@ -52,7 +52,11 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
 `max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off), `dry_run_cash_usd`.
+`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off), `dry_run_cash_usd`,
+`confluence_min`·`confluence_exit_min` (각 1~14, **서로 독립** — 원칙 7),
+`confluence_span` (0~50), `confluence_expected_weight` (0~1),
+`confluence_htf` (`analysis_timeframe`보다 상위여야 하며 `off` 가능 — 양방향 교차 검증),
+`confluence_require_volume`.
 
 `execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
 does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
