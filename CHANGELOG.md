@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/y0ngha/siglens-trader/compare/v0.28.1...v0.28.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* 배포 후 "Failed to fetch dynamically imported module" — 세 겹으로 막는다 ([#53](https://github.com/y0ngha/siglens-trader/issues/53)) ([47f4b0b](https://github.com/y0ngha/siglens-trader/commit/47f4b0b013b26233032eafac281e56ecbc45b474))
+
 ## [0.28.1](https://github.com/y0ngha/siglens-trader/compare/v0.28.0...v0.28.1) (2026-08-22)
 
 
