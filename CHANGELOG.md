@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.26.0](https://github.com/y0ngha/siglens-trader/compare/v0.25.0...v0.26.0) (2026-08-22)
+
+
+### Features
+
+* 매수 가능 현금을 세 모드에서 같은 뜻으로 만든다 (dry_run 원장 + semi_auto 실잔고) ([#48](https://github.com/y0ngha/siglens-trader/issues/48)) ([b044edd](https://github.com/y0ngha/siglens-trader/commit/b044edd927f1d14d6eca9f3a962eca27d26cc670))
+
 # [0.25.0](https://github.com/y0ngha/siglens-trader/compare/v0.24.0...v0.25.0) (2026-08-21)
 
 
