@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.3](https://github.com/y0ngha/siglens-trader/compare/v0.28.2...v0.28.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* 빌드 산출물에 의존하는 서버 테스트가 CI를 깼다 ([#54](https://github.com/y0ngha/siglens-trader/issues/54)) ([8051bd8](https://github.com/y0ngha/siglens-trader/commit/8051bd89e054a74f03b1b8868c437f4d248beda4)), closes [#53](https://github.com/y0ngha/siglens-trader/issues/53)
+
 ## [0.28.2](https://github.com/y0ngha/siglens-trader/compare/v0.28.1...v0.28.2) (2026-08-22)
 
 
