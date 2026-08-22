@@ -709,13 +709,18 @@ function sectionAccount(input: TradeGateInput): string[] {
     const mode = sanitize(a.tradingMode, 20) || '미상';
     // 현금은 **진입에서만** 사이징 입력이다. 청산 크기와 매수 여력 사이에는 인과가 없고,
     // "미상 = 보수적으로"를 청산 프롬프트에 남기면 손절을 덜 하라는 지시가 된다.
+    // dry_run의 현금은 **모의 잔고**다(`dry_run_cash_usd` − 현재 노출). 실제로 사이징을
+    // 제약하는 값이므로 미상으로 두면 안 되지만, 실계좌 조회 결과인 척해도 안 된다 —
+    // 시스템 규칙 2가 "프롬프트에 적힌 값은 참"이라 선언하므로 출처를 밝혀야 참이 된다.
+    const cashValue =
+        a.availableCashUsd === null
+            ? `미상 (현재 매매 모드 ${mode}에서는 브로커 잔고를 조회하지 않는다. 이 불확실성 자체를 보수적 요인으로 취급하라)`
+            : a.tradingMode === 'dry_run'
+              ? `${fmtUsd(a.availableCashUsd)} (모의 잔고 — dry_run 시뮬레이션 계좌이며 실계좌 조회가 아니다. 사이징 제약으로는 실제와 동일하게 적용된다)`
+              : fmtUsd(a.availableCashUsd);
     const cashLine =
         input.kind === 'entry'
-            ? `- 매수 가능 현금: ${
-                  a.availableCashUsd === null
-                      ? `미상 (현재 매매 모드 ${mode}에서는 브로커 잔고를 조회하지 않는다. 이 불확실성 자체를 보수적 요인으로 취급하라)`
-                      : fmtUsd(a.availableCashUsd)
-              }`
+            ? `- 매수 가능 현금: ${cashValue}`
             : '- 브로커 잔고: 이번 결정과 무관 (매수 여력은 청산 크기에 영향을 주지 않는다)';
     const exposureLeft = a.maxTotalExposure - a.currentExposure;
     const symbolLeft = a.maxPositionSize - a.symbolExposure;

@@ -52,7 +52,7 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
 `max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off).
+`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off), `dry_run_cash_usd`.
 
 `execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
 does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
@@ -265,6 +265,20 @@ a position behind and `order_tracking.idempotency_key` is unique.
 응답과 주문 사이에 있고, 청산 경로에서는 그 사이가 곧 손절이 나가기까지의 지연이다(원칙 7).
 `(cron_run_id, symbol, kind)`는 유일하지 않으므로(재평가 청산이 미뤄지면 같은 런에서 시그널
 매도가 같은 심볼을 다시 태운다) 게이트에 넘긴 `correlation_id`를 같이 저장한다.
+
+**`dry_run`은 모의 잔고를 쓴다 (`dry_run_cash_usd`, 기본 $5,000).** 값은
+`설정값 − 현재 노출(원가)`이고 0에서 클램프된다 — 계좌 **총액**을 고정해야 "현금이 줄어든다"가
+재현되기 때문이다. 매 런 총액으로 리셋하면 노출 한도까지 무한히 쌓을 수 있어 리허설로서
+가치가 없다. 런 안에서는 auto와 같이 매수마다 차감한다(그러지 않으면 한 런의 매수 여러 건이
+전부 같은 잔고를 보고 승인된다).
+
+종전에는 `null`이었고, 그 결과 두 가지가 동시에 죽어 있었다: 게이트 프롬프트에
+"매수 가능 현금: 미상"이 찍혀 사이징의 1차 제약이 모델에게 안 보였고, `planEntry`의 현금
+클램프도 걸리지 않았다. 이제 프롬프트에 찍히는 숫자와 실제 예산 제약이 같은 값이다 —
+프롬프트는 그 값을 **모의 잔고라고 명시**한다(시스템 규칙 2: 적힌 값은 참).
+
+`semi_auto`는 `null`을 유지한다. 그 모드의 포지션은 실계좌에 실재하므로 모의 잔고를 먹이면
+없는 돈을 있다고 하는 것이 된다.
 
 **Gate OFF is not byte-identical to the pre-gate build.** `planEntry` clamps the budget by
 real buying power (`auto` only), which `calculatePositionSize` never did — e.g. price $100 /

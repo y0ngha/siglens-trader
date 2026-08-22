@@ -192,6 +192,14 @@ const RUN_DEADLINE_MS = 900_000;
 /** 락 TTL. `RUN_DEADLINE_MS` + 최악 잔여 작업보다 크게 잡는다. */
 const LOCK_TTL_SEC = 1800;
 
+/**
+ * `dry_run` 모의 계좌의 총액 (USD). `config.dry_run_cash_usd`로 덮어쓴다.
+ *
+ * 시뮬레이션에만 쓰인다 — `auto`는 브로커 실잔고를, `semi_auto`는 아무것도 쓰지 않는다.
+ * 실계좌로 넘어가기 전에 이 값을 실제 예치금과 맞춰 두면 리허설이 그만큼 정확해진다.
+ */
+const DEFAULT_DRY_RUN_CASH_USD = 5000;
+
 /** Analysis rows the gate prompt reads, in the order `trade-gate.ts` renders them. */
 const GATE_AXES: Array<TradeGateAnalysisEntry['type']> = [
     // 컨플루언스가 선두인 이유 — 유일하게 LLM을 거치지 않은 결정론적 축이라
@@ -982,10 +990,27 @@ async function handler(req: Request): Promise<Response> {
             }
             currentExposure += pendingBuyExposure;
 
-            // USD buying power, fetched once per invocation (auto mode only — guard not used in semi_auto).
-            // null => fetch failed — fail CLOSED: all buy orders are skipped until the next run.
+            // USD buying power, fetched once per invocation.
+            //
+            // - `auto`: 브로커 실잔고. null => 조회 실패 — fail CLOSED로 이번 런의 매수를 전부 건너뛴다.
+            // - `dry_run`: **모의 잔고.** `dry_run_cash_usd`(기본 $5,000)에서 이미 물려 있는
+            //   원가를 뺀 값이다. 종전에는 null이라 시뮬레이션이 현금 무한을 가정했고, 그건
+            //   리허설로서 가치가 없었다 — 게이트 프롬프트에는 "매수 가능 현금: 미상"이 찍히고
+            //   `planEntry`의 현금 클램프도 걸리지 않아, 한도 $25,000까지 쌓는 것을 아무도 막지
+            //   않았다. 계좌 총액을 고정하고 노출을 빼야 "현금이 줄어든다"가 재현된다.
+            // - `semi_auto`: null 유지. 이 모드의 포지션은 실계좌에 실재하므로 모의 잔고를
+            //   먹이면 없는 돈을 있다고 하는 것이 된다. 실잔고 연동은 별건이다.
             const usdBuyingPower =
-                tradingMode === 'auto' ? await getBuyingPower('USD').catch(() => null) : null;
+                tradingMode === 'auto'
+                    ? await getBuyingPower('USD').catch(() => null)
+                    : tradingMode === 'dry_run'
+                      ? Math.max(
+                            0,
+                            ((await getConfigValue<number>(db, 'dry_run_cash_usd').catch(
+                                () => null,
+                            )) ?? DEFAULT_DRY_RUN_CASH_USD) - currentExposure,
+                        )
+                      : null;
             // Running balance: optimistically decremented after each live buy so multiple
             // buys in one run don't all authorize against the same un-decremented cash.
             // null => guard disabled. Reconcile/next-run corrects against broker reality.
@@ -2592,6 +2617,15 @@ async function handler(req: Request): Promise<Response> {
                                     })
                                     .catch((err) => console.error('[email] send failed:', err));
                                 currentExposure += currentPrice * decision.quantity;
+                                // 모의 잔고도 auto와 같이 런 안에서 차감한다. 그러지 않으면 한
+                                // 런의 매수 여러 건이 전부 같은 잔고를 보고 승인돼, 현금 한도가
+                                // 종목 수만큼 뻥튀기된다.
+                                if (remainingBuyingPower != null) {
+                                    remainingBuyingPower = Math.max(
+                                        0,
+                                        remainingBuyingPower - currentPrice * decision.quantity,
+                                    );
+                                }
                             } else if (decision.action === 'sell') {
                                 const existingSellPos = await getOpenPositionBySymbol(
                                     db,

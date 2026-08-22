@@ -297,6 +297,61 @@ describe('buildTradeGatePrompt — 계좌 상태', () => {
         expect(user).toContain('보수적 요인');
     });
 
+    it('dry_run 현금은 모의 잔고임을 밝힌다 — 값은 쓰되 실계좌인 척하지 않는다', () => {
+        // 시스템 규칙 2가 "프롬프트에 적힌 값은 참"이라 선언한다. 모의 잔고를 출처 없이
+        // 적으면 모델은 실계좌 조회 결과로 읽는다. 반대로 미상으로 두면 실제로 사이징을
+        // 제약하는 값을 숨기는 것이 된다 — 둘 다 틀렸다.
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                account: {
+                    ...baseInput().account,
+                    availableCashUsd: 4200,
+                    tradingMode: 'dry_run',
+                },
+            }),
+        );
+
+        expect(user).toContain('매수 가능 현금: $4,200.00');
+        expect(user).toContain('모의 잔고');
+        expect(user).toContain('실계좌 조회가 아니다');
+        // 제약으로는 실제와 같이 적용된다는 것도 말해야 모델이 무시하지 않는다.
+        expect(user).toContain('사이징 제약으로는 실제와 동일하게 적용된다');
+        expect(user).not.toContain('미상 (현재 매매 모드');
+    });
+
+    it('auto 현금에는 모의 잔고 딱지를 붙이지 않는다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                account: {
+                    ...baseInput().account,
+                    availableCashUsd: 4200,
+                    tradingMode: 'auto',
+                },
+            }),
+        );
+
+        expect(user).toContain('매수 가능 현금: $4,200.00');
+        expect(user).not.toContain('모의 잔고');
+    });
+
+    it('청산 프롬프트에는 dry_run이어도 현금이 등장하지 않는다', () => {
+        // 매수 여력과 청산 크기 사이에 인과가 없다. 모의 잔고라고 예외일 이유도 없다.
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                kind: 'exit',
+                account: {
+                    ...baseInput().account,
+                    availableCashUsd: 4200,
+                    tradingMode: 'dry_run',
+                },
+            }),
+        );
+
+        expect(user).not.toContain('모의 잔고');
+        expect(user).not.toContain('매수 가능 현금');
+        expect(user).toContain('이번 결정과 무관');
+    });
+
     it('전체 노출 잔여와 일일 손실 한도 잔여를 계산해 적는다', () => {
         const { user } = buildTradeGatePrompt(baseInput());
 
