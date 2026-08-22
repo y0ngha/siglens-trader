@@ -15,9 +15,13 @@ COPY . .
 # Frontend only — a static Vite SPA, so no build-time DB/API credentials are needed
 # (unlike siglens, which prerenders DB/FMP-backed routes at build time). The token is
 # still mounted because .yarnrc.yml interpolates it on every yarn invocation.
+#
+# APP_VERSION은 **빌더에도** 필요하다. 런너에만 두면 서버는 태그를 아는데 번들은 모르는
+# 상태가 되고, 그러면 화면의 번들 버전이 늘 `-dev`라 캐시 판별이라는 목적 자체가 죽는다.
+ARG APP_VERSION=unknown
 RUN --mount=type=secret,id=SIGLENS_GITHUB_TOKEN,required=true \
     SIGLENS_GITHUB_TOKEN="$(cat /run/secrets/SIGLENS_GITHUB_TOKEN)" \
-    yarn build
+    APP_VERSION="${APP_VERSION}" yarn build
 # Drop devDependencies (typescript, vite, vitest, drizzle-kit, ...) now that the SPA is
 # built — the runtime only needs the production tree, which roughly halves the image.
 RUN --mount=type=secret,id=SIGLENS_GITHUB_TOKEN,required=true \

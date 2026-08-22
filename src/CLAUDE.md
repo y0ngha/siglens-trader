@@ -24,7 +24,9 @@ src/
 │   ├── ErrorFallback.tsx
 │   ├── ErrorMessage.tsx
 │   ├── LoadingSkeleton.tsx
-│   └── TickerSearch.tsx   # Combobox for adding watchlist symbols via FMP search
+│   ├── TickerSearch.tsx   # Combobox for adding watchlist symbols via FMP search
+│   └── VersionBadge.tsx   # 번들·서버 버전을 **따로** 표기 (푸터). 하나만 보여주면
+│                          # "새 서버 + 옛 번들"을 구분할 수 없어 목적이 죽는다
 ├── mocks/             # MSW (Mock Service Worker) for dev:mock mode
 │   ├── browser.ts     # MSW browser setup
 │   └── handlers.ts    # All API endpoint mocks with in-memory state

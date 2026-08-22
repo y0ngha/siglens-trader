@@ -52,7 +52,8 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
 `analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
 `max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off), `dry_run_cash_usd`,
+`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off),
+`min_rr` (0~10; 0이면 손익비 가드 off), `dry_run_cash_usd`,
 `confluence_min`·`confluence_exit_min` (각 1~14, **서로 독립** — 원칙 7),
 `confluence_span` (0~50), `confluence_expected_weight` (0~1),
 `confluence_htf` (`analysis_timeframe`보다 상위여야 하며 `off` 가능 — 양방향 교차 검증),
@@ -182,6 +183,15 @@ broken check.
        past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
      - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
        (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
+     - `entry_poor_rr`: the risk:reward at entry is below `min_rr` (default **1.5**) —
+       reward is the **first** upside exit that would fire (analysis take-profit, resistance
+       band lower edge, or 95% of target, whichever is nearest), risk is the distance to the
+       first stop trigger. Fail-open when either side is unknown. Measured: analysis
+       take-profit sat **below** the current price on 11.5% of ticks and resistance on 14.6%,
+       so those entries hit their exit the moment they filled. Worse, score and R:R are
+       *inversely* correlated — median R:R is 1.27 in the 45-49 score band and **0.00** in the
+       65+ band, i.e. by the time the composite says buy, price has passed what the analysis
+       was aiming at
      - `entry_no_stop_room`: the entry price sits less than `min_stop_room_pct` (default
        **0.5%**) above `max(supportLevel, aiStopLoss)` (`hasStopRoom`). Fail-open when the
        analysis carries neither level. **Not the same layer as `entry_out_of_zone`**: that one
@@ -369,6 +379,7 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 | Breaker | Config Key | Default | Behavior |
 |---------|-----------|---------|----------|
 | Entry zone | — (analysis-driven) | +1% over `entryPrices` max | Blocks buy/average_in only — `entry_out_of_zone`. Not a breaker row in the audit: it is per-symbol, so it decides inside the watchlist loop rather than setting `entryBlock` |
+| Risk:reward | `min_rr` | 1.5 | Blocks buy/average_in only — `entry_poor_rr`. Per-symbol. Fail-open when upside or downside is unknown. 0 disables |
 | Stop room | `min_stop_room_pct` | 0.5% above `max(support, aiStopLoss)` | Blocks buy/average_in only — `entry_no_stop_room`. Per-symbol, same as above. Fail-open with no support/stop level. 0 disables |
 | Re-entry cooldown | `entry_cooldown_min` | 60 min | Blocks buy/average_in only — `entry_cooldown`. Per-symbol, same as above. 0 disables |
 | Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |

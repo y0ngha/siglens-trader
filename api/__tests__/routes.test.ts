@@ -845,6 +845,34 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(200);
     });
 
+    it('accepts min_rr within range, including 0 (off)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        for (const value of [0, 1.5, 3, 10]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'min_rr',
+                    value,
+                }),
+            );
+            expect(res.status, `min_rr=${value}`).toBe(200);
+        }
+    });
+
+    it('rejects min_rr above 10 — 그 위는 사실상 매수 정지다', async () => {
+        // 실측 손익비 p90이 10.62라, 10을 넘기면 진입의 90%가 걸린다.
+        for (const value of [10.1, 100, -1, 'high', null]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'min_rr',
+                    value,
+                }),
+            );
+            expect(res.status, `min_rr=${String(value)}`).toBe(400);
+        }
+    });
+
     it('rejects an interval/entry_window combination with no overlapping tick', async () => {
         mockGetConfigValue.mockResolvedValue(60);
 

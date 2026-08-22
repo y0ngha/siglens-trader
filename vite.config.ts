@@ -3,11 +3,25 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import pkg from './package.json' with { type: 'json' };
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, process.cwd(), '');
 
     return {
+        /**
+         * 번들에 박히는 빌드 시점 버전.
+         *
+         * 서버는 `/api/health`가 `APP_VERSION`(배포 이미지 태그)을 이미 낸다. 그런데 캐시
+         * 문제는 **번들이 갱신됐는지**라, 서버 버전만 봐서는 답이 안 나온다 — 새 서버에
+         * 옛 SPA가 붙어 있는 상태가 정확히 그 증상이다. 둘을 따로 심어 화면에서 비교한다.
+         *
+         * `APP_VERSION`은 Docker 빌드 인자로 들어오고(로컬 개발에서는 없다), 그때는
+         * `package.json`의 버전에 `-dev`를 붙여 배포본과 구분한다.
+         */
+        define: {
+            __APP_VERSION__: JSON.stringify(process.env.APP_VERSION ?? `${pkg.version}-dev`),
+        },
         plugins: [
             react(),
             tailwindcss(),
