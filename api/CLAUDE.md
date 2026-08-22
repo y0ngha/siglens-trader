@@ -284,6 +284,10 @@ a position behind and `order_tracking.idempotency_key` is unique.
 매도가 같은 심볼을 다시 태운다) 게이트에 넘긴 `correlation_id`를 같이 저장한다.
 
 **매수 가능 현금은 세 모드 모두 같은 뜻의 숫자다 — "지금 쓸 수 있는 돈".**
+계산은 `api/_lib/cash.ts`의 `getAvailableCashUsd` 하나뿐이고 **execute cron과
+`/api/status`(대시보드 `보유 현금`)가 그 함수를 공유한다.** 두 벌로 두면 화면에 찍히는
+현금과 실제 사이징이 쓰는 현금이 조용히 갈라진다 — 대시보드가 "$4,500 있음"이라 하는데
+주문은 다른 예산으로 나가는 상태가 된다.
 
 | 모드 | 출처 | 조회 실패 시 |
 |---|---|---|

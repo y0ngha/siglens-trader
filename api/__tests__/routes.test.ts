@@ -16,6 +16,15 @@ vi.mock('../_lib/auth', () => ({
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
+const mockGetDryRunCashFlowUsd = vi.fn().mockResolvedValue(0);
+const mockGetBuyingPower = vi.fn().mockResolvedValue(null);
+// `getBuyingPower`만 갈아끼우고 나머지는 실제 모듈을 쓴다. 전체를 대체하면
+// `getSellableQuantity`가 사라져 approve 경로가 조용히 다른 코드를 탄다.
+vi.mock('../../lib/trading/account', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../lib/trading/account')>()),
+    getBuyingPower: (...args: unknown[]) => mockGetBuyingPower(...args),
+}));
+
 vi.mock('../../lib/trading/orders', () => ({
     executeBuyOrder: (...args: unknown[]) => mockExecuteBuyOrder(...args),
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
@@ -66,6 +75,7 @@ const mockGetCronDecisions = vi.fn();
 
 vi.mock('../../lib/db/queries', () => ({
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
+    getDryRunCashFlowUsd: (...args: unknown[]) => mockGetDryRunCashFlowUsd(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getRecentTrades: (...args: unknown[]) => mockGetRecentTrades(...args),
@@ -174,6 +184,96 @@ describe('GET /api/status', () => {
             todayTrades: 5,
             tradingEnabled: 'live',
             maxTradesPerDay: 'live',
+            // dry_run이 아니면 브로커 실잔고 경로. 조회 실패는 null이고 UI가 `—`로 그린다.
+            cashBalance: null,
+        });
+    });
+
+    describe('보유 현금', () => {
+        it('dry_run은 예치금 + 체결 원장 순현금흐름을 낸다', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode' ? 'dry_run' : key === 'dry_run_cash_usd' ? 5000 : null,
+                ),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetDryRunCashFlowUsd.mockResolvedValue(-472.8);
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+
+            expect((await res.json()).cashBalance).toBeCloseTo(4527.2);
+            // 모의 계좌라 브로커를 부르지 않는다.
+            expect(mockGetBuyingPower).not.toHaveBeenCalled();
+        });
+
+        it('dry_run 잔고는 0에서 멈춘다 — 음수 현금은 의미가 없다', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode' ? 'dry_run' : key === 'dry_run_cash_usd' ? 400 : null,
+                ),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetDryRunCashFlowUsd.mockResolvedValue(-900);
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+            expect((await res.json()).cashBalance).toBe(0);
+        });
+
+        it('auto는 브로커 실잔고를 낸다', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? 'auto' : null),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetBuyingPower.mockResolvedValue(7777);
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+
+            expect(mockGetBuyingPower).toHaveBeenCalledWith('USD');
+            expect((await res.json()).cashBalance).toBe(7777);
+        });
+
+        it('브로커 조회가 실패하면 null — 0으로 떨어뜨리지 않는다', async () => {
+            // "못 읽었다"와 "현금이 없다"는 다른 상태다. 후자로 표시하면 운영자가
+            // 있지도 않은 잔고 소진을 믿게 된다.
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? 'auto' : null),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetBuyingPower.mockRejectedValue(new Error('broker down'));
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+            expect(res.status).toBe(200);
+            expect((await res.json()).cashBalance).toBeNull();
+        });
+
+        it('원장 조회가 실패해도 예치금으로 답한다', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode' ? 'dry_run' : key === 'dry_run_cash_usd' ? 3000 : null,
+                ),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetDryRunCashFlowUsd.mockRejectedValue(new Error('db down'));
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+            expect((await res.json()).cashBalance).toBe(3000);
+        });
+
+        it('설정이 없으면 기본 예치금 $5,000', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+            );
+            mockGetTodayTradeCount.mockResolvedValue(0);
+            mockGetDryRunCashFlowUsd.mockResolvedValue(0);
+
+            const res = await handler(makeRequest('https://example.com/api/status'));
+            expect((await res.json()).cashBalance).toBe(5000);
         });
     });
 
