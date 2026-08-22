@@ -211,6 +211,10 @@ const fakeTechResult = {
         trend: 'bullish',
         riskLevel: 'low',
         keyLevels: { support: [{ price: 140, reason: '직전 저점' }], resistance: [] },
+        // 손익비 게이트가 상방을 요구한다. 기본 시세 150 / 지지 140이므로 하방 10,
+        // 익절 180이면 R:R 4.0 — 이 픽스처를 쓰는 테스트들은 손익비가 관심사가 아니라
+        // 넉넉히 통과시킨다. 손익비 자체는 전용 describe가 검증한다.
+        actionRecommendation: { takeProfitPrices: [180] },
     },
 };
 
@@ -3117,9 +3121,13 @@ describe('execute cron handler', () => {
                 .mockResolvedValueOnce([fakeOpenPosition]) // main open positions
                 .mockResolvedValueOnce([]); // after re-evaluation recalc
             mockGetLatestAnalysisResult.mockImplementation(
-                (_db: unknown, _sym: string, type: string) => {
-                    if (type === 'technical') return Promise.resolve(fakeTechWithBearish);
-                    return Promise.resolve(null);
+                (_db: unknown, sym: string, type: string) => {
+                    if (type !== 'technical') return Promise.resolve(null);
+                    // AAPL은 청산될 포지션이라 약세 분석, TSLA는 그 뒤 매수 경로를 타므로
+                    // 정상 분석을 준다. 하나로 쓰면 약세 픽스처의 저항 110이 TSLA 시세
+                    // 150보다 아래여서 손익비 게이트에 걸리고, 이 테스트가 보려는 노출
+                    // 재계산에 도달하지 못한다.
+                    return Promise.resolve(sym === 'AAPL' ? fakeTechWithBearish : fakeTechResult);
                 },
             );
             mockEvaluateExistingPosition.mockReturnValue({
@@ -8301,12 +8309,14 @@ describe('execute cron handler', () => {
                     exit: '',
                     riskReward: '',
                     entryPrices: [148, 152],
+                    // 손익비 게이트(min 1.5)를 통과할 상방. 이 describe가 검증하려는 것은
+                    // 구간 이탈·손절 여유이지 손익비가 아니다.
+                    takeProfitPrices: [stop + (150 - stop) * 3, 200],
                     // `stop`을 파라미터로 뺀 이유: 손절 여유 가드(`entry_no_stop_room`)가
                     // 진입가와 이 값의 간격을 보므로, 진입가가 낮은 케이스에서 고정 140을
                     // 쓰면 손절선이 진입가 **위**가 되어 다른 가드를 검증하려던 테스트가
                     // 손절 여유 가드에 걸린다.
                     stopLoss: stop,
-                    takeProfitPrices: [170, 185],
                 },
             },
         });
@@ -8478,6 +8488,158 @@ describe('execute cron handler', () => {
 
                 expect(body.decisions).not.toContainEqual(
                     expect.objectContaining({ action: 'entry_no_stop_room' }),
+                );
+            });
+        });
+
+        describe('손익비 가드 (entry_poor_rr)', () => {
+            /** 지지 140 / 시세 150 기준으로 상방만 갈아끼운다. */
+            function withUpside(takeProfit: number | undefined, price = 150) {
+                buySetup(price, {}, 140);
+                mockGetLatestAnalysisResult.mockImplementation(
+                    (_db: unknown, _sym: string, type: string) =>
+                        Promise.resolve(
+                            type === 'technical'
+                                ? {
+                                      result: {
+                                          trend: 'bullish',
+                                          riskLevel: 'low',
+                                          keyLevels: {
+                                              support: [{ price: 140, reason: 'x' }],
+                                              resistance: [],
+                                          },
+                                          actionRecommendation: {
+                                              entryPrices: [148, 152],
+                                              stopLoss: 140,
+                                              ...(takeProfit == null
+                                                  ? {}
+                                                  : { takeProfitPrices: [takeProfit] }),
+                                          },
+                                      },
+                                  }
+                                : null,
+                        ),
+                );
+            }
+
+            it('익절가가 진입가 아래면 매수하지 않는다 — 사는 순간 익절 조건이 성립한다', async () => {
+                withUpside(145);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_poor_rr' }),
+                );
+                expect(mockInsertTrade).not.toHaveBeenCalled();
+                // 게이트보다 앞이어야 한다 — 어차피 안 살 주문에 LLM을 태우지 않는다.
+                expect(mockRunTradeGate).not.toHaveBeenCalled();
+            });
+
+            it('손익비가 요구치 미만이면 막는다', async () => {
+                // 하방 10 (150→140), 상방 11 → R:R 1.1 < 1.5
+                withUpside(161);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'entry_poor_rr' }),
+                );
+            });
+
+            it('손익비가 충분하면 그대로 매수한다', async () => {
+                // 하방 10, 상방 20 → R:R 2.0
+                withUpside(170);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('상방 레벨이 없으면 통과시킨다 (fail-open)', async () => {
+                withUpside(undefined);
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('min_rr 설정으로 완화·강화할 수 있다', async () => {
+                withUpside(161); // R:R 1.1
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                    Promise.resolve(
+                        key === 'trading_mode' ? 'dry_run' : key === 'min_rr' ? 1 : null,
+                    ),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('min_rr 0이면 게이트가 꺼진다', async () => {
+                withUpside(145); // 상방 없음
+                mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                    Promise.resolve(
+                        key === 'trading_mode' ? 'dry_run' : key === 'min_rr' ? 0 : null,
+                    ),
+                );
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).toContainEqual(
+                    expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                );
+            });
+
+            it('감사 로그에 손익비와 익절 지점을 남긴다', async () => {
+                withUpside(145);
+
+                await handler(makeRequest(true));
+
+                expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                    fakeDb,
+                    expect.any(String),
+                    'execute',
+                    expect.arrayContaining([
+                        expect.objectContaining({
+                            action: 'entry_poor_rr',
+                            detail: expect.objectContaining({
+                                price: 150,
+                                riskReward: expect.stringContaining('상방 없음'),
+                                minRiskReward: 1.5,
+                            }),
+                        }),
+                    ]),
+                );
+            });
+
+            it('매도에는 걸지 않는다 — 진입만 막는다 (원칙 7)', async () => {
+                withUpside(145);
+                mockGetOpenPositionBySymbol.mockResolvedValue({
+                    id: 1,
+                    symbol: 'AAPL',
+                    quantity: 5,
+                    avgPrice: '160',
+                    status: 'open',
+                });
+                mockMakeTradeDecision.mockReturnValue({
+                    action: 'sell',
+                    symbol: 'AAPL',
+                    score: 20,
+                    reason: 'SELL',
+                    quantity: 5,
+                });
+
+                const body = await (await handler(makeRequest(true))).json();
+
+                expect(body.decisions).not.toContainEqual(
+                    expect.objectContaining({ action: 'entry_poor_rr' }),
                 );
             });
         });
@@ -9312,7 +9474,17 @@ describe('execute cron — 노출은 원가 기준', () => {
         });
         setLivePrice(200);
         mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
-        mockGetLatestAnalysisResult.mockResolvedValue(fakeTechResult);
+        // 시세 200에 맞춘 레벨. 기본 픽스처는 시세 150 기준(지지 140 / 익절 180)이라
+        // 여기서는 익절이 진입가 아래가 되고 지지선도 30% 떨어져 있어, 손익비 게이트가
+        // 막는다. 이 테스트의 관심사는 예산 계산이므로 레벨을 시세에 맞춰 준다
+        // (지지 195 / 익절 215 → R:R 3.0).
+        mockGetLatestAnalysisResult.mockResolvedValue({
+            result: {
+                ...fakeTechResult.result,
+                keyLevels: { support: [{ price: 195, reason: '직전 저점' }], resistance: [] },
+                actionRecommendation: { takeProfitPrices: [215] },
+            },
+        });
         mockGetOpenPositionBySymbol.mockResolvedValue({
             id: 1,
             symbol: 'AAPL',

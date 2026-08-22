@@ -3,6 +3,7 @@ import { lazy, Suspense } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type SessionUser } from '@/lib/api';
 import { MobileNav } from '@/components/MobileNav';
+import { VersionBadge } from '@/components/VersionBadge';
 import type { NavItem } from '@/components/MobileNav';
 import { LoginPage } from '@/pages/Login';
 
@@ -101,6 +102,7 @@ function Dashboard({ user }: { user: SessionUser }) {
                     <p className="mx-auto max-w-5xl [overflow-wrap:anywhere] break-words">
                         {INVESTMENT_DISCLAIMER}
                     </p>
+                    <VersionBadge />
                 </footer>
 
                 {/* Mobile bottom tab bar — hidden on desktop */}

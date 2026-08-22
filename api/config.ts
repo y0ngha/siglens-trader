@@ -91,6 +91,7 @@ async function handler(req: Request): Promise<Response> {
             'execute_interval_min',
             'entry_cooldown_min',
             'min_stop_room_pct',
+            'min_rr',
             'dry_run_cash_usd',
             'confluence_min',
             'confluence_exit_min',
@@ -111,6 +112,7 @@ async function handler(req: Request): Promise<Response> {
             'max_daily_loss_usd',
             'entry_cooldown_min',
             'min_stop_room_pct',
+            'min_rr',
             'dry_run_cash_usd',
             'confluence_min',
             'confluence_exit_min',
@@ -319,6 +321,14 @@ async function handler(req: Request): Promise<Response> {
                 // 그보다 크면 분석이 그어 주는 손절선(폴백은 진입가 − 1.5×ATR)을 상시
                 // 넘어서므로 가드가 아니라 매수 정지 버튼이 된다. 무필 상태는 "신호 없음"과
                 // 로그상 구분되지 않으므로, 그렇게 되는 값은 애초에 저장하지 않는다.
+                // 최소 손익비. 상한 10은 그 위가 사실상 매수 정지다 — 실측 손익비 p90이
+                // 10.62라, 10을 넘기면 진입의 90%가 걸린다. 0은 게이트 off.
+                if (key === 'min_rr' && (value as number) > 10) {
+                    return Response.json(
+                        { error: 'min_rr must be between 0 and 10' },
+                        { status: 400 },
+                    );
+                }
                 if (key === 'min_stop_room_pct' && (value as number) > 5) {
                     return Response.json(
                         { error: 'min_stop_room_pct must be between 0 and 5' },

@@ -47,7 +47,11 @@ import {
 } from '../../lib/strategy/entry-window.js';
 import {
     exceedsEntryZone,
+    firstUpsideExit,
     formatEntryZone,
+    formatRiskReward,
+    hasRiskReward,
+    MIN_RISK_REWARD,
     formatStopRoom,
     hasStopRoom,
     MIN_STOP_ROOM,
@@ -803,6 +807,12 @@ async function handler(req: Request): Promise<Response> {
             const storedStopRoomPct = await getConfigValue<number>(db, 'min_stop_room_pct').catch(
                 () => null,
             );
+            // 최소 손익비. 0이면 게이트 off — 근거는 위 `entry_poor_rr` 주석.
+            const storedRr = await getConfigValue<number>(db, 'min_rr').catch(() => null);
+            const minRiskReward =
+                typeof storedRr === 'number' && Number.isFinite(storedRr) && storedRr >= 0
+                    ? storedRr
+                    : MIN_RISK_REWARD;
             const minStopRoom =
                 typeof storedStopRoomPct === 'number' && Number.isFinite(storedStopRoomPct)
                     ? Math.max(0, storedStopRoomPct) / 100
@@ -2109,6 +2119,38 @@ async function handler(req: Request): Promise<Response> {
                                 stopRoom: formatStopRoom(currentPrice, stopLevels),
                                 minStopRoom,
                                 ...stopLevels,
+                            },
+                        });
+                        continue;
+                    }
+
+                    // 손익비가 안 되는 진입 차단 — `entry_no_stop_room`의 **대칭**이다.
+                    //
+                    // 그쪽은 하방(손절선까지 여유)만 본다. 상방을 아무도 안 봐서, 분석이
+                    // 그은 익절 레벨이 **진입가보다 아래**인 자리에서도 매수가 나갔다.
+                    // 실측(426틱): 분석 익절가가 현재가 이하인 경우 11.5%, 저항선이 아래인
+                    // 경우 14.6%. 그런 진입은 사는 순간 익절 조건이 성립해 같은 틱에 나간다.
+                    //
+                    // 더 나쁜 것은 상관 구조다 — 종합 점수 구간별 손익비 중앙값이
+                    // 45~49에서 1.27인데 **매수 구간(65+)에서 0.00**이다. 점수가 매수를
+                    // 외칠 때는 분석이 본 목표를 이미 지나 있다. 이 게이트는 그 자리를 막는다.
+                    const rrLevels = {
+                        takeProfit: safeAnalysisTakeProfit(tech?.result),
+                        resistance: safeAnalysisResistance(tech?.result),
+                        target: safeAnalysisTargetPrice(tech?.result),
+                        ...stopLevels,
+                    };
+                    if (isEntryDecision && !hasRiskReward(currentPrice, rrLevels, minRiskReward)) {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_poor_rr',
+                            score: decision.score,
+                            detail: {
+                                price: currentPrice,
+                                riskReward: formatRiskReward(currentPrice, rrLevels),
+                                minRiskReward,
+                                firstUpsideExit: firstUpsideExit(currentPrice, rrLevels),
+                                ...rrLevels,
                             },
                         });
                         continue;

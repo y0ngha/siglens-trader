@@ -3,9 +3,14 @@ import {
     ENTRY_ZONE_TOLERANCE,
     exceedsEntryZone,
     formatEntryZone,
+    firstUpsideExit,
+    formatRiskReward,
     formatStopRoom,
+    hasRiskReward,
     hasStopRoom,
+    MIN_RISK_REWARD,
     MIN_STOP_ROOM,
+    riskRewardRatio,
 } from '../entry-zone.js';
 
 describe('exceedsEntryZone', () => {
@@ -200,5 +205,116 @@ describe('formatStopRoom', () => {
         expect(formatStopRoom(150, {})).toBeUndefined();
         expect(formatStopRoom(NaN, { supportLevel: 140 })).toBeUndefined();
         expect(formatStopRoom(150, { supportLevel: NaN })).toBeUndefined();
+    });
+});
+
+describe('firstUpsideExit', () => {
+    it('가장 먼저 서는 익절 트리거를 고른다 — 더 먼 목표를 세면 못 먹을 이익을 센다', () => {
+        // 저항은 밴드 하단(−2%)에서, 목표가는 95%에서 발동한다.
+        expect(firstUpsideExit(100, { takeProfit: 110, resistance: 105, target: 130 })).toBeCloseTo(
+            102.9, // 105 × 0.98
+        );
+    });
+
+    it('진입가 이하인 레벨은 후보에서 뺀다', () => {
+        expect(firstUpsideExit(100, { takeProfit: 95, resistance: 99 })).toBeNull();
+        expect(firstUpsideExit(100, { takeProfit: 95, resistance: 120 })).toBeCloseTo(117.6);
+    });
+
+    it('레벨이 없거나 가격이 비정상이면 null', () => {
+        expect(firstUpsideExit(100, {})).toBeNull();
+        expect(firstUpsideExit(Number.NaN, { takeProfit: 110 })).toBeNull();
+    });
+});
+
+describe('riskRewardRatio', () => {
+    it('상방/하방을 실제 트리거 기준으로 계산한다', () => {
+        // 하방: max(지지 90, 손절 없음) = 90 → 리스크 10
+        // 상방: 익절 115 (저항 없음) → 보상 15 → R:R 1.5
+        expect(riskRewardRatio(100, { takeProfit: 115, supportLevel: 90 })).toBeCloseTo(1.5);
+    });
+
+    it('하방은 먼저 서는 쪽(높은 레벨)을 쓴다', () => {
+        // 지지 90 vs 분석 손절 95 → 95가 먼저 선다 → 리스크 5 → R:R 3.0
+        expect(
+            riskRewardRatio(100, { takeProfit: 115, supportLevel: 90, aiStopLoss: 95 }),
+        ).toBeCloseTo(3.0);
+    });
+
+    it('익절 레벨이 전부 진입가 이하면 0이다 — null(판단 불가)과 구분해야 한다', () => {
+        // 실측에서 매수 신호의 6/8이 이 상태였다. "먹을 게 없다"는 정보이지 무지가 아니다.
+        expect(riskRewardRatio(100, { takeProfit: 95, supportLevel: 90 })).toBe(0);
+        expect(riskRewardRatio(100, { resistance: 98, supportLevel: 90 })).toBe(0);
+    });
+
+    it('하방을 모르면 null — 그때는 판단하지 않는다', () => {
+        expect(riskRewardRatio(100, { takeProfit: 115 })).toBeNull();
+        expect(riskRewardRatio(100, { takeProfit: 115, supportLevel: 105 })).toBeNull();
+    });
+
+    it('상방 레벨이 하나도 없으면 null', () => {
+        expect(riskRewardRatio(100, { supportLevel: 90 })).toBeNull();
+    });
+
+    it('가격이 비정상이면 null', () => {
+        expect(riskRewardRatio(Number.NaN, { takeProfit: 115, supportLevel: 90 })).toBeNull();
+        expect(riskRewardRatio(0, { takeProfit: 115, supportLevel: 90 })).toBeNull();
+    });
+});
+
+describe('hasRiskReward', () => {
+    it('기본 요구치는 1.5', () => {
+        expect(MIN_RISK_REWARD).toBe(1.5);
+        expect(hasRiskReward(100, { takeProfit: 115, supportLevel: 90 })).toBe(true); // 1.5
+        expect(hasRiskReward(100, { takeProfit: 114, supportLevel: 90 })).toBe(false); // 1.4
+    });
+
+    describe('실측 회귀 — 매수 신호 자리가 이 모양이었다', () => {
+        it('익절가가 진입가 아래면 막는다 (실측 매수 신호 8건 중 6건)', () => {
+            // PLTR 175.05 매수 / 분석 익절 174.98 → 사는 순간 익절 조건 성립
+            expect(hasRiskReward(175.05, { takeProfit: 174.98, supportLevel: 174.5 })).toBe(false);
+        });
+
+        it('상방 0.14%에 하방 0.6%인 자리를 막는다', () => {
+            // PLTR 176.03 / 익절 176.17 / 지지 175.0 → R:R 0.14
+            expect(hasRiskReward(176.03, { takeProfit: 176.17, supportLevel: 175.0 })).toBe(false);
+        });
+    });
+
+    describe('worst case — 판단 재료가 없으면 통과 (fail-open)', () => {
+        it('하방을 모르면 통과 — 다른 진입 가드와 같은 정책', () => {
+            expect(hasRiskReward(100, { takeProfit: 115 })).toBe(true);
+        });
+
+        it('상방 레벨이 아예 없으면 통과', () => {
+            expect(hasRiskReward(100, { supportLevel: 90 })).toBe(true);
+        });
+
+        it('minRr 0이면 게이트가 꺼진다', () => {
+            expect(hasRiskReward(100, { takeProfit: 95, supportLevel: 90 }, 0)).toBe(true);
+        });
+
+        it('minRr이 비정상이면 기본값으로 되돌린다 — 조용히 꺼지지 않는다', () => {
+            expect(hasRiskReward(100, { takeProfit: 114, supportLevel: 90 }, Number.NaN)).toBe(
+                false,
+            );
+            expect(hasRiskReward(100, { takeProfit: 114, supportLevel: 90 }, -1)).toBe(false);
+        });
+    });
+});
+
+describe('formatRiskReward', () => {
+    it('비율과 익절 지점을 함께 적는다', () => {
+        expect(formatRiskReward(100, { takeProfit: 115, supportLevel: 90 })).toBe(
+            '1.50 (익절 $115.00)',
+        );
+    });
+
+    it('상방이 없으면 그 사실을 적는다 — 0과 미상을 구분해야 감사에서 읽힌다', () => {
+        expect(formatRiskReward(100, { takeProfit: 95, supportLevel: 90 })).toContain('상방 없음');
+    });
+
+    it('판단 재료가 없으면 undefined', () => {
+        expect(formatRiskReward(100, { takeProfit: 115 })).toBeUndefined();
     });
 });
