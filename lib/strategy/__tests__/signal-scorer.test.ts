@@ -23,6 +23,7 @@ function neutralConfluence(): ConfluenceSnapshot {
         htfTrend: null,
         params: {
             min: 3,
+            exitMin: 2.5,
             span: 15,
             expectedWeight: 0.5,
             htf: null,
@@ -152,7 +153,9 @@ describe('scoreSignals', () => {
             expect(result.components.options).toBe(50);
             expect(result.components.fundamental).toBe(80);
             expect(result.total).toBe(66);
-            expect(result.signal).toBe('hold');
+            // 임계 65 기준으로는 매수다. 70이던 시절엔 hold였는데, 그 70이 실측 분포의
+            // p99 위여서 11거래일 동안 매수 신호가 4틱뿐이었다 — `DEFAULT_BUY_THRESHOLD` 참고.
+            expect(result.signal).toBe('buy');
         });
 
         it('handles technical with missing fields', () => {
@@ -1092,7 +1095,14 @@ describe('confluence 축', () => {
             freshBullish: [],
             freshBearish: [],
             htfTrend: null,
-            params: { min: 3, span: 15, expectedWeight: 0.5, htf: null, requireVolume: false },
+            params: {
+                min: 3,
+                exitMin: 2.5,
+                span: 15,
+                expectedWeight: 0.5,
+                htf: null,
+                requireVolume: false,
+            },
             entryTrigger: false,
             exitTrigger: false,
             ...over,
@@ -1155,6 +1165,7 @@ describe('confluence 축', () => {
                     htfTrend: null,
                     params: {
                         min: 3,
+                        exitMin: 2.5,
                         span: 15,
                         expectedWeight: 0.5,
                         htf: null,
@@ -1222,6 +1233,7 @@ describe('confluence 축', () => {
                     htfTrend: null,
                     params: {
                         min: 3,
+                        exitMin: 2.5,
                         span: 15,
                         expectedWeight: 0.5,
                         htf: null,
@@ -1404,6 +1416,7 @@ describe('컨플루언스 기권 강등', () => {
                     htfTrend: null,
                     params: {
                         min: 3,
+                        exitMin: 2.5,
                         span: 15,
                         expectedWeight: 0.5,
                         htf: null,

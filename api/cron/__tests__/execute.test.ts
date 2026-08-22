@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+// 임계값은 상수로 참조한다 — 숫자를 박으면 기본값을 바꿀 때 테스트가 옛 값을 못박아
+// "기본값 변경"이 곧 "테스트 실패"가 되고, 진짜 회귀와 구분이 안 된다.
+import { DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../../../lib/strategy/types.js';
 import { GET as handler } from '../execute';
 
 // ---------------------------------------------------------------------------
@@ -2514,7 +2517,10 @@ describe('execute cron handler', () => {
                             // 일치로 검증되므로 배선이 조용히 끊기면 여기서 걸린다.
                             totalWithoutConfluence: expect.any(Number),
                             signal: 'hold',
-                            thresholds: { buy: 70, sell: 30 },
+                            thresholds: {
+                                buy: DEFAULT_BUY_THRESHOLD,
+                                sell: DEFAULT_SELL_THRESHOLD,
+                            },
                             sourceAnalyzedAt: expect.any(String),
                             confluence: fakeConfluenceSnapshot,
                         },
@@ -2548,7 +2554,10 @@ describe('execute cron handler', () => {
                         detail: expect.objectContaining({
                             components: expect.objectContaining({ technical: expect.any(Number) }),
                             signal: 'buy',
-                            thresholds: { buy: 70, sell: 30 },
+                            thresholds: {
+                                buy: DEFAULT_BUY_THRESHOLD,
+                                sell: DEFAULT_SELL_THRESHOLD,
+                            },
                             sourceAnalyzedAt: expect.any(String),
                         }),
                     }),
@@ -6166,7 +6175,10 @@ describe('execute cron handler', () => {
                     priceSource: 'live',
                     budget: { fullBudget: 1500, limitedBy: 'symbol', maxQuantity: 10 },
                     exit: null,
-                    signal: expect.objectContaining({ total: 80, buyThreshold: 70 }),
+                    signal: expect.objectContaining({
+                        total: 80,
+                        buyThreshold: DEFAULT_BUY_THRESHOLD,
+                    }),
                     modelId: 'deepseek-v4-flash',
                     correlationId: expect.stringContaining('-AAPL-entry'),
                 }),
@@ -6331,7 +6343,10 @@ describe('execute cron handler', () => {
                         detail: expect.objectContaining({
                             // scoreDecisionDetail is preserved, the gate block is merged in.
                             signal: 'buy',
-                            thresholds: { buy: 70, sell: 30 },
+                            thresholds: {
+                                buy: DEFAULT_BUY_THRESHOLD,
+                                sell: DEFAULT_SELL_THRESHOLD,
+                            },
                             gate: {
                                 kind: 'entry',
                                 source: 'ai',
@@ -8025,6 +8040,7 @@ describe('execute cron handler', () => {
                 const cfg: Record<string, unknown> = {
                     trading_mode: 'dry_run',
                     confluence_min: 4,
+                    confluence_exit_min: 2,
                     confluence_span: 20,
                     confluence_expected_weight: 0.25,
                     confluence_htf: '1Hour',
@@ -8038,11 +8054,36 @@ describe('execute cron handler', () => {
 
             expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', expect.any(String), {
                 min: 4,
+                exitMin: 2,
                 span: 20,
                 expectedWeight: 0.25,
                 htf: '1Hour',
                 requireVolume: false,
             });
+        });
+
+        it('confluence_exit_min은 confluence_min과 독립으로 전달된다', async () => {
+            // 하나로 묶여 있던 탓에 진입을 조이자 청산 신호가 실측 5건 → 1건으로 같이 줄었다.
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode'
+                        ? 'dry_run'
+                        : key === 'confluence_min'
+                          ? 8
+                          : key === 'confluence_exit_min'
+                            ? 2
+                            : null,
+                ),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith(
+                'AAPL',
+                expect.any(String),
+                expect.objectContaining({ min: 8, exitMin: 2 }),
+            );
         });
 
         it("confluence_htf: 'off'는 상위 시간축 게이트를 끈다", async () => {

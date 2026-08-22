@@ -71,8 +71,15 @@ export function __clearHtfCache(): void {
 
 /** 튜너블. 전부 `config`에서 오고, 호출부(execute cron)가 읽어 넘긴다. */
 export interface ConfluenceOptions {
-    /** 트리거에 필요한 가중 계열 수. */
+    /** 진입 트리거에 필요한 가중 계열 수. */
     min?: number;
+    /**
+     * **청산** 트리거에 필요한 가중 계열 수. `min`과 독립이다.
+     *
+     * 하나로 묶여 있던 탓에 진입 문턱을 올리자 청산 신호가 실측 5건 → 1건으로 같이
+     * 줄었다. 조이는 변경이 청산에 떨어지면 리스크 축소 경로가 좁아진다(원칙 7).
+     */
+    exitMin?: number;
     /** 연속 점수 폭. */
     span?: number;
     /** `expected` phase 표 가중치. */
@@ -159,6 +166,7 @@ export async function computeConfluence(
             htfLabel: htf,
             minBars: MIN_BARS,
             ...(typeof opts?.min === 'number' ? { min: opts.min } : {}),
+            ...(typeof opts?.exitMin === 'number' ? { exitMin: opts.exitMin } : {}),
             ...(typeof opts?.span === 'number' ? { span: opts.span } : {}),
             ...(typeof opts?.expectedWeight === 'number'
                 ? { expectedWeight: opts.expectedWeight }

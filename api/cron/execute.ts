@@ -472,12 +472,14 @@ async function handler(req: Request): Promise<Response> {
             // 재현할 수 있다.
             const confluenceOpts = await Promise.all([
                 getConfigValue<number>(db, 'confluence_min').catch(() => null),
+                getConfigValue<number>(db, 'confluence_exit_min').catch(() => null),
                 getConfigValue<number>(db, 'confluence_span').catch(() => null),
                 getConfigValue<number>(db, 'confluence_expected_weight').catch(() => null),
                 getConfigValue<string>(db, 'confluence_htf').catch(() => null),
                 getConfigValue<boolean>(db, 'confluence_require_volume').catch(() => null),
-            ]).then(([min, span, expectedWeight, htf, requireVolume]) => ({
+            ]).then(([min, exitMin, span, expectedWeight, htf, requireVolume]) => ({
                 ...(typeof min === 'number' ? { min } : {}),
+                ...(typeof exitMin === 'number' ? { exitMin } : {}),
                 ...(typeof span === 'number' ? { span } : {}),
                 ...(typeof expectedWeight === 'number' ? { expectedWeight } : {}),
                 // 'off'는 상위 시간축 정렬 게이트를 끄는 문자열이다 — JSONB에 null을 저장하는

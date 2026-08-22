@@ -14,6 +14,7 @@ import {
     updateNotificationConfig,
 } from '../lib/db/queries.js';
 import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
+import { DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../lib/strategy/types.js';
 
 /**
  * 시간축 정렬 순서. 값 자체는 의미 없고 **대소 비교**만 쓴다 —
@@ -92,6 +93,7 @@ async function handler(req: Request): Promise<Response> {
             'min_stop_room_pct',
             'dry_run_cash_usd',
             'confluence_min',
+            'confluence_exit_min',
             'confluence_span',
             'confluence_expected_weight',
             'confluence_htf',
@@ -111,6 +113,7 @@ async function handler(req: Request): Promise<Response> {
             'min_stop_room_pct',
             'dry_run_cash_usd',
             'confluence_min',
+            'confluence_exit_min',
             'confluence_span',
             'confluence_expected_weight',
         ]);
@@ -334,6 +337,18 @@ async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
+                // 청산 문턱은 진입과 **분리돼 있다**. 진입을 조인다고 청산이 따라 조여지면
+                // 리스크 축소 경로가 좁아진다(원칙 7). 하한 1은 진입과 같은 이유 —
+                // 0이면 `bearish >= 0`이 항상 참이라 눌림 신호 하나에 전량 청산된다.
+                if (
+                    key === 'confluence_exit_min' &&
+                    ((value as number) < 1 || (value as number) > 14)
+                ) {
+                    return Response.json(
+                        { error: 'confluence_exit_min must be between 1 and 14' },
+                        { status: 400 },
+                    );
+                }
                 // `span` 상한: 50이면 강세 9계열에서 연속 점수가 95가 되어 트리거 스냅(92)을
                 // 넘어선다 — 트리거와 연속 구간의 구분이 사라지는 지점이다. (연속 점수만으로
                 // 매수 임계 70을 넘지는 못한다. 다른 축이 전부 중립이면 최대 66이다.)
@@ -362,6 +377,24 @@ async function handler(req: Request): Promise<Response> {
                 // htf를 15Min으로 두면 진입 봉보다 더 잡음이 많은 축에 정렬을 요구하는 것이라
                 // 게이트의 전제가 통째로 뒤집힌다. 두 키가 따로 저장되므로 여기서 교차 검증
                 // 한다 — `execute_interval_min` × `entry_window`와 같은 이유다.
+                // 역방향도 막는다. `confluence_htf`를 쓸 때만 검사하면, 나중에
+                // `analysis_timeframe`을 올려 두 값이 같아지거나 뒤집혀도 아무도 모른다 —
+                // 저장 시점엔 유효했던 조합이 조용히 무효가 되는 경로다.
+                if (key === 'analysis_timeframe') {
+                    const htf = await getConfigValue<string>(db, 'confluence_htf');
+                    if (
+                        typeof htf === 'string' &&
+                        htf !== 'off' &&
+                        (TIMEFRAME_RANK[htf] ?? 0) <= (TIMEFRAME_RANK[value as string] ?? 0)
+                    ) {
+                        return Response.json(
+                            {
+                                error: `analysis_timeframe (${String(value)}) must be lower than confluence_htf (${htf}) — 상위 시간축이 진입 봉보다 낮으면 정렬 게이트의 전제가 뒤집힌다`,
+                            },
+                            { status: 400 },
+                        );
+                    }
+                }
                 if (key === 'confluence_htf' && value !== 'off') {
                     const current =
                         (await getConfigValue<string>(db, 'analysis_timeframe')) ?? '1Hour';
@@ -398,8 +431,12 @@ async function handler(req: Request): Promise<Response> {
                     }
                     const otherKey = key === 'buy_threshold' ? 'sell_threshold' : 'buy_threshold';
                     const otherValue = await getConfigValue<number>(db, otherKey);
-                    const buyT = key === 'buy_threshold' ? numVal : (otherValue ?? 70);
-                    const sellT = key === 'sell_threshold' ? numVal : (otherValue ?? 30);
+                    // 폴백은 상수를 쓴다 — 숫자를 박아 두면 기본값을 바꿀 때 검증만 옛
+                    // 값으로 남아, 새 기본 조합이 스스로의 교차 검증에 걸린다.
+                    const buyT =
+                        key === 'buy_threshold' ? numVal : (otherValue ?? DEFAULT_BUY_THRESHOLD);
+                    const sellT =
+                        key === 'sell_threshold' ? numVal : (otherValue ?? DEFAULT_SELL_THRESHOLD);
                     if (buyT <= sellT) {
                         return Response.json(
                             { error: 'buy_threshold must be greater than sell_threshold' },

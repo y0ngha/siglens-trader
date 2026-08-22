@@ -773,6 +773,78 @@ describe('POST /api/config', () => {
         }
     });
 
+    it('accepts confluence_exit_min independently of confluence_min', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        for (const value of [1, 2.5, 14]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'confluence_exit_min',
+                    value,
+                }),
+            );
+            expect(res.status, `exit_min=${value}`).toBe(200);
+        }
+    });
+
+    it('rejects confluence_exit_min of 0 — 청산 트리거가 무장해제된다', async () => {
+        for (const value of [0, -1, 15, 'low']) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'confluence_exit_min',
+                    value,
+                }),
+            );
+            expect(res.status, `exit_min=${String(value)}`).toBe(400);
+        }
+    });
+
+    it('analysis_timeframe을 올려 confluence_htf와 역전되는 조합을 막는다', async () => {
+        // 저장 시점엔 유효했던 조합이 반대쪽 키를 바꾸며 조용히 무효가 되는 경로다.
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'confluence_htf' ? '1Hour' : null),
+        );
+
+        // 1Hour htf에 analysis 1Hour → 같은 축, 거부
+        const same = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'analysis_timeframe',
+                value: '1Hour',
+            }),
+        );
+        expect(same.status).toBe(400);
+        expect((await same.json()).error).toContain('confluence_htf');
+
+        // 30Min이면 여전히 하위라 통과
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const ok = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'analysis_timeframe',
+                value: '30Min',
+            }),
+        );
+        expect(ok.status).toBe(200);
+    });
+
+    it("confluence_htf: 'off'면 analysis_timeframe 변경을 막지 않는다", async () => {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'confluence_htf' ? 'off' : null),
+        );
+        mockSetConfigValue.mockResolvedValue(undefined);
+
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'analysis_timeframe',
+                value: '1Hour',
+            }),
+        );
+        expect(res.status).toBe(200);
+    });
+
     it('rejects an interval/entry_window combination with no overlapping tick', async () => {
         mockGetConfigValue.mockResolvedValue(60);
 
