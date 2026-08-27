@@ -241,6 +241,7 @@ const SECTION_ORDER = [
     '## 계좌 상태',
     '## 포지션',
     '## 예산',
+    '## 결정론적 지표',
     '## 청산 트리거',
     '## 분석 데이터',
     '## 판단 지침',
@@ -446,6 +447,100 @@ describe('buildTradeGatePrompt — 포지션', () => {
         expect(user).not.toContain('-$3.00');
         expect(user).toContain('평균 매입가: 미상');
         expect(user).toContain('매입 원가: 미상');
+    });
+});
+
+describe('buildTradeGatePrompt — 결정론적 지표', () => {
+    /** 시세 100 / 지지 90 / 분석 손절 95 / 익절 후보 여러 개. */
+    function withPlan(overrides: Record<string, unknown> = {}) {
+        return baseInput({
+            price: 100,
+            analyses: [
+                {
+                    type: 'technical',
+                    analyzedAt: DECIDED_AT,
+                    modelId: 'm',
+                    result: {
+                        keyLevels: {
+                            support: [{ price: 90, reason: 'x' }],
+                            resistance: [{ price: 130, reason: 'y' }],
+                        },
+                        actionRecommendation: {
+                            entryPrices: [96, 98],
+                            stopLoss: 95,
+                            takeProfitPrices: [110, 120, 140],
+                        },
+                        ...overrides,
+                    },
+                },
+            ],
+        });
+    }
+
+    it('손익비를 계산해 싣고, 실제로 구속하는 익절 레벨을 명시한다', () => {
+        const { user } = buildTradeGatePrompt(withPlan());
+
+        expect(user).toContain('## 결정론적 지표');
+        // 하방은 지지 90과 분석 손절 95 중 **높은 쪽** 95 → 5. 상방은 가장 먼저 서는 110 → 10.
+        expect(user).toContain('손익비: 2.00 (익절 $110.00)');
+        expect(user).toContain('가장 먼저 서는');
+        // 더 먼 목표(140)로 암산하면 R:R 8.00이 된다. 그 값이 나와서는 안 된다.
+        // (맨 '8.00'은 진입 구간 상단 $98.00에도 들어 있으므로 라벨까지 붙여 본다.)
+        expect(user).not.toContain('손익비: 8.00');
+    });
+
+    it('모델에게 다시 계산하지 말라고 못박고, 지침도 이 섹션을 가리킨다', () => {
+        const { user } = buildTradeGatePrompt(withPlan());
+
+        expect(user).toContain('다시 계산하지 말고 이 값을 그대로 쓴다');
+        expect(user).toContain('`## 결정론적 지표`에 이미 계산돼 있으니 그 값을 쓴다');
+        // 종전 지침은 모델에게 암산을 시켰다.
+        expect(user).not.toContain('손절가·익절가가 있으면 손익비를 함께 본다');
+    });
+
+    it('손절 여유와 구간 상단 대비 위치를 함께 적는다', () => {
+        const { user } = buildTradeGatePrompt(withPlan());
+
+        expect(user).toContain('손절까지 여유: 5.00% (손절 레벨 $95.00)');
+        // 구간 상단 98, 시세 100 → +2.04%
+        expect(user).toContain('구간 상단 대비 +2.04%');
+    });
+
+    it('청산에서는 해당 없음으로 남는다 — 진입 프레이밍을 청산에 싣지 않는다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({ kind: 'exit', exit: { trigger: 'stop_loss', ruleReason: 'r' } }),
+        );
+
+        expect(user).toContain('## 결정론적 지표');
+        expect(user).toContain('- 해당 없음 (진입 품질 산술은 청산 결정에 적용되지 않는다)');
+        expect(user).not.toContain('손익비:');
+    });
+
+    it('기술 분석이 없으면 값을 지어내지 않는다', () => {
+        const { user } = buildTradeGatePrompt(baseInput({ analyses: [] }));
+
+        expect(user).toContain('- 해당 없음 (기술 분석 없음)');
+    });
+
+    it('하방 레벨이 없으면 손익비를 판단 불가로 둔다', () => {
+        const { user } = buildTradeGatePrompt(
+            baseInput({
+                price: 100,
+                analyses: [
+                    {
+                        type: 'technical',
+                        analyzedAt: DECIDED_AT,
+                        modelId: 'm',
+                        result: {
+                            actionRecommendation: { takeProfitPrices: [110] },
+                        },
+                    },
+                ],
+            }),
+        );
+
+        expect(user).toContain('손익비: 판단 불가 (하방 레벨 없음)');
+        expect(user).toContain('손절까지 여유: 판단 불가 (손절 레벨 없음)');
     });
 });
 

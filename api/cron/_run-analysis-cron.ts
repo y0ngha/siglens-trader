@@ -240,7 +240,20 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                 // 사라졌다 — LLM 키 만료나 프로바이더 429가 지속되면 5심볼 전부 error인데
                 // 런은 `completed`로 남고, `assessCronHealth`는 error 행만 실패로 세므로
                 // 아무 경보도 나가지 않는다. 부분 실패는 지금처럼 completed로 둔다.
-                const allFailed = byStatus.error > 0 && byStatus.done + byStatus.cached === 0;
+                //
+                // `skipped`는 실패가 아니라 **아직 cadence 창이 안 열린 심볼**이므로 분모에
+                // 넣지 않는다. 종전 조건(`error > 0 && done + cached === 0`)은 skip을 성공으로도
+                // 실패로도 세지 않아, 시도된 심볼이 하나뿐일 때 그 하나의 일시적 오류가 곧
+                // 전면 실패가 됐다 — 실측(2026-08-26 14:45 technical): NVDA·PLTR·TSLA가 cadence
+                // skip이고 IONQ만 `TypeError: terminated`(LLM 타임아웃) 하나였는데
+                // "모든 심볼 실패 (1/4)"로 기록되고 경보까지 나갔다. IONQ는 14:05 성공,
+                // 15:03 성공으로 스스로 복구된 단발이었다.
+                //
+                // 잡으려던 지속 장애는 이 조건으로도 그대로 걸린다 — 아무것도 저장되지 않으면
+                // 신선한 분석이 없어 skip이 사라지고, 다음 런에서 전 심볼이 시도돼 전부 error가
+                // 된다. 장애 시작 한 주기(최대 cadence 1회)만큼 늦게 뜰 뿐이고
+                // `assessCronHealth`는 24시간 창에서 세므로 그 지연은 무의미하다.
+                const allFailed = results.length > 0 && byStatus.error === results.length;
                 if (allFailed) {
                     finishState = {
                         status: 'error',

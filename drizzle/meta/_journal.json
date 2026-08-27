@@ -120,6 +120,13 @@
       "when": 1787317898889,
       "tag": "0016_medical_sprite",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787793889739,
+      "tag": "0017_normal_lilandra",
+      "breakpoints": true
     }
   ]
 }

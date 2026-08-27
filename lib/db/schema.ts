@@ -88,6 +88,23 @@ export const analysisResults = pgTable(
         analysisType: text('analysis_type').notNull(),
         result: jsonb('result').notNull(),
         modelId: text('model_id').notNull(),
+        /**
+         * 이 결과를 만든 **프롬프트 세대**. 배포 이미지 태그(`APP_VERSION`)를 그대로 쓴다.
+         *
+         * 프롬프트는 저장하지 않는다 — 스킬이 샘플링돼 실려 한 건에 수십 KB이고, 응답 쪽은
+         * `result`가 곧 파싱된 원문이라 원문을 따로 둘 이유가 없다. 하지만 **어느 세대가
+         * 만든 행인지**를 모르면 프롬프트를 바꾼 전후를 데이터만으로 가를 수 없고, 그러면
+         * 감사 테이블을 두고도 전후 비교가 불가능해진다(원칙 11).
+         *
+         * core 버전이 아니라 앱 태그인 이유: core의 `package.json`은 `exports`에 막혀
+         * 런타임에 읽을 수 없고, core 업그레이드는 언제나 새 릴리스로만 나가므로 태그가
+         * 세대를 그대로 가리킨다. 게다가 앱 태그는 **trader 자신의 프롬프트 변경**
+         * (`lib/analysis/trade-gate.ts`)까지 함께 잡는다. 태그 → core 버전은 그 태그의
+         * `package.json`으로 역추적한다.
+         *
+         * 로컬 개발에서는 `APP_VERSION`이 없어 NULL이다.
+         */
+        appVersion: text('app_version'),
         analyzedAt: timestamp('analyzed_at', { withTimezone: true }).notNull(),
         sourceAnalyzedAt: timestamp('source_analyzed_at', { withTimezone: true }),
         cronRunId: text('cron_run_id'),

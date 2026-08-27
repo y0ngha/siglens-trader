@@ -2046,6 +2046,21 @@ async function handler(req: Request): Promise<Response> {
                         decision.action === 'average_in' ||
                         unfundedBuy;
 
+                    // 아래 가드들이 남기는 행에도 축 breakdown을 붙인다.
+                    //
+                    // 종전에는 게이트 행의 `detail`이 게이트 페이로드뿐이라, **임계를 넘은
+                    // 결정만 골라 어느 축이 밀어올렸는지**를 사후에 볼 수 없었다. 하필 그 행이
+                    // 가장 알고 싶은 행이다 — 실측(2026-08-26) PLTR이 6틱 연속 임계를 넘어
+                    // 세 게이트에 나눠 막혔는데, 점수 67의 출처가 컨플루언스 트리거인지
+                    // 다른 축인지 추정밖에 못 했다. 원칙 11.
+                    const scoreDetail = scoreDecisionDetail(
+                        signalScore,
+                        buyThreshold,
+                        sellThreshold,
+                        techReferenceTime,
+                        confluence,
+                    );
+
                     // Stop-loss cooldown: skip buy signals for symbols closed by stop-loss in
                     // this run.
                     if (isEntryDecision && recentStopLossSymbols.has(item.symbol)) {
@@ -2053,6 +2068,7 @@ async function handler(req: Request): Promise<Response> {
                             symbol: item.symbol,
                             action: 'cooldown_after_stop_loss',
                             score: decision.score,
+                            detail: scoreDetail,
                         });
                         continue;
                     }
@@ -2070,6 +2086,7 @@ async function handler(req: Request): Promise<Response> {
                             action: 'entry_out_of_zone',
                             score: decision.score,
                             detail: {
+                                ...scoreDetail,
                                 price: currentPrice,
                                 entryZone: formatEntryZone(entryPrices),
                                 entryPrices,
@@ -2094,6 +2111,7 @@ async function handler(req: Request): Promise<Response> {
                             action: 'entry_no_stop_room',
                             score: decision.score,
                             detail: {
+                                ...scoreDetail,
                                 price: currentPrice,
                                 stopRoom: formatStopRoom(currentPrice, stopLevels),
                                 minStopRoom,
@@ -2125,6 +2143,7 @@ async function handler(req: Request): Promise<Response> {
                             action: 'entry_poor_rr',
                             score: decision.score,
                             detail: {
+                                ...scoreDetail,
                                 price: currentPrice,
                                 riskReward: formatRiskReward(currentPrice, rrLevels),
                                 minRiskReward,
@@ -2267,13 +2286,7 @@ async function handler(req: Request): Promise<Response> {
                             score: decision.score,
                             executed: false,
                             reason: decision.reason,
-                            detail: scoreDecisionDetail(
-                                signalScore,
-                                buyThreshold,
-                                sellThreshold,
-                                techReferenceTime,
-                                confluence,
-                            ),
+                            detail: scoreDetail,
                         });
                         continue;
                     }
@@ -2322,13 +2335,7 @@ async function handler(req: Request): Promise<Response> {
                                 symbol: item.symbol,
                                 action: 'pending_exists',
                                 score: decision.score,
-                                detail: scoreDecisionDetail(
-                                    signalScore,
-                                    buyThreshold,
-                                    sellThreshold,
-                                    techReferenceTime,
-                                    confluence,
-                                ),
+                                detail: scoreDetail,
                             });
                             continue;
                         }
@@ -2339,13 +2346,6 @@ async function handler(req: Request): Promise<Response> {
                     // in-flight orders, phantom sell, kill switch, daily limits, duplicate
                     // approvals) has already run, so an LLM call only happens on a path that
                     // is actually going to place an order.
-                    const scoreDetail = scoreDecisionDetail(
-                        signalScore,
-                        buyThreshold,
-                        sellThreshold,
-                        techReferenceTime,
-                        confluence,
-                    );
                     const gateAnalyses = toGateAnalyses({
                         // 재평가 루프와 같은 조립 — DB row가 아니므로 AnalysisRow 형태로 맞춘다.
                         confluence: confluence

@@ -139,7 +139,15 @@ export async function saveAnalysisResult(
         cronRunId?: string;
     },
 ) {
-    return db.insert(analysisResults).values(params).returning();
+    return db
+        .insert(analysisResults)
+        .values({
+            ...params,
+            // 호출부에서 받지 않고 여기서 붙인다 — 분석 축이 다섯이고 저장 경로는 하나뿐이라,
+            // 인자로 만들면 축 하나가 빠뜨려도 컴파일이 통과하고 그 축만 세대 미상이 된다.
+            appVersion: process.env.APP_VERSION ?? null,
+        })
+        .returning();
 }
 
 export async function getLatestAnalysisResult(db: Db, symbol: string, type: string) {

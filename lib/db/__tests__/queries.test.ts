@@ -439,9 +439,29 @@ describe('Analysis results queries', () => {
             expect(
                 (db as unknown as { insert: ReturnType<typeof vi.fn> }).insert,
             ).toHaveBeenCalled();
-            expect(db._chain.values).toHaveBeenCalledWith(params);
+            expect(db._chain.values).toHaveBeenCalledWith({ ...params, appVersion: null });
             expect(db._chain.returning).toHaveBeenCalled();
             expect(result).toEqual(mockReturned);
+        });
+
+        it('APP_VERSION을 프롬프트 세대로 붙인다 — 호출부가 넘기지 않아도', async () => {
+            // 프롬프트를 바꾼 전후를 데이터만으로 가르려면 어느 세대가 만든 행인지가 필요하다.
+            // 인자가 아니라 여기서 붙이는 이유는 축 하나가 빠뜨려도 컴파일이 통과하기 때문이다.
+            vi.stubEnv('APP_VERSION', 'v0.28.4');
+            const db = createMockDb([]);
+
+            await saveAnalysisResult(db as unknown as Db, {
+                symbol: 'AAPL',
+                analysisType: 'news',
+                result: {},
+                modelId: 'm',
+                analyzedAt: new Date('2026-01-15'),
+            });
+
+            expect(db._chain.values).toHaveBeenCalledWith(
+                expect.objectContaining({ appVersion: 'v0.28.4' }),
+            );
+            vi.unstubAllEnvs();
         });
     });
 

@@ -8642,6 +8642,31 @@ describe('execute cron handler', () => {
                     expect.objectContaining({ action: 'entry_poor_rr' }),
                 );
             });
+
+            it('막힌 행에도 축 breakdown을 남긴다 — 임계를 넘은 행이 가장 알고 싶은 행이다', async () => {
+                // 실측(2026-08-26): PLTR이 6틱 연속 임계를 넘어 세 게이트에 나눠 막혔는데
+                // 게이트 행의 detail에 components가 없어 점수 67의 출처를 추정만 할 수 있었다.
+                withUpside(161);
+
+                await handler(makeRequest(true));
+
+                // `publicDecision`이 HTTP 응답에서 detail을 벗기므로 DB 기록 쪽을 본다.
+                const saved = mockInsertCronDecisions.mock.calls.at(-1)?.[3] as Array<{
+                    action: string;
+                    detail?: Record<string, unknown>;
+                }>;
+                const blocked = saved.find((d) => d.action === 'entry_poor_rr');
+                expect(blocked?.detail).toEqual(
+                    expect.objectContaining({
+                        components: expect.any(Object),
+                        signal: expect.any(String),
+                        thresholds: expect.objectContaining({ buy: expect.any(Number) }),
+                        // 게이트 고유 페이로드가 덮이지 않는다.
+                        riskReward: expect.any(String),
+                        minRiskReward: expect.any(Number),
+                    }),
+                );
+            });
         });
 
         describe('권장 진입 구간 이탈 (entry_out_of_zone)', () => {
