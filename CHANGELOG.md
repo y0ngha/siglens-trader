@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.5](https://github.com/y0ngha/siglens-trader/compare/v0.28.4...v0.28.5) (2026-08-27)
+
+
+### Bug Fixes
+
+* 크론 오탐 경보와 관측 갭 넷 ([#56](https://github.com/y0ngha/siglens-trader/issues/56)) ([#56](https://github.com/y0ngha/siglens-trader/issues/56)) ([8d80b18](https://github.com/y0ngha/siglens-trader/commit/8d80b1811838149078875d3d800b53287af915eb))
+
 ## [0.28.4](https://github.com/y0ngha/siglens-trader/compare/v0.28.3...v0.28.4) (2026-08-22)
 
 
