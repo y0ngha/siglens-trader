@@ -23,7 +23,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `sessions` | Login sessions (cookie value = row id, expiry enforced on read) |
 | `watchlist` | Symbols to monitor |
 | `analysis_model_config` | Per-analysis-type model + BYOK settings |
-| `analysis_results` | Latest analysis snapshots (JSONB) |
+| `analysis_results` | Latest analysis snapshots (JSONB). `app_version`은 이 결과를 만든 **프롬프트 세대**(배포 태그) — 프롬프트 원문은 저장하지 않으므로 전후 비교의 유일한 축이다 |
 | `positions` | Open/closed positions (unique index on symbol+open status) |
 | `trades` | Execution history (with reason + mode + cronRunId) |
 | `trade_audit` | 사이징 게이트 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. `cron_run_id` + `symbol` + `kind`로 `trades`/`cron_decisions`와 조인하고, 정확히 1:1이어야 하면 `correlation_id`를 쓴다 (한 런에서 같은 심볼이 `exit` 게이트를 두 번 탈 수 있다) |

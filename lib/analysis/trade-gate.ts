@@ -10,15 +10,28 @@ import type { ConfluenceSnapshot } from '../strategy/confluence.js';
 import type { ExitTrigger } from '../strategy/trade-plan.js';
 import {
     safeActionRecommendation,
+    safeAnalysisEntryPrices,
     safeAnalysisIndicators,
     safeAnalysisPriceScenario,
+    safeAnalysisResistance,
     safeAnalysisSentiment,
+    safeAnalysisStopLoss,
+    safeAnalysisSupport,
+    safeAnalysisTakeProfit,
+    safeAnalysisTargetPrice,
     safeAnalysisTrend,
     safeArray,
     safePriceLevelArray,
     safeRecord,
     safeString,
 } from '../strategy/safe-extract.js';
+import {
+    firstUpsideExit,
+    formatEntryZone,
+    formatRiskReward,
+    formatStopRoom,
+    riskRewardRatio,
+} from '../strategy/entry-zone.js';
 import { ANALYSIS_TIER, toErrStr } from './types.js';
 
 /**
@@ -808,6 +821,81 @@ function sectionBudget(input: TradeGateInput): string[] {
     ];
 }
 
+/**
+ * 룰 엔진이 이미 계산해 둔 진입 품질 산술을 그대로 실어 보낸다 — 모델에게 다시 시키지 않는다.
+ *
+ * 종전에는 현재가·손절가·익절가 배열만 주고 지침 4번이 "손익비를 함께 본다"고 시켰다. 두 가지가
+ * 잘못이다. 첫째, 우리가 정확히 아는 값을 모델의 암산에 맡기는 것이라 틀릴 수 있다. 둘째이자 더
+ * 나쁜 쪽 — **모델은 어느 익절 레벨이 실제로 구속하는지 알 방법이 없다.** `권고 익절가`는 배열을
+ * 통째로 나열하는데(실측 PLTR: `$177.89, $178.24, $179.86, $181.10`) 시스템은 `firstUpsideExit`
+ * = min(분석 익절가, 저항 밴드 하단, 목표가 95%)에서 나간다. 가장 먼 목표로 암산하면 도달하지
+ * 못할 이익을 세게 되고, 그 과대평가가 곧 과대 사이징이다.
+ *
+ * 손절 쪽도 같다 — 구속하는 것은 지지선과 분석 손절가 중 **더 높은 쪽**인데 그 규칙은 프롬프트
+ * 어디에도 없었다.
+ *
+ * 내용은 진입 전용이다 — 이 값들은 전부 진입 품질 게이트의 산술이고, 청산 프롬프트에 진입
+ * 프레이밍을 싣지 않는다는 기존 방침(`renderAnalysisBody`의 kind 분기)과 같은 이유다. 다만
+ * **헤더는 항상 낸다**: `## 예산`·`## 청산 트리거`와 같은 규약이고, 섹션 집합이 kind에 따라
+ * 달라지면 프롬프트 골격이 흔들린다.
+ */
+function sectionPlanCheck(input: TradeGateInput): string[] {
+    const header = '## 결정론적 지표';
+    if (input.kind !== 'entry') {
+        return [header, '- 해당 없음 (진입 품질 산술은 청산 결정에 적용되지 않는다)'];
+    }
+    const tech = input.analyses.find((a) => a.type === 'technical')?.result;
+    if (tech == null) {
+        return [header, '- 해당 없음 (기술 분석 없음)'];
+    }
+
+    const price = input.price;
+    const stopLevels = {
+        supportLevel: safeAnalysisSupport(tech),
+        aiStopLoss: safeAnalysisStopLoss(tech),
+    };
+    const rrLevels = {
+        takeProfit: safeAnalysisTakeProfit(tech),
+        resistance: safeAnalysisResistance(tech),
+        target: safeAnalysisTargetPrice(tech),
+        ...stopLevels,
+    };
+    const entryPrices = safeAnalysisEntryPrices(tech);
+    const zoneTop = entryPrices.length ? Math.max(...entryPrices) : null;
+    const rr = riskRewardRatio(price, rrLevels);
+    const upside = firstUpsideExit(price, rrLevels);
+
+    const lines = [
+        header,
+        '- 아래 값은 규칙 엔진이 계산한 것이다. **다시 계산하지 말고 이 값을 그대로 쓴다.**',
+        `- 손익비: ${formatRiskReward(price, rrLevels) ?? '판단 불가 (하방 레벨 없음)'}`,
+    ];
+    if (upside !== null) {
+        lines.push(
+            `  - 보상은 **가장 먼저 서는** 익절 트리거(${fmtUsd(upside)})까지다 — 분석 익절가 / 저항 밴드 하단 / 목표가 95% 중 최솟값. \`## 분석\`의 \`권고 익절가\`에 더 먼 값이 나열돼 있어도 시스템은 거기까지 들고 가지 않는다.`,
+        );
+    }
+    if (rr !== null) {
+        lines.push(
+            `  - 손익분기 승률: ${fmtNum(Math.round(100 / (1 + rr)))}% (이 손익비에서 본전이 되는 승률)`,
+        );
+    }
+    // `price`는 비유한일 수 있다 — 맨 산술은 `NaN%`를 프롬프트에 흘린다(원칙 10). 포맷터가
+    // 흡수하게 두지 않고 계산 자체를 막는다: 분모가 0이면 Infinity라 포맷터도 '미상'만 낸다.
+    const zoneGap =
+        zoneTop !== null && zoneTop > 0 && Number.isFinite(price)
+            ? (price / zoneTop - 1) * 100
+            : null;
+    lines.push(
+        `- 손절까지 여유: ${formatStopRoom(price, stopLevels) ?? '판단 불가 (손절 레벨 없음)'}`,
+        '  - 구속하는 것은 지지선과 분석 손절가 중 **더 높은 쪽**이다.',
+        `- 권장 진입 구간: ${formatEntryZone(entryPrices) ?? '미상'}${
+            zoneGap === null ? '' : ` / 현재가는 구간 상단 대비 ${fmtPct(zoneGap)}`
+        }`,
+    );
+    return lines;
+}
+
 function sectionExit(input: TradeGateInput): string[] {
     const e = input.exit;
     if (input.kind !== 'exit' || !e) {
@@ -990,7 +1078,7 @@ const GUIDELINES: Record<TradeGateKind, string[]> = {
         '1. **예산과 현금이 먼저다.** `## 예산`의 집행 가능 금액이 작으면 분석이 아무리 좋아도 큰 `fraction`은 의미가 없다. 매수 가능 현금이 `미상`이면 그 사실 자체를 보수적 요인으로 취급해 크기를 줄인다.',
         '2. **분석의 신선도.** 각 축의 기준시각과 경과 시간을 본다. 오래된 분석에 기대어 내린 판단은 확신을 낮춘다.',
         '3. **신호 구성요소의 일치도.** 5개 축이 한 방향이면 확신을 높이고, 기술만 강하고 나머지가 엇갈리면 낮춘다.',
-        '4. **현재 위치와 키 레벨의 관계.** 현재가가 권장 진입 구간 안인지, 저항 바로 아래인지 지지 위인지를 본다. 같은 점수라도 크기가 달라야 한다. 손절가·익절가가 있으면 손익비를 함께 본다.',
+        '4. **현재 위치와 키 레벨의 관계.** 현재가가 권장 진입 구간 안인지, 저항 바로 아래인지 지지 위인지를 본다. 같은 점수라도 크기가 달라야 한다. 손익비·손절 여유·구간 대비 위치는 `## 결정론적 지표`에 이미 계산돼 있으니 그 값을 쓴다 — 직접 암산하지 않는다. 손익비가 낮을수록 크기를 줄인다.',
         '5. **기존 포지션과 추가 매수의 방향.** 이미 종목당 한도의 상당 부분을 채웠다면 추가 매수는 작아야 한다. ' +
             '`## 포지션`에 성격이 적혀 있으면 그것을 사이징에 반영한다 — 물타기는 고정 손절선을 함께 ' +
             '아래로 옮겨 같은 하락폭에서 손절이 더 늦게 걸리므로, 진입 근거가 약해진 상태의 물타기는 작게 낸다. ' +
@@ -1071,6 +1159,7 @@ export function buildTradeGatePrompt(input: TradeGateInput): { system: string; u
         sectionAccount(input),
         sectionPosition(input),
         sectionBudget(input),
+        sectionPlanCheck(input),
         sectionExit(input),
         sectionAnalyses(input),
         sectionGuidelines(input.kind),

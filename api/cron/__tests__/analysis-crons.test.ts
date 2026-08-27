@@ -215,6 +215,23 @@ describe('createAnalysisCronHandler', () => {
         );
     });
 
+    it('cadence skip 뒤 남은 한 심볼만 실패한 것은 전면 실패가 아니다 — 실측 회귀', async () => {
+        // 2026-08-26 14:45 technical: NVDA·PLTR·TSLA가 cadence skip이고 IONQ만
+        // `TypeError: terminated`(LLM 타임아웃) 하나였는데 "모든 심볼 실패 (1/4)"로
+        // 기록되고 경보까지 나갔다. IONQ는 14:05·15:03 성공으로 스스로 복구된 단발이었다.
+        mockRunner
+            .mockResolvedValueOnce({ status: 'error', error: 'TypeError: terminated' })
+            .mockResolvedValue({ status: 'skipped' });
+
+        await handler(makeRequest(true));
+
+        expect(mockFinishCronRun).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.any(String),
+            expect.objectContaining({ status: 'completed' }),
+        );
+    });
+
     it('일부만 실패하면 completed를 유지한다', async () => {
         mockRunner
             .mockResolvedValueOnce({ status: 'error', error: 'provider down' })
