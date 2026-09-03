@@ -14,6 +14,11 @@ vi.mock('../_lib/auth', () => ({
     isAuthenticated: (...args: unknown[]) => mockIsAuthenticated(...args),
 }));
 
+const mockCheckSchemaReadiness = vi.fn().mockResolvedValue({ ready: true });
+vi.mock('../../lib/db/schema-readiness', () => ({
+    checkSchemaReadiness: (...args: unknown[]) => mockCheckSchemaReadiness(...args),
+}));
+
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
 const mockGetDryRunCashFlowUsd = vi.fn().mockResolvedValue(0);
@@ -141,6 +146,7 @@ beforeEach(() => {
     mockGetDb.mockReturnValue(fakeDb);
     mockSendErrorEmail.mockResolvedValue(undefined);
     mockSendTradeExecutedEmail.mockResolvedValue(undefined);
+    mockCheckSchemaReadiness.mockResolvedValue({ ready: true });
     // resetAllMocks clears this; the approve route reads it before doing anything.
     mockGetNotificationConfig.mockResolvedValue([
         {
@@ -1977,6 +1983,42 @@ describe('GET /api/health', () => {
         const res = await handler(makeRequest('https://example.com/api/health'));
 
         expect(res.status).toBe(200);
+    });
+
+    it('ready=true 스키마 준비 확인은 인증 없이 통과한다 — deploy.sh가 폴링', async () => {
+        mockIsAuthenticated.mockResolvedValue(false);
+        mockCheckSchemaReadiness.mockResolvedValue({ ready: true });
+
+        const res = await handler(makeRequest('https://example.com/api/health?ready=true'));
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).ready).toBe(true);
+        expect(mockIsAuthenticated).not.toHaveBeenCalled();
+    });
+
+    it('스키마 불일치(42703)면 ready=true가 503으로 배포 실패를 알린다', async () => {
+        mockCheckSchemaReadiness.mockResolvedValue({
+            ready: false,
+            error: 'schema mismatch (42703): column "timeframe" does not exist',
+        });
+
+        const res = await handler(makeRequest('https://example.com/api/health?ready=true'));
+
+        expect(res.status).toBe(503);
+        const data = await res.json();
+        expect(data.ready).toBe(false);
+        expect(data.status).toBe('degraded');
+        expect(data.error).toContain('42703');
+    });
+
+    it('getDb() 자체가 던져도(DATABASE_URL 미설정 등) 503으로 죽는다', async () => {
+        mockGetDb.mockImplementation(() => {
+            throw new Error('DATABASE_URL environment variable is required');
+        });
+
+        const res = await handler(makeRequest('https://example.com/api/health?ready=true'));
+
+        expect(res.status).toBe(503);
     });
 });
 

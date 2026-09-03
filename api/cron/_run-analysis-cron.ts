@@ -6,6 +6,7 @@ import {
     getAnalysisConfig,
     getConfigValue,
     getLatestAnalysisResult,
+    getRecentAnalysisResults,
     saveAnalysisResult,
     startCronRun,
     finishCronRun,
@@ -17,6 +18,7 @@ import type { CronRunFinish, CronType } from '../../lib/db/queries.js';
 import type {
     AnalysisRunResult,
     NewsCardStore,
+    PriorAnalysisStore,
     RunAnalysisOptions,
 } from '../../lib/analysis/types.js';
 import { getAnalysisReasoning } from '../../lib/analysis/types.js';
@@ -130,6 +132,24 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                     upsertCards: (rows) => upsertNewsCards(db, [...rows]),
                 };
 
+                // prior-analysis 이력 Port. technical만 주입한다 — core의 prior-analysis
+                // 윈도우는 봉에 앵커링되고, 다섯 축 중 봉이 있는 것은 technical뿐이다
+                // (run-technical.ts만 이 필드를 읽으므로 다른 러너에 넘겨도 무해하지만,
+                // 존재 자체로 "이 축엔 이력이 있다"를 문서화하는 편이 낫다).
+                const priorAnalysisStore: PriorAnalysisStore | undefined =
+                    analysisType === 'technical'
+                        ? {
+                              getRecent: (p) =>
+                                  getRecentAnalysisResults(db, {
+                                      symbol: p.symbol,
+                                      type: 'technical',
+                                      timeframe: p.timeframe,
+                                      limit: p.limit,
+                                      since: p.since,
+                                  }),
+                          }
+                        : undefined;
+
                 // Cadence guard: the clock window this type gets one analysis per.
                 // toCoreTimeframe always returns one of the three AnalysisTimeframe literals;
                 // the wider Timeframe type is a TS artifact of the return annotation.
@@ -192,6 +212,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                                         : undefined,
                                     timeframe,
                                     cardStore,
+                                    priorAnalysisStore,
                                     deadlineMs: analysisDeadlineMs,
                                     // 분석 타입별 reasoning 정책(짧은 주기 축은 OFF).
                                     // 대시보드에 스위치가 생기면 config에서 흘려보낸다.
@@ -207,6 +228,7 @@ export function createAnalysisCronHandler(analysisType: string, runner: Analysis
                                     analysisType,
                                     result: result.result,
                                     modelId: config.modelId,
+                                    timeframe,
                                     analyzedAt: savedAt,
                                     sourceAnalyzedAt: extractSourceAnalyzedAt(
                                         result.result,

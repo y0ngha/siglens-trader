@@ -5,6 +5,7 @@ import {
     safeString,
     safeAnalysisTrend,
     safeAnalysisSentiment,
+    safeAnalysisRiskLevel,
     safeAnalysisSupport,
     safeAnalysisResistance,
     safeAnalysisTargetPrice,
@@ -13,6 +14,7 @@ import {
     safeAnalysisEntryPrices,
     safeAnalysisStopLoss,
     safeAnalysisTakeProfit,
+    safeAnalysisTakeProfitLadder,
     safeAnalysisIndicators,
     safeFundamentalCategories,
     safeArray,
@@ -102,6 +104,24 @@ describe('safeAnalysisSentiment', () => {
 
     it('returns undefined when overallSentiment is an array', () => {
         expect(safeAnalysisSentiment({ overallSentiment: ['bearish'] })).toBeUndefined();
+    });
+});
+
+describe('safeAnalysisRiskLevel', () => {
+    it('extracts riskLevel from valid structure', () => {
+        expect(safeAnalysisRiskLevel({ riskLevel: 'medium' })).toBe('medium');
+    });
+
+    it('returns undefined for null input', () => {
+        expect(safeAnalysisRiskLevel(null)).toBeUndefined();
+    });
+
+    it('returns undefined when riskLevel is missing', () => {
+        expect(safeAnalysisRiskLevel({})).toBeUndefined();
+    });
+
+    it('returns undefined when riskLevel is not a string', () => {
+        expect(safeAnalysisRiskLevel({ riskLevel: 3 })).toBeUndefined();
     });
 });
 
@@ -734,5 +754,42 @@ describe('safeAnalysisTakeProfit', () => {
             }),
         ).toBeUndefined();
         expect(safeAnalysisTakeProfit(null)).toBeUndefined();
+    });
+});
+
+describe('safeAnalysisTakeProfitLadder', () => {
+    it('사다리 전체를 오름차순으로 읽는다', () => {
+        expect(
+            safeAnalysisTakeProfitLadder(
+                withAction({ ...baseAction, takeProfitPrices: [170, 185, 200] }),
+            ),
+        ).toEqual([170, 185, 200]);
+    });
+
+    it('보정값 배열이 있으면 보정값이 이긴다', () => {
+        expect(
+            safeAnalysisTakeProfitLadder(
+                withAction({
+                    ...baseAction,
+                    takeProfitPrices: [90],
+                    reconciledLevels: {
+                        takeProfitPrices: [170, 185],
+                        exit: '',
+                        riskReward: '',
+                        reason: 'AI 익절가가 현재가 아래였습니다',
+                    },
+                }),
+            ),
+        ).toEqual([170, 185]);
+    });
+
+    it('없거나 전부 비정상이면 undefined', () => {
+        expect(safeAnalysisTakeProfitLadder(withAction(baseAction))).toBeUndefined();
+        expect(
+            safeAnalysisTakeProfitLadder({
+                actionRecommendation: { ...baseAction, takeProfitPrices: [0, -3] },
+            }),
+        ).toBeUndefined();
+        expect(safeAnalysisTakeProfitLadder(null)).toBeUndefined();
     });
 });

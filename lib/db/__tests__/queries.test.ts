@@ -17,6 +17,7 @@ import {
     getLatestAnalysisResult,
     getLatestAnalysisResults,
     getAllLatestAnalysisResults,
+    getRecentAnalysisResults,
     getOpenPositions,
     getOpenPositionBySymbol,
     openPosition,
@@ -427,6 +428,7 @@ describe('Analysis results queries', () => {
                 analysisType: 'technical',
                 result: { score: 85 },
                 modelId: 'claude-4',
+                timeframe: '1Hour',
                 analyzedAt: new Date('2026-01-15'),
                 sourceAnalyzedAt: new Date('2026-01-15T01:23:45Z'),
                 cronRunId: 'run-123',
@@ -455,6 +457,7 @@ describe('Analysis results queries', () => {
                 analysisType: 'news',
                 result: {},
                 modelId: 'm',
+                timeframe: '1Hour',
                 analyzedAt: new Date('2026-01-15'),
             });
 
@@ -500,6 +503,44 @@ describe('Analysis results queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+
+    describe('getRecentAnalysisResults', () => {
+        it('symbol + type + timeframe로 걸러 analyzedAt desc, limit개까지 반환한다', async () => {
+            const mockRows = [
+                { id: 3, symbol: 'AAPL', analysisType: 'technical', timeframe: '1Hour' },
+                { id: 2, symbol: 'AAPL', analysisType: 'technical', timeframe: '1Hour' },
+            ];
+            const db = createMockDb(mockRows);
+            const since = new Date('2026-05-01T00:00:00.000Z');
+
+            const result = await getRecentAnalysisResults(db as unknown as Db, {
+                symbol: 'AAPL',
+                type: 'technical',
+                timeframe: '1Hour',
+                limit: 21,
+                since,
+            });
+
+            expect(db._chain.where).toHaveBeenCalled();
+            expect(db._chain.orderBy).toHaveBeenCalled();
+            expect(db._chain.limit).toHaveBeenCalledWith(21);
+            expect(result).toEqual(mockRows);
+        });
+
+        it('빈 결과는 빈 배열', async () => {
+            const db = createMockDb([]);
+
+            const result = await getRecentAnalysisResults(db as unknown as Db, {
+                symbol: 'AAPL',
+                type: 'technical',
+                timeframe: '1Hour',
+                limit: 21,
+                since: new Date('2026-05-01T00:00:00.000Z'),
+            });
+
+            expect(result).toEqual([]);
         });
     });
 

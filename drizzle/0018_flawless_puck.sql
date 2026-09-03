@@ -1,0 +1,2 @@
+ALTER TABLE "analysis_results" ADD COLUMN "timeframe" text DEFAULT '1Hour' NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_analysis_symbol_type_timeframe_date" ON "analysis_results" USING btree ("symbol","analysis_type","timeframe","analyzed_at");

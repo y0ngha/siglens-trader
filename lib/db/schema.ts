@@ -105,6 +105,19 @@ export const analysisResults = pgTable(
          * 로컬 개발에서는 `APP_VERSION`이 없어 NULL이다.
          */
         appVersion: text('app_version'),
+        /**
+         * 이 결과가 생성될 때 적용 중이던 `analysis_timeframe`(전역 설정, `POST /api/config`로
+         * 런타임에 바뀔 수 있다 — `lib/analysis/timeframe.ts`). '1Hour'로 백필한다
+         * (`DEFAULT_ANALYSIS_TIMEFRAME`과 같은 값이지만, `lib/db/`는 `lib/analysis/`를
+         * import할 수 없어(레이어 규칙) 리터럴을 중복해 둔다).
+         *
+         * **왜 필요한가.** 운영자가 타임프레임을 바꾸면 그 전후에 쌓인 행이 이 컬럼 없이는
+         * 구분되지 않는다. prior-analysis 이력 기능은 과거 분석을 **봉에 고정**해 프롬프트에
+         * 넣는데(siglens-core가 바 앵커드 윈도우로 재단), 예를 들어 1Hour로 생성된 분석을
+         * 15Min 봉 옆에 놓고 비교하면 애초에 그 해상도로 조건화된 적 없는 신호를 실제
+         * 가격 움직임에 잘못 귀속시키게 된다.
+         */
+        timeframe: text('timeframe').notNull().default('1Hour'),
         analyzedAt: timestamp('analyzed_at', { withTimezone: true }).notNull(),
         sourceAnalyzedAt: timestamp('source_analyzed_at', { withTimezone: true }),
         cronRunId: text('cron_run_id'),
@@ -114,6 +127,17 @@ export const analysisResults = pgTable(
         index('idx_analysis_symbol_type_date').on(
             table.symbol,
             table.analysisType,
+            table.analyzedAt,
+        ),
+        // prior-analysis 읽기 쿼리(getRecentAnalysisResults) 전용 — symbol + analysisType +
+        // timeframe 동등 비교 후 analyzedAt DESC. 위 인덱스에 timeframe을 끼워 넣지 않는
+        // 이유: getAllLatestAnalysisResults의 DISTINCT ON (symbol, analysisType) ORDER BY
+        // symbol, analysisType, analyzedAt DESC가 그 인덱스 순서와 정확히 일치해야 인덱스만으로
+        // 풀리는데, 중간에 timeframe이 끼면 그 일치가 깨진다.
+        index('idx_analysis_symbol_type_timeframe_date').on(
+            table.symbol,
+            table.analysisType,
+            table.timeframe,
             table.analyzedAt,
         ),
     ],

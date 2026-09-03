@@ -41,6 +41,11 @@ export function safeAnalysisSentiment(result: unknown): string | undefined {
     return r ? safeString(r.overallSentiment) : undefined;
 }
 
+export function safeAnalysisRiskLevel(result: unknown): string | undefined {
+    const r = safeRecord(result);
+    return r ? safeString(r.riskLevel) : undefined;
+}
+
 export function safeNumberArray(value: unknown): number[] | undefined {
     if (!Array.isArray(value)) return undefined;
     const nums = value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
@@ -160,6 +165,21 @@ function actionRecommendationRecords(result: unknown): {
  */
 export function safeAnalysisEntryPrices(result: unknown): number[] {
     return safePriceLevelArray(actionRecommendationRecords(result).rec?.entryPrices) ?? [];
+}
+
+/**
+ * AI가 제시한 익절가 전체 사다리(보정값 우선) — 오름차순.
+ *
+ * `safeAnalysisTakeProfit`은 가장 가까운 한 칸만 반환한다(청산 트리거는 단일 숫자여야
+ * 하므로). prior-analysis 이력(`lib/analysis/prior-analysis.ts`)은 트리거가 아니라 "그때
+ * 무엇을 목표로 했는가"를 프롬프트에 참고 정보로 보여줄 뿐이라 사다리 전체가 필요하다.
+ */
+export function safeAnalysisTakeProfitLadder(result: unknown): number[] | undefined {
+    const { rec, reconciled } = actionRecommendationRecords(result);
+    return (
+        safePriceLevelArray(reconciled?.takeProfitPrices) ??
+        safePriceLevelArray(rec?.takeProfitPrices)
+    );
 }
 
 /** AI가 제시한 손절가 (보정값 우선). `evaluateExistingPosition`의 손절 트리거. */

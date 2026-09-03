@@ -141,6 +141,30 @@ export interface NewsCardStore {
     ): Promise<void>;
 }
 
+/** One `analysis_results` row's raw fields, as needed to build a `PriorAnalysis` from it. */
+export interface PriorAnalysisRow {
+    result: unknown;
+    /** The original analysis time (`analyzed_at`), not the row's insert time. */
+    analyzedAt: Date;
+}
+
+/**
+ * Port: db 의존을 analysis 레이어 밖으로 분리한다 (`NewsCardStore`와 같은 패턴). 구현체는
+ * api/cron 레이어가 `lib/db/queries.ts`의 `getRecentAnalysisResults`로 주입한다.
+ *
+ * `run-technical.ts`만 이 필드를 읽는다 — siglens-core의 prior-analysis 윈도우는 봉에
+ * 앵커링되고, trader의 다섯 분석 축 중 봉이 있는 것은 technical뿐이다.
+ */
+export interface PriorAnalysisStore {
+    getRecent(params: {
+        symbol: string;
+        timeframe: Timeframe;
+        /** From core's `analysisHistoryQuery(timeframe)` — a deliberately generous pre-filter. */
+        limit: number;
+        since: Date;
+    }): Promise<PriorAnalysisRow[]>;
+}
+
 export interface RunAnalysisOptions {
     symbol: string;
     companyName: string;
@@ -149,6 +173,8 @@ export interface RunAnalysisOptions {
     timeframe?: Timeframe;
     /** news enrich에 필요. factory가 항상 주입. */
     cardStore?: NewsCardStore;
+    /** prior-analysis 이력 조회 Port (see {@link PriorAnalysisStore}). technical만 사용. */
+    priorAnalysisStore?: PriorAnalysisStore;
     /**
      * 상세 분석(deep-thinking reasoning) 토글. 지정하지 않으면 항상 ON으로 취급한다.
      * siglens-trader에는 상세분석 스위치 UI가 없으므로 cron이 항상 `true`로 주입하며,
