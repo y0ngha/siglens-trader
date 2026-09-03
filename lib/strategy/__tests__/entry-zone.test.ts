@@ -210,15 +210,26 @@ describe('formatStopRoom', () => {
 
 describe('firstUpsideExit', () => {
     it('가장 먼저 서는 익절 트리거를 고른다 — 더 먼 목표를 세면 못 먹을 이익을 센다', () => {
-        // 저항은 밴드 하단(−2%)에서, 목표가는 95%에서 발동한다.
-        expect(firstUpsideExit(100, { takeProfit: 110, resistance: 105, target: 130 })).toBeCloseTo(
-            102.9, // 105 × 0.98
+        // 목표가는 95%에서 발동한다. 저항은 `takeProfit`이 있으면 후보가 아니다(아래 참고).
+        expect(firstUpsideExit(100, { takeProfit: 130, target: 120 })).toBeCloseTo(
+            114, // 120 × 0.95
         );
+    });
+
+    it('저항선은 takeProfit이 없을 때만 후보다 — 규칙 5가 4.5의 폴백이라서', () => {
+        // takeProfit이 있으면 청산 체인의 규칙 5(저항 밴드)는 아예 서지 않는다. 여기서
+        // 세면 서지도 않을 트리거를 보상 상한으로 잡아 손익비를 실제보다 낮게 낸다.
+        expect(firstUpsideExit(100, { takeProfit: 110, resistance: 105 })).toBeCloseTo(110);
+        // 없으면 폴백이 살아나 밴드 하단(−2%)이 보상이 된다.
+        expect(firstUpsideExit(100, { resistance: 105 })).toBeCloseTo(102.9);
     });
 
     it('진입가 이하인 레벨은 후보에서 뺀다', () => {
         expect(firstUpsideExit(100, { takeProfit: 95, resistance: 99 })).toBeNull();
-        expect(firstUpsideExit(100, { takeProfit: 95, resistance: 120 })).toBeCloseTo(117.6);
+        // `takeProfit` 95는 현재가 100 **아래**라 규칙 4.5가 이미 서 있다 — 상방이 없다.
+        // 종전에는 저항 120×0.98=117.6을 보상으로 셌는데, 거기 닿기 한참 전에 4.5가
+        // 발동해 청산되므로 도달할 수 없는 이익이었다.
+        expect(firstUpsideExit(100, { takeProfit: 95, resistance: 120 })).toBeNull();
     });
 
     it('레벨이 없거나 가격이 비정상이면 null', () => {

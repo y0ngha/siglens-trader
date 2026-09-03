@@ -128,7 +128,8 @@ export const RESISTANCE_BREAKOUT_BAND = 0.02;
  * 3.5. 하락 지표 컨플루언스 — always active
  * 4. Fixed take profit (only when fixedExitEnabled)
  * 4.5. 분석 익절가 도달 (`aiTakeProfit`) — always active
- * 5. Dynamic take profit (resistance / target approach) — always active
+ * 5. Dynamic take profit (resistance approach) — **`aiTakeProfit`이 없을 때만** (4.5의 폴백)
+ * 5b. Dynamic take profit (target approach) — always active
  * 6. News-driven preemptive exit (bearish news + profit zone) — always active
  */
 export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
@@ -247,7 +248,8 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
 
     // 4.5. 분석이 명시한 익절가 도달. 손절 쪽(1.5)과 같은 자리 — 고정선 다음이 분석선이다.
     // 저항선/목표가 근접(5번)이 98%·95% 근사인 것과 달리 이건 명시 가격이라 근사를 쓰지
-    // 않는다. 이 값이 없을 때 5번이 그대로 받는다.
+    // 않는다. 이 값이 없을 때 5번이 그대로 받는다 — 그 폴백 관계는 이제 5번 조건에
+    // 실제로 적혀 있다. 종전에는 문장으로만 있었고 코드는 5번을 항상 돌렸다.
     if (params.aiTakeProfit && currentPrice >= params.aiTakeProfit) {
         return {
             action: 'take_profit',
@@ -265,17 +267,39 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         };
     }
 
-    // 5. Dynamic take profit: approaching resistance or target
+    // 5. Dynamic take profit: approaching resistance — **4.5의 폴백일 때만.**
     //
-    // **밴드다 — 하한만 두면 돌파가 저항 거부로 오독된다.** 종전 조건은 `>= r*0.98`뿐이라
-    // 가격이 저항선을 아무리 크게 넘어도 계속 참이었다. 실측(2026-08-13 PLTR): 저항 172.33에
-    // 현재가 176.375(2.3% **위**)를 "저항선 근접"으로 청산. 게다가 매수가가 178.53이라
-    // 저항선이 진입가보다 아래였고, 그래서 포지션이 열린 순간부터 이 조건이 서 있었다.
+    // 4.5가 "이 값이 없을 때 5번이 그대로 받는다"고 적어 둔 그 폴백이다. 그런데 조건이
+    // 없어서 **항상** 돌았고, `aiTakeProfit`보다 낮은 자리에서 먼저 서기 때문에(실측 75%)
+    // 자기가 받쳐 주기로 한 규칙을 가로챘다.
     //
-    // 저항선은 목표가와 다르다. 목표가 위는 "도달했다"이므로 익절이 맞지만(아래 분기는
-    // 그대로 상한 없이 둔다), 저항선 위는 "뚫었다"이고 그건 파는 이유가 아니다. 뚫고 올라간
-    // 포지션은 4.5(분석 익절가)·5b(목표가)·구조 훼손 청산이 받는다.
+    // 왜 상수인가 — `keyLevels.resistance[0]`은 정의상 **현재가에서 가장 가까운** 저항이고
+    // 매시간 다시 계산돼 가격을 따라다닌다. 실측(706틱): 현재가 대비 중앙 **+0.19%**로,
+    // 1Hour 실현 이동 중앙값(0.25~0.49%)보다 **작다**. 거기에 ±2% 밴드를 씌우니
+    // **99.2%의 틱에서 조건이 참**이었다. 신호가 아니라 상수다 — congress 축과 같은 형태다.
+    //
+    // 결과는 "사자마자 청산"이다. 실측(705 표본, 매 틱 매수 → 다음 틱 평가): 청산되지 않는
+    // 경우가 **0%**. 프로덕션 실거래도 그렇게 났다 — 2026-09-02 NVDA를 227.53에 사고
+    // (저항 227, **매수가보다 아래**) 10분 뒤 227.45에 청산, 즉 체결되는 순간 이미 조건이
+    // 서 있었다.
+    //
+    // 폴백으로 되돌리면 자기 자리를 찾는다. `aiTakeProfit`은 실측 99% 존재하고(그중 82%는
+    // AI 원본, 18%는 core의 ATR 폴백) 현재가 대비 중앙 **+0.70%** — 노이즈 밖의 진짜 목표다.
+    // 리플레이(702 표본): 규칙 4.5 발동이 93건(평균 +0.370%) → 275건(평균 **+1.360%**),
+    // 거래당 평균 −0.024% → **+0.229%**, 보유 중앙값 10분 → 30분.
+    //
+    // **이 변경은 청산을 느슨하게 만든다** — 원칙 7이 요구하는 방향 선언이다. 조이는 쪽이
+    // 아니므로 진입에는 영향이 없다. 리스크 컨트롤(1.5 분석손절가 / 2 지지선 이탈 /
+    // 3 추세 반전 / 3.5 하락 컨플루언스)은 그대로이고 각각 4~6%의 틱에서 발동한다.
+    // 다만 손실 꼬리가 두꺼워진다는 것은 사실이다(리플레이 p05 −0.70% → −2.44%) —
+    // 규칙 5가 이익도 손실도 함께 잘라 내던 것이 없어지고 분석 손절가가 그 자리를 받는다.
+    //
+    // **밴드는 그대로 둔다.** 하한만 두면 돌파가 저항 거부로 오독된다 — 종전 조건은
+    // `>= r*0.98`뿐이라 가격이 저항선을 아무리 크게 넘어도 계속 참이었다(실측 2026-08-13
+    // PLTR: 저항 172.33에 현재가 176.375). 목표가 위는 "도달했다"이므로 익절이 맞지만
+    // (아래 5b는 그대로 상한 없이 둔다) 저항선 위는 "뚫었다"이고 그건 파는 이유가 아니다.
     if (
+        !params.aiTakeProfit &&
         params.resistanceLevel &&
         currentPrice >= params.resistanceLevel * (1 - RESISTANCE_APPROACH_BAND) &&
         currentPrice <= params.resistanceLevel * (1 + RESISTANCE_BREAKOUT_BAND)

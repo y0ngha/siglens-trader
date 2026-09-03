@@ -658,6 +658,67 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
+    describe('저항선 근접은 4.5(분석 익절가)의 폴백이다', () => {
+        // 프로덕션 실측(2026-09-02 NVDA): 227.5272에 매수(저항 227 — **매수가보다 아래**),
+        // 10분 뒤 227.45에 "저항선 근접"으로 청산. 체결되는 순간 이미 조건이 서 있었다.
+        //
+        // 원인은 상수화다. `keyLevels.resistance[0]`은 현재가에서 가장 가까운 저항이고
+        // 매시간 다시 계산돼 가격을 따라다닌다 — 실측 706틱에서 현재가 대비 중앙 +0.19%로
+        // 1Hour 실현 이동 중앙값(0.25~0.49%)보다 작다. ±2% 밴드를 씌우면 99.2%의 틱에서
+        // 참이 되고, 705 표본에서 "다음 틱에 청산되지 않는" 경우가 0%였다.
+        it('aiTakeProfit이 있으면 저항선 근접으로 청산하지 않는다 — 실측 회귀', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 227.5272,
+                currentPrice: 227.45,
+                resistanceLevel: 227,
+                aiTakeProfit: 231.07,
+                aiStopLoss: 222.46,
+                supportLevel: 225.4,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('aiTakeProfit이 없으면 폴백이 살아나 그대로 익절한다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 227.5272,
+                currentPrice: 227.45,
+                resistanceLevel: 227,
+                aiStopLoss: 222.46,
+                supportLevel: 225.4,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('저항선 근접');
+        });
+
+        it('폴백을 막아도 분석 익절가는 그대로 발동한다 — 익절 경로가 사라지지 않는다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100,
+                currentPrice: 111,
+                resistanceLevel: 110,
+                aiTakeProfit: 110,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('분석 익절가');
+        });
+
+        it('폴백을 막아도 손절 경로는 그대로다 — 원칙 7', () => {
+            // 청산을 느슨하게 만드는 변경이므로 리스크 컨트롤이 남아 있는지 못박는다.
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100,
+                currentPrice: 94,
+                resistanceLevel: 94,
+                aiTakeProfit: 110,
+                aiStopLoss: 95,
+            });
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('분석 손절가');
+        });
+    });
+
     describe('저항선 근접은 밴드다 — 돌파는 익절 사유가 아니다', () => {
         // 2026-08-13 PLTR 실측: 저항 172.33에 현재가 176.375(2.3% **위**)를 "저항선 근접"
         // 으로 청산. 매수가 178.53이라 저항선이 진입가 아래였고, 포지션이 열린 순간부터
