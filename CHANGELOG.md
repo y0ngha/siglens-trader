@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.6](https://github.com/y0ngha/siglens-trader/compare/v0.28.5...v0.28.6) (2026-09-03)
+
+
+### Bug Fixes
+
+* 저항선 근접 익절을 4.5의 폴백으로 되돌린다 ([#57](https://github.com/y0ngha/siglens-trader/issues/57)) ([#58](https://github.com/y0ngha/siglens-trader/issues/58)) ([3f7d6d1](https://github.com/y0ngha/siglens-trader/commit/3f7d6d1c2d5e447f6965d8cc3c15d97ed3e787da))
+
 ## [0.28.5](https://github.com/y0ngha/siglens-trader/compare/v0.28.4...v0.28.5) (2026-08-27)
 
 
