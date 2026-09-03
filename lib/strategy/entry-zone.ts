@@ -117,7 +117,7 @@ export const MIN_RISK_REWARD = 1.5;
 export interface RiskRewardLevels {
     /** `actionRecommendation.takeProfitPrices[0]` — 청산 규칙 4.5가 보는 값. */
     takeProfit?: number;
-    /** `keyLevels.resistance[0]` — 규칙 5가 밴드 하단(−2%)에서 발동한다. */
+    /** `keyLevels.resistance[0]` — 규칙 5가 밴드 하단(−2%)에서 발동한다(`takeProfit` 부재 시에만). */
     resistance?: number;
     /** `priceTargets.bullish` 첫 목표 — 규칙 5b가 95% 지점에서 발동한다. */
     target?: number;
@@ -137,12 +137,19 @@ const TARGET_TRIGGER_RATIO = 0.95;
  * 청산 규칙이 4.5(분석 익절가) → 5(저항 밴드) → 5b(목표가) 순으로 배치돼 있지만, 가격이
  * 올라가며 실제로 먼저 닿는 것은 **그중 가장 낮은 값**이다. 보상은 그 지점까지다 —
  * 더 먼 목표를 근거로 손익비를 계산하면 도달하지 못할 이익을 세는 셈이 된다.
+ *
+ * **저항선은 `takeProfit`이 없을 때만 후보다.** 규칙 5가 4.5의 폴백이라(그쪽 주석 참고)
+ * 분석 익절가가 있으면 저항 밴드는 아예 발동하지 않는다. 여기서 세면 청산 체인이 서지도
+ * 않을 트리거를 보상 상한으로 잡아, 실제보다 낮은 손익비로 진입을 막게 된다.
+ * 실측(706틱)에서 저항선이 구속하는 경우는 1%다 — 결합 자체가 얇지만, 두 곳이 같은
+ * 규칙을 다르게 모델링하는 상태로 두면 다음에 한쪽만 고쳐질 때 조용히 갈라진다.
  */
 export function firstUpsideExit(price: number, levels: RiskRewardLevels): number | null {
     if (!isFinitePositive(price)) return null;
+    const resistanceCounts = !isFinitePositive(levels.takeProfit);
     const candidates = [
         levels.takeProfit,
-        isFinitePositive(levels.resistance)
+        resistanceCounts && isFinitePositive(levels.resistance)
             ? levels.resistance * RESISTANCE_TRIGGER_RATIO
             : undefined,
         isFinitePositive(levels.target) ? levels.target * TARGET_TRIGGER_RATIO : undefined,
