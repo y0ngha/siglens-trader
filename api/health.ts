@@ -1,6 +1,7 @@
 import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
 import { checkConsistency } from '../lib/db/recovery.js';
+import { checkSchemaReadiness } from '../lib/db/schema-readiness.js';
 
 async function handler(req: Request): Promise<Response> {
     if (req.method !== 'GET') {
@@ -16,6 +17,34 @@ async function handler(req: Request): Promise<Response> {
         // 무관해서 그 확인을 못 했다.
         version: process.env.APP_VERSION ?? 'unknown',
     };
+
+    // Deploy-time readiness probe: /api/health?ready=true. `infra/aws/deploy.sh` polls
+    // this (not the bare endpoint below) so a migrate-after-deploy ordering mistake
+    // fails the deploy loudly instead of going unnoticed — see docs/DEPLOYMENT.md §12.
+    // Unauthenticated like the bare check: it leaks no data, only whether one known
+    // column exists, and the box running deploy.sh has no session cookie to send.
+    // Deliberately separate from `deep=true` below — that one is an authenticated,
+    // unbounded consistency scan meant for a human, not a 60s deploy poll.
+    if (url.searchParams.get('ready') === 'true') {
+        try {
+            const { ready, error } = await checkSchemaReadiness(getDb());
+            if (!ready) {
+                return Response.json(
+                    { ...base, status: 'degraded', ready, error },
+                    { status: 503 },
+                );
+            }
+            return Response.json({ ...base, ready });
+        } catch (err) {
+            // getDb() itself can throw (e.g. DATABASE_URL unset) — fail loudly the same
+            // way as a confirmed schema mismatch rather than letting this bubble into a
+            // generic 500 with no explanation in the deploy log.
+            return Response.json(
+                { ...base, status: 'degraded', ready: false, error: String(err) },
+                { status: 503 },
+            );
+        }
+    }
 
     // Optional deep check: /api/health?deep=true
     if (url.searchParams.get('deep') === 'true') {

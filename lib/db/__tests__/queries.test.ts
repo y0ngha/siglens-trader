@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { inArray } from 'drizzle-orm';
-import { orderTracking } from '../schema';
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { analysisResults, orderTracking } from '../schema';
 import {
     getEnabledWatchlist,
     getAllWatchlist,
@@ -17,6 +17,7 @@ import {
     getLatestAnalysisResult,
     getLatestAnalysisResults,
     getAllLatestAnalysisResults,
+    getRecentAnalysisResults,
     getOpenPositions,
     getOpenPositionBySymbol,
     openPosition,
@@ -427,6 +428,7 @@ describe('Analysis results queries', () => {
                 analysisType: 'technical',
                 result: { score: 85 },
                 modelId: 'claude-4',
+                timeframe: '1Hour',
                 analyzedAt: new Date('2026-01-15'),
                 sourceAnalyzedAt: new Date('2026-01-15T01:23:45Z'),
                 cronRunId: 'run-123',
@@ -455,6 +457,7 @@ describe('Analysis results queries', () => {
                 analysisType: 'news',
                 result: {},
                 modelId: 'm',
+                timeframe: '1Hour',
                 analyzedAt: new Date('2026-01-15'),
             });
 
@@ -500,6 +503,58 @@ describe('Analysis results queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
             expect(db._chain.orderBy).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+    });
+
+    describe('getRecentAnalysisResults', () => {
+        it('symbol + type + timeframe로 걸러 analyzedAt desc, limit개까지 반환한다', async () => {
+            const mockRows = [
+                { id: 3, symbol: 'AAPL', analysisType: 'technical', timeframe: '1Hour' },
+                { id: 2, symbol: 'AAPL', analysisType: 'technical', timeframe: '1Hour' },
+            ];
+            const db = createMockDb(mockRows);
+            const since = new Date('2026-05-01T00:00:00.000Z');
+
+            const result = await getRecentAnalysisResults(db as unknown as Db, {
+                symbol: 'AAPL',
+                type: 'technical',
+                timeframe: '1Hour',
+                limit: 21,
+                since,
+            });
+
+            // 술어를 **같은 방식으로 조립해 깊은 비교**한다.
+            // `toHaveBeenCalled()`만 보면 `timeframe` 조건을 빼거나
+            // `gte`↔`lte`를 바꿔도 통과한다 — 모킹된 체인이 어떤 쿼리를
+            // 받든 같은 스텁을 돌려주기 때문이다.
+            expect(db._chain.where.mock.calls[0]![0]).toEqual(
+                and(
+                    eq(analysisResults.symbol, 'AAPL'),
+                    eq(analysisResults.analysisType, 'technical'),
+                    eq(analysisResults.timeframe, '1Hour'),
+                    gte(analysisResults.analyzedAt, since),
+                ),
+            );
+            // 정렬이 뒤집히면(desc→asc) 최신이 아니라 **가장 오래된** 이력이
+            // 프롬프트에 실린다.
+            expect(db._chain.orderBy.mock.calls[0]![0]).toEqual(desc(analysisResults.analyzedAt));
+
+            expect(db._chain.limit).toHaveBeenCalledWith(21);
+            expect(result).toEqual(mockRows);
+        });
+
+        it('빈 결과는 빈 배열', async () => {
+            const db = createMockDb([]);
+
+            const result = await getRecentAnalysisResults(db as unknown as Db, {
+                symbol: 'AAPL',
+                type: 'technical',
+                timeframe: '1Hour',
+                limit: 21,
+                since: new Date('2026-05-01T00:00:00.000Z'),
+            });
+
+            expect(result).toEqual([]);
         });
     });
 

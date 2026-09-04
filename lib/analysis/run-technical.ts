@@ -1,4 +1,9 @@
-import { runAnalysis } from '@y0ngha/siglens-core';
+import {
+    analysisHistoryQuery,
+    runAnalysis,
+    type PriorAnalysis,
+    type Timeframe,
+} from '@y0ngha/siglens-core';
 import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
 import {
     ANALYSIS_TIER,
@@ -9,6 +14,41 @@ import {
     type RunAnalysisOptions,
 } from './types.js';
 import { DEFAULT_ANALYSIS_TIMEFRAME } from './timeframe.js';
+import { mapRowsToPriorAnalyses } from './prior-analysis.js';
+
+/**
+ * Fetches + maps prior-analysis history for `runAnalysis`'s `priorAnalyses` option.
+ *
+ * **Never fails the analysis.** This is additional context, not a precondition — omitting
+ * `priorAnalyses` leaves the prompt and (for callers that don't force-bypass, unlike this repo)
+ * the cache key byte-identical, so any failure here just falls back to that pre-existing
+ * behavior. A missing store (other four analysis axes, or a caller that doesn't wire one) is the
+ * normal case, not an error.
+ *
+ * Sizes the query with core's `analysisHistoryQuery(timeframe)` — a deliberately generous
+ * coarse pre-filter that core re-cuts twice afterwards (cache-window exclusion, then a
+ * bar-anchored window). Never narrow below what it returns; under-fetching silently disables
+ * the feature with no error anywhere.
+ */
+async function fetchPriorAnalyses(
+    options: RunAnalysisOptions,
+    timeframe: Timeframe,
+): Promise<PriorAnalysis[]> {
+    if (!options.priorAnalysisStore) return [];
+    try {
+        const { limit, sinceMs } = analysisHistoryQuery(timeframe);
+        const rows = await options.priorAnalysisStore.getRecent({
+            symbol: options.symbol,
+            timeframe,
+            limit,
+            since: new Date(Date.now() - sinceMs),
+        });
+        return mapRowsToPriorAnalyses(rows);
+    } catch (err) {
+        console.warn('[run-technical] prior-analysis fetch failed, proceeding without it', err);
+        return [];
+    }
+}
 
 export async function runTechnicalAnalysis(
     options: RunAnalysisOptions,
@@ -19,6 +59,7 @@ export async function runTechnicalAnalysis(
     try {
         // 미지정 시 분석 타임프레임 계약의 기본값(1Hour)으로. '1Day'는 계약 밖이라 금지.
         const timeframe = options.timeframe ?? DEFAULT_ANALYSIS_TIMEFRAME;
+        const priorAnalyses = await fetchPriorAnalyses(options, timeframe);
         // `force = true` — core의 Redis 분석 캐시를 우회한다.
         //
         // 캐시 키에는 입력 해시가 없고(심볼·타임프레임·모델·프롬프트버전·스킬지문·reasoning)
@@ -43,6 +84,10 @@ export async function runTechnicalAnalysis(
                 // 상세 분석 항상 ON(스위치 없음). 지정 시 그 값을 따른다.
                 reasoning: options.reasoning ?? DEFAULT_ANALYSIS_REASONING,
                 signal,
+                // 빈 배열이면 생략한다 — core 문서상 "omitting it leaves the prompt and
+                // cache key byte-identical"과 정확히 같은 상태로 두기 위해서다(이 저장소는
+                // force=true라 캐시 키는 무관하지만, 프롬프트 바이트는 여전히 동일해야 한다).
+                priorAnalyses: priorAnalyses.length > 0 ? priorAnalyses : undefined,
             },
         );
 

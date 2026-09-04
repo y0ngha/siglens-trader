@@ -134,6 +134,15 @@ export async function saveAnalysisResult(
         analysisType: string;
         result: unknown;
         modelId: string;
+        /**
+         * 이 결과가 생성될 때 적용 중이던 `analysis_timeframe` 값.
+         *
+         * `appVersion`과 달리 함수 내부에서 유도하지 않고 호출부가 명시적으로 넘긴다 —
+         * 호출부(`api/cron/_run-analysis-cron.ts`)는 이미 어떤 타임프레임으로 분석을
+         * 돌렸는지 알고 있고, 여기서 기본값을 두면 새 호출부 하나가 빠뜨려도 컴파일이
+         * 통과해 그 행만 조용히 잘못된 타임프레임으로 라벨링된다.
+         */
+        timeframe: string;
         analyzedAt: Date;
         sourceAnalyzedAt?: Date;
         cronRunId?: string;
@@ -158,6 +167,37 @@ export async function getLatestAnalysisResult(db: Db, symbol: string, type: stri
         .orderBy(desc(analysisResults.analyzedAt))
         .limit(1);
     return rows[0] ?? null;
+}
+
+/**
+ * Prior-analysis history for one symbol + analysis type + timeframe, newest first.
+ *
+ * `timeframe` is an equality filter, not a hint — see the `timeframe` column doc in
+ * `schema.ts`. `analyzedAt` is the *original* analysis time (not `createdAt`, the row's
+ * insert time), which is what lets the caller anchor these rows against historical bars.
+ *
+ * `since` / `limit` are meant to come from siglens-core's `analysisHistoryQuery(timeframe)` —
+ * a deliberately generous coarse pre-filter that core re-cuts twice afterwards. Narrowing
+ * below what that returns silently starves the feature; this function does not second-guess
+ * the caller's bounds.
+ */
+export async function getRecentAnalysisResults(
+    db: Db,
+    params: { symbol: string; type: string; timeframe: string; limit: number; since: Date },
+) {
+    return db
+        .select()
+        .from(analysisResults)
+        .where(
+            and(
+                eq(analysisResults.symbol, params.symbol),
+                eq(analysisResults.analysisType, params.type),
+                eq(analysisResults.timeframe, params.timeframe),
+                gte(analysisResults.analyzedAt, params.since),
+            ),
+        )
+        .orderBy(desc(analysisResults.analyzedAt))
+        .limit(params.limit);
 }
 
 export async function getLatestAnalysisResults(db: Db, symbol: string, limit = 50) {

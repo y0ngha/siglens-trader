@@ -41,6 +41,11 @@ export function safeAnalysisSentiment(result: unknown): string | undefined {
     return r ? safeString(r.overallSentiment) : undefined;
 }
 
+export function safeAnalysisRiskLevel(result: unknown): string | undefined {
+    const r = safeRecord(result);
+    return r ? safeString(r.riskLevel) : undefined;
+}
+
 export function safeNumberArray(value: unknown): number[] | undefined {
     if (!Array.isArray(value)) return undefined;
     const nums = value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
@@ -160,6 +165,26 @@ function actionRecommendationRecords(result: unknown): {
  */
 export function safeAnalysisEntryPrices(result: unknown): number[] {
     return safePriceLevelArray(actionRecommendationRecords(result).rec?.entryPrices) ?? [];
+}
+
+/**
+ * AI가 제시한 익절가 전체 사다리(보정값 우선) — 오름차순.
+ *
+ * `safeAnalysisTakeProfit`은 가장 가까운 한 칸만 반환한다(청산 트리거는 단일 숫자여야
+ * 하므로). prior-analysis 이력(`lib/analysis/prior-analysis.ts`)은 트리거가 아니라 "그때
+ * 무엇을 목표로 했는가"를 프롬프트에 참고 정보로 보여줄 뿐이라 사다리 전체가 필요하다.
+ */
+export function safeAnalysisTakeProfitLadder(result: unknown): number[] | undefined {
+    const { rec, reconciled } = actionRecommendationRecords(result);
+    const ladder =
+        safePriceLevelArray(reconciled?.takeProfitPrices) ??
+        safePriceLevelArray(rec?.takeProfitPrices);
+    // 오름차순을 **가정하지 않고 강제한다.** core는 `takeProfitPrices[0]`을
+    // "가장 가까운 목표가"로 보고 도달 여부를 채점하는데, 순서가 뒤집힌 채
+    // 저장된 옛 행이 하나라도 있으면 가장 먼 목표를 최근접으로 오독해
+    // "목표 미달"을 "달성"으로 뒤집어 보고하게 된다. 저장된 JSONB의 순서를
+    // 신뢰할 이유가 없다 — 몇 달 전 프롬프트 세대가 쓴 값일 수 있다.
+    return ladder === undefined ? undefined : [...ladder].sort((a, b) => a - b);
 }
 
 /** AI가 제시한 손절가 (보정값 우선). `evaluateExistingPosition`의 손절 트리거. */

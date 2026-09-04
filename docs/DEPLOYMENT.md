@@ -66,6 +66,12 @@ yarn release:patch          # v0.11.1 태그 push → .github/workflows/deploy.y
 > **auto / semi_auto 모드를 활성화하기 전에 반드시 완료해야 한다.**
 > `order_tracking` 테이블에 `client_order_id` 컬럼이 없으면 auto 모드 주문 insert가 모두 실패한다.
 
+> **⚠️ 0018 (`analysis_results.timeframe`)은 더 심각하다 — 운영 모드와 무관하게, 코드가
+> 마이그레이션보다 먼저 배포되면 `analysis_results`를 건드리는 모든 쿼리가 그 즉시 깨진다.**
+> 분석 크론은 전 종목 `status:'error'`, execute 크론은 전 포지션 `action:'error'`로 떨어진다.
+> per-symbol try/catch가 잡아 잘못된 주문은 안 나가지만, 보유 포지션의 손절·목표가 감시가
+> 그 시간 동안 조용히 멈춘다. 배경과 SQLSTATE 근거는 §12 참고 — 여기서는 순서만 지킬 것.
+
 `drizzle/` 디렉터리는 버전관리에 포함되어 있으며 `yarn db:migrate`는 FRESH DB에서도 정상 동작한다 (0004 마이그레이션에 `IF NOT EXISTS` 적용).
 
 **방법 A — yarn db:migrate (권장, FRESH/기존 DB 모두 동작)**
@@ -95,7 +101,9 @@ WHERE table_name = 'order_tracking' AND column_name = 'client_order_id';
 ## 안전 롤아웃 순서
 
 1. **환경변수 설정** — 위 env 목록 전체 (Redis + Toss 키 포함) 입력 후 저장
-2. **스키마 마이그레이션** — 위 단계로 `client_order_id` 컬럼 존재 확인
+2. **스키마 마이그레이션** — 위 단계로 `client_order_id` 컬럼 존재 확인. **`timeframe`(0018)은 특히
+   순서가 중요하다** — 코드보다 먼저 적용하지 않으면 배포 직후부터 리스크 감시가 조용히 멈춘다
+   (위 경고 박스 및 §12 참고)
 3. **`dry_run` 배포** (기본값) — 실제 주문 없이 한 세션(1~2 거래일) 운영하며 로그·DB 확인
 4. **`semi_auto` 전환** — 신호 발생 시 이메일 수신 + 대시보드 승인으로 실제 Toss 주문 경로 검증 (한 세션)
 5. **`auto` 전환** — `semi_auto` 세션이 정상 완료된 후에만 활성화. 초기에는 `max_trades_per_day`, `max_position_size`, `max_daily_loss_usd`를 보수적으로 설정
@@ -343,7 +351,7 @@ UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 | GET | `/api/pending` | 승인 대기 주문 |
 | POST | `/api/approve/:id` | 주문 승인/거절 |
 | GET | `/api/search?q=` | 종목 검색 (FMP) |
-| GET | `/api/health` | 헬스체크 (인증 불필요, `?deep=true`로 DB 정합성 포함) |
+| GET | `/api/health` | 헬스체크 (인증 불필요, `?deep=true`로 DB 정합성 포함, `?ready=true`로 스키마 준비 상태 확인 — `infra/aws/deploy.sh`가 폴링) |
 
 ### Cron API (CRON_SECRET 인증)
 
@@ -375,6 +383,44 @@ Redis 분산 락을 위해 기존 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST
 ---
 
 ## 12. 마이그레이션 참고
+
+### ⚠️ 0018 (`analysis_results.timeframe`) — 코드보다 **먼저** 적용해야 한다
+
+이 마이그레이션은 "적용을 잊으면 새 기능만 안 되는" 종류가 아니다. **코드를 먼저
+배포하면 `analysis_results`의 모든 쿼리가 깨진다.**
+
+Drizzle은 `SELECT *`를 쓰지 않는다 — `.select()`가 스키마 객체에서 컬럼 목록을
+만들어 명시적으로 나열한다. 그래서 `schema.ts`에 `timeframe`이 추가된 이미지가
+컬럼 없는 DB를 만나면, 신규 쿼리뿐 아니라 기존 `getLatestAnalysisResult`,
+`getAllLatestAnalysisResults`, `saveAnalysisResult`까지 전부
+`column "timeframe" does not exist`로 실패한다.
+
+실제 결과: 분석 크론은 전 종목 `status:'error'`, execute 크론은 전 포지션
+`action:'error'`로 떨어진다. 잘못된 주문이 나가지는 않지만 — 각 크론의
+per-symbol / per-position try/catch가 잡는다 — **보유 포지션의 손절·목표가
+평가가 그 시간 동안 통째로 멈춘다.** 리스크 감시가 눈을 감는다.
+
+`infra/aws/deploy.sh`는 이미지 pull과 서비스 재시작만 한다 — 마이그레이션은 실행하지
+않으므로, 수동으로 **배포 전에** 실행할 것:
+
+```bash
+DATABASE_URL=postgresql://<prod-connection-string> yarn db:migrate
+```
+
+컬럼 자체는 `DEFAULT '1Hour' NOT NULL`이라 기존 행이 자동 백필되고, 최신 Postgres에서
+non-volatile 기본값 추가는 메타데이터 변경이라 테이블 재작성·락 폭주가 없다.
+
+**이 순서를 놓치면 어떻게 되는가.** `/api/health`는 `?ready=true`로 호출하면
+`analysis_results.timeframe`을 실제로 조회해(`lib/db/schema-readiness.ts`) 컬럼이 있는지
+확인하고, `infra/aws/deploy.sh`는 (bare `/api/health`가 아니라) 바로 이 엔드포인트를 배포
+성공 판정에 쓴다. Postgres가 `42703`(undefined_column) 또는 `42P01`(undefined_table)을
+내면 — 즉 이미지와 스키마가 실제로 어긋난 경우에만 — `503`으로 응답해 배포가 `unhealthy`로
+실패한다. 그 외 에러(타임아웃 2초 포함, 일시적 Neon 장애 등)는 판정하지 못한 것으로 보고
+`ready:true`를 낸다 — 배포 폴링 도중의 순간적인 DB 장애로 정상 롤아웃을 실패시키지
+않기 위해서다. 이 판정은 진단 도구이지 안전장치가 아니다 — 순서를 지키는 것이 여전히
+1차 방어선이고, 이건 그 순서를 놓쳤을 때 "포트는 열렸지만 리스크 감시는 죽어 있다"는
+상태로 배포가 조용히 성공 처리되는 것을 막는 2차 방어선이다.
+
 
 `order_tracking` 테이블이 추가되었으며, 이후 `client_order_id TEXT` 컬럼 및 `trades.realized_pnl` 컬럼이 추가되었다.
 
@@ -444,5 +490,6 @@ Vercel에서 AWS로 넘길 때의 순서. 실매매 도구라 **`trading_mode=dr
 | Config 400 | 허용되지 않은 key | ALLOWED_CONFIG_KEYS 확인 (api/config.ts) |
 | Execute skipped (locked) | 이전 execute cron이 아직 실행 중 | Redis 락 TTL (15분) 만료 대기, 또는 수동 키 삭제 |
 | Auto 주문 insert 오류 | `client_order_id` 컬럼 없음 | `ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS client_order_id text;` 실행 후 재배포 |
+| 배포가 `unhealthy`로 실패 (`journalctl`에 에러 없음) | `/api/health?ready=true`가 503 — 마이그레이션 전에 이미지가 배포됨(§12) | `DATABASE_URL=<prod> yarn db:migrate` 실행 후 `infra/aws/deploy.sh <같은 태그>` 재시도. `curl -s "localhost:3000/api/health?ready=true"`의 `error` 필드에 SQLSTATE가 찍힌다 |
 | Reconcile 이메일 폭발 | 다수 주문 30분 타임아웃 | broker 연결 상태 확인, 수동 주문 상태 업데이트 |
 | 일일 손실 한도 초과 | 당일 실현+미실현 손실 합산 초과 | `max_daily_loss_usd` 조정 또는 다음 거래일까지 대기 |

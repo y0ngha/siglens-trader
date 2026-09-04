@@ -10,6 +10,7 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
+| `schema-readiness.ts` | `checkSchemaReadiness()` — probes that a specific column (currently `analysis_results.timeframe`) exists, for `/api/health?ready=true`. Only 42703/42P01 report not-ready; anything else (timeout included) reports ready, since it can't prove a mismatch |
 | `migrate.ts` | Migration runner script (CLI) |
 | `seed.ts` | Mock data seeder for dashboard preview |
 | `seed-operator.ts` | Operator account provisioning + data-ownership backfill (CLI, `yarn db:seed-operator`) |

@@ -19,6 +19,7 @@ const mockGetEnabledWatchlist = vi.fn();
 const mockGetAnalysisConfig = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockGetLatestAnalysisResult = vi.fn();
+const mockGetRecentAnalysisResults = vi.fn();
 const mockSaveAnalysisResult = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
@@ -30,6 +31,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getAnalysisConfig: (...args: unknown[]) => mockGetAnalysisConfig(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     getLatestAnalysisResult: (...args: unknown[]) => mockGetLatestAnalysisResult(...args),
+    getRecentAnalysisResults: (...args: unknown[]) => mockGetRecentAnalysisResults(...args),
     saveAnalysisResult: (...args: unknown[]) => mockSaveAnalysisResult(...args),
     startCronRun: (...args: unknown[]) => mockStartCronRun(...args),
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
@@ -108,6 +110,7 @@ describe('createAnalysisCronHandler', () => {
         // getLatestAnalysisResult is only called when minIntervalMs > 0.
         mockGetCadenceWindowMs.mockReturnValue(0);
         mockGetLatestAnalysisResult.mockResolvedValue(null);
+        mockGetRecentAnalysisResults.mockResolvedValue([]);
         mockSaveAnalysisResult.mockResolvedValue([]);
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
@@ -338,6 +341,7 @@ describe('createAnalysisCronHandler', () => {
             analysisType: 'technical',
             result: { trend: 'bullish', analyzedAt: '2026-05-24T09:55:00Z' },
             modelId: 'claude-sonnet-4-20250514',
+            timeframe: '1Hour',
             analyzedAt: new Date('2026-05-24T10:00:00.000Z'),
             sourceAnalyzedAt: new Date('2026-05-24T09:55:00.000Z'),
             cronRunId: expect.stringMatching(/^technical-/),
@@ -347,6 +351,7 @@ describe('createAnalysisCronHandler', () => {
             analysisType: 'technical',
             result: { trend: 'bearish' },
             modelId: 'claude-sonnet-4-20250514',
+            timeframe: '1Hour',
             analyzedAt: new Date('2026-05-24T10:00:00.000Z'),
             sourceAnalyzedAt: new Date('2026-05-24T10:00:00.000Z'),
             cronRunId: expect.stringMatching(/^technical-/),
@@ -534,6 +539,53 @@ describe('createAnalysisCronHandler', () => {
         // upsertCards delegates to upsertNewsCards(db, rows)
         await passed.cardStore.upsertCards([{ newsId: 'x' }]);
         expect(mockUpsertNewsCards).toHaveBeenCalledWith(fakeDb, [{ newsId: 'x' }]);
+    });
+
+    it('wires a priorAnalysisStore backed by getRecentAnalysisResults into the technical runner', async () => {
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+        const fakeRows = [{ result: { trend: 'bullish' }, analyzedAt: new Date() }];
+        mockGetRecentAnalysisResults.mockResolvedValue(fakeRows);
+
+        await handler(makeRequest(true));
+
+        const passed = mockRunner.mock.calls[0][0] as {
+            priorAnalysisStore: {
+                getRecent: (params: {
+                    symbol: string;
+                    timeframe: string;
+                    limit: number;
+                    since: Date;
+                }) => Promise<unknown[]>;
+            };
+        };
+        expect(passed.priorAnalysisStore).toBeDefined();
+
+        const since = new Date('2026-05-01T00:00:00.000Z');
+        const got = await passed.priorAnalysisStore.getRecent({
+            symbol: 'AAPL',
+            timeframe: '1Hour',
+            limit: 21,
+            since,
+        });
+        expect(mockGetRecentAnalysisResults).toHaveBeenCalledWith(fakeDb, {
+            symbol: 'AAPL',
+            type: 'technical',
+            timeframe: '1Hour',
+            limit: 21,
+            since,
+        });
+        expect(got).toBe(fakeRows);
+    });
+
+    it('does not wire a priorAnalysisStore into non-technical runners', async () => {
+        const newsHandler = createAnalysisCronHandler('news', mockRunner);
+        mockRunner.mockResolvedValue({ status: 'done', result: {} });
+
+        await newsHandler(makeRequest(true));
+
+        expect(mockRunner).toHaveBeenCalledWith(
+            expect.objectContaining({ priorAnalysisStore: undefined }),
+        );
     });
 
     it('normalizes the configured timeframe via toCoreTimeframe before passing it to the runner', async () => {

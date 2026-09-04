@@ -13,7 +13,8 @@ log "deploying $IMAGE to $IID"
 
 # The health check runs on the box (port 3000 is not reachable from anywhere else) and its
 # exit status decides the deploy result: a container that pulls but fails to serve is a
-# failed deploy, not a successful one.
+# failed deploy, not a successful one. `?ready=true` also confirms the DB schema matches
+# this image's code (not just that the port is open) — see docs/DEPLOYMENT.md §12.
 CMD_ID=$(aws ssm send-command --instance-ids "$IID" \
     --document-name AWS-RunShellScript \
     --comment "deploy $APP:$TAG" \
@@ -23,7 +24,7 @@ CMD_ID=$(aws ssm send-command --instance-ids "$IID" \
       'docker pull $IMAGE',
       'echo $IMAGE > /etc/$APP.image',
       'systemctl restart $APP.service',
-      'for i in \$(seq 1 30); do sleep 2; if curl -fsS localhost:3000/api/health >/dev/null; then echo healthy; exit 0; fi; done; echo unhealthy; journalctl -u $APP.service -n 50 --no-pager; exit 1'
+      'for i in \$(seq 1 30); do sleep 2; if curl -fsS \"localhost:3000/api/health?ready=true\" >/dev/null; then echo healthy; exit 0; fi; done; echo unhealthy; journalctl -u $APP.service -n 50 --no-pager; exit 1'
     ]" \
     --query Command.CommandId --output text)
 
