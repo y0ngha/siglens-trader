@@ -176,10 +176,15 @@ export function safeAnalysisEntryPrices(result: unknown): number[] {
  */
 export function safeAnalysisTakeProfitLadder(result: unknown): number[] | undefined {
     const { rec, reconciled } = actionRecommendationRecords(result);
-    return (
+    const ladder =
         safePriceLevelArray(reconciled?.takeProfitPrices) ??
-        safePriceLevelArray(rec?.takeProfitPrices)
-    );
+        safePriceLevelArray(rec?.takeProfitPrices);
+    // 오름차순을 **가정하지 않고 강제한다.** core는 `takeProfitPrices[0]`을
+    // "가장 가까운 목표가"로 보고 도달 여부를 채점하는데, 순서가 뒤집힌 채
+    // 저장된 옛 행이 하나라도 있으면 가장 먼 목표를 최근접으로 오독해
+    // "목표 미달"을 "달성"으로 뒤집어 보고하게 된다. 저장된 JSONB의 순서를
+    // 신뢰할 이유가 없다 — 몇 달 전 프롬프트 세대가 쓴 값일 수 있다.
+    return ladder === undefined ? undefined : [...ladder].sort((a, b) => a - b);
 }
 
 /** AI가 제시한 손절가 (보정값 우선). `evaluateExistingPosition`의 손절 트리거. */

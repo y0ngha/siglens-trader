@@ -766,6 +766,17 @@ describe('safeAnalysisTakeProfitLadder', () => {
         ).toEqual([170, 185, 200]);
     });
 
+    it('저장된 순서가 뒤집혀 있어도 오름차순으로 정규화한다', () => {
+        // core는 `takeProfitPrices[0]`을 "가장 가까운 목표가"로 보고 도달
+        // 여부를 채점한다. 내림차순으로 저장된 옛 행을 그대로 넘기면 가장 먼
+        // 목표를 최근접으로 읽어 "미달"을 "달성"으로 뒤집어 보고하게 된다.
+        expect(
+            safeAnalysisTakeProfitLadder(
+                withAction({ ...baseAction, takeProfitPrices: [200, 170, 185] }),
+            ),
+        ).toEqual([170, 185, 200]);
+    });
+
     it('보정값 배열이 있으면 보정값이 이긴다', () => {
         expect(
             safeAnalysisTakeProfitLadder(
