@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.29.0](https://github.com/y0ngha/siglens-trader/compare/v0.28.6...v0.29.0) (2026-09-05)
+
+
+### Bug Fixes
+
+* schema 준비 상태 확인의 cause 체인 탐색 명확화 및 테스트 추가 ([5cacf4a](https://github.com/y0ngha/siglens-trader/commit/5cacf4af9fe833c693b2d68dc7e3ce9c29c9e86e))
+* schema 준비 상태 확인의 drizzle 에러 원인 체인 처리 ([9c0a2b1](https://github.com/y0ngha/siglens-trader/commit/9c0a2b153758fbb64f9ffba726acb87c17949874))
+* takeProfitLadder 오름차순 정렬 + 테스트 강화 ([cc9ddeb](https://github.com/y0ngha/siglens-trader/commit/cc9ddebc70d759e7983cce4474a20b74bf8b3227))
+
+
+### Features
+
+* 기술 분석 프롬프트에 분석 이력 피드백 추가 ([b08012f](https://github.com/y0ngha/siglens-trader/commit/b08012fbead1f30e4d605e2b874bb40515c25c3a))
+
 ## [0.28.6](https://github.com/y0ngha/siglens-trader/compare/v0.28.5...v0.28.6) (2026-09-03)
 
 
