@@ -63,6 +63,20 @@ describe('checkSchemaReadiness', () => {
         expect(result.error).toContain(code);
     });
 
+    it('cause 체인 안쪽에만 있는 SQLSTATE도 찾아낸다 — 바깥 에러엔 code가 없다', async () => {
+        // 위 두 테스트는 "정상 DB를 unhealthy로 오판하지 않는다"는 안전한
+        // 방향만 지킨다 — 탐색 로직을 통째로 비워도 통과한다. 이 테스트는
+        // 반대로 **탐색이 실제로 cause를 파고드는지**를 고정한다.
+        const err = drizzleWrapped('column "timeframe" does not exist', '42703');
+        expect((err as { code?: unknown }).code).toBeUndefined(); // 바깥엔 없다
+        const db = createMockDb(vi.fn().mockRejectedValue(err));
+
+        const result = await checkSchemaReadiness(db);
+
+        expect(result.ready).toBe(false);
+        expect(result.error).toContain('42703');
+    });
+
     it('does NOT report not-ready on an unrelated SQLSTATE — narrow allow-list only', async () => {
         // 57P03 = cannot_connect_now (Neon cold-start / restart blip)
         const err = drizzleWrapped('the database system is starting up', '57P03');

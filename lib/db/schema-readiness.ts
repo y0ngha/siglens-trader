@@ -47,8 +47,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * 항상 `ready: true`를 돌려줬다 — 배포 게이트가 **어떤 환경에서도** 스키마
  * 불일치를 잡을 수 없는 상태였다. 로컬 Postgres 컨테이너에 실제로 붙여 보고
  * 나서야 드러났다. 단위 테스트는 `Object.assign(new Error(), { code })`라는
- * 납작한 가짜 에러를 던지고 있어서, 버그가 그대로 배포돼도 전부 초록이었다
- * (`isNeonTransientError.ts`가 이미 `cause` 체인을 훑는 것과 같은 이유다).
+ * 납작한 가짜 에러를 던지고 있어서, 버그가 그대로 배포돼도 전부 초록이었다.
+ *
+ * 같은 래핑 때문에 자매 레포(siglens)의 `src/shared/db/isNeonTransientError.ts`도
+ * `cause` 체인을 따라간다 — 이 레포엔 그런 헬퍼가 없어 여기서 새로 만든다.
  */
 function extractSqlState(err: unknown): string | undefined {
     let node: unknown = err;
