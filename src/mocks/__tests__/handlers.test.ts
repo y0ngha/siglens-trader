@@ -31,6 +31,6 @@ describe('mock config handler', () => {
 
         expect(response.ok).toBe(true);
         expect(body.analysis).toHaveLength(5);
-        expect(body.analysis.every(({ modelId }) => modelId === 'deepseek-v4-flash')).toBe(true);
+        expect(body.analysis.every(({ modelId }) => modelId === 'deepseek-v4.1-flash')).toBe(true);
     });
 });

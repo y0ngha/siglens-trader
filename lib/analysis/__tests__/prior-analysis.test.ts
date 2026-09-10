@@ -105,7 +105,7 @@ describe('mapRowsToPriorAnalyses', () => {
             { ...row({ trend: 'bullish', riskLevel: 'low' }), modelId: 'claude-sonnet-4' } as any,
             {
                 ...row({ trend: 'bearish', riskLevel: 'high' }),
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
             } as any,
         ];
 

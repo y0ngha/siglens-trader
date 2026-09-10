@@ -17,7 +17,7 @@ export const NEWS_ENRICH_CONCURRENCY = 3;
 export const ENRICH_TOTAL_FAILURE_LIMIT = 6;
 // core의 NEWS_CARD_MODEL_ID와 같은 값. core가 루트에서 export하지 않아 여기 복제한다
 // (news_cards.model_id 라벨 용도 — core가 모델을 바꾸면 이 값도 따라가야 한다).
-export const CARD_MODEL_ID = 'deepseek-v4-flash';
+export const CARD_MODEL_ID = 'deepseek-v4.1-flash';
 
 export async function enrichNewsCards(
     store: NewsCardStore,

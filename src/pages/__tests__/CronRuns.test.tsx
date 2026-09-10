@@ -689,7 +689,7 @@ describe('CronRunsPage', () => {
                         gate: {
                             kind: 'entry',
                             source: 'error',
-                            model: 'deepseek-v4-flash',
+                            model: 'deepseek-v4.1-flash',
                             fraction: 0,
                             confidence: null,
                             reason: '게이트 호출 타임아웃',
@@ -746,7 +746,7 @@ describe('CronRunsPage', () => {
                         gate: {
                             kind: 'entry',
                             source: 'ai',
-                            model: 'deepseek-v4-flash',
+                            model: 'deepseek-v4.1-flash',
                             fraction: 0,
                             confidence: 40,
                             reason: '현금 여유 부족으로 이번 틱 진입 보류',

@@ -81,7 +81,7 @@ export const DEFAULT_ANALYSIS_REASONING = true;
  * 분석 타입별 상세 분석(reasoning) 정책.
  *
  * 분석이 얼마나 자주 돌아야 하는지가 추론을 감당할 수 있는지를 결정한다. 실측(2026-08-10,
- * deepseek-v4-flash, 30Min):
+ * deepseek-v4.1-flash, 30Min):
  *
  *   추론 ON인 technical은 심볼당 출력이 22k~37k 토큰까지 늘어나 첫 호출이
  *   `finish_reason: undefined`로 잘리고(148초 낭비), 재시도가 269초를 더 써서

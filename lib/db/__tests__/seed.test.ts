@@ -78,7 +78,7 @@ describe('seed', () => {
         expect(modelConfigCalls.length).toBe(5);
         expect(
             modelConfigCalls.every(
-                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',
+                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4.1-flash',
             ),
         ).toBe(true);
 
@@ -179,7 +179,7 @@ describe('seed', () => {
         expect(analysisCalls.length).toBe(25);
         expect(
             analysisCalls.every(
-                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4-flash',
+                ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4.1-flash',
             ),
         ).toBe(true);
     });
