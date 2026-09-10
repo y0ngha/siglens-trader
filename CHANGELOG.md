@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.30.0](https://github.com/y0ngha/siglens-trader/compare/v0.29.0...v0.30.0) (2026-09-10)
+
+
+### Bug Fixes
+
+* 기술 축의 지표 신호 입력 복구 + 침묵 방지 진단 ([#60](https://github.com/y0ngha/siglens-trader/issues/60)) ([f7a5e81](https://github.com/y0ngha/siglens-trader/commit/f7a5e81d3a4d7663428cc7635abbf8bc4a4f6ed1))
+
+
+### Features
+
+* core 1.0.0 모델 레지스트리 배선 ([077f11a](https://github.com/y0ngha/siglens-trader/commit/077f11a01c36a47d2f5737005a7109e1a53022c5))
+
 # [0.29.0](https://github.com/y0ngha/siglens-trader/compare/v0.28.6...v0.29.0) (2026-09-05)
 
 
