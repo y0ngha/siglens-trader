@@ -51,31 +51,31 @@ export async function seed() {
     const models = [
         {
             analysisType: 'technical',
-            modelId: 'deepseek-v4-flash',
+            modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
         },
         {
             analysisType: 'news',
-            modelId: 'deepseek-v4-flash',
+            modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
         },
         {
             analysisType: 'options',
-            modelId: 'deepseek-v4-flash',
+            modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
         },
         {
             analysisType: 'fundamental',
-            modelId: 'deepseek-v4-flash',
+            modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
         },
         {
             analysisType: 'congress',
-            modelId: 'deepseek-v4-flash',
+            modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
         },
@@ -256,7 +256,7 @@ export async function seed() {
                 symbol,
                 analysisType: type,
                 result: generateMockAnalysisResult(type, symbol),
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 analyzedAt: hoursAgo(1),
                 cronRunId: `${type}-mock`,
             });

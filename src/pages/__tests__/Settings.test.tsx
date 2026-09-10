@@ -73,7 +73,7 @@ const mockConfig = {
             id: 1,
             analysisType: 'technical',
             enabled: true,
-            modelId: 'gemini-2.5-flash',
+            modelId: 'gemini-3.6-flash',
             useByok: false,
             updatedAt: '2026-01-01T00:00:00Z',
         },
@@ -81,7 +81,7 @@ const mockConfig = {
             id: 2,
             analysisType: 'news',
             enabled: true,
-            modelId: 'claude-sonnet-4-6',
+            modelId: 'claude-sonnet-5',
             useByok: false,
             updatedAt: '2026-01-01T00:00:00Z',
         },
@@ -89,7 +89,7 @@ const mockConfig = {
             id: 3,
             analysisType: 'options',
             enabled: false,
-            modelId: 'gpt-5-mini',
+            modelId: 'gpt-5.6-luna',
             useByok: true,
             updatedAt: '2026-01-01T00:00:00Z',
         },
@@ -97,7 +97,7 @@ const mockConfig = {
             id: 4,
             analysisType: 'fundamental',
             enabled: true,
-            modelId: 'gemini-2.5-pro',
+            modelId: 'gemini-3.1-pro-preview',
             useByok: false,
             updatedAt: '2026-01-01T00:00:00Z',
         },
@@ -105,7 +105,7 @@ const mockConfig = {
             id: 5,
             analysisType: 'trade_gate',
             enabled: true,
-            modelId: 'gpt-5.4',
+            modelId: 'gpt-5.6-terra',
             useByok: false,
             updatedAt: '2026-01-01T00:00:00Z',
         },
@@ -637,13 +637,13 @@ describe('SettingsPage', () => {
             expect(screen.getByText('분석 설정')).toBeInTheDocument();
         });
 
-        const modelSelects = screen.getAllByDisplayValue('gemini-2.5-flash');
-        await user.selectOptions(modelSelects[0], 'claude-sonnet-4-6');
+        const modelSelects = screen.getAllByDisplayValue('gemini-3.6-flash');
+        await user.selectOptions(modelSelects[0], 'claude-sonnet-5');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'analysis',
             analysisType: 'technical',
-            updates: { modelId: 'claude-sonnet-4-6' },
+            updates: { modelId: 'claude-sonnet-5' },
         });
     });
 
@@ -658,14 +658,14 @@ describe('SettingsPage', () => {
         expect(tradeGateItem).not.toBeNull();
 
         const modelSelect = within(tradeGateItem!).getByRole('combobox');
-        expect(modelSelect).toHaveValue('gpt-5.4');
+        expect(modelSelect).toHaveValue('gpt-5.6-terra');
 
-        await user.selectOptions(modelSelect, 'claude-opus-4-7');
+        await user.selectOptions(modelSelect, 'claude-opus-5');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'analysis',
             analysisType: 'trade_gate',
-            updates: { modelId: 'claude-opus-4-7' },
+            updates: { modelId: 'claude-opus-5' },
         });
     });
 
@@ -678,9 +678,9 @@ describe('SettingsPage', () => {
         expect(technicalItem).not.toBeNull();
 
         const modelSelect = within(technicalItem!).getByRole('combobox');
-        expect(modelSelect).toHaveValue('gemini-2.5-flash');
+        expect(modelSelect).toHaveValue('gemini-3.6-flash');
         expect(
-            within(modelSelect).getByRole('option', { name: 'gemini-2.5-flash-lite' }),
+            within(modelSelect).getByRole('option', { name: 'gemini-3.5-flash-lite' }),
         ).toBeInTheDocument();
     });
 
@@ -700,7 +700,7 @@ describe('SettingsPage', () => {
         const modelSelects = within(analysisList!).getAllByRole('combobox');
         expect(modelSelects).toHaveLength(6);
         modelSelects.forEach((select) => {
-            expect(select).toHaveValue('deepseek-v4-flash');
+            expect(select).toHaveValue('deepseek-v4.1-flash');
         });
     });
 

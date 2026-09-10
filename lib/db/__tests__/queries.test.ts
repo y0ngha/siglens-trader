@@ -213,7 +213,11 @@ describe('Watchlist queries', () => {
 describe('Analysis config queries', () => {
     describe('getAnalysisConfig', () => {
         it('returns first row when exists', async () => {
-            const mockRow = { id: 1, analysisType: 'technical', modelId: 'gpt-4' };
+            const mockRow = {
+                id: 1,
+                analysisType: 'technical',
+                modelId: 'claude-sonnet-5',
+            };
             const db = createMockDb([mockRow]);
 
             const result = await getAnalysisConfig(db as unknown as Db, 'technical');
@@ -222,6 +226,25 @@ describe('Analysis config queries', () => {
             expect(db._chain.where).toHaveBeenCalled();
             expect(db._chain.limit).toHaveBeenCalledWith(1);
             expect(result).toEqual(mockRow);
+        });
+
+        it('folds a stored model that no longer exists back to the default', async () => {
+            // `modelId`는 text 컬럼이라 예전에 고른 모델이 그대로 남는다. core가
+            // 그 모델을 지우면 `MODEL_SPECS[model]`이 undefined가 되어 분석 호출이
+            // 통째로 실패하고, try/catch로 감싼 경로에서는 조용히 삼켜진다.
+            const db = createMockDb([{ id: 1, analysisType: 'technical', modelId: 'gpt-5.4' }]);
+
+            const result = await getAnalysisConfig(db as unknown as Db, 'technical');
+
+            expect(result.modelId).toBe('deepseek-v4.1-flash');
+        });
+
+        it('leaves a stored model that still exists untouched', async () => {
+            const db = createMockDb([{ id: 1, analysisType: 'technical', modelId: 'gpt-5.6-sol' }]);
+
+            const result = await getAnalysisConfig(db as unknown as Db, 'technical');
+
+            expect(result.modelId).toBe('gpt-5.6-sol');
         });
 
         it('returns default-enabled config when no rows exist', async () => {
@@ -233,7 +256,7 @@ describe('Analysis config queries', () => {
                 id: 0,
                 analysisType: 'nonexistent',
                 enabled: true,
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
@@ -243,8 +266,16 @@ describe('Analysis config queries', () => {
     describe('getAllAnalysisConfigs', () => {
         it('returns all rows', async () => {
             const mockRows = [
-                { id: 1, analysisType: 'technical' },
-                { id: 2, analysisType: 'fundamental' },
+                {
+                    id: 1,
+                    analysisType: 'technical',
+                    modelId: 'deepseek-v4.1-flash',
+                },
+                {
+                    id: 2,
+                    analysisType: 'fundamental',
+                    modelId: 'claude-sonnet-5',
+                },
             ];
             const db = createMockDb(mockRows);
 
@@ -252,6 +283,17 @@ describe('Analysis config queries', () => {
 
             expect(db._chain.from).toHaveBeenCalled();
             expect(result).toEqual(mockRows);
+        });
+
+        it('normalizes every row, not just the first', async () => {
+            const db = createMockDb([
+                { id: 1, analysisType: 'technical', modelId: 'gpt-5.6-sol' },
+                { id: 2, analysisType: 'news', modelId: 'gemini-2.5-pro' },
+            ]);
+
+            const result = await getAllAnalysisConfigs(db as unknown as Db);
+
+            expect(result.map((r) => r.modelId)).toEqual(['gpt-5.6-sol', 'deepseek-v4.1-flash']);
         });
     });
 
@@ -297,7 +339,7 @@ describe('Analysis config queries', () => {
             expect(db._chain.values).toHaveBeenCalledWith({
                 analysisType: 'news',
                 enabled: false,
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
@@ -321,7 +363,7 @@ describe('Analysis config queries', () => {
             expect(db._chain.values).toHaveBeenCalledWith({
                 analysisType: 'options',
                 enabled: false,
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 useByok: false,
                 updatedAt: expect.any(Date),
             });
@@ -795,7 +837,7 @@ describe('Trades queries', () => {
             await insertTradeAudit(db as unknown as Db, {
                 symbol: 'AAPL',
                 kind: 'entry',
-                modelId: 'deepseek-v4-pro',
+                modelId: 'deepseek-v4.1-pro',
                 systemPrompt: 'SYS',
                 userPrompt: 'USER',
                 rawResponse: '{"fraction":0.3}',
@@ -808,7 +850,7 @@ describe('Trades queries', () => {
             expect(db._chain.values).toHaveBeenCalledWith({
                 symbol: 'AAPL',
                 kind: 'entry',
-                modelId: 'deepseek-v4-pro',
+                modelId: 'deepseek-v4.1-pro',
                 systemPrompt: 'SYS',
                 userPrompt: 'USER',
                 rawResponse: '{"fraction":0.3}',
@@ -2070,7 +2112,7 @@ describe('upsertNewsCards', () => {
                 newsId: 'x',
                 symbol: 'NVDA',
                 card: { sentiment: 'bullish' } as never,
-                modelId: 'gemini-2.5-flash-lite',
+                modelId: 'gemini-3.5-flash-lite',
             },
         ]);
 
@@ -2080,7 +2122,7 @@ describe('upsertNewsCards', () => {
                 newsId: 'x',
                 symbol: 'NVDA',
                 card: { sentiment: 'bullish' },
-                modelId: 'gemini-2.5-flash-lite',
+                modelId: 'gemini-3.5-flash-lite',
             },
         ]);
         expect(db._chain.onConflictDoNothing).toHaveBeenCalled();

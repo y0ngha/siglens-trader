@@ -186,19 +186,19 @@ function baseInput(overrides: Partial<TradeGateInput> = {}): TradeGateInput {
             {
                 type: 'technical',
                 analyzedAt: new Date('2026-08-12T13:35:00.000Z'),
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 result: technicalResult,
             },
             {
                 type: 'news',
                 analyzedAt: new Date('2026-08-12T13:00:00.000Z'),
-                modelId: 'gemini-2.5-flash',
+                modelId: 'gemini-3.6-flash',
                 result: newsResult,
             },
             {
                 type: 'options',
                 analyzedAt: new Date('2026-08-12T13:30:00.000Z'),
-                modelId: 'deepseek-v4-flash',
+                modelId: 'deepseek-v4.1-flash',
                 result: optionsResult,
             },
             {
@@ -210,11 +210,11 @@ function baseInput(overrides: Partial<TradeGateInput> = {}): TradeGateInput {
             {
                 type: 'congress',
                 analyzedAt: new Date('2026-08-11T16:00:00.000Z'),
-                modelId: 'gpt-5-mini',
+                modelId: 'gpt-5.6-luna',
                 result: congressResult,
             },
         ],
-        modelId: 'deepseek-v4-flash',
+        modelId: 'deepseek-v4.1-flash',
         ...overrides,
     };
 }
@@ -829,19 +829,19 @@ describe('buildTradeGatePrompt — 분석 데이터', () => {
         const { user } = buildTradeGatePrompt(baseInput());
 
         expect(user).toContain(
-            '[기술적] 기준시각 2026-08-12T13:35:00.000Z (32분 전) · 모델 deepseek-v4-flash',
+            '[기술적] 기준시각 2026-08-12T13:35:00.000Z (32분 전) · 모델 deepseek-v4.1-flash',
         );
         expect(user).toContain(
-            '[뉴스] 기준시각 2026-08-12T13:00:00.000Z (1시간 7분 전) · 모델 gemini-2.5-flash',
+            '[뉴스] 기준시각 2026-08-12T13:00:00.000Z (1시간 7분 전) · 모델 gemini-3.6-flash',
         );
         expect(user).toContain(
-            '[옵션] 기준시각 2026-08-12T13:30:00.000Z (37분 전) · 모델 deepseek-v4-flash',
+            '[옵션] 기준시각 2026-08-12T13:30:00.000Z (37분 전) · 모델 deepseek-v4.1-flash',
         );
         expect(user).toContain(
             '[펀더멘털] 기준시각 2026-08-11T15:00:00.000Z (23시간 7분 전) · 모델 claude-sonnet-4',
         );
         expect(user).toContain(
-            '[의회] 기준시각 2026-08-11T16:00:00.000Z (22시간 7분 전) · 모델 gpt-5-mini',
+            '[의회] 기준시각 2026-08-11T16:00:00.000Z (22시간 7분 전) · 모델 gpt-5.6-luna',
         );
     });
 
@@ -1579,7 +1579,7 @@ describe('runTradeGate — 파싱 및 검증', () => {
             fraction: 0.5,
             confidence: 72,
             reason: '예산 절반만 집행한다',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4.1-flash',
             transcript: {
                 systemPrompt: expect.stringContaining('포지션 사이징 게이트'),
                 userPrompt: expect.stringContaining('## 결정 요청'),
@@ -1778,7 +1778,7 @@ describe('runTradeGate — 파싱 및 검증', () => {
         expect(out).toEqual({
             status: 'error',
             error: 'provider 500',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4.1-flash',
             // 호출 자체가 실패했으므로 응답이 없다. `rawResponse: null`은 "받아서 파싱에
             // 실패한" 경우와 구분되며, 감사 기록에서 그 구분이 고장 원인을 가른다.
             transcript: expect.objectContaining({ rawResponse: null }),
@@ -1837,7 +1837,7 @@ describe('runTradeGate — 호출 파라미터', () => {
         expect(mockedCall).toHaveBeenCalledWith({
             prompt: expect.stringContaining('## 결정 요청'),
             system: expect.stringContaining('포지션 사이징 게이트'),
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4.1-flash',
             tier: 'pro',
             userApiKey: 'sk-123',
             // 사이징은 6축 요약을 한꺼번에 놓고 내리는 유일한 판단이라 추론을 켠다.

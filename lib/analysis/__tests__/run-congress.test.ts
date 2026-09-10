@@ -18,7 +18,7 @@ const mockedCore = vi.mocked(coreRun);
 const baseOptions: RunAnalysisOptions = {
     symbol: 'AAPL',
     companyName: 'Apple Inc.',
-    modelId: 'deepseek-v4-flash' as any,
+    modelId: 'deepseek-v4.1-flash' as any,
 };
 
 describe('runCongressAnalysis', () => {

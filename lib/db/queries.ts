@@ -2,6 +2,7 @@ import { eq, desc, and, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
+import { MODEL_SPECS } from '@y0ngha/siglens-core';
 import {
     watchlist,
     analysisModelConfig,
@@ -48,7 +49,27 @@ export async function toggleWatchlistItem(db: Db, id: number, enabled: boolean) 
 // ---------------------------------------------------------------------------
 
 // Default model when no analysis_model_config row exists. Keep in sync with src/pages/Settings.tsx MODELS[0].
-const DEFAULT_ANALYSIS_MODEL = 'deepseek-v4-flash';
+const DEFAULT_ANALYSIS_MODEL = 'deepseek-v4.1-flash';
+
+/**
+ * 저장된 모델 ID를 현재 레지스트리 기준으로 정규화한다.
+ *
+ * `analysis_model_config.modelId`는 `text` 컬럼이라 예전에 고른 모델이 그대로
+ * 남는다. core가 모델을 삭제하거나 개명하면(0.60.0에서 9개 삭제 + DeepSeek
+ * V4→V4.1 개명) 그 행은 레지스트리에 없는 ID를 가리키게 되고,
+ * `MODEL_SPECS[model]`이 `undefined`가 되어 분석 호출이 통째로 실패한다.
+ * `runTradeGate`처럼 try/catch로 감싼 경로에서는 그 실패가 조용히 삼켜져
+ * "게이트가 매번 error"인 상태로만 드러난다.
+ *
+ * 그래서 읽는 지점에서 한 번 거른다 — DB 마이그레이션보다 안전하다. 마이그레이션은
+ * 한 번 돌고 끝이지만, 이 가드는 다음 레지스트리 변경에도 계속 동작한다.
+ *
+ * 알 수 없는 ID는 기본 모델로 접는다. 사용자가 고른 값을 말없이 바꾸는 셈이지만,
+ * 대안은 그 분석 타입이 영구히 실패하는 것이다.
+ */
+function normalizeModelId(stored: string): string {
+    return stored in MODEL_SPECS ? stored : DEFAULT_ANALYSIS_MODEL;
+}
 
 export async function getAnalysisConfig(db: Db, type: string) {
     const rows = await db
@@ -60,20 +81,26 @@ export async function getAnalysisConfig(db: Db, type: string) {
     // schema's `enabled.default(true)` and the dashboard's empty-state). This is fail-open by
     // design; live trading remains separately gated by trading_enabled (kill switch) + trading_mode
     // (defaults to dry_run), so a missing analysis row never causes unintended real orders.
-    return (
-        rows[0] ?? {
-            id: 0,
-            analysisType: type,
-            enabled: true,
-            modelId: DEFAULT_ANALYSIS_MODEL,
-            useByok: false,
-            updatedAt: new Date(),
-        }
-    );
+    const row = rows[0];
+    if (row) {
+        return { ...row, modelId: normalizeModelId(row.modelId) };
+    }
+    return {
+        id: 0,
+        analysisType: type,
+        enabled: true,
+        modelId: DEFAULT_ANALYSIS_MODEL,
+        useByok: false,
+        updatedAt: new Date(),
+    };
 }
 
 export async function getAllAnalysisConfigs(db: Db) {
-    return db.select().from(analysisModelConfig);
+    const rows = await db.select().from(analysisModelConfig);
+    return rows.map((row) => ({
+        ...row,
+        modelId: normalizeModelId(row.modelId),
+    }));
 }
 
 export async function updateAnalysisConfig(

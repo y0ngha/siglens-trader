@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { ModelId } from '@y0ngha/siglens-core';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
@@ -76,18 +77,36 @@ function toKstRange(start: string, end: string, offsetHours: number): string | n
     return `${s.time}–${e.nextDay ? `익일 ${e.time}` : e.time}`;
 }
 
-// MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다. lib/db/queries.ts DEFAULT_ANALYSIS_MODEL과 동기화 유지.
-const MODELS = [
-    'deepseek-v4-flash',
-    'deepseek-v4-pro',
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'claude-sonnet-4-6',
-    'claude-opus-4-7',
-    'gpt-5-mini',
-    'gpt-5.4',
-] as const;
+/**
+ * 선택 가능한 분석 모델. **MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다** —
+ * `lib/db/queries.ts`의 `DEFAULT_ANALYSIS_MODEL`과 동기화 유지.
+ *
+ * `readonly ModelId[]`로 타입을 박아 둔 이유: 예전에는 `as const` 문자열 배열이라
+ * core에서 모델이 삭제돼도 컴파일이 통과했고, 드롭다운에 죽은 ID가 남아 선택하면
+ * 런타임에 실패했다. 이제 삭제된 ID는 타입 에러로 잡힌다.
+ *
+ * 순서는 비용 오름차순(등급 free → member → byok)이며 제품 판단이므로
+ * `Object.keys(MODEL_SPECS)`로 유도하지 않는다 — 그렇게 하면 core의 선언 순서가
+ * 바뀔 때 기본 모델이 조용히 따라 바뀐다.
+ */
+const MODELS: readonly ModelId[] = [
+    'deepseek-v4.1-flash',
+    'gpt-5.6-luna',
+    'gemini-3.5-flash-lite',
+    'gemini-3.6-flash',
+    'claude-haiku-4-5',
+    'deepseek-v4.1-pro',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
+    'gemini-3.1-pro-preview',
+    'claude-sonnet-5',
+    'gpt-5.6-terra',
+    'gpt-5.6-sol',
+    'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-fable-5-1',
+    'gpt-6-astra',
+];
 
 const ANALYSIS_TYPES = [
     'technical',
