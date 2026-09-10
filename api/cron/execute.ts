@@ -155,6 +155,10 @@ function scoreDecisionDetail(
             : null;
     return {
         components: signalScore.components,
+        // 기술 축이 3입력 중 몇 개로 계산됐는지. 모델 교체로 입력이 사라져도 점수는
+        // 그럴듯해서 티가 나지 않는다 — 실측으로 824건이 한 달간 그 상태였다.
+        // 자세한 근거는 `SignalScore.technicalInputs` 독스트링.
+        technicalInputs: signalScore.technicalInputs,
         // 컨플루언스 보정이 걸리면 `signal='sell'`인데 `total`이 매도 임계값을 크게 웃돈다.
         // 이 값이 없으면 그 행은 저장된 숫자만으로 재현되지 않아 버그와 구분되지 않는다.
         totalWithoutConfluence: signalScore.totalWithoutConfluence,

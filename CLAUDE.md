@@ -155,6 +155,14 @@ weighted average, so the sum itself carries no meaning):
 - Congress: **0** — 축은 돌지만 점수에 투표하지 않는다. 프로덕션 실측 31/31 `bullish`
   (분산 0)로, 투표가 아니라 상수 가산점이었다. 근거와 되돌리는 법은 `DEFAULT_WEIGHTS` 독스트링.
 
+> **모델 선택이 축 품질을 좌우한다.** 기술 축은 `indicatorResults[].signals`(지표 가이드
+> 신호)를 세 입력 중 하나로 쓰는데, **DeepSeek 계열은 30k 토큰 프로덕션 프롬프트에서 이
+> 배열을 채우지 못한다** — 실측 824건 전부 빈 배열이고 같은 프롬프트에서 gemini는 143건
+> 100% 채운다(간단한 프롬프트로는 DeepSeek도 정상 생성하므로 구조적 무능이 아니라 긴
+> 프롬프트에서 지시를 놓치는 것이다). DeepSeek은 `response_format: json_schema`를 지원하지
+> 않아(`400 unavailable`) 스키마로 강제할 수도 없다. **기술 축 모델은 gemini 계열로 둔다.**
+> 축이 반쪽이 되어도 점수는 그럴듯하므로, `cron_decisions.detail.technicalInputs`로 감시한다.
+
 Buy threshold: **65**, Sell threshold: **40** (configurable via dashboard). 두 값은 축 하나의
 크기가 아니라 **종합 점수 분포의 상·하위 3.4% 꼬리**를 가리킨다 — 근거는 원칙 12.
 `WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises

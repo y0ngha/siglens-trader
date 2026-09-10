@@ -34,6 +34,61 @@ function neutralConfluence(): ConfluenceSnapshot {
     };
 }
 
+describe('scoreSignals — technicalInputs 진단', () => {
+    // 2026-08-09 기술 분석 모델이 gemini → deepseek으로 바뀌면서
+    // `indicatorResults[].signals`가 824건 전부 빈 배열이 됐는데, 축 점수는 남은 입력만으로
+    // 계산돼 그럴듯했고 가중치 8도 그대로였다. 한 달간 아무 데도 티가 나지 않았다.
+    const run = (technical: unknown) =>
+        scoreSignals(
+            { confluence: neutralConfluence(), technical } as never,
+            DEFAULT_WEIGHTS,
+            DEFAULT_BUY_THRESHOLD,
+            DEFAULT_SELL_THRESHOLD,
+        );
+
+    it('세 입력이 모두 있으면 전부 true다', () => {
+        const r = run({
+            trend: 'bullish',
+            riskLevel: 'low',
+            indicators: [{ trend: 'bullish', strength: 'strong' }],
+            patterns: [{ trend: 'bullish', confidenceWeight: 0.8 }],
+        });
+        expect(r.technicalInputs).toEqual({ signals: true, patterns: true, trend: true });
+    });
+
+    it('지표 신호가 비면 signals=false — 점수는 여전히 나온다(그래서 안 보였다)', () => {
+        const r = run({
+            trend: 'bullish',
+            riskLevel: 'medium',
+            indicators: [],
+            patterns: [{ trend: 'bullish', confidenceWeight: 0.8 }],
+        });
+        expect(r.technicalInputs.signals).toBe(false);
+        expect(r.technicalInputs.patterns).toBe(true);
+        expect(r.technicalInputs.trend).toBe(true);
+        // 핵심: 입력이 사라져도 축 점수는 중립이 아니다 — 남은 것만으로 평균이 난다.
+        expect(r.components.technical).toBeGreaterThan(50);
+    });
+
+    it('패턴이 detected:false뿐이면 patterns=false', () => {
+        const r = run({
+            trend: 'neutral',
+            indicators: [{ trend: 'bullish', strength: 'moderate' }],
+            patterns: [{ trend: 'bullish', detected: false }],
+        });
+        expect(r.technicalInputs.patterns).toBe(false);
+        expect(r.technicalInputs.signals).toBe(true);
+    });
+
+    it('기술 분석 자체가 없으면 전부 false', () => {
+        expect(run(null).technicalInputs).toEqual({
+            signals: false,
+            patterns: false,
+            trend: false,
+        });
+    });
+});
+
 describe('scoreSignals', () => {
     describe('happy path — bullish inputs', () => {
         it('returns high score and buy signal for fully bullish inputs', () => {

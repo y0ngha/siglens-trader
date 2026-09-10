@@ -73,9 +73,10 @@ export function scoreSignals(
     // 신호의 부호를 반대로 만든다.
     const weights = sanitizeWeights(rawWeights);
 
+    const technical = scoreTechnical(inputs.technical);
     const components = {
         confluence: scoreConfluence(inputs.confluence ?? null),
-        technical: scoreTechnical(inputs.technical),
+        technical: technical.score,
         news: scoreSentiment(inputs.news),
         options: scoreOptions(inputs.options),
         fundamental: scoreFundamental(inputs.fundamental),
@@ -107,7 +108,13 @@ export function scoreSignals(
         congressWeight;
 
     if (!(totalWeight > 0)) {
-        return { total: 50, totalWithoutConfluence: 50, components, signal: 'hold' as const };
+        return {
+            total: 50,
+            totalWithoutConfluence: 50,
+            components,
+            technicalInputs: technical.inputs,
+            signal: 'hold' as const,
+        };
     }
 
     const weightedSum =
@@ -177,6 +184,7 @@ export function scoreSignals(
         total,
         totalWithoutConfluence,
         components,
+        technicalInputs: technical.inputs,
         signal: confluenceAbstained && corrected === 'buy' ? 'hold' : corrected,
     };
 }
@@ -189,14 +197,18 @@ function scoreTechnical(
         indicators?: Array<{ trend?: string; strength?: string }>;
         patterns?: WeightedTrendSignal[];
     } | null,
-): number {
-    if (!input) return 50;
+): { score: number; inputs: SignalScore['technicalInputs'] } {
+    const empty = { signals: false, patterns: false, trend: false };
+    if (!input) return { score: 50, inputs: empty };
 
-    const trendScore = technicalTrendScore(input);
+    const { score: trendScore, inputs } = technicalTrendScore(input);
     const riskModifier = mapRiskLevel(input.riskLevel);
     const recommendationModifier = mapActionRecommendation(input.actionRecommendation);
 
-    return clamp(Math.round(trendScore + riskModifier + recommendationModifier), 0, 100);
+    return {
+        score: clamp(Math.round(trendScore + riskModifier + recommendationModifier), 0, 100),
+        inputs,
+    };
 }
 
 /**
@@ -218,15 +230,19 @@ function technicalTrendScore(input: {
     trend?: string;
     indicators?: Array<{ trend?: string; strength?: string }>;
     patterns?: WeightedTrendSignal[];
-}): number {
+}): { score: number; inputs: SignalScore['technicalInputs'] } {
     const parts: number[] = [];
+    const inputs = { signals: false, patterns: false, trend: false };
 
     const signalAgg = aggregateDirection(
         input.indicators ?? [],
         (i) => directionOf(i.trend),
         (i) => strengthWeight(i.strength),
     );
-    if (signalAgg !== null) parts.push(50 + signalAgg * TREND_SPAN);
+    if (signalAgg !== null) {
+        parts.push(50 + signalAgg * TREND_SPAN);
+        inputs.signals = true;
+    }
 
     const patternAgg = aggregateDirection(
         // 미검출 항목은 방향을 주장하지 않는다 — 분모에 넣으면 카탈로그 크기가 곧 희석이 된다.
@@ -236,13 +252,19 @@ function technicalTrendScore(input: {
         // 덮어 그 한 패턴이 기술 점수를 단독으로 정한다.
         (p) => (isFinitePositiveNumber(p.confidenceWeight) ? Math.min(p.confidenceWeight, 1) : 1),
     );
-    if (patternAgg !== null) parts.push(50 + patternAgg * TREND_SPAN);
+    if (patternAgg !== null) {
+        parts.push(50 + patternAgg * TREND_SPAN);
+        inputs.patterns = true;
+    }
 
     const overall = directionOf(input.trend);
-    if (overall !== null) parts.push(mapTrend(input.trend));
+    if (overall !== null) {
+        parts.push(mapTrend(input.trend));
+        inputs.trend = true;
+    }
 
-    if (parts.length === 0) return 50;
-    return parts.reduce((sum, v) => sum + v, 0) / parts.length;
+    if (parts.length === 0) return { score: 50, inputs };
+    return { score: parts.reduce((sum, v) => sum + v, 0) / parts.length, inputs };
 }
 
 /**
