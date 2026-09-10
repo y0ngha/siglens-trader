@@ -23,6 +23,30 @@ export interface SignalScore {
         fundamental: number;
         congress: number;
     };
+    /**
+     * 기술 축이 **실제로 몇 개 입력으로** 계산됐는가. 셋 다 `true`여야 설계대로다.
+     *
+     * `technicalTrendScore`는 세 재료(지표 신호 집계 / 패턴 집계 / LLM 종합 `trend`)를
+     * 평균하는데, 없는 재료는 조용히 건너뛴다 — 남은 것만으로 평균이 나오므로 점수는
+     * 그럴듯하고 축의 가중치도 그대로다. 그래서 **입력이 사라져도 아무 데도 티가 나지 않는다.**
+     *
+     * 실제로 그렇게 샜다: 2026-08-09 기술 분석 모델이 gemini → deepseek으로 바뀌면서
+     * `indicatorResults[].signals`가 **824건 전부 빈 배열**이 됐고(같은 프롬프트에서 gemini는
+     * 143건 100% 채운다), 그 사실이 한 달간 드러나지 않았다. 축 하나가 3입력 설계에서
+     * 사실상 1입력으로 줄어든 채 가중치 8을 그대로 행사했다.
+     *
+     * 점수에는 영향을 주지 않는 순수 관측 필드다 — `cron_decisions.detail`에 실려
+     * `where (detail->'technicalInputs'->>'signals')::bool is false`로 바로 세어진다.
+     * 원칙 11.
+     */
+    technicalInputs: {
+        /** `indicatorResults[].signals` — 지표 가이드가 낸 신호. */
+        signals: boolean;
+        /** `patternSummaries` + `strategyResults` + `candlePatterns`(detected≠false). */
+        patterns: boolean;
+        /** LLM 종합 `trend`. */
+        trend: boolean;
+    };
     signal: SignalDirection;
 }
 

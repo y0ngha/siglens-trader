@@ -15,6 +15,7 @@ function createSignalScore(overrides: Partial<SignalScore> = {}): SignalScore {
             fundamental: 60,
             congress: 50,
         },
+        technicalInputs: { signals: true, patterns: true, trend: true },
         signal: 'buy',
         ...overrides,
     };
@@ -336,6 +337,7 @@ describe('buildReason의 컨플루언스 표기', () => {
                     fundamental: 50,
                     congress: 50,
                 },
+                technicalInputs: { signals: true, patterns: true, trend: true },
                 signal: 'buy',
             },
             hasOpenPosition: false,
