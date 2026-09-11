@@ -389,7 +389,20 @@ describe('FmpFundamentalClient', () => {
 
             const result = await client.getCashFlowStatement('AAPL');
 
-            expect(result).toEqual({ operatingCashFlow: 100_000_000 });
+            expect(result).toEqual({ operatingCashFlow: 100_000_000, reportedCurrency: null });
+        });
+
+        it('passes the filer reporting currency through, trimmed', async () => {
+            const { FmpFundamentalClient } = await import('../fmp-fundamental');
+            const client = new FmpFundamentalClient();
+            const raw: RawFmpCashFlowStatement[] = [
+                { operatingCashFlow: 100_000_000, reportedCurrency: ' TWD ' },
+            ];
+            mockFmpGet.mockResolvedValueOnce(raw);
+
+            const result = await client.getCashFlowStatement('TSM');
+
+            expect(result).toEqual({ operatingCashFlow: 100_000_000, reportedCurrency: 'TWD' });
         });
 
         it('returns null when empty', async () => {

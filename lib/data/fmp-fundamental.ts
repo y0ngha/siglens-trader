@@ -165,7 +165,12 @@ export class FmpFundamentalClient implements FundamentalDataProvider {
         const arr = await fmpGet<RawFmpCashFlowStatement[]>('cash-flow-statement', { symbol });
         const r = arr[0];
         if (!r) return null;
-        return { operatingCashFlow: toFiniteNumber(r.operatingCashFlow) };
+        return {
+            operatingCashFlow: toFiniteNumber(r.operatingCashFlow),
+            // core labels EPS, operating cash flow and analyst estimates with the
+            // reporting currency; an ADR (e.g. TSM) reports in its home currency, not USD.
+            reportedCurrency: r.reportedCurrency?.trim() || null,
+        };
     }
 
     /** Fetch YoY income statement growth (revenue + EPS); returns `null` when unavailable. */
