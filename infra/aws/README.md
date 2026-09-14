@@ -45,7 +45,7 @@ aws ssm start-session --target $(aws ec2 describe-instances \
 
 **롤백**: 이전 태그로 `deploy.sh <이전-태그>` (ECR lifecycle이 최근 3개만 보관).
 
-**알람**(SNS `siglens-trader-alerts`): 인스턴스 상태 체크 실패, cron 실패 로그(`[cron:*] failed`).
+**알람**(SNS `siglens-alerts` — siglens 운영 알림 토픽 공유. 예전 전용 토픽 `siglens-trader-alerts`는 구독자가 0명이라 2026-09-14 폐기): 인스턴스 상태 체크 실패, cron 실패 로그(`[cron:*] failed`).
 cron 실패는 박스가 정상이어도 매매가 멈추는 유일한 경로라 별도 알람을 둔다.
 
 ## 주의

@@ -42,9 +42,18 @@ fi
 aws logs create-log-group --log-group-name "$LOG_GROUP" 2>/dev/null || true
 aws logs put-retention-policy --log-group-name "$LOG_GROUP" --retention-in-days 14
 
-TOPIC_ARN=$(aws sns create-topic --name "$APP-alerts" --query TopicArn --output text)
-[ -n "${ALARM_EMAIL:-}" ] && aws sns subscribe --topic-arn "$TOPIC_ARN" \
-    --protocol email --notification-endpoint "$ALARM_EMAIL" >/dev/null
+# Alarms publish to the shared ops topic (`siglens-alerts`, provisioned and email-confirmed by
+# siglens infra/aws/07-alarms.sh). A dedicated `$APP-alerts` topic used to be created here, but
+# ALARM_EMAIL was never set when provisioning, so it had zero subscribers and every trader alarm
+# (including cron failures, which stop trading) went nowhere. Removed 2026-09-14.
+# create-topic is idempotent: it returns the existing ARN without touching its subscriptions.
+ALARM_TOPIC_NAME="${ALARM_TOPIC_NAME:-siglens-alerts}"
+TOPIC_ARN=$(aws sns create-topic --name "$ALARM_TOPIC_NAME" --query TopicArn --output text)
+SUBSCRIBERS=$(aws sns get-topic-attributes --topic-arn "$TOPIC_ARN" \
+    --query Attributes.SubscriptionsConfirmed --output text)
+if [ "$SUBSCRIBERS" = "0" ]; then
+    log "WARNING: $ALARM_TOPIC_NAME has no confirmed subscribers — alarms will not notify anyone"
+fi
 
 # A cron failure is the failure mode that matters here: the box can be healthy while every
 # scheduled run errors out, and this is a trading tool, so that must page.
