@@ -137,7 +137,7 @@ UTC 13~21시 = KST 22:00~06:59. 실제 실행은 런타임 게이트 `isEtRegula
   요청으로 호출하므로, 미설정 시 스케줄러가 경고를 남기고 **비활성**된다.
 - `/api/cron/*` 엔드포인트도 살아 있어 수동 트리거가 가능하다(같은 시크릿으로 인증).
 - 실행 이력: 대시보드 Cron Runs 탭, 또는 `aws logs tail /siglens-trader/app --follow`.
-- cron 실패는 SNS 알람(`siglens-trader-alerts`)으로 통지된다 — 박스가 정상이어도 매매만 멈추는
+- cron 실패는 SNS 알람(siglens 운영 토픽 `siglens-alerts`)으로 통지된다 — 박스가 정상이어도 매매만 멈추는
   경로라 별도로 감시한다.
 
 ---
