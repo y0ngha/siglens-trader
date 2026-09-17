@@ -1830,7 +1830,7 @@ describe('runTradeGate — 호출 파라미터', () => {
         mockedCall.mockResolvedValue('{"fraction":0.5,"confidence":70,"reason":"x"}');
     });
 
-    it('reasoning:true, tier:pro, model/userApiKey/signal/correlationId를 전달한다', async () => {
+    it('reasoning:false, tier:pro, model/userApiKey/signal/correlationId를 전달한다', async () => {
         await runTradeGate(baseInput({ userApiKey: 'sk-123', correlationId: 'run1-AAPL-entry' }));
 
         expect(mockedCall).toHaveBeenCalledTimes(1);
@@ -1840,9 +1840,9 @@ describe('runTradeGate — 호출 파라미터', () => {
             model: 'deepseek-v4.1-flash',
             tier: 'pro',
             userApiKey: 'sk-123',
-            // 사이징은 6축 요약을 한꺼번에 놓고 내리는 유일한 판단이라 추론을 켠다.
-            // deepseek 스펙은 `callAnalysisAi`가 오버라이드하므로 모델과 무관하게 이 값이 정한다.
-            reasoning: true,
+            // 2026-09-17 전 축 추론 OFF. deepseek 스펙은 `callAnalysisAi`가 오버라이드하므로
+            // 모델과 무관하게 이 값이 정한다.
+            reasoning: false,
             signal: expect.any(AbortSignal),
             correlationId: 'run1-AAPL-entry',
         });

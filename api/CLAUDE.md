@@ -223,7 +223,8 @@ broken check.
 `fraction` that `lib/strategy/trade-plan.ts` turns into a share count. Design:
 [`docs/specs/2026-08-12-ai-trade-gate-design.md`](../docs/specs/2026-08-12-ai-trade-gate-design.md) §8–9.
 
-The gate runs with **reasoning on** and a **120s** per-call timeout (2026-08-17). It is the only
+The gate runs with **reasoning off** (2026-09-17, operator decision) and a **120s** per-call timeout.
+The reasoning-on rationale below (2026-08-17) is kept as history. It is the only
 place where the six axes, the account state and the budget are weighed together, so the review that
 produces the fraction is worth paying for; the total is bounded by the gate deadline (cron start +
 600s), not by this timeout. It was 25s with reasoning off, which would now abort mid-thought — and

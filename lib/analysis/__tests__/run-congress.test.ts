@@ -103,7 +103,7 @@ describe('runCongressAnalysis', () => {
                 symbol: 'AAPL',
                 modelId: baseOptions.modelId,
                 tier: 'pro',
-                reasoning: true,
+                reasoning: false,
                 dataProvider: expect.any(Object),
             }),
         );

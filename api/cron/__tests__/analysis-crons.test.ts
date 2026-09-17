@@ -494,16 +494,16 @@ describe('createAnalysisCronHandler', () => {
     it('passes the per-type reasoning policy to the runner', async () => {
         mockRunner.mockResolvedValue({ status: 'done', result: {} });
 
-        // technical: ON (핸들러가 'technical'로 만들어져 있다)
+        // technical: OFF (핸들러가 'technical'로 만들어져 있다)
         await handler(makeRequest(true));
-        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
 
-        // 정책 표에 없는 타입은 기본값(ON)을 따른다 — 핸들러가 축 이름으로 정책을
+        // 전 축 OFF(2026-09-17) — 핸들러가 축 이름으로 정책을
         // 조회한다는 것이 이 테스트의 대상이다.
         mockRunner.mockClear();
         const optionsHandler = createAnalysisCronHandler('options', mockRunner);
         await optionsHandler(makeRequest(true));
-        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: true }));
+        expect(mockRunner).toHaveBeenCalledWith(expect.objectContaining({ reasoning: false }));
     });
 
     it('passes a deadlineMs of start + 1200s to the runner', async () => {

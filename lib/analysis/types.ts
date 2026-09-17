@@ -72,13 +72,15 @@ export function toErrStr(e: unknown): string {
 export const ANALYSIS_TIER: Tier = 'pro';
 
 /**
- * 상세 분석(reasoning) 기본값. 정책이 없는 분석 타입은 이 값을 따른다 — 새 분석이 추가되면
- * 품질 우선(ON)으로 시작하고, 지연이 문제가 될 때 아래 표에 명시적으로 내린다.
+ * 상세 분석(reasoning) 기본값. 정책이 없는 분석 타입은 이 값을 따른다.
+ * 2026-09-17 운영자 결정으로 전 축 OFF — 새 분석도 OFF로 시작한다.
  */
-export const DEFAULT_ANALYSIS_REASONING = true;
+export const DEFAULT_ANALYSIS_REASONING = false;
 
 /**
  * 분석 타입별 상세 분석(reasoning) 정책.
+ *
+ * **2026-09-17: 전 축 OFF (운영자 결정).** 아래는 켜 두었던 시기의 기록이다.
  *
  * 분석이 얼마나 자주 돌아야 하는지가 추론을 감당할 수 있는지를 결정한다. 실측(2026-08-10,
  * deepseek-v4.1-flash, 30Min):
@@ -116,11 +118,11 @@ export const DEFAULT_ANALYSIS_REASONING = true;
  * 그 시간이 실패로 바뀌지 않는다), 옵션 cron은 15분마다 돌되 케이던스 창이 잉여 틱을 접는다.
  */
 export const ANALYSIS_REASONING: Readonly<Record<string, boolean>> = {
-    technical: true,
-    options: true,
-    news: true,
-    fundamental: true,
-    congress: true,
+    technical: false,
+    options: false,
+    news: false,
+    fundamental: false,
+    congress: false,
 };
 
 /** 해당 분석 타입의 reasoning 설정. 정책이 없으면 {@link DEFAULT_ANALYSIS_REASONING}. */
