@@ -1291,7 +1291,8 @@ describe('buildTradeGatePrompt — 출력 형식', () => {
             buildTradeGatePrompt(baseInput()),
             buildTradeGatePrompt(exitInput()),
         ]) {
-            expect(`${system}\n${user}`).not.toContain('0.5');
+            // 독립된 `0.5`만 잡는다 — 픽스처의 결정론적 지표(`손익비: 0.59`)는 앵커가 아니다.
+            expect(`${system}\n${user}`).not.toMatch(/(?<![\d.])0\.5(?!\d)/);
         }
     });
 });

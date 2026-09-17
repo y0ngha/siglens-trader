@@ -129,7 +129,7 @@ export const RESISTANCE_BREAKOUT_BAND = 0.02;
  * 4. Fixed take profit (only when fixedExitEnabled)
  * 4.5. 분석 익절가 도달 (`aiTakeProfit`) — always active
  * 5. Dynamic take profit (resistance approach) — **`aiTakeProfit`이 없을 때만** (4.5의 폴백)
- * 5b. Dynamic take profit (target approach) — always active
+ * 5b. Dynamic take profit (target approach) — **`aiTakeProfit`이 없을 때만** (4.5의 폴백)
  * 6. News-driven preemptive exit (bearish news + profit zone) — always active
  */
 export function evaluateExistingPosition(params: EvaluatePositionParams): PositionEvaluation {
@@ -311,7 +311,23 @@ export function evaluateExistingPosition(params: EvaluatePositionParams): Positi
         };
     }
 
-    if (params.targetPrice && currentPrice >= params.targetPrice * 0.95) {
+    // 5b. 목표가 근접 — 5번과 같은 이유로 **4.5의 폴백일 때만.**
+    //
+    // 같은 결함이 옆 규칙에서 재발했다. `targetPrice`는 `priceTargets.bullish`의 **첫** 목표,
+    // 즉 현재가에서 가장 가까운 목표이고 매시간 재계산된다. v0.30.0(core 1.0.x의 DeepSeek
+    // 스키마 강제)부터 이 필드가 99% 채워지는데, 실측(537틱) 현재가 대비 중앙 **+0.80%**,
+    // 최대 +4.69%다. `* 0.95`는 목표가 +5.26% 안쪽이면 항상 참이므로 **537/537틱에서 조건이
+    // 참**이었다 — 그전 모델은 목표가를 한 번도 내지 않아(0/862) 이 규칙이 잠들어 있었을 뿐이다.
+    // 리플레이(매 틱 매수 → 다음 틱 평가): 1틱 청산 **100%**.
+    //
+    // 95% 근사는 목표가 수 주짜리 +10~20%일 때의 어휘다. 장중 분석의 목표는 피보나치·이평
+    // 레벨이라 그 어휘가 맞지 않는다. 그리고 첫 목표가는 77%의 틱에서 `aiTakeProfit`과
+    // **같은 가격**이다 — "도달"은 4.5가 근사 없이 이미 잡는다.
+    //
+    // **청산을 느슨하게 만드는 변경이다**(원칙 7의 방향 선언). 진입에는 영향이 없고 리스크
+    // 컨트롤(1.5 / 2 / 3 / 3.5)은 그대로다. `entry-zone.ts`의 `firstUpsideExit`이 같은 규칙을
+    // 미러링한다.
+    if (!params.aiTakeProfit && params.targetPrice && currentPrice >= params.targetPrice * 0.95) {
         return {
             action: 'take_profit',
             reason: `목표가 근접 (목표: $${params.targetPrice})`,

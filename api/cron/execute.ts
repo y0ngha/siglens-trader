@@ -2179,6 +2179,57 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // 사는 순간 이미 서 있는 청산 조건 — 진입 차단.
+                    //
+                    // 위 세 가드는 **가격 레벨**만 본다(구간·손절 여유·손익비). 청산 체인에는
+                    // 레벨이 아닌 트리거가 더 있다 — 기술 추세 bearish(3), 하락 컨플루언스(3.5),
+                    // 뉴스 악재(6). 그중 하나가 서 있는 채로 사면 다음 틱(10분 뒤)에 그대로
+                    // 나간다. 그리고 이 부류는 **조용히** 생긴다: 저항선 근접(v0.28.6)과 목표가
+                    // 근접(v0.30.x)이 각각 99%·100% 틱에서 참인 상수가 됐을 때, 증상은 "사자마자
+                    // 청산" 체결 한 쌍뿐이라 감사로만 발견됐다.
+                    //
+                    // 그래서 레벨을 하나씩 흉내 내지 않고 **청산 체인 자체**에 묻는다. 새 청산
+                    // 규칙이 추가되거나 어느 규칙이 다시 상수가 되면 이 행이 쌓여서 보인다.
+                    // 신규 매수는 평단 = 현재가로, 추가 매수는 기존 평단으로 평가한다.
+                    //
+                    // 매수 전용이다(원칙 7) — 청산 판정을 읽기만 하고 청산을 막지 않는다.
+                    // 결합 효과(원칙 11): 실측 13세션 매수 신호 45틱 중 이 가드가 **새로** 막는
+                    // 틱은 0건 — 서 있던 16건은 전부 위 세 가드가 먼저 잡았다.
+                    const standingExit = isEntryDecision
+                        ? evaluateExistingPosition({
+                              avgPrice: safeNumber(
+                                  Number(existingPosition?.avgPrice ?? currentPrice),
+                                  currentPrice,
+                              ),
+                              currentPrice,
+                              stopLossPercent,
+                              takeProfitPercent,
+                              fixedExitEnabled,
+                              aiStopLoss: stopLevels.aiStopLoss,
+                              aiTakeProfit: rrLevels.takeProfit,
+                              supportLevel: stopLevels.supportLevel,
+                              resistanceLevel: rrLevels.resistance,
+                              targetPrice: rrLevels.target,
+                              technicalTrend: safeAnalysisTrend(tech?.result),
+                              newsSentiment: safeAnalysisSentiment(news?.result),
+                              confluenceExit: isConfluenceExit(confluence),
+                          })
+                        : null;
+                    if (standingExit && standingExit.action !== 'hold') {
+                        decisions.push({
+                            symbol: item.symbol,
+                            action: 'entry_exit_standing',
+                            score: decision.score,
+                            detail: {
+                                ...scoreDetail,
+                                price: currentPrice,
+                                exitAction: standingExit.action,
+                                exitReason: standingExit.reason,
+                            },
+                        });
+                        continue;
+                    }
+
                     // 같은 틱에 방금 줄인 포지션은 다시 늘리지 않는다.
                     if (isEntryDecision && reducedSymbols.has(item.symbol)) {
                         decisions.push({

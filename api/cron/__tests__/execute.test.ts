@@ -3130,7 +3130,9 @@ describe('execute cron handler', () => {
                     return Promise.resolve(sym === 'AAPL' ? fakeTechWithBearish : fakeTechResult);
                 },
             );
-            mockEvaluateExistingPosition.mockReturnValue({
+            // Once — 재평가 루프의 AAPL만 청산이다. 그대로 두면 TSLA 진입 가드
+            // (`entry_exit_standing`)도 같은 값을 받아 매수가 막히고 노출 재계산에 닿지 못한다.
+            mockEvaluateExistingPosition.mockReturnValueOnce({
                 action: 'stop_loss',
                 reason: '기술적 추세 반전',
             });
@@ -8906,6 +8908,101 @@ describe('execute cron handler', () => {
                     expect.objectContaining({ symbol: 'AAPL', action: 'entry_not_recommended' }),
                 );
                 expect(mockRunTradeGate).not.toHaveBeenCalled();
+            });
+
+            describe('사는 순간 이미 서 있는 청산 조건 (entry_exit_standing)', () => {
+                it('청산 체인이 hold가 아니면 매수하지 않는다 — 다음 틱에 그대로 나갈 포지션이다', async () => {
+                    buySetup(150);
+                    mockEvaluateExistingPosition.mockReturnValue({
+                        action: 'stop_loss',
+                        reason: '기술적 추세 반전 (bearish)',
+                        structural: true,
+                    });
+
+                    const body = await (await handler(makeRequest(true))).json();
+
+                    expect(body.decisions).toContainEqual(
+                        expect.objectContaining({ symbol: 'AAPL', action: 'entry_exit_standing' }),
+                    );
+                    // 어느 청산 규칙이 서 있었는지 남아야 한다 — 이 행이 쌓이면 그 규칙이
+                    // 다시 상수가 됐다는 신호다.
+                    expect(mockInsertCronDecisions).toHaveBeenCalledWith(
+                        fakeDb,
+                        expect.any(String),
+                        'execute',
+                        expect.arrayContaining([
+                            expect.objectContaining({
+                                action: 'entry_exit_standing',
+                                detail: expect.objectContaining({
+                                    price: 150,
+                                    exitAction: 'stop_loss',
+                                    exitReason: '기술적 추세 반전 (bearish)',
+                                }),
+                            }),
+                        ]),
+                    );
+                    // 어차피 사지 않을 주문에 LLM 호출을 태우지 않는다.
+                    expect(mockRunTradeGate).not.toHaveBeenCalled();
+                });
+
+                it('신규 매수는 평단 = 현재가로 평가한다', async () => {
+                    buySetup(150);
+
+                    await handler(makeRequest(true));
+
+                    expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                        expect.objectContaining({ avgPrice: 150, currentPrice: 150 }),
+                    );
+                });
+
+                it('추가 매수는 기존 평단으로 평가한다 — 재평가 루프가 다음 틱에 볼 값과 같다', async () => {
+                    buySetup(80, {}, 70);
+                    mockGetOpenPositionBySymbol.mockResolvedValue({
+                        id: 1,
+                        symbol: 'AAPL',
+                        quantity: 5,
+                        avgPrice: '100',
+                        status: 'open',
+                    });
+                    mockMakeTradeDecision.mockReturnValue({
+                        action: 'average_in',
+                        symbol: 'AAPL',
+                        score: 80,
+                        reason: 'AVERAGE_IN',
+                        quantity: 3,
+                    });
+
+                    await handler(makeRequest(true));
+
+                    expect(mockEvaluateExistingPosition).toHaveBeenCalledWith(
+                        expect.objectContaining({ avgPrice: 100, currentPrice: 80 }),
+                    );
+                });
+
+                it('청산 체인이 hold면 그대로 산다', async () => {
+                    buySetup(150);
+
+                    const body = await (await handler(makeRequest(true))).json();
+
+                    expect(body.decisions).toContainEqual(
+                        expect.objectContaining({ symbol: 'AAPL', action: 'buy', executed: true }),
+                    );
+                });
+
+                it('매수 결정이 아니면 평가하지 않는다 — 진입 전용 가드다 (원칙 7)', async () => {
+                    buySetup(150);
+                    mockMakeTradeDecision.mockReturnValue({
+                        action: 'hold',
+                        symbol: 'AAPL',
+                        score: 50,
+                        reason: 'HOLD',
+                        quantity: 0,
+                    });
+
+                    await handler(makeRequest(true));
+
+                    expect(mockEvaluateExistingPosition).not.toHaveBeenCalled();
+                });
             });
 
             it('물타기는 규칙으로 막지 않는다 — 점수와 게이트가 이미 AI 판단이다', async () => {

@@ -210,10 +210,20 @@ describe('formatStopRoom', () => {
 
 describe('firstUpsideExit', () => {
     it('가장 먼저 서는 익절 트리거를 고른다 — 더 먼 목표를 세면 못 먹을 이익을 센다', () => {
-        // 목표가는 95%에서 발동한다. 저항은 `takeProfit`이 있으면 후보가 아니다(아래 참고).
-        expect(firstUpsideExit(100, { takeProfit: 130, target: 120 })).toBeCloseTo(
-            114, // 120 × 0.95
-        );
+        // 폴백 둘(저항 밴드 하단 102.9, 목표가 95% 114) 중 먼저 닿는 쪽이 보상이다.
+        expect(firstUpsideExit(100, { resistance: 105, target: 120 })).toBeCloseTo(102.9);
+        expect(firstUpsideExit(100, { target: 120 })).toBeCloseTo(114); // 120 × 0.95
+    });
+
+    it('목표가는 takeProfit이 없을 때만 후보다 — 규칙 5b도 4.5의 폴백이라서', () => {
+        // takeProfit이 있으면 청산 체인의 규칙 5b(목표가 95%)는 서지 않는다. 종전에는
+        // 114(120 × 0.95)를 보상으로 셌는데, 체인은 130까지 들고 간다.
+        expect(firstUpsideExit(100, { takeProfit: 130, target: 120 })).toBeCloseTo(130);
+    });
+
+    it('실측 회귀 — 장중 분석의 첫 목표가는 95%가 현재가 아래라 어차피 후보가 아니었다', () => {
+        // 2026-09-14 PLTR: 현재가 171.56 / 첫 목표 172.68(= 익절가). 172.68 × 0.95 = 164.05.
+        expect(firstUpsideExit(171.56, { takeProfit: 172.68, target: 172.68 })).toBeCloseTo(172.68);
     });
 
     it('저항선은 takeProfit이 없을 때만 후보다 — 규칙 5가 4.5의 폴백이라서', () => {
