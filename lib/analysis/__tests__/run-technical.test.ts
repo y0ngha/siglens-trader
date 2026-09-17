@@ -116,7 +116,7 @@ describe('runTechnicalAnalysis', () => {
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,
             tierContext: { userId: null, tier: 'pro' },
-            reasoning: true,
+            reasoning: false,
             // 마감이 없는 호출(baseOptions)은 signal도 없다 — 심볼당 상한을 두지 않는다.
             // 종전 150초 상한은 추론 ON 축에서 타임아웃이 아니라 실패 그 자체였다.
             signal: undefined,

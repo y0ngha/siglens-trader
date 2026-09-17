@@ -1271,6 +1271,7 @@ export async function runTradeGate(input: TradeGateInput): Promise<TradeGateOutc
             // pro tier: free면 서버 키 라우팅이 깨진다(기존 분석 축과 동일).
             tier: ANALYSIS_TIER,
             userApiKey: input.userApiKey,
+            // reasoning:false (2026-09-17 운영자 결정으로 OFF). 아래는 켜 두었던 시기의 근거.
             // reasoning:true (2026-08-17). 게이트는 6축 요약·계좌 상태·예산·보유 맥락을
             // 한꺼번에 놓고 "얼마나"를 정하는 **유일한 판단 지점**이다. 사이징이 한 줄짜리
             // 결론이라는 것과 그 결론에 이르는 검토가 짧아도 된다는 것은 다른 말이라,
@@ -1279,7 +1280,7 @@ export async function runTradeGate(input: TradeGateInput): Promise<TradeGateOutc
             // 켠 대가는 지연이고, 그 지연은 위 `DEFAULT_GATE_TIMEOUT_MS`와 execute의
             // 게이트 마감이 함께 막는다. deepseek 스펙은 `callAnalysisAi`가 오버라이드하므로
             // 모델이 flash든 pro든 이 플래그가 thinking 여부를 정한다.
-            reasoning: true,
+            reasoning: false,
             signal: AbortSignal.timeout(input.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS),
             correlationId: input.correlationId,
             // responseSchema는 쓰지 않는다 — provider마다 스키마 형식이 달라 이식성이 없다.

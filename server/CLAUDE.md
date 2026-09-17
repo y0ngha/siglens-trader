@@ -96,8 +96,8 @@ symbol then refreshes at 2× the window.
 
 ### Reasoning (상세 분석) policy
 
-Per-type, in `ANALYSIS_REASONING` (`lib/analysis/types.ts`). **All five axes run with reasoning
-on** as of 2026-08-17 (options was the last holdout).
+Per-type, in `ANALYSIS_REASONING` (`lib/analysis/types.ts`). **All five axes and the trade gate
+run with reasoning off** as of 2026-09-17 (operator decision; they had been on since 2026-08-17).
 
 **There is no per-symbol timeout any more** — the run deadline (`cron start + 1200s`) is the only
 budget, and `symbolSignal()` derives the AbortSignal from it.

@@ -40,18 +40,11 @@ describe('toErrStr', () => {
 });
 
 describe('getAnalysisReasoning', () => {
-    it('technical은 추론을 켠다 — 주기 저하가 매매를 멈추지 않기 때문', () => {
-        // 2026-08-10 측정에서 심볼당 ~7분이 나와 껐지만, 그 결론("신호가 사라진다")이
-        // 과장이었다. 패스가 창(30분)을 넘겨도 마지막 종목의 갱신이 30→60분이 될 뿐이고,
-        // 60분은 30Min 신선도 한도(90분) 안이라 매매는 계속 돈다.
-        expect(getAnalysisReasoning('technical')).toBe(true);
-    });
-
-    it('options도 추론을 켠다 (2026-08-17)', () => {
-        // 축 하나만 꺼 두면 "왜 이 축만 다른가"를 매번 설명해야 하고, 실제로 판단 근거의
-        // 두께가 얇아진다. 상한이 추론 정책을 따라오므로(getPerSymbolMaxMs) 켜는 비용은
-        // 시간뿐이고, 케이던스 창이 잉여 틱을 접는다.
-        expect(getAnalysisReasoning('options')).toBe(true);
+    it('전 축 추론 OFF (2026-09-17 운영자 결정)', () => {
+        for (const t of ['technical', 'options', 'news', 'fundamental', 'congress', 'unknown']) {
+            expect(getAnalysisReasoning(t)).toBe(false);
+        }
+        expect(DEFAULT_ANALYSIS_REASONING).toBe(false);
     });
 
     describe('symbolSignal', () => {
