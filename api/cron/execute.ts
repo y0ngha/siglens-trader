@@ -36,6 +36,7 @@ import {
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import { getAnalysisReferenceTime } from '../../lib/analysis/source-time.js';
 import { computeConfluence } from '../../lib/analysis/confluence.js';
+import type { HtfMode } from '../../lib/analysis/confluence.js';
 import { isConfluenceExit } from '../../lib/strategy/confluence.js';
 import type { ConfluenceSnapshot } from '../../lib/strategy/confluence.js';
 import { getTechnicalMaxAgeMs, normalizeAnalysisTimeframe } from '../../lib/analysis/timeframe.js';
@@ -473,7 +474,8 @@ async function handler(req: Request): Promise<Response> {
                 getConfigValue<number>(db, 'confluence_expected_weight').catch(() => null),
                 getConfigValue<string>(db, 'confluence_htf').catch(() => null),
                 getConfigValue<boolean>(db, 'confluence_require_volume').catch(() => null),
-            ]).then(([min, exitMin, span, expectedWeight, htf, requireVolume]) => ({
+                getConfigValue<string>(db, 'confluence_htf_mode').catch(() => null),
+            ]).then(([min, exitMin, span, expectedWeight, htf, requireVolume, htfMode]) => ({
                 ...(typeof min === 'number' ? { min } : {}),
                 ...(typeof exitMin === 'number' ? { exitMin } : {}),
                 ...(typeof span === 'number' ? { span } : {}),
@@ -482,6 +484,10 @@ async function handler(req: Request): Promise<Response> {
                 // 것과 "키가 없다"를 구분하기 어려워 명시 값을 쓴다.
                 ...(typeof htf === 'string' ? { htf: htf === 'off' ? null : htf } : {}),
                 ...(typeof requireVolume === 'boolean' ? { requireVolume } : {}),
+                // 모르는 값은 넘기지 않는다 — `computeConfluence`가 trader 기본 모드를 쓴다.
+                ...(htfMode === 'uptrend' || htfMode === 'notUptrend'
+                    ? { htfMode: htfMode as HtfMode }
+                    : {}),
             }));
 
             const confluenceCache = new Map<string, ConfluenceSnapshot | null>();

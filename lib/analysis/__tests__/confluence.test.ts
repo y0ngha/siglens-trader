@@ -21,7 +21,7 @@ vi.mock('@y0ngha/siglens-core', () => ({
     CONFLUENCE_MIN_BARS: 120,
 }));
 
-const { computeConfluence, MIN_BARS, DEFAULT_HTF_TIMEFRAME, __clearHtfCache } =
+const { computeConfluence, MIN_BARS, DEFAULT_HTF_TIMEFRAME, DEFAULT_HTF_MODE, __clearHtfCache } =
     await import('../confluence.js');
 
 /** 종가가 모두 `close`인 n개 봉. 마지막 봉은 **방금** 닫힌 것으로 만든다. */
@@ -131,6 +131,40 @@ describe('computeConfluence — 조회와 게이트 (trader 소유)', () => {
             expect(opts.requireVolume).toBe(false);
             expect('span' in opts).toBe(false);
             expect('expectedWeight' in opts).toBe(false);
+        });
+
+        describe('상위 시간축 게이트 모드', () => {
+            // core 기본값은 `uptrend`인데 trader는 `notUptrend`로 돈다 — 1시간봉 전진 수익률
+            // 실측에서 uptrend 요구가 −0.54%/1일, uptrend 제외가 +0.45%였다(`DEFAULT_HTF_MODE`).
+            it('미지정이면 trader 기본 모드(notUptrend)를 넘긴다 — core 기본값에 맡기지 않는다', async () => {
+                await computeConfluence('AAPL', '1Hour');
+
+                expect(DEFAULT_HTF_MODE).toBe('notUptrend');
+                expect(evaluateConfluence).toHaveBeenCalledWith(
+                    expect.anything(),
+                    expect.objectContaining({ htfMode: 'notUptrend' }),
+                );
+            });
+
+            it('설정으로 종전 모드(uptrend)로 되돌릴 수 있다', async () => {
+                await computeConfluence('AAPL', '1Hour', { htfMode: 'uptrend' });
+
+                expect(evaluateConfluence).toHaveBeenCalledWith(
+                    expect.anything(),
+                    expect.objectContaining({ htfMode: 'uptrend' }),
+                );
+            });
+
+            it('모르는 값은 기본 모드로 되돌린다 — 손상된 설정 행이 게이트를 뒤집지 않는다', async () => {
+                await computeConfluence('AAPL', '1Hour', {
+                    htfMode: 'downtrend' as unknown as 'uptrend',
+                });
+
+                expect(evaluateConfluence).toHaveBeenCalledWith(
+                    expect.anything(),
+                    expect.objectContaining({ htfMode: 'notUptrend' }),
+                );
+            });
         });
 
         it('튜너블 전부를 넘길 수 있다', async () => {

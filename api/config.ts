@@ -98,6 +98,7 @@ async function handler(req: Request): Promise<Response> {
             'confluence_span',
             'confluence_expected_weight',
             'confluence_htf',
+            'confluence_htf_mode',
             'confluence_require_volume',
         ]);
 
@@ -380,6 +381,17 @@ async function handler(req: Request): Promise<Response> {
                 ) {
                     return Response.json(
                         { error: 'confluence_htf must be one of 15Min/30Min/1Hour/1Day/off' },
+                        { status: 400 },
+                    );
+                }
+                // 열거값만 받는다 — 런타임은 모르는 값을 기본 모드로 되돌리는데, 그 폴백은
+                // 손상된 행에 대한 방어이지 운영자의 오타를 숨기는 장치가 아니다.
+                if (
+                    key === 'confluence_htf_mode' &&
+                    !['uptrend', 'notUptrend'].includes(value as string)
+                ) {
+                    return Response.json(
+                        { error: 'confluence_htf_mode must be one of uptrend/notUptrend' },
                         { status: 400 },
                     );
                 }

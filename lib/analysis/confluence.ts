@@ -11,8 +11,48 @@ import { isFinitePositive } from '../validation.js';
  */
 export const MIN_BARS = CONFLUENCE_MIN_BARS;
 
-/** 상위 시간축 기본값. 30분봉 진입을 일봉 추세에 정렬시킨다. */
+/** 상위 시간축 기본값. 진입 봉의 위치를 일봉 추세에 비춰 본다. */
 export const DEFAULT_HTF_TIMEFRAME = '1Day';
+
+/** 상위 시간축 게이트 모드 — core의 `ConfluenceHtfMode`. */
+export type HtfMode = 'uptrend' | 'notUptrend';
+
+/**
+ * 상위 시간축 게이트의 기본 모드 — **core 기본값(`uptrend`)과 다르다. 의도된 것이다.**
+ *
+ * 종전 게이트는 "일봉이 상승일 때만 진입"이었다. 근거는 추론("같은 시간축 MA50은 중기 추세
+ * 필터가 아니다")과 손실 3건을 막았다는 사실뿐이고, **전진 수익률은 한 번도 재지 않았다.**
+ * 2026-09-17에 쟀다 — 16종목(관심 4 + 대형/고베타 12) × 1년 1시간 완성봉 27,190개, 진입 창 봉,
+ * 심볼·일 첫 트리거만, 초과수익 = 심볼 자체 평균 대비:
+ *
+ * | 상위 추세 조건 | n | +1일 초과 (중앙) | t | +2일 | 심볼 1개 제외 범위 |
+ * |---|---|---|---|---|---|
+ * | 상승 요구 (종전) | 230 | **−0.54%** (−0.54) | −2.1 | −1.03% | −0.69 ~ −0.44 |
+ * | 게이트 off | 641 | +0.10% (−0.10) | 0.6 | −0.01% | +0.07 ~ +0.15 |
+ * | 상승 제외 | 413 | **+0.45%** (−0.01) | 2.2 | +0.51% | +0.41 ~ +0.52 |
+ *
+ * 게이트의 **부호가 반대**였다. 컨플루언스 없이도 방향이 같다: 일봉 `uptrend` 상태 뒤
+ * +1일 초과 −0.19%(양수 3/16종목), `downtrend` 뒤 +0.18%(15/16). 이미 뻗은 일봉 위의 1시간봉
+ * 강세 컨플루언스는 **늦은 추격**이고, 그렇지 않은 자리에서는 반등 확인으로 작동한다 —
+ * 프로덕션 13세션에서 매수 신호가 +30분 +0.10% 뒤 +120분 −0.20%, D+1 −1.61%로 되돌려진
+ * 것과 같은 그림이다.
+ *
+ * **한계를 그대로 적는다.** 1년·단일 국면, 완성봉 기준(프로덕션은 형성 중 봉), `상승 제외`의
+ * 평균은 우측 꼬리에서 온다(중앙 ≈ 0, 승률 51%). 확실한 것은 "종전 모드가 해롭다"이고,
+ * "새 모드가 이롭다"는 그보다 약한 증거다. 그래서 설정(`confluence_htf_mode`)으로 되돌릴 수
+ * 있고, 적용 모드가 스냅샷 `params.htfMode`에 남아 전후 비교가 된다.
+ *
+ * **진입 전용이다**(원칙 7) — 청산 트리거는 상위 추세를 보지 않는다.
+ *
+ * **결합 효과(원칙 11).** 조이는 변경이 아니라 방향 전환이다: 관심 4종목의 트리거 심볼·일은
+ * 1년에 54 → 104(월 8~15). 다만 국면을 탄다 — 하락 테이프였던 2026-09의 13세션은 종전 모드
+ * 6 심볼·일, 새 모드 **0**이다(일봉이 상승이 아닌 종목은 1시간봉 MA50 아래에 있었다). 종전
+ * 모드도 2026-01·02·07이 0이었다. 신호가 마르면 `cron_decisions.detail.confluence`의
+ * `htfTrend`·`params.htfMode`로 어느 조건이 막았는지 갈린다.
+ *
+ * 설계·재현 스크립트: `docs/specs/2026-09-18-audit-exit-constant-and-htf-mode-design.md`.
+ */
+export const DEFAULT_HTF_MODE: HtfMode = 'notUptrend';
 
 /**
  * 상위 시간축 봉 캐시 TTL.
@@ -86,8 +126,13 @@ export interface ConfluenceOptions {
     expectedWeight?: number;
     /** 상위 시간축. `null`이면 정렬 게이트를 끈다. 기본 {@link DEFAULT_HTF_TIMEFRAME}. */
     htf?: string | null;
-    /** 강세 계열에 거래량 계열이 최소 하나 있어야 진입 트리거가 서는가. 기본 true. */
+    /**
+     * 강세 계열에 거래량 계열이 최소 하나 있어야 진입 트리거가 서는가.
+     * 기본 **false**(core 기본값) — 실측에서 트리거를 절반으로 줄였을 뿐 값을 하지 못했다.
+     */
     requireVolume?: boolean;
+    /** 상위 시간축 게이트 모드. 기본 {@link DEFAULT_HTF_MODE}. */
+    htfMode?: HtfMode;
 }
 
 /**
@@ -164,6 +209,8 @@ export async function computeConfluence(
             timeframe,
             htfBars,
             htfLabel: htf,
+            // core 기본값(`uptrend`)에 맡기지 않는다 — 근거는 `DEFAULT_HTF_MODE`.
+            htfMode: opts?.htfMode === 'uptrend' ? 'uptrend' : DEFAULT_HTF_MODE,
             minBars: MIN_BARS,
             ...(typeof opts?.min === 'number' ? { min: opts.min } : {}),
             ...(typeof opts?.exitMin === 'number' ? { exitMin: opts.exitMin } : {}),

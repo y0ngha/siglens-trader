@@ -832,6 +832,8 @@ describe('POST /api/config', () => {
             ['confluence_expected_weight', 1],
             ['confluence_htf', '1Day'],
             ['confluence_htf', 'off'],
+            ['confluence_htf_mode', 'uptrend'],
+            ['confluence_htf_mode', 'notUptrend'],
             ['confluence_require_volume', true],
             ['confluence_require_volume', false],
         ];
@@ -865,6 +867,10 @@ describe('POST /api/config', () => {
             // 같거나 낮은 축은 게이트의 전제를 뒤집는다.
             ['confluence_htf', '1Hour'],
             ['confluence_htf', '15Min'],
+            // 열거값만 — 런타임 폴백(모르는 값 → 기본 모드)이 운영자의 오타를 숨기면 안 된다.
+            ['confluence_htf_mode', 'downtrend'],
+            ['confluence_htf_mode', 'NotUptrend'],
+            ['confluence_htf_mode', true],
             ['confluence_require_volume', 'yes'],
         ];
         for (const [key, value] of cases) {

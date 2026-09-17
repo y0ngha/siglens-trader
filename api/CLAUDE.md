@@ -57,6 +57,7 @@ Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total
 `confluence_min`·`confluence_exit_min` (각 1~14, **서로 독립** — 원칙 7),
 `confluence_span` (0~50), `confluence_expected_weight` (0~1),
 `confluence_htf` (`analysis_timeframe`보다 상위여야 하며 `off` 가능 — 양방향 교차 검증),
+`confluence_htf_mode` (`uptrend` | `notUptrend` — 열거값만, 기본 `notUptrend`),
 `confluence_require_volume`.
 
 `execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
