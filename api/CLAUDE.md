@@ -184,8 +184,9 @@ broken check.
      - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
        (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
      - `entry_poor_rr`: the risk:reward at entry is below `min_rr` (default **1.5**) —
-       reward is the **first** upside exit that would fire (analysis take-profit, resistance
-       band lower edge, or 95% of target, whichever is nearest), risk is the distance to the
+       reward is the **first** upside exit that would fire (the analysis take-profit; only
+       when that is absent, the resistance band's lower edge or 95% of target, whichever is
+       nearer — rules 5/5b are fallbacks for 4.5), risk is the distance to the
        first stop trigger. Fail-open when either side is unknown. Measured: analysis
        take-profit sat **below** the current price on 11.5% of ticks and resistance on 14.6%,
        so those entries hit their exit the moment they filled. Worse, score and R:R are
@@ -201,6 +202,16 @@ broken check.
      - `entry_not_recommended`: the analysis says `entryRecommendation: 'avoid'`. Enforced here
        rather than as a score penalty, and `entry_out_of_zone` cannot substitute — core fills a
        *contingent* `entryPrices` range even on `avoid`, usually **above** the current price
+     - `entry_exit_standing`: the exit chain (`evaluateExistingPosition`, evaluated at
+       avgPrice = current price for a new buy, the existing average for an average-in)
+       already returns a non-`hold` verdict. The three price guards above only look at
+       *levels*; the chain also exits on a bearish technical trend, a bearish confluence
+       and bearish news, and a buy made while one of those stands is sold on the next tick.
+       Asking the chain itself — rather than mirroring each rule — also turns the recurring
+       "an exit rule silently became a constant" failure (resistance band 99.2%, target
+       price 100%) from a buy/sell pair 10 minutes apart into rows that pile up with the
+       rule's name in `detail.exitReason`. Entry-only: it reads the exit verdict, it never
+       blocks an exit
      - `entry_cooldown`: this symbol had any real fill (buy **or sell**) inside
        `entry_cooldown_min` (default 60). Counting sells is what stops a re-buy minutes after a
        stop-loss — `recentStopLossSymbols` is run-scoped and resets on the next tick. Reads
@@ -255,8 +266,9 @@ prompt says so, telling the model to weigh it more heavily when the axes disagre
 same run-scoped cache as the scoring path, so entering the gate costs no extra fetch.
 
 Decision actions from the entry guards: `entry_out_of_zone`, `entry_no_stop_room`,
-`entry_cooldown` (all carry a `detail` block naming the price/zone, the stop room and its
-trigger, or the last fill time, so "why didn't it buy" is answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
+`entry_poor_rr`, `entry_exit_standing`, `entry_cooldown` (all carry a `detail` block naming
+the price/zone, the stop room and its trigger, the risk:reward, the exit rule already
+standing, or the last fill time, so "why didn't it buy" is answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
 `exit_already_handled` (the re-evaluation loop already sold this symbol this tick),
 `entry_blocked` (a risk breaker is up and this symbol's signal is not a sell).
 Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
@@ -386,6 +398,7 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 | Entry zone | — (analysis-driven) | +1% over `entryPrices` max | Blocks buy/average_in only — `entry_out_of_zone`. Not a breaker row in the audit: it is per-symbol, so it decides inside the watchlist loop rather than setting `entryBlock` |
 | Risk:reward | `min_rr` | 1.5 | Blocks buy/average_in only — `entry_poor_rr`. Per-symbol. Fail-open when upside or downside is unknown. 0 disables |
 | Stop room | `min_stop_room_pct` | 0.5% above `max(support, aiStopLoss)` | Blocks buy/average_in only — `entry_no_stop_room`. Per-symbol, same as above. Fail-open with no support/stop level. 0 disables |
+| Standing exit | — (exit chain) | exit chain returns non-`hold` at entry | Blocks buy/average_in only — `entry_exit_standing`. Per-symbol, same as above. `detail.exitReason` names the rule that was already standing |
 | Re-entry cooldown | `entry_cooldown_min` | 60 min | Blocks buy/average_in only — `entry_cooldown`. Per-symbol, same as above. 0 disables |
 | Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
@@ -551,6 +564,14 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
 - **`entry_not_recommended`** — 분석의 `entryRecommendation`이 `avoid`면 점수와 무관하게 매수를
   막는다. core는 `avoid`에서도 "돌파 시 진입" **조건부** 구간을 채우므로 `entryPrices` 상단
   검사로는 걸러지지 않는다.
+- **`entry_exit_standing`** — 사는 순간 청산 체인이 이미 `hold`가 아니면 매수/추가매수를
+  건너뛴다. 위 가드들은 **가격 레벨**만 보는데, 청산 체인에는 레벨이 아닌 트리거가 더 있다
+  (기술 추세 bearish, 하락 컨플루언스, 뉴스 악재). 레벨을 하나씩 흉내 내지 않고 실제
+  `evaluateExistingPosition`에 묻는다 — 신규 매수는 평단 = 현재가, 추가 매수는 기존 평단.
+  실측(13세션 매수 신호 45틱)에서 이 가드가 **새로** 막는 틱은 0건이다(서 있던 16건은 전부
+  앞의 세 가드가 먼저 잡았다). 그래도 두는 이유는 관측이다: 청산 규칙 하나가 다시 상수가
+  되면 증상이 10분 간격 매수·매도 한 쌍이 아니라 `detail.exitReason`이 찍힌 행으로 쌓인다.
+  매도에는 걸지 않는다(원칙 7).
 - **`entry_after_exit_blocked`** — 같은 틱에 부분 청산한 종목은 다시 늘리지 않는다.
 
 **노출 한도는 원가(투자 금액) 기준이다.** `max_position_size` / `max_total_exposure`는
@@ -574,6 +595,15 @@ $180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석�
 관대해, 그 비대칭이 승률을 깎는 방향으로만 작동했다. 저항선 쪽은 상한이 없어 **돌파를 저항
 거부로 오독**했다(실측: 저항 172.33에 현재가 176.375를 "저항선 근접"으로 청산). 목표가는
 상한을 두지 않는다 — 목표가 위는 "도달"이지만 저항선 위는 "돌파"라 뜻이 다르다.
+
+**목표가 근접(5b)도 같은 폴백이다.** v0.30.0(core 1.0.x의 DeepSeek 스키마 강제)부터
+`priceTargets`가 99% 채워지는데, 첫 목표는 현재가에서 가장 가까운 목표라 중앙 +0.80%(최대
++4.69%)이고 `>= target * 0.95`는 +5.26% 안쪽이면 항상 참이다 — 실측 **537/537틱**, 리플레이
+1틱 청산 100%. 그전 모델은 목표가를 한 번도 내지 않아(0/862) 잠들어 있었을 뿐이다. 첫
+목표가는 77%의 틱에서 `aiTakeProfit`과 같은 가격이라 "도달"은 4.5가 이미 잡는다.
+수정 후에도 평균 수익은 좋아지지 않는다(−0.02% → −0.37%, 추세 비약세 틱) — 10분 청산은
+"매매를 하지 않는 것"이었고, 고치면 우위 없는 진입을 실제로 들고 가기 때문이다. 그 진입
+쪽 원인은 컨플루언스 상위 시간축 게이트였다(루트 CLAUDE.md).
 
 **저항선 근접은 `aiTakeProfit`이 없을 때만 발동한다** — 4.5의 폴백이다. 밴드를 씌워도
 상수였기 때문이다: `keyLevels.resistance[0]`은 현재가에서 가장 가까운 저항이고 매시간

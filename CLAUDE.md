@@ -160,11 +160,25 @@ weighted average, so the sum itself carries no meaning):
 > 배열을 채우지 못한다** — 실측 824건 전부 빈 배열이고 같은 프롬프트에서 gemini는 143건
 > 100% 채운다(간단한 프롬프트로는 DeepSeek도 정상 생성하므로 구조적 무능이 아니라 긴
 > 프롬프트에서 지시를 놓치는 것이다). DeepSeek은 `response_format: json_schema`를 지원하지
-> 않아(`400 unavailable`) 스키마로 강제할 수도 없다. **기술 축 모델은 gemini 계열로 둔다.**
+> 않아(`400 unavailable`) 스키마로 강제할 수도 없다. ~~기술 축 모델은 gemini 계열로 둔다.~~
+> **2026-09-10 갱신**: core 1.0.1이 DeepSeek 출력을 스키마로 강제하면서 `deepseek-v4.1-flash`가
+> 이 배열을 **100% 채운다**(실측 540/540틱, `technicalInputs` 3입력 전부 true). 지금 기술 축은
+> DeepSeek으로 돈다. 위 문단은 "모델을 바꾸면 축이 조용히 반쪽이 될 수 있다"는 경고로 남긴다.
 > 축이 반쪽이 되어도 점수는 그럴듯하므로, `cron_decisions.detail.technicalInputs`로 감시한다.
+>
+> **같은 교체가 축의 분포도 옮겼다.** 구 모델은 `trend`가 90% `neutral`·`riskLevel` 100%
+> `medium`이라 기술 축이 사실상 상수(평균 44.7)였고, v4.1은 하락장에서 `bearish` 55%를 내
+> 평균 27.9다. 그리고 `entryRecommendation`은 역대 1,111건 중 `enter`가 **5건**, v4.1은
+> `wait` 136/136 — 수정자(−6)가 투표가 아니라 상수 감점이다(congress와 같은 형태). 점수식은
+> 건드리지 않았다: 빼면 분포가 +1.4점 올라 **매도가 어려워지는** 쪽으로도 떨어지기 때문이다(원칙 7).
 
 Buy threshold: **65**, Sell threshold: **40** (configurable via dashboard). 두 값은 축 하나의
-크기가 아니라 **종합 점수 분포의 상·하위 3.4% 꼬리**를 가리킨다 — 근거는 원칙 12.
+크기가 아니라 **종합 점수 분포의 상·하위 3.4% 꼬리**를 가리키도록 잡았다 — 근거는 원칙 12.
+**그 측정은 30Min 시절 것이고 지금은 어긋나 있다**(2026-09-17, 1Hour 13세션 1,402틱): ≥65는
+3.2%(모델 교체 후 1.7%)로 비슷하지만 ≤40은 **12.7%**, 컨플루언스 제외 보정까지 합친 매도
+신호는 **21.8%**다. 옮기지 않은 이유는 전진 수익률이 어느 쪽 이동도 지지하지 않아서다
+(점수 ≤40 틱의 +60분 −0.14% vs 기준선 −0.12%). 임계를 다시 잡을 때는 꼬리 비율이 아니라
+그 구간의 전진 수익률로 정한다.
 `WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises
 confluence to 14 and technical to 10 while cutting fundamental/congress); `1Hour` is the default
 profile above. Stored `score_weights` overrides the profile key by key.

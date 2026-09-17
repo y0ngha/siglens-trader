@@ -719,6 +719,61 @@ describe('evaluateExistingPosition', () => {
         });
     });
 
+    describe('목표가 근접(5b)도 분석 익절가(4.5)의 폴백이다', () => {
+        // v0.30.0부터 `priceTargets`가 99% 채워지는데 첫 목표가 현재가 대비 중앙 +0.80%
+        // (최대 +4.69%)라, `>= target * 0.95`가 실측 537/537틱에서 참이었다 — 리플레이
+        // 1틱 청산 100%. 저항선(5번)과 같은 결함이 옆 규칙에서 재발한 것이다.
+        it('실측 회귀 — 매수 직후 첫 목표가 95% 조건만으로 청산하지 않는다', () => {
+            // 2026-09-14 PLTR 분석: 현재가 171.56, 첫 목표 = 익절가 172.68, 손절 168.25.
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 171.56,
+                currentPrice: 171.6,
+                aiTakeProfit: 172.68,
+                aiStopLoss: 168.25,
+                targetPrice: 172.68,
+            });
+            expect(result.action).toBe('hold');
+        });
+
+        it('분석 익절가가 없으면 폴백이 그대로 받는다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 100,
+                currentPrice: 108,
+                targetPrice: 112, // 108 >= 112 * 0.95
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('목표가 근접');
+        });
+
+        it('폴백을 막아도 분석 익절가 도달은 그대로 발동한다 — 익절 경로가 사라지지 않는다', () => {
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 171.56,
+                currentPrice: 172.7,
+                aiTakeProfit: 172.68,
+                targetPrice: 172.68,
+            });
+            expect(result.action).toBe('take_profit');
+            expect(result.reason).toContain('분석 익절가');
+        });
+
+        it('폴백을 막아도 손절 경로는 그대로다 — 원칙 7', () => {
+            // 청산을 느슨하게 만드는 변경이므로 리스크 컨트롤이 남아 있는지 못박는다.
+            const result = evaluateExistingPosition({
+                ...baseParams,
+                avgPrice: 171.56,
+                currentPrice: 168.2,
+                aiTakeProfit: 172.68,
+                aiStopLoss: 168.25,
+                targetPrice: 172.68,
+            });
+            expect(result.action).toBe('stop_loss');
+            expect(result.reason).toContain('분석 손절가');
+        });
+    });
+
     describe('저항선 근접은 밴드다 — 돌파는 익절 사유가 아니다', () => {
         // 2026-08-13 PLTR 실측: 저항 172.33에 현재가 176.375(2.3% **위**)를 "저항선 근접"
         // 으로 청산. 매수가 178.53이라 저항선이 진입가 아래였고, 포지션이 열린 순간부터
