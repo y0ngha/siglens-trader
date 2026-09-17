@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.31.0](https://github.com/y0ngha/siglens-trader/compare/v0.30.2...v0.31.0) (2026-09-17)
+
+
+### Bug Fixes
+
+* 목표가 근접 익절(5b)을 4.5의 폴백으로 + 서 있는 청산 조건 진입 가드 ([1c90d20](https://github.com/y0ngha/siglens-trader/commit/1c90d2039c6af3a05a484e3e59043534559829b3))
+
+
+### Features
+
+* 컨플루언스 상위 시간축 게이트 방향 전환 (notUptrend) + core 1.10.0 ([85fcdc0](https://github.com/y0ngha/siglens-trader/commit/85fcdc0af52064326848aca3d2b11932b1028e34)), closes [y0ngha/siglens-core#212](https://github.com/y0ngha/siglens-core/issues/212)
+
 ## [0.30.2](https://github.com/y0ngha/siglens-trader/compare/v0.30.1...v0.30.2) (2026-09-17)
 
 ## [0.30.1](https://github.com/y0ngha/siglens-trader/compare/v0.30.0...v0.30.1) (2026-09-11)
