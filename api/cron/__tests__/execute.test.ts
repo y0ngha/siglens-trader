@@ -8055,6 +8055,7 @@ describe('execute cron handler', () => {
                     confluence_expected_weight: 0.25,
                     confluence_htf: '1Hour',
                     confluence_require_volume: false,
+                    confluence_htf_mode: 'uptrend',
                 };
                 return Promise.resolve(cfg[key] ?? null);
             });
@@ -8069,7 +8070,25 @@ describe('execute cron handler', () => {
                 expectedWeight: 0.25,
                 htf: '1Hour',
                 requireVolume: false,
+                htfMode: 'uptrend',
             });
+        });
+
+        it('손상된 confluence_htf_mode는 넘기지 않는다 — trader 기본 모드가 적용된다', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(
+                    key === 'trading_mode'
+                        ? 'dry_run'
+                        : key === 'confluence_htf_mode'
+                          ? 'downtrend'
+                          : null,
+                ),
+            );
+            mockGetEnabledWatchlist.mockResolvedValue([fakeWatchlist[0]]);
+
+            await handler(makeRequest(true));
+
+            expect(computeConfluenceMock).toHaveBeenCalledWith('AAPL', expect.any(String), {});
         });
 
         it('confluence_exit_min은 confluence_min과 독립으로 전달된다', async () => {

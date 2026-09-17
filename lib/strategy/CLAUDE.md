@@ -61,8 +61,9 @@ Priority-weighted average of 6 analysis axes (weights sum to 35 on the default `
   투표로 취급한다), 진입 룰이 정확히 성립하면 ≥92, 약세 역이면 ≤8로 스냅된다. 92는 단독으로
   매수 임계를 넘지 못하도록 고른 값이다: 트리거 + 나머지 중립 = 64 → hold.
   `expected` phase는 반표(위치 상태와 확정 교차를 같은 무게로 셀 수 없다).
-  진입 트리거에는 **상위 시간축 정렬**과 **거래량 확인**이 추가로 걸리고, 청산에는 걸리지
-  않는다 — 둘 다 트리거를 어렵게 만드는 조건이라 청산에 걸면 원칙 7 위반이다.
+  진입 트리거에는 **상위 시간축 게이트**(trader 기본 `notUptrend` — 일봉이 상승이 아닐 때만,
+  근거는 `lib/analysis/confluence.ts`의 `DEFAULT_HTF_MODE`)가 추가로 걸리고, **거래량 확인**은
+  옵트인(기본 꺼짐)이다. 둘 다 청산에는 걸리지 않는다 — 진입 필터를 청산에 걸면 원칙 7 위반이다.
 - Technical (8): the **mean of three readings** — (1) strength-weighted `indicatorResults`
   aggregate, (2) confidence-weighted aggregate of `patternSummaries` + `strategyResults` +
   `candlePatterns` (`safeAnalysisPatterns`; `detected: false` items abstain), (3) the LLM's overall

@@ -1958,8 +1958,10 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         expect(user).toContain('- MA50: $180.25 / 종가 $190.50 (MA50 위)');
         // 조건 문구에 "3종"을 박지 않는다 — `confluence_min`이 설정이라 그 숫자는 언제든
         // 거짓이 되고, 집계 단위도 타입이 아니라 지표 계열이다.
-        expect(user).toContain('- 진입 트리거: 성립 (강세 지표 계열 다수');
-        expect(user).toContain('상위 추세 상승 + 거래량 확인)');
+        // 픽스처는 상위 시간축 게이트 off(`htfTrend: null`) + 거래량 요구 off다 — 적용되지
+        // 않은 조건을 성립 사유에 적으면 프롬프트가 거짓말을 한다.
+        expect(user).toContain('- 진입 트리거: 성립 (강세 지표 계열 다수 + 신규 + MA50 위)');
+        expect(user).not.toContain('거래량 확인');
         expect(user).not.toContain('강세 3종');
         expect(user).toContain('- 청산 트리거: 미성립');
         // 이 축이 LLM 판단이 아니라는 사실을 모델이 알아야 가중치를 다르게 준다.
@@ -1981,10 +1983,51 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
         const legacy = { ...confluenceSnapshot };
         delete (legacy as { htfTrend?: unknown }).htfTrend;
 
-        expect(withConfluence(legacy)).toContain('- 상위 시간축 추세: 미상 (정렬 게이트 미적용)');
+        expect(withConfluence(legacy)).toContain(
+            '- 상위 시간축 추세: 미상 (상위 시간축 게이트 미적용)',
+        );
     });
 
-    it('70%는 **원형 룰**의 수치임을 밝히고, 현재 룰이 미검증임을 함께 적는다', () => {
+    describe('상위 시간축 게이트 모드 — 성립 사유는 적용된 파라미터에서 나온다', () => {
+        const gated = (htfMode?: 'uptrend' | 'notUptrend', requireVolume = false) => ({
+            ...confluenceSnapshot,
+            htfTrend: htfMode === 'notUptrend' ? 'sideways' : 'uptrend',
+            params: {
+                ...confluenceSnapshot.params,
+                htf: '1Day',
+                requireVolume,
+                ...(htfMode ? { htfMode } : {}),
+            },
+        });
+
+        it('notUptrend: 추세 줄에 게이트 방향을, 성립 사유에 "비상승"을 적는다', () => {
+            const user = withConfluence(gated('notUptrend'));
+
+            expect(user).toContain('- 상위 시간축 추세: 횡보 (게이트: 상승이 아닐 때만 진입 허용');
+            expect(user).toContain('MA50 위 + 상위 추세 비상승)');
+            expect(user).not.toContain('상위 추세 상승');
+        });
+
+        it('uptrend: 종전 문구 그대로', () => {
+            const user = withConfluence(gated('uptrend'));
+
+            expect(user).toContain('- 상위 시간축 추세: 상승 (게이트: 상승일 때만 진입 허용)');
+            expect(user).toContain('MA50 위 + 상위 추세 상승)');
+        });
+
+        it('htfMode가 없는 구 스냅샷은 uptrend로 읽는다 — 그 시절엔 전부 그렇게 돌았다', () => {
+            expect(withConfluence(gated())).toContain('MA50 위 + 상위 추세 상승)');
+        });
+
+        it('거래량 확인은 실제로 요구됐을 때만 적는다', () => {
+            expect(withConfluence(gated('notUptrend', true))).toContain(
+                '상위 추세 비상승 + 거래량 확인)',
+            );
+            expect(withConfluence(gated('notUptrend', false))).not.toContain('거래량 확인');
+        });
+    });
+
+    it('70%는 **원형 룰**의 수치임을 밝히고, 현재 룰의 실측을 과장 없이 적는다', () => {
         // 70%는 일봉·10일 보유 백테스트의 수치인데, 현재 룰은 그 뒤 30분봉 운용에 맞춰
         // 계열 집계·상위 추세 정렬·거래량 확인이 더해졌다. 그 상태로 "진입 룰은 승률
         // 70%"라고 적으면 모델은 **지금 켜진 트리거**의 승률로 읽고 그만큼 크게 산다.
@@ -1996,10 +2039,15 @@ describe('buildTradeGatePrompt — 지표 컨플루언스 축', () => {
             exitTrigger: true,
         });
 
-        expect(entry).toContain('원형 룰은');
+        expect(entry).toContain('원형 룰의 승률 70%는');
         expect(entry).toContain('일봉·10일 보유');
-        expect(entry).toContain('수정본은 백테스트로 검증된 적이 없다');
         expect(entry).toContain('70%를 현재 룰의 승률로 읽지 마라');
+        // 현재 룰은 이제 백테스트가 있다(16종목 × 1년 1시간봉). 그 결과를 **약한 우위**로
+        // 적는다 — 평균 +0.45%에 중앙값 ≈ 0인 수치를 "검증됨"으로 읽히게 두면 70%를
+        // 물려주던 종전 문구와 같은 거짓말이 된다.
+        expect(entry).toContain('+0.45%');
+        expect(entry).toContain('중앙값 ≈ 0');
+        expect(entry).toContain('약한 우위이지 확신의 근거가 아니다');
         // 현재 룰이 그 수치를 물려받은 것처럼 읽히는 종전 문구는 사라져야 한다.
         expect(entry).not.toContain('진입 룰은 백테스트(2024.04–2026.04, 100케이스)에서 승률 70%');
 

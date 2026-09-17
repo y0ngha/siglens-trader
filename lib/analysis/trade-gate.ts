@@ -208,8 +208,18 @@ const TREND_LABEL: Record<string, string> = {
     sideways: '횡보',
 };
 
+/** 상위 시간축 게이트 모드의 설명(추세 줄)과 성립 사유(트리거 줄). */
+const HTF_MODE_LABEL = {
+    uptrend: '상승일 때만 진입 허용',
+    notUptrend: '상승이 아닐 때만 진입 허용 — 이미 뻗은 자리의 추격을 거른다',
+} as const;
+const HTF_MODE_CLAUSE = {
+    uptrend: '상위 추세 상승',
+    notUptrend: '상위 추세 비상승',
+} as const;
+
 const CONFLUENCE_SOURCE_LINE: Record<TradeGateKind, string> = {
-    entry: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 원형 룰은 백테스트(2024.04–2026.04, 100케이스, **일봉·10일 보유**)에서 승률 70%였으나, 현재 룰은 그 뒤 30분봉 운용에 맞춰 수정됐고(지표 계열 단위 집계, 상위 시간축 정렬, 거래량 확인) 수정본은 백테스트로 검증된 적이 없다. 70%를 현재 룰의 승률로 읽지 마라.',
+    entry: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 원형 룰의 승률 70%는 **일봉·10일 보유** 백테스트 값이고, 그 뒤 장중 운용에 맞춰 수정된 현재 룰(지표 계열 단위 집계, 상위 시간축 게이트)에는 적용되지 않는다. 70%를 현재 룰의 승률로 읽지 마라. 현재 룰의 1시간봉 백테스트(16종목 × 1년, 2025-09~2026-09): 상위 시간축 게이트 없이는 기준선과 구분되지 않았고, 상위 추세가 **상승이 아닐 때만** 허용하는 모드에서 +1일 초과수익 평균 +0.45%(n=413, 중앙값 ≈ 0, 승률 51%)였다. 상위 추세 **상승을 요구**하는 모드는 −0.54%였다. 약한 우위이지 확신의 근거가 아니다.',
     exit: '- 출처: LLM 판단이 아니라 규칙 엔진의 결정론적 출력이다. 청산 트리거는 진입 룰의 대칭 반전이며 백테스트로 검증된 적이 없다 — 원형 룰의 70% 승률은 이쪽에 적용되지 않는다.',
 };
 
@@ -930,6 +940,16 @@ function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind):
             // 구 스냅샷에는 이 필드가 없다 — 없으면 정렬 게이트가 적용되지 않았다는 뜻이다.
             const htfTrend = typeof s.htfTrend === 'string' ? s.htfTrend : null;
             const close = typeof s.close === 'number' && Number.isFinite(s.close) ? s.close : null;
+            // 구 스냅샷에는 `htfMode`가 없다 — 전부 `uptrend`로 돌았다(core 계약).
+            const params = safeRecord(s.params);
+            const htfMode = params?.htfMode === 'notUptrend' ? 'notUptrend' : 'uptrend';
+            const entryClauses = [
+                '강세 지표 계열 다수',
+                '신규',
+                'MA50 위',
+                ...(htfTrend === null ? [] : [HTF_MODE_CLAUSE[htfMode]]),
+                ...(params?.requireVolume === true ? ['거래량 확인'] : []),
+            ];
             return [
                 CONFLUENCE_SOURCE_LINE[kind],
                 `- 봉 주기: ${sanitize(s.timeframe, 8) || '미상'}`,
@@ -946,11 +966,15 @@ function renderAnalysisBody(entry: TradeGateAnalysisEntry, kind: TradeGateKind):
                 })`,
                 // 조건 문구를 하드코딩하지 않는다 — `confluence_min`이 설정이라 "3종"은
                 // 설정을 바꾸는 순간 거짓이 되고, 집계 단위도 타입이 아니라 지표 계열이다.
-                `- 상위 시간축 추세: ${TREND_LABEL[htfTrend ?? ''] ?? '미상 (정렬 게이트 미적용)'}`,
+                `- 상위 시간축 추세: ${
+                    htfTrend === null
+                        ? '미상 (상위 시간축 게이트 미적용)'
+                        : `${TREND_LABEL[htfTrend] ?? '미상'} (게이트: ${HTF_MODE_LABEL[htfMode]})`
+                }`,
+                // 성립 사유도 하드코딩하지 않는다. "상위 추세 상승 + 거래량 확인"이라고 적어 두면
+                // 모드를 바꾸거나 거래량 요구가 꺼져 있을 때(기본값) 프롬프트가 거짓말을 한다.
                 `- 진입 트리거: ${
-                    s.entryTrigger === true
-                        ? '성립 (강세 지표 계열 다수 + 신규 + MA50 위 + 상위 추세 상승 + 거래량 확인)'
-                        : '미성립'
+                    s.entryTrigger === true ? `성립 (${entryClauses.join(' + ')})` : '미성립'
                 }`,
                 `- 청산 트리거: ${
                     s.exitTrigger === true
