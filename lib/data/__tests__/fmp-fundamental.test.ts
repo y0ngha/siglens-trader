@@ -542,6 +542,32 @@ describe('FmpFundamentalClient', () => {
             });
         });
 
+        it("picks the fiscal year in progress, not FMP's far-future first row", async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-09-19T00:00:00Z'));
+            try {
+                const { FmpFundamentalClient } = await import('../fmp-fundamental');
+                const client = new FmpFundamentalClient();
+                // Real NVDA response shape on 2026-09-19: newest first, 5 years ahead.
+                const raw: RawFmpAnalystEstimate[] = [
+                    { date: '2031-01-25', epsAvg: 20, revenueAvg: 1119719500000 },
+                    { date: '2028-01-25', epsAvg: 15.70071, revenueAvg: 687354277951 },
+                    { date: '2027-01-25', epsAvg: 9.2584, revenueAvg: 408757705951 },
+                    { date: '2026-01-25', epsAvg: 4.69388, revenueAvg: 213656385457 },
+                ];
+                mockFmpGet.mockResolvedValueOnce(raw);
+
+                const result = await client.getAnalystEstimates('NVDA');
+
+                expect(result).toEqual({
+                    estimatedEpsAvg: 9.2584,
+                    estimatedRevenueAvg: 408757705951,
+                });
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
         it('returns null when empty', async () => {
             const { FmpFundamentalClient } = await import('../fmp-fundamental');
             const client = new FmpFundamentalClient();
@@ -715,5 +741,37 @@ describe('FmpFundamentalClient', () => {
 
             expect(result).toEqual([]);
         });
+    });
+});
+
+describe('currentFiscalYearRow', () => {
+    const rows = [
+        { date: '2031-01-25', epsAvg: 20 },
+        { date: '2027-01-25', epsAvg: 9.2584 },
+        { date: '2026-01-25', epsAvg: 4.69388 },
+    ];
+    const NOW = new Date('2026-09-19T00:00:00Z');
+
+    it('picks the earliest period end on or after today', async () => {
+        const { currentFiscalYearRow } = await import('../fmp-fundamental');
+        expect(currentFiscalYearRow(rows, NOW)?.date).toBe('2027-01-25');
+        expect(currentFiscalYearRow(rows, new Date('2027-01-25T12:00:00Z'))?.date).toBe(
+            '2027-01-25',
+        );
+    });
+
+    it('falls back to the most recent past row, then to the first undated row', async () => {
+        const { currentFiscalYearRow } = await import('../fmp-fundamental');
+        // Two past rows, newest-first as FMP returns them — the most recent
+        // (not the oldest, not simply arr[0] of a one-row list) must win.
+        const pastOnly = [
+            { date: '2026-01-25', epsAvg: 4.69388 },
+            { date: '2025-01-26', epsAvg: 2.95192 },
+        ];
+        expect(currentFiscalYearRow(pastOnly, NOW)?.date).toBe('2026-01-25');
+        expect(currentFiscalYearRow([...pastOnly].reverse(), NOW)?.date).toBe('2026-01-25');
+        const undated = [{ epsAvg: 1 }, { epsAvg: 2 }];
+        expect(currentFiscalYearRow(undated, NOW)).toBe(undated[0]);
+        expect(currentFiscalYearRow([], NOW)).toBeUndefined();
     });
 });
