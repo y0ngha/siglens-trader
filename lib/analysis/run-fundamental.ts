@@ -1,5 +1,7 @@
 import { runFundamentalAnalysis as coreRunFundamentalAnalysis } from '@y0ngha/siglens-core';
 import { FmpFundamentalClient } from '../data/fmp-fundamental.js';
+import { getMarketDataProvider } from '../data/fmp-market-data-provider.js';
+import { isFinitePositive } from '../validation.js';
 import {
     ANALYSIS_TIER,
     DEFAULT_ANALYSIS_REASONING,
@@ -10,6 +12,18 @@ import {
 } from './types.js';
 
 const fundamentalClient = new FmpFundamentalClient();
+
+/**
+ * Latest quote price for the fundamental prompt's target-upside line (core
+ * `SubmitFundamentalAnalysisOptions.currentPrice`). Passed as a lazy getter:
+ * core calls it only after a cache miss, so a cached analysis costs no quote.
+ * A missing quote or a non-positive price is unknown → `null` (the upside line
+ * reads N/A); the provider's `getQuote` already turns fetch errors into `null`.
+ */
+async function quotePrice(symbol: string): Promise<number | null> {
+    const quote = await getMarketDataProvider().getQuote(symbol);
+    return isFinitePositive(quote?.price) ? quote.price : null;
+}
 
 export async function runFundamentalAnalysis(
     options: RunAnalysisOptions,
@@ -27,6 +41,7 @@ export async function runFundamentalAnalysis(
             // 상세 분석 항상 ON(스위치 없음). 지정 시 그 값을 따른다.
             reasoning: options.reasoning ?? DEFAULT_ANALYSIS_REASONING,
             signal,
+            currentPrice: () => quotePrice(options.symbol),
         });
 
         if (outcome.status === 'cached') return { status: 'cached', result: outcome.result };

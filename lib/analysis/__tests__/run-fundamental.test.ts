@@ -9,6 +9,11 @@ vi.mock('@lib/data/fmp-fundamental', () => ({
     FmpFundamentalClient: vi.fn().mockImplementation(() => ({})),
 }));
 
+const { mockGetQuote } = vi.hoisted(() => ({ mockGetQuote: vi.fn() }));
+vi.mock('@lib/data/fmp-market-data-provider', () => ({
+    getMarketDataProvider: () => ({ getQuote: mockGetQuote }),
+}));
+
 // 'runFundamentalAnalysis' from core — aliased to avoid collision with the local function under test.
 const { runFundamentalAnalysis: coreRun } = await import('@y0ngha/siglens-core');
 const { runFundamentalAnalysis } = await import('../run-fundamental');
@@ -24,6 +29,42 @@ const baseOptions: RunAnalysisOptions = {
 describe('runFundamentalAnalysis', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+    });
+
+    it('passes currentPrice as a lazy getter — no quote fetched unless core calls it', async () => {
+        mockedCore.mockResolvedValue({ status: 'cached', result: {} } as any);
+        mockGetQuote.mockResolvedValue({
+            price: 412.5,
+            changesPercentage: 1,
+            symbol: 'MSFT',
+            name: 'x',
+        });
+
+        await runFundamentalAnalysis(baseOptions);
+
+        const opts = mockedCore.mock.calls.find((c) => c[0].symbol === 'MSFT')![0];
+        expect(typeof opts.currentPrice).toBe('function');
+        expect(mockGetQuote).not.toHaveBeenCalled();
+        const getter = opts.currentPrice as () => Promise<number | null>;
+        await expect(getter()).resolves.toBe(412.5);
+        expect(mockGetQuote).toHaveBeenCalledWith('MSFT');
+    });
+
+    it('the getter resolves null for a missing quote or a non-positive price', async () => {
+        mockedCore.mockResolvedValue({ status: 'cached', result: {} } as any);
+        await runFundamentalAnalysis(baseOptions);
+        const getter = mockedCore.mock.calls.find((c) => c[0].symbol === 'MSFT')![0]
+            .currentPrice as () => Promise<number | null>;
+
+        mockGetQuote.mockResolvedValueOnce(null);
+        await expect(getter()).resolves.toBeNull();
+        mockGetQuote.mockResolvedValueOnce({
+            price: 0,
+            changesPercentage: 0,
+            symbol: 'MSFT',
+            name: 'x',
+        });
+        await expect(getter()).resolves.toBeNull();
     });
 
     it('returns cached result from core', async () => {
