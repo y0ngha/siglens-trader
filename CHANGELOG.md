@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.32.0](https://github.com/y0ngha/siglens-trader/compare/v0.31.0...v0.32.0) (2026-09-19)
+
+
+### Bug Fixes
+
+* **fundamental:** 애널리스트 추정치를 진행 중인 회계연도 행으로 고른다 ([6bada09](https://github.com/y0ngha/siglens-trader/commit/6bada09eb8fe66bebde29f73afa6dd897de26743))
+
+
+### Features
+
+* **fundamental:** 펀더멘털 분석에 현재가를 지연 조회로 넘긴다 ([e5ed673](https://github.com/y0ngha/siglens-trader/commit/e5ed673da3ab6711e2aab2fd0bb21810d40c7651))
+
 # [0.31.0](https://github.com/y0ngha/siglens-trader/compare/v0.30.2...v0.31.0) (2026-09-17)
 
 
