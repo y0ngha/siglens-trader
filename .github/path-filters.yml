@@ -1,0 +1,21 @@
+# Path filters for CI job-level gating (dorny/paths-filter, picomatch dot:true).
+# CI runs iff all_count != ci_irrelevant_count, i.e. at least one changed file
+# is OUTSIDE the irrelevant set. Forgetting an irrelevant path only makes CI run
+# unnecessarily (the safe failure direction).
+
+# Total changed files.
+all:
+    - '**'
+
+# Changes that cannot affect typecheck/lint/format/test/build.
+ci_irrelevant:
+    - 'docs/**'
+    - '**/*.md'
+    - '.claude/**'
+    - '.codex/**'
+    - '.gemini/**'
+    - '.agents/**'
+    - '.idea/**'
+    - '.vscode/**'
+    - '.husky/**'
+    - 'LICENSE'
