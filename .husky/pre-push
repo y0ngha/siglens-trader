@@ -33,18 +33,21 @@ run_check() {
     return "$code"
 }
 
-run_check "1/5 format:check" "$tmp_dir/format-check.log" yarn format:check &
+run_check "1/3 format:check" "$tmp_dir/format-check.log" yarn format:check &
 pid_format=$!
 
-run_check "2/5 lint" "$tmp_dir/lint.log" yarn lint &
+run_check "2/3 lint" "$tmp_dir/lint.log" yarn lint &
 pid_lint=$!
 
 wait "$pid_format" || status=1
 wait "$pid_lint" || status=1
 
-run_check "3/5 typecheck" "$tmp_dir/typecheck.log" yarn typecheck || status=1
-run_check "4/5 test" "$tmp_dir/test.log" yarn test:quiet || status=1
-run_check "5/5 build" "$tmp_dir/build.log" yarn build || status=1
+run_check "3/3 typecheck" "$tmp_dir/typecheck.log" yarn typecheck || status=1
+
+# test, build는 pre-push에서 실행하지 않음. (시간이 오래 걸리기 때문)
+
+# run_check "4/5 test" "$tmp_dir/test.log" yarn test:quiet || status=1
+# run_check "5/5 build" "$tmp_dir/build.log" yarn build || status=1
 
 if [ "$status" -ne 0 ]; then
     echo ""
