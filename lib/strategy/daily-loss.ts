@@ -13,9 +13,12 @@
  */
 
 /**
- * 현재가가 기준가에서 이 비율보다 넘게 벗어나면 시세 손상(소수점 이동, 다른 종목의 가격)으로 보고
- * 그 포지션의 변동을 0으로 둔다. 실제 25% 넘는 급락도 여기서 무시되지만, 그 포지션의 재난 손절은
- * 실시간 가격으로 따로 작동하므로 청산이 늦어지지는 않는다 — 무뎌지는 쪽은 파괴적이지 않은 쪽이다.
+ * 현재가가 기준가에서 이 비율보다 넘게 벗어나면 시세 손상(소수점 이동, 다른 종목의 가격)으로
+ * 의심한다. **손실 방향은 그래도 합계에 더한다** — 시세 손상 오탐이더라도 진짜 손실을 숨기면
+ * 안전한 쪽이 아니다. `mr_stop_atr = 0`이거나 `semi_auto`처럼 손절이 즉시 작동하지 않는 설정에서는
+ * 이 항이 실제 25% 넘는 급락을 차단기에 반영하는 유일한 경로다. **이득 방향만 0으로 둔다** — 상승
+ * 오탐(스파이크)이 진짜 손실을 상쇄해 차단기를 가리면 안 되지만, 이득을 부풀리는 쪽은 차단기를
+ * 더 보수적으로 만들 뿐이라 위험하지 않다.
  */
 export const MAX_QUOTE_DIVERGENCE = 0.25;
 
@@ -59,11 +62,14 @@ export function todayUnrealizedChange(
             missingPrice.push(p.symbol);
             continue;
         }
+        const change = (price - reference) * p.quantity;
         if (Math.abs(price - reference) / reference > MAX_QUOTE_DIVERGENCE) {
             divergent.push(p.symbol);
+            // 손실(음수)은 시세 손상으로 의심되더라도 합계에 반영한다 — 드러내는 쪽이 안전하다.
+            if (change < 0) total += change;
             continue;
         }
-        total += (price - reference) * p.quantity;
+        total += change;
     }
     return { total, missingPrice, divergent };
 }

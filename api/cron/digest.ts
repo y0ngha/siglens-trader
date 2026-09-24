@@ -25,6 +25,7 @@ import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import {
+    getConfigValue,
     getCronRuns,
     hasDecisionPhaseSince,
     getNotificationConfig,
@@ -158,7 +159,12 @@ async function checkHealth(
             db,
             new Date(now.getTime() - DECISION_SILENCE_MS),
         ).catch(() => undefined);
-        const issues = describeCronHealth(assessCronHealth(runs, now, decisionPhaseSeen));
+        // 킬 스위치가 꺼져 있으면 execute가 판단 단계 전에 의도적으로 빠져나간다 — execute와
+        // 같은 방식으로 읽어 no_decision 헛경보를 막는다(스펙 §6, A11).
+        const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+        const issues = describeCronHealth(
+            assessCronHealth(runs, now, decisionPhaseSeen, tradingEnabled),
+        );
         if (issues.length === 0) return { issues: [], response: {} };
 
         await sendCronHealthEmail(issues, emailNotif?.target ?? undefined);

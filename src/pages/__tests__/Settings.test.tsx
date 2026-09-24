@@ -3,15 +3,21 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { SettingsPage } from '../Settings';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 
-vi.mock('@/lib/api', () => ({
-    api: {
-        getConfig: vi.fn(),
-        updateConfig: vi.fn(),
-        searchTickers: vi.fn(),
-    },
-}));
+// `ApiError` is imported for real (via importOriginal) so Settings.tsx's
+// `err instanceof ApiError` check still works when a mocked call rejects with one (C5).
+vi.mock('@/lib/api', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/api')>();
+    return {
+        ...actual,
+        api: {
+            getConfig: vi.fn(),
+            updateConfig: vi.fn(),
+            searchTickers: vi.fn(),
+        },
+    };
+});
 
 const mockedApi = vi.mocked(api);
 
@@ -1144,7 +1150,9 @@ describe('SettingsPage', () => {
     // 전략 설정 — mr_rsi_entry / mr_max_hold_days / mr_stop_atr / mr_regime_filter
     // -----------------------------------------------------------------------
 
-    /** 전략 설정 필드는 label에 htmlFor가 없다 — label 텍스트의 형제 input을 찾는다. */
+    /** Strategy/investment fields now have htmlFor+id (C4) — this still works via the
+     * shared wrapper div, kept so the many existing call sites below don't need churn.
+     * New tests use `getByLabelText` directly to pin the accessibility fix itself. */
     function strategyInput(labelText: string): HTMLInputElement {
         const label = screen.getByText(labelText);
         const input = label.closest('div')!.querySelector('input');
@@ -1269,5 +1277,98 @@ describe('SettingsPage', () => {
                 /크론이 실패했거나 72시간 이상 멈춘 경우, 또는 매매 판단 단계가 100시간 동안 돌지 않은 경우/,
             ),
         ).toBeInTheDocument();
+    });
+
+    // -----------------------------------------------------------------------
+    // C2 — clearing a numeric field blocks its save instead of sending 0
+    // -----------------------------------------------------------------------
+
+    it('clearing mr_stop_atr and saving sends no request for that key and shows an inline error', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        // Never sent as 0 — the field is excluded from the save entirely.
+        expect(mockedApi.updateConfig).not.toHaveBeenCalledWith(
+            expect.objectContaining({ key: 'mr_stop_atr' }),
+        );
+        expect(screen.getByText('숫자를 입력하세요')).toBeInTheDocument();
+        // The typed (empty) value is kept, not reverted to the last saved 5.
+        expect(stopAtrInput).toHaveValue(null);
+    });
+
+    it('a non-finite risk value also blocks its own save while other valid fields still save', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
+
+        const rsiInput = screen.getByLabelText('매수 기준 RSI(2)');
+        await user.clear(rsiInput);
+        await user.type(rsiInput, '15');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'mr_rsi_entry',
+            value: 15,
+        });
+        expect(mockedApi.updateConfig).not.toHaveBeenCalledWith(
+            expect.objectContaining({ key: 'mr_stop_atr' }),
+        );
+    });
+
+    // -----------------------------------------------------------------------
+    // C4 — strategy/investment inputs are properly labelled (id + htmlFor)
+    // -----------------------------------------------------------------------
+
+    it('exposes strategy and investment inputs via getByLabelText (C4)', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByLabelText('매수 기준 RSI(2)')).toHaveValue(10);
+        expect(screen.getByLabelText('최대 보유 거래일')).toHaveValue(10);
+        expect(screen.getByLabelText('재난 손절 ATR 배수')).toHaveValue(5);
+        expect(screen.getByLabelText('모의 체결 비용 (bp, 편도)')).toHaveValue(10);
+        expect(screen.getByLabelText('일일 최대 손실 한도 ($)')).toHaveValue(500);
+    });
+
+    // -----------------------------------------------------------------------
+    // C5 — failed risk saves show the server's message and keep typed values
+    // -----------------------------------------------------------------------
+
+    it('shows the server error message and keeps the typed value on a failed risk save (C5)', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockRejectedValue(
+            new ApiError(400, JSON.stringify({ error: 'mr_stop_atr must be between 0 and 20' })),
+        );
+
+        renderWithQuery(<SettingsPage />);
+
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
+        await user.type(stopAtrInput, '25');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/mr_stop_atr must be between 0 and 20/)).toBeInTheDocument();
+        });
+        // Typed value stays — it is not silently cleared back to the last saved 5.
+        expect(stopAtrInput).toHaveValue(25);
     });
 });

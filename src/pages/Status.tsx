@@ -1,11 +1,36 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { Position, Trade } from '@/lib/api';
+import type { CronRun, Position, Trade } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const MAX_RECENT_TRADES = 10;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** 미국 동부시간(America/New_York) 기준 YYYY-MM-DD — 판단 틱의 "오늘"은 이 시간대다. */
+function nyDateString(d: Date): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(d);
+}
+
+/** 이 런이 오늘(NY) 있었던 하루 1회 판단 틱인가(§4.1). */
+function isTodaysDecisionRun(run: CronRun, todayNy: string): boolean {
+    if (!isRecord(run.summary) || run.summary.decisionPhase !== 'done') return false;
+    return nyDateString(new Date(run.startedAt)) === todayNy;
+}
+
+/** `summary.decisionsByAction`을 안전하게 읽는다 — 숫자가 아닌 값은 버린다. */
+function readDecisionsByAction(summary: unknown): Record<string, number> | null {
+    if (!isRecord(summary) || !isRecord(summary.decisionsByAction)) return null;
+    const result: Record<string, number> = {};
+    for (const [k, v] of Object.entries(summary.decisionsByAction)) {
+        if (typeof v === 'number') result[k] = v;
+    }
+    return result;
+}
 
 function modeLabel(mode: string): string {
     switch (mode) {
@@ -58,10 +83,14 @@ function computePositionView(p: Position) {
     return { avg, cur, profitable };
 }
 
-/** 재난 손절가 표시 — `mr_stop_atr = 0`이거나 아직 계산 전이면 stopPrice가 null이다. */
-function stopLabel(stopPrice: string | null | undefined): string {
-    if (stopPrice == null) return '손절 없음';
-    return `손절 $${Number(stopPrice).toFixed(2)}`;
+/**
+ * 재난 손절가 표시. stopPrice가 null인 이유는 둘 중 하나다 — `mr_stop_atr = 0`(손절 없음,
+ * 설정으로 끈 것) 또는 승인·복구 경로로 열린 포지션이 아직 채워지지 않은 것(집행 다음
+ * 틱에서 채워진다, §4.2). 후자를 "손절 없음"으로 보이면 재난 손절이 꺼진 줄 오인한다.
+ */
+function stopLabel(stopPrice: string | null | undefined, mrStopAtr: number): string {
+    if (stopPrice != null) return `손절 $${Number(stopPrice).toFixed(2)}`;
+    return mrStopAtr > 0 ? '손절 계산 전' : '손절 없음';
 }
 
 function computePortfolio(positions: Position[]) {
@@ -106,26 +135,15 @@ export function StatusPage() {
         queryFn: ({ signal }) => api.getConfig(signal),
     });
 
-    // Latest execute run → its decisions, summarized below as "오늘의 판단". Two lightweight
-    // calls against the cron-runs API CronRuns.tsx already uses.
-    const { data: latestExecuteRun } = useQuery({
+    // Execute runs → find the run that actually made today's decision (§4.1). The
+    // *latest* execute run is almost never that one — later risk-only ticks or
+    // market_closed skips replace it. Default limit (200) covers several days of ticks.
+    const { data: executeRuns } = useQuery({
         queryKey: ['cron-runs', 'execute'] as const,
         queryFn: async ({ queryKey: [, qType], signal }) => {
             const { runs } = await api.getCronRuns({ type: qType }, signal);
-            return runs[0] ?? null;
+            return runs;
         },
-        refetchInterval: 30_000,
-    });
-
-    const latestExecuteRunId = latestExecuteRun?.runId;
-    const { data: latestExecuteDecisions } = useQuery({
-        queryKey: ['cron-decisions', latestExecuteRunId] as const,
-        queryFn: async ({ queryKey: [, qRunId], signal }) => {
-            if (!qRunId) return [];
-            const { decisions } = await api.getCronDecisions(qRunId, signal);
-            return decisions;
-        },
-        enabled: Boolean(latestExecuteRunId),
         refetchInterval: 30_000,
     });
 
@@ -147,15 +165,24 @@ export function StatusPage() {
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
 
-    // 오늘의 판단 — execute의 사이징 게이트는 더 이상 없다. 대신 최신 execute 런의 결정
-    // 분포를 보여준다(§7). 결정이 하나도 없으면(아직 오늘 판단이 없거나 런 자체가 없으면)
-    // 아무것도 렌더하지 않는다.
-    const todayDecisions = latestExecuteDecisions ?? [];
-    const mrBuyCount = todayDecisions.filter((d) => d.action === 'mr_buy').length;
-    const mrSkipBudgetCount = todayDecisions.filter((d) => d.action === 'mr_skip_budget').length;
-    const mrSkipBreakerCount = todayDecisions.filter((d) => d.action === 'mr_skip_breaker').length;
-    const mrRegimeOff = todayDecisions.some((d) => d.action === 'mr_regime_off');
-    const mrDataError = todayDecisions.some((d) => d.action === 'mr_data_error');
+    // 오늘의 판단 — execute의 사이징 게이트는 더 이상 없다. 대신 오늘(NY) 하루 1회 판단
+    // 틱의 결정 분포를 보여준다(§7). 그 런이 없으면(아직 판단 전이거나 어제 판단만 있으면)
+    // 중립 상태를 보여준다 — 0건도 어제 값도 아니다(C1).
+    const todayNy = nyDateString(new Date());
+    const decisionRun = (executeRuns ?? []).find((r) => isTodaysDecisionRun(r, todayNy)) ?? null;
+    const dba = decisionRun ? readDecisionsByAction(decisionRun.summary) : null;
+    const actionCount = (key: string) => dba?.[key] ?? 0;
+    // 매수 집계는 mr_buy(모의투자/반자동 승인대기)뿐 아니라 실주문 체결(auto)까지 포함한다.
+    const mrBuyCount =
+        actionCount('mr_buy') + actionCount('order_submitted') + actionCount('order_partial');
+    // 예산 부족도 마찬가지 — auto의 fail-closed 현금 조회 실패·부족까지 예산 부족으로 센다.
+    const mrSkipBudgetCount =
+        actionCount('mr_skip_budget') +
+        actionCount('skipped_insufficient_cash') +
+        actionCount('skipped_no_buying_power');
+    const mrSkipBreakerCount = actionCount('mr_skip_breaker');
+    const mrRegimeOff = actionCount('mr_regime_off') > 0;
+    const mrDataError = actionCount('mr_data_error') > 0;
 
     const configEntries = configData as
         | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
@@ -164,6 +191,9 @@ export function StatusPage() {
         (configEntries?.watchlist as { symbol: string; enabled?: boolean }[] | undefined) ?? [];
     const mrMaxHoldDays = Number(
         configEntries?.config?.find((c) => c.key === 'mr_max_hold_days')?.value ?? 10,
+    );
+    const mrStopAtr = Number(
+        configEntries?.config?.find((c) => c.key === 'mr_stop_atr')?.value ?? 5,
     );
     const exitRuleText = `5일선 회복 또는 ${mrMaxHoldDays}거래일`;
 
@@ -396,7 +426,7 @@ export function StatusPage() {
                                                         ${cur.toFixed(2)}
                                                     </span>
                                                     <span className="col-span-2 font-mono text-red-400">
-                                                        {stopLabel(p.stopPrice)}
+                                                        {stopLabel(p.stopPrice, mrStopAtr)}
                                                     </span>
                                                     <span className="text-neutral-500">
                                                         청산조건
@@ -463,7 +493,7 @@ export function StatusPage() {
                                                             ${cur.toFixed(2)}
                                                         </td>
                                                         <td className="px-3 py-2 text-right font-mono text-red-400">
-                                                            {stopLabel(p.stopPrice)}
+                                                            {stopLabel(p.stopPrice, mrStopAtr)}
                                                         </td>
                                                         <td className="px-3 py-2 text-right text-neutral-400">
                                                             {exitRuleText}
@@ -524,10 +554,11 @@ export function StatusPage() {
                         </section>
                     )}
 
-                    {/* 오늘의 판단 — 최신 execute 런의 결정 분포 (§7). 사이징 게이트는 이제 없다. */}
-                    {todayDecisions.length > 0 && (
-                        <section>
-                            <h2 className="text-xs font-medium text-neutral-500">오늘의 판단</h2>
+                    {/* 오늘의 판단 — 오늘(NY) 하루 1회 판단 틱의 결정 분포 (§7, C1). 그 틱이 아직
+                        없으면(또는 어제 것뿐이면) 0건이 아니라 중립 상태를 보여준다. */}
+                    <section>
+                        <h2 className="text-xs font-medium text-neutral-500">오늘의 판단</h2>
+                        {decisionRun ? (
                             <div className="mt-2 flex flex-wrap gap-2 text-xs">
                                 <span className="rounded bg-green-500/10 px-2 py-1 text-green-400">
                                     매수 {mrBuyCount}
@@ -549,8 +580,10 @@ export function StatusPage() {
                                     </span>
                                 )}
                             </div>
-                        </section>
-                    )}
+                        ) : (
+                            <p className="mt-2 text-xs text-neutral-500">오늘 판단 전</p>
+                        )}
+                    </section>
                 </div>
 
                 {/* Right column: 최근 활동 */}

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { minutesUntilUsMarketClose } from '@y0ngha/siglens-core';
 import type { Db } from '../../lib/db/index.js';
 import {
     averageIntoPosition,
@@ -16,6 +17,7 @@ import { getSellableQuantity } from '../../lib/trading/account.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 import { isFinitePositive, safeNumber } from '../../lib/validation.js';
 import type { EmailDispatcher } from '../../lib/notification/dispatch.js';
+import { etMinutesOfDay } from '../../lib/analysis/daily-bars.js';
 
 /**
  * 세 모드(dry_run / semi_auto / auto)의 주문 실행 — execute 크론의 주문 코드를 **동작 그대로**
@@ -64,6 +66,23 @@ export function dryRunFillPrice(price: number, side: 'buy' | 'sell', bps: number
 }
 
 const noop = (exposureDelta = 0, cashDebit = 0) => ({ exposureDelta, cashDebit });
+
+/**
+ * semi_auto 대기 주문의 만료 시각 — `min(now + APPROVAL_TTL_MS, 장 마감)`(A5b).
+ *
+ * 종전에는 마감 5분 전에 낸 승인 대기가 15분 뒤(장 마감 후)까지 살아 있어, 운영자가 마감
+ * 후에 승인을 누르면 지정가 매수/매도가 시간외로 나갈 수 있었다. 마감까지 남은 분이 0이면
+ * (이미 마감했거나 장중이 아니면) 이 캡은 의미가 없으므로 기존 TTL을 그대로 쓴다.
+ */
+function approvalExpiresAt(now: Date): Date {
+    const minutesToClose = minutesUntilUsMarketClose(now, etMinutesOfDay(now));
+    const ttlExpiry = now.getTime() + APPROVAL_TTL_MS;
+    if (minutesToClose > 0) {
+        const closeAt = now.getTime() + minutesToClose * 60_000;
+        return new Date(Math.min(ttlExpiry, closeAt));
+    }
+    return new Date(ttlExpiry);
+}
 
 function isAlreadyClosed(err: unknown): boolean {
     return err instanceof Error && err.message === 'POSITION_ALREADY_CLOSED';
@@ -154,7 +173,7 @@ export async function executeExit(
                 priceLimit: p.price,
                 analysisSummary: reason,
                 signalScore: 0,
-                expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
+                expiresAt: approvalExpiresAt(new Date()),
             });
             await dispatcher
                 .notifyApprovalRequest({
@@ -428,7 +447,7 @@ export async function executeEntry(
                 priceLimit: p.price,
                 analysisSummary: reason,
                 signalScore: p.score,
-                expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
+                expiresAt: approvalExpiresAt(new Date()),
             });
             await dispatcher
                 .notifyApprovalRequest({
@@ -441,7 +460,9 @@ export async function executeEntry(
                 })
                 .catch((err) => console.error('[email] send failed:', err));
             // 대기 매수도 노출로 센다 — 안 세면 매 틱 새 종목에 승인 요청이 쌓여 한도를 넘는다.
-            return { executed: false, ...noop(p.price * quantity) };
+            // 현금도 같이 차감해야 한다(A9) — semi_auto도 승인 시점에 실주문이 나가 실계좌
+            // 현금으로 사이징하므로, 같은 런의 다음 진입이 이 대기 매수를 뺀 잔여 현금을 본다.
+            return { executed: false, ...noop(p.price * quantity, p.price * quantity) };
         }
 
         case 'auto': {
@@ -465,6 +486,11 @@ export async function executeEntry(
                     },
                     ...noop(),
                 };
+            }
+            // 재확인(A7) — 호출자의 in-flight 가드와 이 제출 사이에 reconcile 지연 체결 복구가
+            // 끼어들면 포지션이 이미 있을 수 있다. dry_run과 같은 응답으로 물타기를 막는다.
+            if (await getOpenPositionBySymbol(db, symbol)) {
+                return { executed: false, action: 'already_open', ...noop() };
             }
             const idempotencyKey = `${cronRunId}-${symbol}-buy`;
             const clientOrderId = crypto.randomUUID();
@@ -543,7 +569,9 @@ export async function executeEntry(
                         filledQuantity: orderResult.filledQuantity ?? null,
                         orderId: orderResult.orderId ?? null,
                     },
-                    ...noop(0, cashDebit),
+                    // 살아 있는 주문은 노출도 쓴다(A9) — 계획된 명목가 기준. 0으로 두면 같은 런의
+                    // 다음 진입이 이 주문을 못 본 채 총 노출 한도를 넘겨 승인/제출한다.
+                    ...noop(p.price * quantity, cashDebit),
                 };
             }
             const filledQ = orderResult.filledQuantity ?? quantity;

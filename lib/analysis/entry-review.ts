@@ -47,6 +47,14 @@ export interface EntryReviewInput {
     symbol: string;
     companyName?: string;
     decidedAt: Date;
+    /**
+     * 이 리뷰가 실제로 도는 시각 — 분석 신선도("N분 전")는 이 시각을 기준으로 잰다.
+     * `decidedAt`을 기준으로 삼으면 분석이 판단 이후(리뷰 크론이 그 자리에서 새로 만든 것)에
+     * 저장됐을 때 나이가 음수가 되어 "미래 시각(시계 불일치)"로 잘못 표시된다.
+     */
+    reviewedAt: Date;
+    /** 판단 단계가 남긴 실제 액션(`mr_buy`·`order_submitted`·`mr_skip_budget` 등) — 표시 문구를 결정한다. */
+    action: string;
     mr: {
         price: number;
         rsi2: number;
@@ -357,6 +365,30 @@ function buildSystemPrompt(): string {
     ].join('\n');
 }
 
+/**
+ * 판단 단계가 남긴 액션을 실제 의미로 설명한다(스펙 §5). 종전에는 `executed: false`를 전부
+ * "예산·한도로 못 샀다"로 뭉뚱그려서, 주문이 아직 진행 중인 것과 애초에 안 산 것을 모델이
+ * 구별할 수 없었다.
+ */
+export function describeSignalAction(action: string, executed: boolean): string {
+    if (action === 'mr_buy' && executed) return '매수 체결';
+    if (action === 'mr_buy' || action === 'order_submitted' || action === 'order_partial') {
+        return '주문 대기 (승인 대기 또는 미체결)';
+    }
+    if (
+        action === 'mr_skip_budget' ||
+        action === 'skipped_insufficient_cash' ||
+        action === 'skipped_no_buying_power'
+    ) {
+        return '예산·현금 부족으로 미매수';
+    }
+    if (action === 'mr_skip_breaker') return '일일 한도 차단으로 미매수';
+    if (action === 'order_rejected' || action === 'needs_review' || action === 'already_open') {
+        return '주문 결과 불명확 (반려·검토 필요·이미 보유 등 — 매수 여부 확정 아님)';
+    }
+    return '신호 (매수 여부 미상)';
+}
+
 function sectionDecision(input: EntryReviewInput): string[] {
     const symbol = sanitize(input.symbol, 16) || '미상';
     const company = sanitize(input.companyName);
@@ -365,8 +397,9 @@ function sectionDecision(input: EntryReviewInput): string[] {
         '## 리뷰 대상',
         `- 심볼: ${company ? `${symbol} (${company})` : symbol}`,
         `- 판단 시각: ${fmtIso(input.decidedAt)} (UTC) / ET ${et.local}`,
+        `- 리뷰 시각: ${fmtIso(input.reviewedAt)} (UTC)`,
         `- 미국 장 상태: ${et.session}, 마감까지 ${et.toClose}`,
-        `- 규칙의 처리: ${input.executed ? '매수함' : '신호였지만 예산·한도로 매수하지 못함'} (어느 쪽이든 당신의 판단은 기록 전용이다)`,
+        `- 규칙의 처리: ${describeSignalAction(input.action, input.executed)} (어느 쪽이든 당신의 판단은 기록 전용이다)`,
     ];
 }
 
@@ -399,7 +432,10 @@ function sectionAnalyses(input: EntryReviewInput): string[] {
             continue;
         }
         lines.push(
-            `[${ANALYSIS_LABEL[type]}] 기준시각 ${fmtStamp(entry.analyzedAt, input.decidedAt)} · 모델 ${sanitize(entry.modelId, 40) || '미상'}`,
+            // 리뷰 크론이 이 자리에서 분석을 새로 만들면 저장 시각이 판단 시각(decidedAt)보다
+            // 늦다 — decidedAt을 기준으로 나이를 재면 항상 음수가 되어 "미래 시각"으로 잘못
+            // 찍힌다(B1). 신선도는 이 리뷰가 실제로 도는 시각(reviewedAt) 기준이어야 한다.
+            `[${ANALYSIS_LABEL[type]}] 기준시각 ${fmtStamp(entry.analyzedAt, input.reviewedAt)} · 모델 ${sanitize(entry.modelId, 40) || '미상'}`,
             ...renderAnalysisBody(entry),
             '',
         );

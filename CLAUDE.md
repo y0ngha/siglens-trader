@@ -160,11 +160,12 @@ useQuery({
 `lib/strategy/mean-reversion.ts` (순수 함수, 백테스트 스크립트와 동등성 테스트로 고정).
 
 - **진입**: 가격 > SMA200 **그리고** RSI(2) < `mr_rsi_entry`(10) **그리고** (`mr_regime_filter`면) SPY > SMA200.
-  신호가 예산보다 많으면 RSI(2)가 낮은 순. 한 종목 한 포지션 — 물타기 없음.
+  신호가 예산보다 많으면 RSI(2)가 낮은 순. 한 종목 한 포지션 — 물타기 없음. 오늘(ET) 판 종목은 다시 사지 않는다.
 - **청산**(전량): 가격 > SMA5 · 보유 `mr_max_hold_days`(10)거래일 · 재난 손절 `positions.stop_price`
-  (= 진입가 − `mr_stop_atr`(5) × 전일까지 ATR(14)). 재난 손절만 매 틱, 나머지는 판단 틱에서.
+  (= 진입가 − `mr_stop_atr`(5) × 전일까지 ATR(14), 진입 시점에 고정). 재난 손절만 매 틱, 나머지는 판단 틱에서.
 - **판단은 하루 1회** — 장 마감 20분 전 창의 첫 execute 틱(반일장은 12:40 ET). 오늘 봉의 종가 자리에
-  실시간 가격을 넣는다. 멱등 기록은 `cron_runs.summary.decisionPhase = 'done'`.
+  실시간 가격을 넣는다. 멱등 기록은 `cron_runs.summary.decisionPhase = 'done'` — 데이터 오류·시한 초과·마감 임박
+  중단이 있으면 남기지 않아 창의 다음 틱이 재시도한다. 주문 직전 마감까지 1분 이하면 더 내지 않는다.
 - 비중은 규칙이 정한다: 종목 한도 ∩ 총 노출 한도 ∩ 현금(`planEntry`, fraction 1).
 
 **근거**(스펙 §2): 12년 · 성장주 16 / 부진주 22 / ETF 4 모두에서 같은 청산 규칙의 기준선 대비 우위, 승률
@@ -178,9 +179,9 @@ useQuery({
 
 ## AI Entry Review (기록 전용)
 
-`api/cron/review.ts` + `lib/analysis/entry-review.ts`. 판단 단계가 남긴 신호(`mr_buy`·`mr_skip_budget`·
-`mr_skip_breaker`)마다 기술(1Day)·뉴스·펀더멘털 분석을 확보하고 "이 하락은 노이즈인가, 악재인가"를 물어
-`trade_audit`(kind `entry_review`, `correlation_id = review-<decisionId>`)에 남긴다. **주문에 영향을 주지
+`api/cron/review.ts` + `lib/analysis/entry-review.ts`. 판단 단계가 남긴 신호(`detail.mr.signal = true` — 주문 결과로 action이
+바뀐 행 포함, 종목당 하루 1건)마다 기술(1Day)·뉴스·펀더멘털 분석을 확보하고 "이 하락은 노이즈인가, 악재인가"를 물어
+`trade_audit`(kind `entry_review`, `correlation_id = review-<ET 날짜>-<종목>`)에 남긴다. **주문에 영향을 주지
 않고 주문도 기다리지 않는다.** 신호 30건이 쌓이면 AI가 거부한 쪽(`fraction 0`)과 나머지의 규칙 수익률을
 비교해 거부권·비중으로 승격할지 정한다(원칙 13). 모델은 `analysis_model_config['entry_review']`.
 

@@ -1,3 +1,4 @@
+import { isEtRegularSessionOpen } from '@y0ngha/siglens-core';
 import { getDb } from '../_lib/db.js';
 import { isFinitePositive } from '../../lib/validation.js';
 import { isAuthenticated } from '../_lib/auth.js';
@@ -82,6 +83,19 @@ async function handler(req: Request): Promise<Response> {
         const price = Number(order.priceLimit ?? 0);
         if (!Number.isFinite(price) || price <= 0) {
             return Response.json({ error: 'Order has no valid price limit' }, { status: 400 });
+        }
+
+        // 정규장이 열려 있지 않으면 승인·주문을 거부한다(A5c). 대기 주문은 큐잉 후 승인까지
+        // 최대 15분이 비는데, 그 사이 장이 마감되면 지정가 주문이 시간외로 나가거나 다음 개장까지
+        // 걸린 채 남는다 — 이 시점에서 거부하고 대기 주문은 건드리지 않는다(다른 조회 실패
+        // 분기처럼 그대로 두면 만료 전까지 재승인 가능).
+        if (!isEtRegularSessionOpen(new Date())) {
+            return Response.json(
+                {
+                    error: '현재 미국 정규장이 열려 있지 않아 승인할 수 없습니다 (regular session closed).',
+                },
+                { status: 409 },
+            );
         }
 
         // Atomic status update — prevents concurrent approvals

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ModelId } from '@y0ngha/siglens-core';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
@@ -106,6 +106,38 @@ function typeLabel(type: string): string {
 function getConfigValue(config: ConfigEntry[], key: string, fallback: unknown): unknown {
     const entry = config.find((c) => c.key === key);
     return entry ? entry.value : fallback;
+}
+
+/** Empty or non-numeric text — saving this as `Number(val)` would silently write 0
+ * (e.g. clearing mr_stop_atr would disable the disaster stop). */
+function isInvalidRiskValue(val: string): boolean {
+    return val.trim() === '' || !Number.isFinite(Number(val));
+}
+
+/** Korean label for a risk/strategy field key, for inline errors and the save summary. */
+function riskFieldLabel(key: string): string {
+    switch (key) {
+        case 'mr_rsi_entry':
+            return '매수 기준 RSI(2)';
+        case 'mr_max_hold_days':
+            return '최대 보유 거래일';
+        case 'mr_stop_atr':
+            return '재난 손절 ATR 배수';
+        case 'max_position_size':
+            return '종목당 최대 투자 금액';
+        case 'max_total_exposure':
+            return '전체 투자 한도';
+        case 'max_trades_per_day':
+            return '일일 최대 거래 횟수';
+        case 'max_daily_loss_usd':
+            return '일일 최대 손실 한도';
+        case 'dry_run_cash_usd':
+            return '모의 계좌 예치금';
+        case 'dry_run_cost_bps':
+            return '모의 체결 비용';
+        default:
+            return key;
+    }
 }
 
 /**
@@ -269,6 +301,73 @@ export function SettingsPage() {
 
     function handleNotificationChange(channel: string, updates: object) {
         mutate({ type: 'notification', channel, updates });
+    }
+
+    /**
+     * Saves every overridden risk/strategy field. An empty or non-finite field is never
+     * sent — `Number('')` is 0, and saving `mr_stop_atr = 0` silently disables the
+     * disaster stop (C2). It stays in `riskOverrides` (typed value kept, inline error
+     * shown by the field itself) instead of being dropped. Fields that do send are only
+     * cleared from `riskOverrides` on success, so a failed field keeps what the operator
+     * typed instead of reverting (C5), and the failure message is the server's own text
+     * (`ApiError.displayMessage`), not a generic "N개 항목 저장에 실패" count.
+     */
+    function handleSaveRisk() {
+        const entries = Object.entries(riskOverrides);
+        const invalidEntries = entries.filter(([, val]) => isInvalidRiskValue(val));
+        const validEntries = entries.filter(([, val]) => !isInvalidRiskValue(val));
+        setSaveMessage(null);
+
+        if (validEntries.length === 0) {
+            if (invalidEntries.length > 0) {
+                setSaveMessage(
+                    `오류: ${invalidEntries.map(([key]) => riskFieldLabel(key)).join(', ')}에 숫자를 입력하세요`,
+                );
+            }
+            return;
+        }
+
+        let doneCount = 0;
+        let failCount = 0;
+        const failMessages: string[] = [];
+        const total = validEntries.length;
+
+        const finalize = () => {
+            if (doneCount + failCount !== total) return;
+            const parts: string[] = [];
+            if (invalidEntries.length > 0) {
+                parts.push(
+                    `${invalidEntries.map(([key]) => riskFieldLabel(key)).join(', ')}에 숫자를 입력하세요`,
+                );
+            }
+            parts.push(...failMessages);
+            setSaveMessage(
+                parts.length > 0 ? `오류: ${parts.join(' / ')}` : '설정이 저장되었습니다',
+            );
+        };
+
+        for (const [key, val] of validEntries) {
+            updateMutation.mutate(
+                { type: 'config', key, value: Number(val) },
+                {
+                    onSuccess: () => {
+                        doneCount++;
+                        setRiskOverrides((prev) => {
+                            const next = { ...prev };
+                            delete next[key];
+                            return next;
+                        });
+                        finalize();
+                    },
+                    onError: (err) => {
+                        failCount++;
+                        const message = err instanceof ApiError ? err.displayMessage : err.message;
+                        failMessages.push(`${riskFieldLabel(key)}: ${message}`);
+                        finalize();
+                    },
+                },
+            );
+        }
     }
 
     const hasRiskChanges = Object.keys(riskOverrides).length > 0;
@@ -450,27 +549,44 @@ export function SettingsPage() {
                                 0.5,
                             ],
                         ] as const
-                    ).map(([key, label, helper, min, max, step]) => (
-                        <div key={key}>
-                            <label className="text-xs text-neutral-400">{label}</label>
-                            <p className="text-[10px] text-neutral-600">{helper}</p>
-                            <input
-                                type="number"
-                                inputMode="decimal"
-                                min={min}
-                                max={max}
-                                step={step}
-                                className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
-                                value={getRiskValue(key)}
-                                onChange={(e) =>
-                                    setRiskOverrides((prev) => ({
-                                        ...prev,
-                                        [key]: e.target.value,
-                                    }))
-                                }
-                            />
-                        </div>
-                    ))}
+                    ).map(([key, label, helper, min, max, step]) => {
+                        const fieldId = `risk-${key}`;
+                        const invalid =
+                            riskOverrides[key] !== undefined &&
+                            isInvalidRiskValue(riskOverrides[key]);
+                        return (
+                            <div key={key}>
+                                <label htmlFor={fieldId} className="text-xs text-neutral-400">
+                                    {label}
+                                </label>
+                                <p className="text-[10px] text-neutral-600">{helper}</p>
+                                <input
+                                    id={fieldId}
+                                    type="number"
+                                    inputMode="decimal"
+                                    min={min}
+                                    max={max}
+                                    step={step}
+                                    aria-invalid={invalid}
+                                    className={`mt-1 w-full rounded-lg border bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500 ${
+                                        invalid ? 'border-red-500/50' : 'border-[#262626]'
+                                    }`}
+                                    value={getRiskValue(key)}
+                                    onChange={(e) =>
+                                        setRiskOverrides((prev) => ({
+                                            ...prev,
+                                            [key]: e.target.value,
+                                        }))
+                                    }
+                                />
+                                {invalid && (
+                                    <p className="mt-1 text-[10px] text-red-400">
+                                        숫자를 입력하세요
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
                 <div className="mt-3 flex items-center justify-between rounded border border-[#262626] bg-[#0a0a0a] p-3">
                     <div>
@@ -717,24 +833,41 @@ export function SettingsPage() {
                                 'dry_run 체결가에 붙이는 수수료·슬리피지. 10bp = 0.1%',
                             ],
                         ] as const
-                    ).map(([key, label, helper]) => (
-                        <div key={key}>
-                            <label className="text-xs text-neutral-400">{label}</label>
-                            <p className="text-[10px] text-neutral-600">{helper}</p>
-                            <input
-                                type="number"
-                                inputMode={key === 'max_trades_per_day' ? 'numeric' : 'decimal'}
-                                className="mt-1 w-full rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
-                                value={getRiskValue(key)}
-                                onChange={(e) =>
-                                    setRiskOverrides((prev) => ({
-                                        ...prev,
-                                        [key]: e.target.value,
-                                    }))
-                                }
-                            />
-                        </div>
-                    ))}
+                    ).map(([key, label, helper]) => {
+                        const fieldId = `risk-${key}`;
+                        const invalid =
+                            riskOverrides[key] !== undefined &&
+                            isInvalidRiskValue(riskOverrides[key]);
+                        return (
+                            <div key={key}>
+                                <label htmlFor={fieldId} className="text-xs text-neutral-400">
+                                    {label}
+                                </label>
+                                <p className="text-[10px] text-neutral-600">{helper}</p>
+                                <input
+                                    id={fieldId}
+                                    type="number"
+                                    inputMode={key === 'max_trades_per_day' ? 'numeric' : 'decimal'}
+                                    aria-invalid={invalid}
+                                    className={`mt-1 w-full rounded-lg border bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500 ${
+                                        invalid ? 'border-red-500/50' : 'border-[#262626]'
+                                    }`}
+                                    value={getRiskValue(key)}
+                                    onChange={(e) =>
+                                        setRiskOverrides((prev) => ({
+                                            ...prev,
+                                            [key]: e.target.value,
+                                        }))
+                                    }
+                                />
+                                {invalid && (
+                                    <p className="mt-1 text-[10px] text-red-400">
+                                        숫자를 입력하세요
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </section>
 
@@ -743,38 +876,7 @@ export function SettingsPage() {
                 <div className="flex items-center gap-2">
                     <button
                         type="button"
-                        onClick={() => {
-                            const entries = Object.entries(riskOverrides);
-                            let failCount = 0;
-                            let doneCount = 0;
-                            setSaveMessage(null);
-                            for (const [key, val] of entries) {
-                                updateMutation.mutate(
-                                    { type: 'config', key, value: Number(val) },
-                                    {
-                                        onSuccess: () => {
-                                            doneCount++;
-                                            if (doneCount + failCount === entries.length) {
-                                                setSaveMessage(
-                                                    failCount > 0
-                                                        ? `오류: ${failCount}개 항목 저장에 실패했습니다`
-                                                        : '설정이 저장되었습니다',
-                                                );
-                                            }
-                                        },
-                                        onError: () => {
-                                            failCount++;
-                                            if (doneCount + failCount === entries.length) {
-                                                setSaveMessage(
-                                                    `오류: ${failCount}개 항목 저장에 실패했습니다`,
-                                                );
-                                            }
-                                        },
-                                    },
-                                );
-                            }
-                            setRiskOverrides({});
-                        }}
+                        onClick={handleSaveRisk}
                         className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
                     >
                         저장

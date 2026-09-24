@@ -34,6 +34,7 @@ const q = vi.hoisted(() => ({
     insertCronDecisions: vi.fn(),
     hasDecisionPhaseSince: vi.fn(),
     setPositionStopPrice: vi.fn(),
+    getSymbolsSoldSince: vi.fn(),
 }));
 vi.mock('../../../lib/db/queries', () =>
     Object.fromEntries(
@@ -201,6 +202,7 @@ beforeEach(() => {
     ]);
     q.hasDecisionPhaseSince.mockResolvedValue(false);
     q.setPositionStopPrice.mockResolvedValue(true);
+    q.getSymbolsSoldSince.mockResolvedValue(new Set());
     watch();
     mockCash.mockResolvedValue(25000);
     mockClaimOnce.mockResolvedValue(true);
@@ -475,7 +477,10 @@ describe('daily loss breaker — today’s change (§4.5)', () => {
         q.getOpenPositions.mockResolvedValue([position({ quantity: 10, stopPrice: '1' })]);
         setQuotes({ SPY: lastOf(rising()), TSLA: lastOf(tsla), NVDA: 50 }, { NVDA: 50 });
         await run(DECISION_NOW);
-        expect(mockExecuteEntry).toHaveBeenCalled();
+        expect(mockExecuteEntry).toHaveBeenCalledWith(
+            expect.objectContaining({ tradingMode: 'dry_run' }),
+            expect.objectContaining({ symbol: 'TSLA' }),
+        );
 
         // Today −20% on 30 shares = −$600 → entries become mr_skip_breaker; mail goes once per day.
         mockExecuteEntry.mockClear();
@@ -488,6 +493,32 @@ describe('daily loss breaker — today’s change (§4.5)', () => {
         expect(summary()).toMatchObject({ exitOnly: true, entriesBlockedBy: 'daily_loss_limit' });
     });
 
+    it('a position opened today is measured against its entry price, not previous close (T1)', async () => {
+        watch('TSLA');
+        const tsla = dipAbove();
+        setBars({ SPY: rising(), TSLA: tsla, NVDA: rising() });
+        // avgPrice 100, live 80, previousClose 80, qty 30 → flat vs previousClose but −$600 vs entry.
+        setQuotes({ SPY: lastOf(rising()), TSLA: lastOf(tsla), NVDA: 80 }, { NVDA: 80 });
+        q.getOpenPositions.mockResolvedValue([
+            position({
+                quantity: 30,
+                avgPrice: '100',
+                stopPrice: '1',
+                openedAt: new Date('2026-01-02T20:47:00Z'),
+            }),
+        ]);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalled(); // opened previous day → reference is previousClose (flat)
+
+        mockExecuteEntry.mockClear();
+        q.getOpenPositions.mockResolvedValue([
+            position({ quantity: 30, avgPrice: '100', stopPrice: '1', openedAt: DECISION_NOW }),
+        ]);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled(); // opened today → reference is the entry price
+        expect(actions()).toContain('TSLA:mr_skip_breaker');
+    });
+
     it('a second breach the same day sends no second mail', async () => {
         q.getOpenPositions.mockResolvedValue([position({ quantity: 30, stopPrice: '1' })]);
         setQuotes({ NVDA: 80 }, { NVDA: 100 });
@@ -498,13 +529,22 @@ describe('daily loss breaker — today’s change (§4.5)', () => {
         expect(summary()).toMatchObject({ exitOnly: true, entriesBlockedBy: 'daily_loss_limit' });
     });
 
-    it('a >25% quote jump is treated as a corrupt tick, not a loss (mailed once)', async () => {
+    it('a >25% quote spike upward is treated as a corrupt tick, not a gain (mailed once)', async () => {
         q.getOpenPositions.mockResolvedValue([position({ quantity: 30, stopPrice: '1' })]);
-        setQuotes({ NVDA: 40 }, { NVDA: 100 });
+        setQuotes({ NVDA: 200 }, { NVDA: 100 });
         await run(RISK_NOW);
         expect(summary().entriesBlockedBy).toBeUndefined();
         expect(summary().exitOnly).toBeUndefined();
         expect(mockClaimOnce).toHaveBeenCalledWith('mail:quote-divergence:2026-01-05', 86_400);
+    });
+
+    it('a >25% quote drop still counts as a loss — a corrupt-looking spike must not mask a real crash (A8)', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ quantity: 30, stopPrice: '1' })]);
+        setQuotes({ NVDA: 40 }, { NVDA: 100 });
+        await run(RISK_NOW);
+        expect(summary()).toMatchObject({ exitOnly: true, entriesBlockedBy: 'daily_loss_limit' });
+        expect(mockClaimOnce).toHaveBeenCalledWith('mail:quote-divergence:2026-01-05', 86_400);
+        expect(mockClaimOnce).toHaveBeenCalledWith('mail:daily-loss:2026-01-05', 86_400);
     });
 });
 
@@ -641,5 +681,297 @@ describe('run-level outcomes', () => {
         await run(DECISION_NOW);
         expect(actions()).toEqual(['NVDA:order_rejected']);
         expect(decisionsOf()[0]!.detail).toMatchObject({ order: { status: 'rejected' } });
+    });
+});
+
+describe('A1 — no re-buy on the exit day, even across runs', () => {
+    it('a symbol sold by an earlier run today is not bought back this tick', async () => {
+        watch('NVDA');
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
+        q.getSymbolsSoldSince.mockResolvedValue(new Set(['NVDA']));
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:mr_hold']);
+        expect((decisionsOf()[0]!.detail as { mr: { reason: string } }).mr.reason).toBe(
+            'sold_today',
+        );
+        expect(q.getSymbolsSoldSince).toHaveBeenCalledWith(
+            fakeDb,
+            new Date('2026-01-05T05:00:00Z'),
+        );
+    });
+
+    it('fails closed for entries when the sold-today query throws, exits unaffected', async () => {
+        watch('NVDA');
+        q.getOpenPositions.mockResolvedValue([position({ symbol: 'TSLA', stopPrice: '1' })]);
+        setBars({ SPY: rising(), NVDA: dipAbove(), TSLA: rising() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()), TSLA: lastOf(rising()) });
+        q.getSymbolsSoldSince.mockRejectedValue(new Error('db down'));
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toContain('-:mr_data_error');
+        // the held TSLA rule exit still runs — the failure only blocks entries.
+        expect(mockExecuteExit).toHaveBeenCalled();
+    });
+
+    it('records the failure even with no entry candidates, so decisionPhase is not marked done', async () => {
+        // The one watchlist symbol is already held, so notHeldOrExited is empty —
+        // the mr_data_error row must not be gated on candidate count.
+        watch('NVDA');
+        q.getOpenPositions.mockResolvedValue([position({ symbol: 'NVDA', stopPrice: '1' })]);
+        setBars({ SPY: rising(), NVDA: rising() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(rising()) });
+        q.getSymbolsSoldSince.mockRejectedValue(new Error('db down'));
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toContain('-:mr_data_error');
+        expect(decisionsOf()).toContainEqual(
+            expect.objectContaining({
+                action: 'mr_data_error',
+                detail: expect.objectContaining({ reason: 'sold_today_query_failed' }),
+            }),
+        );
+        expect(summary().decisionPhase).toBeUndefined();
+    });
+});
+
+describe('A2 — SPY bars present but no live price fails closed on entries', () => {
+    it('treats a missing SPY live price as regime unavailable, not yesterday’s close', async () => {
+        watch('NVDA');
+        // SPY has bars (yesterday's EOD series) but no live quote today.
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ NVDA: lastOf(dipAbove()) });
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['SPY:mr_data_error']);
+    });
+});
+
+describe('A4 — mr_stop_atr = 0 disables new stops without touching existing ones', () => {
+    it('does not fetch bars or set a stop when mr_stop_atr is 0', async () => {
+        config.mr_stop_atr = 0;
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: null })]);
+        setQuotes({ NVDA: 95 });
+        await run(RISK_NOW);
+        expect(mockFetchDailyBars).not.toHaveBeenCalled();
+        expect(q.setPositionStopPrice).not.toHaveBeenCalled();
+    });
+});
+
+describe('A6 — silent stop backfill failure', () => {
+    it('records stop_backfill_failed and mails once per day when bars are unavailable', async () => {
+        q.getOpenPositions.mockResolvedValue([
+            position({ stopPrice: null, openedAt: new Date('2026-01-05T15:00:00Z') }),
+        ]);
+        setBars({}); // NVDA bars unavailable
+        setQuotes({ NVDA: 95 });
+        await run(RISK_NOW);
+        expect(actions()).toContain('NVDA:stop_backfill_failed');
+        expect(mockClaimOnce).toHaveBeenCalledWith('mail:stop-backfill-NVDA:2026-01-05', 86_400);
+    });
+});
+
+describe('A7 — in-flight orders are read before open positions', () => {
+    it('reads getPendingSubmittedOrders before getOpenPositions', async () => {
+        // Use the decision tick so the idle-check's own getOpenPositions call (outside the
+        // try block, only made on non-decision ticks) doesn't precede the pair we're pinning.
+        q.getOpenPositions.mockResolvedValue([position()]);
+        setBars({ SPY: rising() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: 95 });
+        await run(DECISION_NOW);
+        const pendingOrder = q.getPendingSubmittedOrders.mock.invocationCallOrder[0]!;
+        const openOrder = q.getOpenPositions.mock.invocationCallOrder[0]!;
+        expect(pendingOrder).toBeLessThan(openOrder);
+    });
+});
+
+describe('A5 — no new orders inside the last minute before the close', () => {
+    it('stops submitting once inside 1 minute of the close, marks closeCutoffHit, decisionPhase not done', async () => {
+        config.max_total_exposure = 1_000_000;
+        watch('AAA', 'BBB');
+        const aaa = dipAbove(3);
+        const bbb = dipAbove(4); // deeper dip → lower RSI2 → ranked first
+        setBars({ SPY: rising(), AAA: aaa, BBB: bbb });
+        setQuotes({ SPY: lastOf(rising()), AAA: lastOf(aaa), BBB: lastOf(bbb) });
+        mockExecuteEntry.mockImplementationOnce(async () => {
+            // DECISION_NOW is 15:47 ET, 13 minutes before the 16:00 close — jump to the close.
+            vi.advanceTimersByTime(13 * 60_000);
+            return { executed: true, exposureDelta: 5000, cashDebit: 5000 };
+        });
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalledTimes(1);
+        expect(actions()).toContain('BBB:mr_buy');
+        expect(actions()).toContain('AAA:close_cutoff');
+        expect(summary()).toMatchObject({ closeCutoffHit: true });
+        expect(summary().decisionPhase).toBeUndefined();
+    });
+});
+
+describe('T2 — kill switch re-check on exit paths never calls executeExit', () => {
+    const killSwitchFlipsAfterFirstRead = () => {
+        let reads = 0;
+        q.getConfigValue.mockImplementation(async (_db: unknown, key: string) =>
+            key === 'trading_enabled' ? ++reads === 1 : (config[key] ?? null),
+        );
+    };
+
+    it('(a) disaster stop hit in the risk phase', async () => {
+        q.getOpenPositions.mockResolvedValue([position()]); // stop_price 90
+        setQuotes({ NVDA: 50 });
+        killSwitchFlipsAfterFirstRead();
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:trading_disabled_mid_loop']);
+    });
+
+    it('(b) MA5 rule exit in the decision tick', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
+        setBars({ SPY: rising(), NVDA: rising() }); // price above SMA5 → exit signal
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(rising()) });
+        killSwitchFlipsAfterFirstRead();
+        await run(DECISION_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toContain('NVDA:trading_disabled_mid_loop');
+    });
+
+    it('(c) forced exit when daily bars fail under the loss breaker', async () => {
+        q.getTodayRealizedPnl.mockResolvedValue(-600);
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
+        setBars({ SPY: rising(), NVDA: null });
+        setQuotes({ SPY: lastOf(rising()), NVDA: 95 });
+        killSwitchFlipsAfterFirstRead();
+        await run(DECISION_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toContain('NVDA:trading_disabled_mid_loop');
+    });
+
+    it('(d) auto + no price under the breaker', async () => {
+        config.trading_mode = 'auto';
+        q.getTodayRealizedPnl.mockResolvedValue(-600);
+        q.getOpenPositions.mockResolvedValue([position()]);
+        setQuotes({});
+        killSwitchFlipsAfterFirstRead();
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:trading_disabled_mid_loop']);
+    });
+});
+
+describe('T4 — stop backfill ATR excludes the entry-day bar', () => {
+    it('a wide range on the entry day does not skew the computed stop', async () => {
+        const bars = series(Array(260).fill(100)); // constant ±1 range → ATR(14) = 2
+        bars[bars.length - 1] = { ...bars[bars.length - 1]!, high: 1000, low: 1 }; // entry-day spike
+        mockFetchDailyBars.mockImplementation(async (sym: string) =>
+            sym === 'NVDA' ? bars : null,
+        );
+        q.getOpenPositions.mockResolvedValue([
+            position({ stopPrice: null, openedAt: new Date('2026-01-05T15:00:00Z') }),
+        ]);
+        setQuotes({ NVDA: 95 });
+        await run(RISK_NOW);
+        expect(q.setPositionStopPrice).toHaveBeenCalledWith(fakeDb, 1, 90); // 100 − 5 × 2, spike excluded
+    });
+});
+
+describe('T5 — a stop hit in the risk phase blocks the same-tick entry (A1)', () => {
+    it('no executeEntry for a symbol stopped out earlier in the same run', async () => {
+        watch('NVDA');
+        q.getOpenPositions.mockResolvedValue([position()]); // stop_price 90
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: 85 }); // below stop → risk phase exits it
+        await run(DECISION_NOW);
+        expect(mockExecuteExit).toHaveBeenCalled();
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toContain('NVDA:mr_stop_atr');
+    });
+});
+
+describe('T6 — a deadline mid-run leaves decisionPhase unset', () => {
+    it('a slow prefetch that crosses the run deadline sets runDeadlineHit and skips decisionPhase', async () => {
+        watch('NVDA', 'MSFT');
+        setBars({ SPY: rising(), NVDA: dipAbove(), MSFT: rising() });
+        let calls = 0;
+        mockQuote.mockImplementation(async (sym: string) => {
+            calls++;
+            if (calls > 1) vi.advanceTimersByTime(900_001);
+            const prices: Record<string, number> = {
+                SPY: lastOf(rising()),
+                NVDA: lastOf(dipAbove()),
+                MSFT: lastOf(rising()),
+            };
+            return { source: 'fmp_quote', price: prices[sym] ?? null, previousClose: null };
+        });
+        await run(DECISION_NOW);
+        expect(summary().decisionPhase).toBeUndefined();
+        expect(summary()).toMatchObject({ runDeadlineHit: true });
+    });
+});
+
+describe('T7 — wiring', () => {
+    it('passes dryRunCostBps 10 (default) to executeEntry', async () => {
+        watch('NVDA');
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry.mock.calls[0]![0]).toMatchObject({ dryRunCostBps: 10 });
+    });
+
+    it('fetches daily bars with the live quote price for candidates', async () => {
+        watch('NVDA');
+        const nvda = dipAbove();
+        setBars({ SPY: rising(), NVDA: nvda });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(nvda) });
+        await run(DECISION_NOW);
+        expect(mockFetchDailyBars).toHaveBeenCalledWith('NVDA', lastOf(nvda), DECISION_NOW);
+    });
+
+    it('an in-flight pending buy consumes budget for a later candidate', async () => {
+        config.max_total_exposure = 5000;
+        watch('AAA');
+        const aaa = dipAbove();
+        setBars({ SPY: rising(), AAA: aaa });
+        setQuotes({ SPY: lastOf(rising()), AAA: lastOf(aaa), ZZZ: 500 });
+        q.getPendingSubmittedOrders.mockResolvedValue([
+            { symbol: 'ZZZ', side: 'buy', status: 'submitted', quantity: 10 },
+        ]);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['AAA:mr_skip_budget']);
+    });
+
+    it('in-flight order count reaching the daily trade limit blocks entries', async () => {
+        watch('NVDA');
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
+        q.getTodayInflightOrderCount.mockResolvedValue(20);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toContain('NVDA:mr_skip_breaker');
+        expect(summary()).toMatchObject({ entriesBlockedBy: 'daily_trade_limit' });
+    });
+});
+
+describe('T8 — a held position with no live price is a data error, not an exit', () => {
+    it('records mr_data_error and never calls executeExit', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
+        setBars({ SPY: rising(), NVDA: rising() });
+        setQuotes({ SPY: lastOf(rising()) }); // no NVDA quote
+        await run(DECISION_NOW);
+        expect(actions()).toEqual(['NVDA:skipped_no_price', 'NVDA:mr_data_error']);
+        expect(decisionsOf()[1]!.detail).toMatchObject({ reason: 'no_live_price' });
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+    });
+});
+
+describe('A10 — every entry-signal decision carries detail.mr.signal', () => {
+    it('is set on mr_skip_budget, not only on mr_buy', async () => {
+        config.max_total_exposure = 1; // forces budget skip
+        watch('NVDA');
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
+        await run(DECISION_NOW);
+        expect(actions()).toEqual(['NVDA:mr_skip_budget']);
+        expect((decisionsOf()[0]!.detail as { mr: { signal: boolean } }).mr.signal).toBe(true);
     });
 });

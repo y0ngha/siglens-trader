@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const q = {
     averageIntoPosition: vi.fn(),
@@ -34,6 +34,12 @@ vi.mock('../../../lib/trading/account', () => ({
     getSellableQuantity: (...a: unknown[]) => mockSellable(...a),
 }));
 
+const mockMinutesToClose = vi.fn();
+vi.mock('@y0ngha/siglens-core', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@y0ngha/siglens-core')>()),
+    minutesUntilUsMarketClose: (...a: unknown[]) => mockMinutesToClose(...a),
+}));
+
 import { executeEntry, executeExit, dryRunFillPrice, type OrderContext } from '../_orders';
 import type { Db } from '../../../lib/db/index';
 
@@ -66,6 +72,8 @@ const entryArgs = {
 };
 
 beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-05T16:00:00Z')); // far from the close by default
     vi.clearAllMocks();
     q.closePosition.mockResolvedValue(true);
     q.reducePositionQuantity.mockResolvedValue(true);
@@ -73,6 +81,11 @@ beforeEach(() => {
     q.getOpenPositionBySymbol.mockResolvedValue(null);
     q.updateOrderTracking.mockResolvedValue(undefined);
     mockSellable.mockResolvedValue(null);
+    mockMinutesToClose.mockReturnValue(300);
+});
+
+afterEach(() => {
+    vi.useRealTimers();
 });
 
 describe('dryRunFillPrice', () => {
@@ -237,13 +250,15 @@ describe('executeEntry — dry_run', () => {
 });
 
 describe('executeEntry — semi_auto', () => {
-    it('queues an approval, counts it as exposure, spends no cash', async () => {
+    it('queues an approval, counts it as exposure and cash (A9 — sized within the run)', async () => {
         const out = await executeEntry(ctx('semi_auto'), entryArgs);
         expect(q.insertPendingOrder).toHaveBeenCalledWith(
             db,
             expect.objectContaining({ side: 'buy', signalScore: 4.2 }),
         );
-        expect(out).toEqual({ executed: false, exposureDelta: 1000, cashDebit: 0 });
+        // semi_auto also places a real order at approval time, so a later entry in the same
+        // run must see this one's cash already spent, not just its exposure counted.
+        expect(out).toEqual({ executed: false, exposureDelta: 1000, cashDebit: 1000 });
     });
 });
 
@@ -284,21 +299,33 @@ describe('executeEntry — auto', () => {
 
     it('merges a real fill into a position that appeared meanwhile', async () => {
         mockBuy.mockResolvedValue({ status: 'filled', avgFilledPrice: 101, filledQuantity: 10 });
-        q.getOpenPositionBySymbol.mockResolvedValue({ id: 3 });
+        // No position existed before submission (the A7 pre-submit re-check passes) but one
+        // appears while the broker call is in flight — the post-fill check must still merge.
+        q.getOpenPositionBySymbol.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 3 });
         await executeEntry(ctx('auto'), entryArgs);
         expect(q.averageIntoPosition).toHaveBeenCalledWith(tx, 3, 10, 101);
     });
 
-    it('pending / partial debit the request price and book nothing; rejected debits nothing', async () => {
+    it('pending / partial debit the request price and count the planned exposure (A9); rejected debits/counts nothing', async () => {
         mockBuy.mockResolvedValueOnce({ status: 'pending' });
         const pending = await executeEntry(ctx('auto'), entryArgs);
-        expect(pending).toMatchObject({ action: 'order_submitted', cashDebit: 1000 });
+        // Still-live orders must count toward `max_total_exposure` within the same run too,
+        // not just cash — otherwise later entries in the run don't see this one's exposure.
+        expect(pending).toMatchObject({
+            action: 'order_submitted',
+            cashDebit: 1000,
+            exposureDelta: 1000,
+        });
         mockBuy.mockResolvedValueOnce({ status: 'partial', filledQuantity: 2 });
-        expect((await executeEntry(ctx('auto'), entryArgs)).action).toBe('order_partial');
+        expect(await executeEntry(ctx('auto'), entryArgs)).toMatchObject({
+            action: 'order_partial',
+            exposureDelta: 1000,
+        });
         mockBuy.mockResolvedValueOnce({ status: 'canceled' });
         expect(await executeEntry(ctx('auto'), entryArgs)).toMatchObject({
             action: 'order_rejected',
             cashDebit: 0,
+            exposureDelta: 0,
         });
         mockBuy.mockResolvedValueOnce({ status: 'filled', avgFilledPrice: 101, filledQuantity: 9 });
         expect((await executeEntry(ctx('auto'), entryArgs)).action).toBe('needs_review');
@@ -313,5 +340,37 @@ describe('executeEntry — auto', () => {
             'exec-1-NVDA-buy',
             expect.objectContaining({ status: 'error' }),
         );
+    });
+
+    it('re-checks for an open position right before submitting (A7)', async () => {
+        q.getOpenPositionBySymbol.mockResolvedValue({ id: 9 });
+        const out = await executeEntry(ctx('auto'), entryArgs);
+        expect(out.action).toBe('already_open');
+        expect(mockBuy).not.toHaveBeenCalled();
+        expect(q.createOrderTracking).not.toHaveBeenCalled();
+    });
+});
+
+describe('semi_auto approval expiresAt caps at the market close (A5b)', () => {
+    it('caps the TTL when the close is sooner than APPROVAL_TTL_MS away', async () => {
+        vi.setSystemTime(new Date('2026-01-05T20:52:00Z')); // 15:52 ET
+        mockMinutesToClose.mockReturnValue(8); // 8 minutes to close, less than the 15-minute TTL
+        await executeEntry(ctx('semi_auto'), entryArgs);
+        const call = q.insertPendingOrder.mock.calls[0]![1] as { expiresAt: Date };
+        expect(call.expiresAt.getTime()).toBe(Date.now() + 8 * 60_000);
+    });
+
+    it('uses the full TTL when the close is far away', async () => {
+        mockMinutesToClose.mockReturnValue(300);
+        await executeExit(ctx('semi_auto'), exitArgs);
+        const call = q.insertPendingOrder.mock.calls[0]![1] as { expiresAt: Date };
+        expect(call.expiresAt.getTime()).toBe(Date.now() + 15 * 60_000);
+    });
+
+    it('uses the full TTL when the market is already closed (0 minutes reported)', async () => {
+        mockMinutesToClose.mockReturnValue(0);
+        await executeEntry(ctx('semi_auto'), entryArgs);
+        const call = q.insertPendingOrder.mock.calls[0]![1] as { expiresAt: Date };
+        expect(call.expiresAt.getTime()).toBe(Date.now() + 15 * 60_000);
     });
 });

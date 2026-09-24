@@ -133,6 +133,13 @@ describe('decision-phase check', () => {
         expect(assessCronHealth(healthy, now)).toEqual([]);
     });
 
+    it('does not raise no_decision while the kill switch is off (A11) — execute exits before the decision phase on purpose', () => {
+        expect(assessCronHealth(healthy, now, false, false)).toEqual([]);
+        // omitting the arg defaults to enabled, preserving old callers' behavior
+        expect(assessCronHealth(healthy, now, false)).toEqual([{ kind: 'no_decision' }]);
+        expect(assessCronHealth(healthy, now, false, true)).toEqual([{ kind: 'no_decision' }]);
+    });
+
     it('describes it in Korean with the window', () => {
         expect(describeCronHealth([{ kind: 'no_decision' }])[0]).toContain('100시간');
         expect(DECISION_SILENCE_MS).toBe(100 * 3_600_000);

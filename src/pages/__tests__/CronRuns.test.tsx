@@ -936,6 +936,335 @@ describe('CronRunsPage', () => {
         expect(screen.getByText(/평가손익 \+42\.50/)).toBeInTheDocument();
     });
 
+    it('renders the execute summary decision counts through the Korean label table (C7)', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    ...mockRuns[0],
+                    summary: { symbolsEvaluated: 3, decisionsByAction: { mr_buy: 1, mr_hold: 2 } },
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText(/매수 1/)).toBeInTheDocument();
+        });
+        expect(screen.getByText(/신호 없음 2/)).toBeInTheDocument();
+        // raw action keys are gone from the summary line
+        expect(screen.queryByText(/mr_buy 1/)).not.toBeInTheDocument();
+    });
+
+    it('renders the ⚠ 마감 임박 중단 marker when closeCutoffHit is set (C6)', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    ...mockRuns[0],
+                    summary: { symbolsEvaluated: 2, closeCutoffHit: true },
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText(/⚠ 마감 임박 중단/)).toBeInTheDocument();
+        });
+    });
+
+    // ─── C7: partial mr detail (rows without rsi2) render readably, not raw JSON ──
+
+    it('renders a mr_stop_atr row (price/stopPrice only, no rsi2) without a raw JSON fallback', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 401,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'mr_stop_atr',
+                    executed: true,
+                    score: '0',
+                    reason: '재난 손절 (손절 $180.00, 현재 $175.00)',
+                    detail: { mr: { price: 175.0, stopPrice: 180.0 } },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('재난 손절')).toBeInTheDocument();
+        expect(screen.getByText(/가격 \$175\.00 · 손절 \$180\.00/)).toBeInTheDocument();
+        // raw score ('0') is suppressed for mr rows, and no raw JSON dump.
+        expect(screen.queryByText('0')).not.toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    it('renders a mr_regime_off row (SPY-only detail, no rsi2) without a raw JSON fallback', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 402,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: null,
+                    action: 'mr_regime_off',
+                    executed: false,
+                    score: '0',
+                    reason: null,
+                    detail: { mr: { spyPrice: 540.2, spySma200: 560.0, candidates: 3 } },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('국면 필터')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText(/SPY \$540\.20/)).toBeInTheDocument();
+        expect(screen.getByText(/SPY SMA200 \$560\.00/)).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    // ─── C7: AI 리뷰(review) decision detail renders readably, not raw JSON ────────
+
+    it("renders a reviewed decision's dropCause/fraction/confidence and afterClose tag", async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 21,
+                    runId: 'run-review-2',
+                    cronType: 'review',
+                    status: 'completed',
+                    outcome: 'completed',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 4000,
+                    summary: { pending: 1, processed: 1 },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 501,
+                    runId: 'run-review-2',
+                    cronType: 'review',
+                    symbol: 'AAPL',
+                    action: 'reviewed',
+                    executed: false,
+                    score: null,
+                    reason: null,
+                    detail: { dropCause: 'noise', fraction: 1, confidence: 0.82, afterClose: true },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('completed')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText(/사유 noise/)).toBeInTheDocument();
+        expect(screen.getByText(/비중 1\.00/)).toBeInTheDocument();
+        expect(screen.getByText(/확신도 0\.82/)).toBeInTheDocument();
+        expect(screen.getByText(/장마감 후/)).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    it('renders an mr_hold row with reason "sold_today" without a raw JSON fallback', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 701,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'mr_hold',
+                    executed: false,
+                    score: '0',
+                    reason: null,
+                    detail: { mr: { spyPrice: 540.0, spySma200: 500.0, reason: 'sold_today' } },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('신호 없음')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/사유 sold_today/)).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    it('renders a bare { reason } detail (no .mr) without a raw JSON fallback', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 702,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: null,
+                    action: 'mr_data_error',
+                    executed: false,
+                    score: '0',
+                    reason: null,
+                    detail: { reason: 'sold_today_query_failed' },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/사유 sold_today_query_failed/)).toBeInTheDocument();
+        });
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    // ─── C6: order-level action labels and colors ──────────────────────────────
+
+    it('labels order-level outcomes in Korean with the right severity colors', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 601,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'order_submitted',
+                    executed: true,
+                    score: '8.0',
+                    reason: null,
+                    detail: {},
+                    createdAt: new Date().toISOString(),
+                },
+                {
+                    id: 602,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'order_rejected',
+                    executed: false,
+                    score: '9.0',
+                    reason: null,
+                    detail: {},
+                    createdAt: new Date().toISOString(),
+                },
+                {
+                    id: 603,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'TSLA',
+                    action: 'skipped_insufficient_cash',
+                    executed: false,
+                    score: '7.0',
+                    reason: null,
+                    detail: {},
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        const submitted = screen.getByText('주문 제출');
+        expect(submitted).toHaveClass('text-blue-400');
+
+        const rejected = screen.getByText('주문 거부');
+        expect(rejected).toHaveClass('text-red-400');
+
+        const cashSkip = screen.getByText('현금 부족');
+        expect(cashSkip).toHaveClass('text-yellow-400');
+    });
+
+    // ─── old-strategy rows keep rendering without crashing ─────────────────────
+
+    it('still renders old-strategy summary keys (exitOnly/outside_entry_window) without crashing', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    ...mockRuns[0],
+                    summary: {
+                        exitOnly: true,
+                        entriesBlockedBy: 'outside_entry_window',
+                        decisionsByAction: { buy: 1, gate_blocked: 2 },
+                    },
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText(/청산전용/)).toBeInTheDocument();
+        });
+        // Old action keys have no label mapping — the raw key is kept as-is, unchanged.
+        expect(screen.getByText(/buy 1/)).toBeInTheDocument();
+        expect(screen.getByText(/gate_blocked 2/)).toBeInTheDocument();
+    });
+
     // ─── empty state ────────────────────────────────────────────────────────
 
     it('shows empty state when no runs', async () => {

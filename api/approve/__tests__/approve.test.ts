@@ -66,6 +66,12 @@ vi.mock('../../../lib/trading/account', () => ({
     getSellableQuantity: (...args: unknown[]) => mockGetSellableQuantity(...args),
 }));
 
+const mockSessionOpen = vi.fn();
+vi.mock('@y0ngha/siglens-core', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@y0ngha/siglens-core')>()),
+    isEtRegularSessionOpen: (...args: unknown[]) => mockSessionOpen(...args),
+}));
+
 const mockSendErrorEmail = vi.fn();
 const mockSendTradeExecutedEmail = vi.fn();
 const mockBuildTradeExecutedEmail = vi.fn(() => ({ subject: 's', html: '<p>h</p>' }));
@@ -150,6 +156,8 @@ function setupDefaults() {
     mockSendErrorEmail.mockResolvedValue(undefined);
     // 브로커 매도가능 수량은 기본적으로 읽히지 않음(가드 비활성).
     mockGetSellableQuantity.mockResolvedValue(null);
+    // 정규장 열림이 기본값 — 대부분의 테스트는 A5c 게이트와 무관하다.
+    mockSessionOpen.mockReturnValue(true);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
         clientOrderId: 'approve-1',
@@ -827,6 +835,47 @@ describe('approve handler', () => {
 
             expect(mockOpenPosition).toHaveBeenCalled();
             expect(mockAverageIntoPosition).not.toHaveBeenCalled();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Regular session gate (A5c)
+    // -----------------------------------------------------------------------
+
+    describe('regular session gate (A5c)', () => {
+        it('refuses approval when the regular session is closed, without mutating the order', async () => {
+            mockSessionOpen.mockReturnValue(false);
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            const body = await res.json();
+
+            expect(res.status).toBe(409);
+            expect(body.error).toBeTruthy();
+            expect(mockApprovePendingOrder).not.toHaveBeenCalled();
+            expect(mockRevertPendingOrder).not.toHaveBeenCalled();
+            expect(mockRejectPendingOrder).not.toHaveBeenCalled();
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
+        it('still allows reject when the session is closed', async () => {
+            mockSessionOpen.mockReturnValue(false);
+
+            const res = await handler(makeApproveRequest(1, 'reject'));
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body.success).toBe(true);
+            expect(mockRejectPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+        });
+
+        it('proceeds normally when the session is open', async () => {
+            mockSessionOpen.mockReturnValue(true);
+
+            const res = await handler(makeApproveRequest(1, 'approve'));
+
+            expect(res.status).toBe(200);
+            expect(mockInsertTrade).toHaveBeenCalled();
         });
     });
 });

@@ -18,6 +18,8 @@ vi.mock('@/lib/api', () => ({
         getTrades: vi.fn(),
         getConfig: vi.fn(),
         dismissAlert: vi.fn(),
+        getCronRuns: vi.fn(),
+        getCronDecisions: vi.fn(),
     },
 }));
 
@@ -70,6 +72,8 @@ describe('StatusPage — disaster stop + exit rule display', () => {
         mockedApi.getStatus.mockResolvedValue(MOCK_STATUS);
         mockedApi.getTrades.mockResolvedValue([]);
         mockedApi.getConfig.mockResolvedValue(MOCK_CONFIG);
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [] });
+        mockedApi.getCronDecisions.mockResolvedValue({ decisions: [] });
     });
 
     it('shows the disaster stop from positions.stopPrice and the exit rule text', async () => {
@@ -88,9 +92,27 @@ describe('StatusPage — disaster stop + exit rule display', () => {
         expect(exitRuleCells.length).toBeGreaterThan(0);
     });
 
-    it('shows "손절 없음" when stopPrice is null', async () => {
+    it('shows "손절 계산 전" when stopPrice is null and mr_stop_atr > 0 (C3)', async () => {
         const pos = makePosition({ stopPrice: null });
         mockedApi.getPositions.mockResolvedValue([pos]);
+        // MOCK_CONFIG has no mr_stop_atr entry — falls back to the default (5, > 0).
+
+        renderStatus();
+
+        const stopCells = await screen.findAllByText('손절 계산 전');
+        expect(stopCells.length).toBeGreaterThan(0);
+    });
+
+    it('shows "손절 없음" when stopPrice is null and mr_stop_atr = 0 (C3)', async () => {
+        const pos = makePosition({ stopPrice: null });
+        mockedApi.getPositions.mockResolvedValue([pos]);
+        mockedApi.getConfig.mockResolvedValue({
+            config: [
+                { key: 'mr_max_hold_days', value: 10 },
+                { key: 'mr_stop_atr', value: 0 },
+            ],
+            watchlist: [],
+        });
 
         renderStatus();
 

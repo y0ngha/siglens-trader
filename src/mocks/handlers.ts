@@ -10,6 +10,16 @@ function genId() {
 // api/config.ts MAX_WATCHLIST_SIZE 미러 — 18종목 결정(§1)에 맞춰 30으로 올렸다.
 const MAX_WATCHLIST_SIZE = 30;
 
+// api/config.ts NUMERIC_BOUNDS 미러 — 전략 파라미터의 키별 범위(스펙 §6). 손절 배수 0은
+// "손절 없음"이라 허용한다. 실제 API와 같은 에러 메시지 형식을 반환해야 Settings의 실패
+// 문구 테스트가 실제 백엔드와 어긋나지 않는다(C8).
+const NUMERIC_BOUNDS: Record<string, { min: number; max: number; integer?: boolean }> = {
+    mr_rsi_entry: { min: 1, max: 50 },
+    mr_max_hold_days: { min: 1, max: 60, integer: true },
+    mr_stop_atr: { min: 0, max: 20 },
+    dry_run_cost_bps: { min: 0, max: 100 },
+};
+
 interface ConfigEntry {
     key: string;
     // mr_regime_filter처럼 boolean 값을 갖는 키가 있어 unknown이다 (API도 JSON을 그대로 저장한다).
@@ -679,7 +689,10 @@ const cronRuns: CronRunFixture[] = [
         durationMs: 3210,
         summary: {
             symbolsEvaluated: 3,
+            decisionTick: true,
             decisionPhase: 'done',
+            pendingBuyExposure: 0,
+            todayRealizedPnl: 0,
             todayUnrealizedChange: 42.5,
             decisionsByAction: { mr_buy: 1, mr_hold: 2 },
         },
@@ -708,9 +721,11 @@ const cronDecisions: CronDecisionFixture[] = [
         runId: 'execute-20260924-2007',
         cronType: 'execute',
         symbol: 'AAPL',
+        // 실제 프로듀서(api/cron/execute.ts)는 score 칼럼에 rsi2를 문자열로 담는다 — mr 행에
+        // score:null을 쓰지 않는다.
         action: 'mr_buy',
         executed: true,
-        score: null,
+        score: '8.2',
         reason: 'RSI(2) 8.2 < 10, 가격 > SMA200',
         detail: {
             mr: { price: 195.2, rsi2: 8.2, sma200: 180.1, sma5: 190.0, atr14: 3.1, rank: 1 },
@@ -724,7 +739,7 @@ const cronDecisions: CronDecisionFixture[] = [
         symbol: 'NVDA',
         action: 'mr_hold',
         executed: false,
-        score: null,
+        score: '42.0',
         reason: '신호 없음',
         detail: {
             mr: { price: 892.5, rsi2: 42.0, sma200: 800.0, sma5: 880.0, atr14: 20.5 },
@@ -740,7 +755,9 @@ const cronDecisions: CronDecisionFixture[] = [
         executed: false,
         score: null,
         reason: '뉴스·펀더멘털상 특이 하락 사유 없음',
-        detail: null,
+        // 실제 모양(api/cron/review.ts): detail.mr이 아니라 dropCause/fraction/confidence가
+        // detail에 바로 얹힌다.
+        detail: { dropCause: 'noise', fraction: 1, confidence: 0.82 },
         createdAt: new Date(Date.now() - 7 * 60000).toISOString(),
     },
     // Decisions for execute-20260612-1307
@@ -1000,6 +1017,23 @@ export const handlers = [
             case 'config': {
                 const key = body.key as string;
                 const value = body.value;
+                const bounds = NUMERIC_BOUNDS[key];
+                if (bounds) {
+                    if (
+                        typeof value !== 'number' ||
+                        !Number.isFinite(value) ||
+                        value < bounds.min ||
+                        value > bounds.max ||
+                        (bounds.integer === true && !Number.isInteger(value))
+                    ) {
+                        return HttpResponse.json(
+                            {
+                                error: `${key} must be ${bounds.integer ? 'an integer ' : ''}between ${bounds.min} and ${bounds.max}`,
+                            },
+                            { status: 400 },
+                        );
+                    }
+                }
                 const entry = configEntries.find((c) => c.key === key);
                 if (entry) {
                     entry.value = value as string | number | boolean;

@@ -50,15 +50,25 @@ describe('todayUnrealizedChange', () => {
         expect(r.missingPrice).toEqual(['A', 'B']);
     });
 
-    it('a price far from its reference is treated as a corrupt quote', () => {
+    it('a divergent price on the loss side still counts — a corrupt-looking spike must not mask a real crash (A8)', () => {
         const r = todayUnrealizedChange(
             [pos()],
             new Map([['A', { price: 10, previousClose: 100 }]]),
             TODAY,
         );
-        expect(r.total).toBe(0);
+        expect(r.total).toBeCloseTo(-900);
         expect(r.divergent).toEqual(['A']);
         expect(MAX_QUOTE_DIVERGENCE).toBe(0.25);
+    });
+
+    it('a divergent price on the gain side is dropped to 0 — inflating gains is not the dangerous direction', () => {
+        const r = todayUnrealizedChange(
+            [pos()],
+            new Map([['A', { price: 200, previousClose: 100 }]]),
+            TODAY,
+        );
+        expect(r.total).toBe(0);
+        expect(r.divergent).toEqual(['A']);
     });
 
     it('sums across positions', () => {

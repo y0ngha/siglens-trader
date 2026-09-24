@@ -17,6 +17,7 @@ const { buildEntryReviewPrompt, runEntryReview } = await import('../entry-review
 const mockedCall = vi.mocked(callAnalysisAi);
 
 const DECIDED_AT = new Date('2026-08-12T19:47:00.000Z'); // 수요일 15:47 ET
+const REVIEWED_AT = new Date('2026-08-12T19:50:00.000Z'); // decidedAt 3분 후 — 분석 신선도 기준
 
 /**
  * 픽스처는 siglens-core의 **실제 타입**을 `satisfies`로 고정한다 — core에 없는 shape를 쓴
@@ -111,6 +112,8 @@ function baseInput(overrides: Partial<EntryReviewInput> = {}): EntryReviewInput 
         symbol: 'AAPL',
         companyName: 'Apple Inc.',
         decidedAt: DECIDED_AT,
+        reviewedAt: REVIEWED_AT,
+        action: 'mr_buy',
         mr: {
             price: 180,
             rsi2: 4.2,
@@ -163,7 +166,42 @@ describe('buildEntryReviewPrompt', () => {
         expect(user).toContain('1거래일 -1.50% / 3거래일 -4.10% / 5거래일 -5.30%');
         expect(user).toContain('위 (상승 국면)');
         expect(user).toContain('15:47');
-        expect(user).toContain('매수함');
+        expect(user).toContain('매수 체결');
+    });
+
+    it('measures analysis freshness against the review clock, not the decision clock (B1)', () => {
+        // 리뷰 크론이 판단(decidedAt) 이후에 새로 분석을 만들어 저장하면 분석 시각이 decidedAt보다
+        // 늦다. decidedAt을 기준으로 나이를 재면 항상 음수라 "미래 시각"으로 잘못 찍혔던 버그.
+        const decidedAt = new Date('2026-08-12T19:40:00.000Z');
+        const analyzedAt = new Date('2026-08-12T19:52:00.000Z');
+        const reviewedAt = new Date('2026-08-12T19:55:00.000Z');
+        const { user } = buildEntryReviewPrompt(
+            baseInput({
+                decidedAt,
+                reviewedAt,
+                analyses: [
+                    { type: 'technical', result: technicalResult, analyzedAt, modelId: 'm' },
+                ],
+            }),
+        );
+        expect(user).not.toContain('미래 시각');
+        expect(user).toContain('3분 전');
+    });
+
+    it('describes a pending/skipped/ambiguous action by what actually happened (B3)', () => {
+        const rendered = (action: string, executed: boolean) =>
+            buildEntryReviewPrompt(baseInput({ action, executed })).user;
+        expect(rendered('mr_buy', false)).toContain('주문 대기 (승인 대기 또는 미체결)');
+        expect(rendered('order_submitted', false)).toContain('주문 대기 (승인 대기 또는 미체결)');
+        expect(rendered('order_partial', false)).toContain('주문 대기 (승인 대기 또는 미체결)');
+        expect(rendered('mr_skip_budget', false)).toContain('예산·현금 부족으로 미매수');
+        expect(rendered('skipped_insufficient_cash', false)).toContain('예산·현금 부족으로 미매수');
+        expect(rendered('skipped_no_buying_power', false)).toContain('예산·현금 부족으로 미매수');
+        expect(rendered('mr_skip_breaker', false)).toContain('일일 한도 차단으로 미매수');
+        expect(rendered('order_rejected', false)).toContain('주문 결과 불명확');
+        expect(rendered('needs_review', false)).toContain('주문 결과 불명확');
+        expect(rendered('already_open', false)).toContain('주문 결과 불명확');
+        expect(rendered('mystery_action', false)).toContain('신호 (매수 여부 미상)');
     });
 
     it('renders news first, then technical and fundamental, inside the fence', () => {
@@ -180,6 +218,7 @@ describe('buildEntryReviewPrompt', () => {
     it('prints 데이터 없음 for a missing axis and sanitizes injected text', () => {
         const { user } = buildEntryReviewPrompt(
             baseInput({
+                action: 'mr_skip_budget',
                 executed: false,
                 mr: { ...baseInput().mr, spyUp: null, change1d: null },
                 analyses: [
@@ -197,7 +236,7 @@ describe('buildEntryReviewPrompt', () => {
         );
         expect(user).toContain('[기술적 (일봉)] 데이터 없음');
         expect(user).toContain('[펀더멘털] 데이터 없음');
-        expect(user).toContain('매수하지 못함');
+        expect(user).toContain('예산·현금 부족으로 미매수');
         expect(user).toContain('시장 국면(SPY 200일선): 미상');
         expect(user).toContain('1거래일 미상');
         expect(user.match(/<\/analysis>/g)).toHaveLength(1);

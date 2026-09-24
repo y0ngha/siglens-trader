@@ -123,25 +123,32 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
 6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`).
 7. Exposure (cost basis + in-flight buys + pending approvals) and cash (`getAvailableCashUsd`).
 8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
-   `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`); no price → `skipped_no_price`
+   `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`; bars unavailable → `stop_backfill_failed`
+   + one mail per symbol per ET day); no price → `skipped_no_price`
    (auto under the loss breaker exits at market instead: `mr_forced_exit`); price ≤ `stop_price` → full exit
    `mr_stop_atr`.
 9. **Decision phase (once a day)** — daily bars for SPY + held + watchlist (`lib/analysis/daily-bars.ts`, today's
    close = live price). Held positions: no live price → `mr_data_error`; bars unreadable → `mr_forced_exit` under the
    loss breaker else `mr_data_error`; otherwise `evaluateRuleExit` → `mr_exit_ma5` / `mr_exit_time` / `mr_hold`.
-   Entries: SPY unreadable with the regime filter on → one `mr_data_error` row, no entries; SPY < SMA200 → one
+   Entries: SPY bars **or SPY live price** unreadable with the regime filter on → one `mr_data_error` row, no entries;
+   symbols sold today (ET, trades or live sell orders — `getSymbolsSoldSince`) → `mr_hold` `sold_today` (query failure
+   → `mr_data_error`, no entries); SPY < SMA200 → one
    `mr_regime_off` row; otherwise signals ranked by RSI(2) → `mr_skip_breaker` (entry block) /
    `pending_order_in_progress` (in-flight buy incl. `error`, or needs_review — **the idempotency guard for a retried
    decision**) / `pending_exists` (semi_auto) / `mr_skip_budget` (`planEntry` quantity 0) / kill-switch re-check /
-   `executeEntry` → `mr_buy` (or the order outcome's action). A symbol sold this run is not re-bought today.
-10. `summary.decisionPhase = 'done'` only if the decision phase finished inside the run deadline.
+   `executeEntry` → `mr_buy` (or the order outcome's action); every entry-signal row carries `detail.mr.signal = true`.
+   Before each order the phase re-reads `minutesUntilUsMarketClose`; ≤ 1 → stop submitting, `summary.closeCutoffHit`.
+10. `summary.decisionPhase = 'done'` only if: no run-deadline hit (quote prefetch included), no close cutoff, and no
+    `mr_data_error` in this run — so the window's next tick retries a transient FMP failure.
 11. `finishCronRun` + `cron_decisions` (every decision carries `detail.mr`).
 
 ## AI Entry Review (review cron)
 
 `api/cron/review.ts` — **record-only**; it never touches an order. Every 10 min 16–21 UTC it picks today's signal
-decisions (`mr_buy`, `mr_skip_budget`, `mr_skip_breaker`) without a `trade_audit` row keyed `review-<decisionId>`,
-up to 5 per run. Nothing pending → no audit row. For each: reuse today's technical (1Day) / news / fundamental rows or
+decisions (rows with `detail.mr.signal = true`, whatever action the order path left — `auto` overwrites `mr_buy`
+with `order_submitted` etc.), deduped to one per symbol, without a `trade_audit` row keyed `review-<ET date>-<SYMBOL>`,
+up to 5 per run. The key is re-checked after the lock (a previous run may have just finished it). Reviews that run
+after the regular close record `afterClose: true` on the decision row. Nothing pending → no audit row. For each: reuse today's technical (1Day) / news / fundamental rows or
 run them (`lib/analysis/run-*.ts`, saved to `analysis_results` with `timeframe = '1Day'`), then
 `runEntryReview` (`lib/analysis/entry-review.ts`, `callAnalysisAi`, pro tier, reasoning off) and write
 `trade_audit` kind `entry_review` — **also on error**, so a failing signal is not retried every tick.
@@ -168,7 +175,8 @@ Output: `{ fraction, dropCause: noise|news|earnings|macro|unknown, confidence, r
 **노출을 따로 빼지 않는다.** 매수는 원장에서 이미 차감됐고 노출은 그 현금이 형태를 바꾼
 것이다. 둘 다 빼면 같은 돈을 두 번 센다 (예치금 $5,000 → $1,000 매수 → 현금 $4,000 +
 노출 $1,000 = 총액 $5,000). 런 안에서는 매수마다 차감한다 — 그러지 않으면 한 런의 매수 여러
-건이 전부 같은 잔고를 보고 승인된다.
+건이 전부 같은 잔고를 보고 승인된다. semi_auto 승인 요청도 계획 금액만큼 현금에서, auto 미체결 매수도
+계획 금액만큼 노출에서 런 안에서 차감한다(판단 단계가 한 런에서 여러 종목을 산다).
 
 dry_run 체결가에는 `dry_run_cost_bps`가 붙는다(매수 ×(1+c), 매도 ×(1−c)) — 현금 원장과 실현 손익이
 같은 가격에서 나와야 어긋나지 않으므로 trade·포지션·알림 모두 그 값을 쓴다(`api/cron/_orders.ts`).
@@ -205,6 +213,9 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
 `{ "force": true }`가 **주문 없이 장부만 닫는** 관리자 경로로 남아 있다(거래 사유에 명시된다).
 
 `POST /api/approve/:id`:
+
+- **미국 정규장이 아니면 거부한다**(409, 대기 주문은 건드리지 않음). 판단이 마감 20분 전이라 승인 요청은 전부
+  마감 직전에 생기고, 만료도 `min(15분, 마감)`으로 잘린다 — 마감 뒤 시장가 주문을 막는다.
 
 - 기록되는 `mode`는 **실제 `trading_mode`**다. dry_run 승인을 `semi_auto`로 남기면 시뮬레이션
   손익이 `getTodayRealizedPnl`에 섞여 실계좌 손실 차단기를 오염시킨다.
@@ -249,7 +260,8 @@ entry**. With multi-day holds one −10% position filled the $500 limit and bloc
 days this strategy buys (backtest: 366 signals blocked in 2023-26, annual return 19.6% → 12.7%, MDD 30% → 28%). The
 unrealized term is now `quantity × (price − reference)`, reference = entry price if opened today, else FMP
 `previousClose` (entry price when missing — substitute, never exclude). A quote more than 25% away from its reference
-is treated as a corrupt tick (change 0, one mail per day); the disaster stop still sees the live price.
+is treated as a possibly corrupt tick (one mail per day): a **loss** still counts, a gain is dropped — a corrupt spike
+must not mask losses, and a real crash must reach the breaker when the stop can't act (`mr_stop_atr = 0`, semi_auto).
 
 `forceFullExit` (loss breaker tripped): every exit is already full-size under this strategy, so what it adds is
 **leaving positions that cannot be evaluated** — no live price in `auto` (market order) or no daily bars in the

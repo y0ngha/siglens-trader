@@ -76,16 +76,120 @@ function readGateDetail(detail: unknown): GateInfo | null {
 }
 
 type MrDetail = {
-    rsi2: number;
+    price: number | null;
+    rsi2: number | null;
+    sma200: number | null;
+    sma5: number | null;
+    atr14: number | null;
+    spyPrice: number | null;
+    spySma200: number | null;
+    stopPrice: number | null;
     rank: number | null;
+    holdDays: number | null;
+    signal: boolean | null;
+    /** e.g. 'sold_today' on an mr_hold row — distinguishes "no signal" from "already
+     * sold today, no re-entry" (§3 "물타기 없음"), or 'sold_today_query_failed'. */
+    reason: string | null;
 };
 
-/** Safely read `detail.mr` (일봉 RSI(2) 전략 판단 근거, §7) from an untyped decision detail blob. */
+function numOrNull(v: unknown): number | null {
+    return typeof v === 'number' ? v : null;
+}
+
+/**
+ * Safely read `detail.mr` (일봉 RSI(2) 전략 판단 근거, §7) from an untyped decision detail
+ * blob. Only requires `detail.mr` to exist — rows without `rsi2` (mr_stop_atr's
+ * `{price, stopPrice}`, mr_regime_off's `{spyPrice, spySma200}`, mr_forced_exit) are real
+ * shapes too, not malformed ones, so they must not fall through to the raw-JSON fallback.
+ */
 function readMrDetail(detail: unknown): MrDetail | null {
     if (!isRecord(detail) || !isRecord(detail.mr)) return null;
     const mr = detail.mr;
-    if (typeof mr.rsi2 !== 'number') return null;
-    return { rsi2: mr.rsi2, rank: typeof mr.rank === 'number' ? mr.rank : null };
+    return {
+        price: numOrNull(mr.price),
+        rsi2: numOrNull(mr.rsi2),
+        sma200: numOrNull(mr.sma200),
+        sma5: numOrNull(mr.sma5),
+        atr14: numOrNull(mr.atr14),
+        spyPrice: numOrNull(mr.spyPrice),
+        spySma200: numOrNull(mr.spySma200),
+        stopPrice: numOrNull(mr.stopPrice),
+        rank: numOrNull(mr.rank),
+        holdDays: numOrNull(mr.holdDays),
+        signal: typeof mr.signal === 'boolean' ? mr.signal : null,
+        reason: typeof mr.reason === 'string' ? mr.reason : null,
+    };
+}
+
+/** Renders only the fields that are actually present — order matches the fixed
+ * "RSI2 X.X · 순위 N" prefix historically shown for mr_buy so existing assertions hold. */
+function formatMrDetail(mr: MrDetail): string {
+    const parts: string[] = [];
+    if (mr.rsi2 !== null) parts.push(`RSI2 ${mr.rsi2.toFixed(1)}`);
+    if (mr.rank !== null) parts.push(`순위 ${mr.rank}`);
+    if (mr.price !== null) parts.push(`가격 $${mr.price.toFixed(2)}`);
+    if (mr.stopPrice !== null) parts.push(`손절 $${mr.stopPrice.toFixed(2)}`);
+    if (mr.sma200 !== null) parts.push(`SMA200 $${mr.sma200.toFixed(2)}`);
+    if (mr.sma5 !== null) parts.push(`SMA5 $${mr.sma5.toFixed(2)}`);
+    if (mr.atr14 !== null) parts.push(`ATR14 ${mr.atr14.toFixed(2)}`);
+    if (mr.spyPrice !== null) parts.push(`SPY $${mr.spyPrice.toFixed(2)}`);
+    if (mr.spySma200 !== null) parts.push(`SPY SMA200 $${mr.spySma200.toFixed(2)}`);
+    if (mr.holdDays !== null) parts.push(`보유 ${mr.holdDays}일`);
+    if (mr.signal === true) parts.push('신호');
+    // 'sold_today' 등 — mr_hold가 "신호 없음"인지 "오늘 이미 매도돼 재진입 안 함"인지 구분한다.
+    if (mr.reason !== null) parts.push(`사유 ${mr.reason}`);
+    return parts.join(' · ');
+}
+
+type ReviewDetail = {
+    dropCause: string | null;
+    fraction: number | null;
+    confidence: number | null;
+    afterClose: boolean;
+};
+
+/** Safely read the AI 리뷰(review cron) decision detail — `{dropCause, fraction,
+ * confidence}` sits directly on `detail`, not nested like `detail.mr`. Without this the
+ * 'reviewed' row falls through to the raw-JSON `<pre>` fallback (C7). */
+function readReviewDetail(detail: unknown): ReviewDetail | null {
+    if (!isRecord(detail)) return null;
+    if (
+        typeof detail.dropCause !== 'string' &&
+        typeof detail.fraction !== 'number' &&
+        typeof detail.confidence !== 'number'
+    ) {
+        return null;
+    }
+    return {
+        dropCause: typeof detail.dropCause === 'string' ? detail.dropCause : null,
+        fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
+        confidence: typeof detail.confidence === 'number' ? detail.confidence : null,
+        afterClose: detail.afterClose === true,
+    };
+}
+
+function formatReviewDetail(r: ReviewDetail): string {
+    const parts: string[] = [];
+    if (r.dropCause !== null) parts.push(`사유 ${r.dropCause}`);
+    if (r.fraction !== null) parts.push(`비중 ${r.fraction.toFixed(2)}`);
+    if (r.confidence !== null) parts.push(`확신도 ${r.confidence.toFixed(2)}`);
+    if (r.afterClose) parts.push('장마감 후');
+    return parts.join(' · ');
+}
+
+/** A bare `{ reason: string }` detail with no `.mr`/review shape (e.g. execute's
+ * `sold_today_query_failed` on mr_data_error) — real, just minimal. Rendered as a short
+ * line instead of falling through to the raw-JSON `<pre>`. */
+function readReasonOnlyDetail(detail: unknown): string | null {
+    if (!isRecord(detail) || isRecord(detail.mr)) return null;
+    return typeof detail.reason === 'string' ? detail.reason : null;
+}
+
+/** Whether this decision's `detail.mr` object exists — used to suppress the raw
+ * `score` badge for mr-strategy rows (C7): the score column holds RSI(2) as an
+ * unbounded numeric string, and the mr detail line below already shows it formatted. */
+function hasMrDetail(detail: unknown): boolean {
+    return isRecord(detail) && isRecord(detail.mr);
 }
 
 function timeAgo(dateStr: string): string {
@@ -238,6 +342,13 @@ function outcomeTextClass(state: string): string {
     }
 }
 
+/**
+ * Chip color family per action (C6): green = executed buy/positive outcome, red = failure
+ * or something needing operator attention (rejections, needs_review, stop-backfill
+ * failure, mid-loop kill-switch stop), orange/yellow = entry blocked or skipped (budget,
+ * cash, pending state), blue = order submitted/partial (in flight, not a failure), gray =
+ * idempotent no-op (already open/closed) or unmapped.
+ */
 function actionChipClass(action: string): string {
     switch (action) {
         case 'buy':
@@ -252,6 +363,10 @@ function actionChipClass(action: string): string {
         case 'mr_data_error':
         case 'mr_forced_exit':
         case 'review_error':
+        case 'order_rejected':
+        case 'needs_review':
+        case 'stop_backfill_failed':
+        case 'trading_disabled_mid_loop':
             return 'bg-red-500/10 text-red-400';
         case 'gate_skipped_deadline':
         case 'entry_blocked':
@@ -261,10 +376,23 @@ function actionChipClass(action: string): string {
         case 'exit_deferred':
         case 'mr_regime_off':
         case 'mr_skip_budget':
+        case 'skipped_insufficient_cash':
+        case 'skipped_no_buying_power':
+        case 'skipped_no_price':
+        case 'skipped_not_sellable':
+        case 'pending_order_in_progress':
+        case 'pending_exists':
+        case 'pending_sell_in_progress':
+        case 'run_deadline':
             return 'bg-yellow-500/10 text-yellow-400';
         case 'mr_exit_ma5':
         case 'mr_exit_time':
+        case 'order_submitted':
+        case 'order_partial':
             return 'bg-blue-500/10 text-blue-400';
+        case 'already_open':
+        case 'already_closed':
+            return 'bg-neutral-700 text-neutral-400';
         default:
             return 'bg-neutral-700 text-neutral-400';
     }
@@ -301,6 +429,39 @@ function decisionActionLabel(action: string): string {
             return 'AI 리뷰';
         case 'review_error':
             return 'AI 리뷰 오류';
+        // 주문 실행 결과 (api/cron/_orders.ts) — 판단(mr_*)과 별개로 결정 행에 그대로 남는다.
+        case 'order_submitted':
+            return '주문 제출';
+        case 'order_partial':
+            return '부분 체결';
+        case 'needs_review':
+            return '검토 필요';
+        case 'order_rejected':
+            return '주문 거부';
+        case 'skipped_insufficient_cash':
+            return '현금 부족';
+        case 'skipped_no_buying_power':
+            return '매수 여력 조회 실패';
+        case 'skipped_no_price':
+            return '가격 없음';
+        case 'skipped_not_sellable':
+            return '매도가능수량 없음';
+        case 'already_open':
+            return '이미 보유중';
+        case 'already_closed':
+            return '이미 청산됨';
+        case 'trading_disabled_mid_loop':
+            return '실행중 매매중지';
+        case 'pending_order_in_progress':
+            return '진행중 주문 있음';
+        case 'pending_exists':
+            return '승인 대기중';
+        case 'pending_sell_in_progress':
+            return '매도 진행중';
+        case 'run_deadline':
+            return '시간초과 미처리';
+        case 'stop_backfill_failed':
+            return '손절가 채우기 실패';
         default:
             return action;
     }
@@ -335,6 +496,8 @@ function parseSummary(cronType: string, summary: unknown): string {
                 const mark = isWindowBlock(s.entriesBlockedBy) ? '' : '⚠ ';
                 parts.push(`${mark}청산전용 (${breakerLabel(s.entriesBlockedBy)})${forced}`);
             }
+            // 마감 임박으로 판단이 중간에 잘렸다 — 다음 틱이 이어서 한다(§4.1).
+            if (s.closeCutoffHit === true) parts.push('⚠ 마감 임박 중단');
             if (typeof s.symbolsEvaluated === 'number') {
                 parts.push(`${s.symbolsEvaluated}종목`);
             }
@@ -350,7 +513,7 @@ function parseSummary(cronType: string, summary: unknown): string {
                 const entries = Object.entries(dba)
                     .filter(([, v]) => v > 0)
                     .slice(0, 4)
-                    .map(([k, v]) => `${k} ${v}`);
+                    .map(([k, v]) => `${decisionActionLabel(k)} ${v}`);
                 if (entries.length > 0) parts.push(entries.join('·'));
             }
             return parts.join(' / ');
@@ -528,8 +691,10 @@ function DecisionsList({ runId }: { runId: string }) {
                         ) : (
                             <span className="text-[10px] text-neutral-600">—</span>
                         )}
-                        {/* score */}
-                        {decision.score != null && (
+                        {/* score — suppressed for mr rows: the score column holds RSI(2)
+                            as an unbounded numeric string, and the mr detail line below
+                            already shows it formatted (C7). */}
+                        {decision.score != null && !hasMrDetail(decision.detail) && (
                             <span className="font-mono text-[10px] text-neutral-400">
                                 {decision.score}
                             </span>
@@ -544,12 +709,33 @@ function DecisionsList({ runId }: { runId: string }) {
                     {(() => {
                         // 신 전략 결정은 detail.mr만 있다 — 구 컨플루언스 점수 분해는 렌더하지
                         // 않는다(과거 행에는 애초에 mr이 없으니 아래 분기로 자연히 넘어간다).
+                        // rsi2가 없는 mr 행(재난 손절·국면 필터·강제청산 등)도 실제 모양이라
+                        // 부분 필드만이라도 사람이 읽게 렌더한다 — raw JSON으로 떨어뜨리지 않는다(C7).
                         const mr = readMrDetail(decision.detail);
                         if (mr) {
+                            const text = formatMrDetail(mr);
+                            return text ? (
+                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                    {text}
+                                </span>
+                            ) : null;
+                        }
+                        // AI 리뷰(review cron) 결정 — detail이 { dropCause, fraction, confidence }
+                        // 로 detail.mr 없이 바로 얹힌다. 이것도 없으면 raw JSON으로 떨어진다.
+                        const review = readReviewDetail(decision.detail);
+                        if (review) {
+                            const text = formatReviewDetail(review);
+                            return text ? (
+                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                    {text}
+                                </span>
+                            ) : null;
+                        }
+                        const reasonOnly = readReasonOnlyDetail(decision.detail);
+                        if (reasonOnly) {
                             return (
                                 <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
-                                    RSI2 {mr.rsi2.toFixed(1)}
-                                    {mr.rank !== null && ` · 순위 ${mr.rank}`}
+                                    사유 {reasonOnly}
                                 </span>
                             );
                         }

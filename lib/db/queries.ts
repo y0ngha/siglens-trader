@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, desc, asc, and, or, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
@@ -851,6 +851,40 @@ export async function getPendingSubmittedOrders(db: Db) {
         .orderBy(orderTracking.submittedAt);
 }
 
+/**
+ * 이 시각 이후 매도된(또는 매도 진행 중인) 심볼 집합 — 같은 날 재매수 가드(스펙 §3 "물타기 없음",
+ * A1).
+ *
+ * `exitedSymbols`(execute 한 런 안에서 청산한 종목)만으로는 부족하다: 14:07 위험 단계에서
+ * 재난 손절로 나간 종목, 또는 판단 단계 도중 죽어 `finishCronRun` 전에 끊긴 런이 이미 낸 매도
+ * 주문은 **이번 런의 `exitedSymbols`에 없다.** 그 상태에서 15:47 판단 틱이 같은 심볼을 다시
+ * 사면 청산 당일 재진입 금지가 깨진다(백테스트는 청산 다음 날부터만 재진입했다).
+ *
+ * 두 출처를 합친다 — `trades`의 실제 체결 매도(`side='sell'`)와, `order_tracking`의 아직 결말이
+ * 확정되지 않았거나 확정된 매도 주문(`rejected`/`canceled`만 제외 — 그 둘은 브로커가 받지 않았다는
+ * 뜻이다). 후자가 필요한 이유는 `submitted`/`error` 같은 in-flight 매도가 아직 `trades`에
+ * 반영되지 않았을 수 있어서다.
+ */
+export async function getSymbolsSoldSince(db: Db, since: Date): Promise<Set<string>> {
+    const [tradeRows, orderRows] = await Promise.all([
+        db
+            .selectDistinct({ symbol: trades.symbol })
+            .from(trades)
+            .where(and(eq(trades.side, 'sell'), gte(trades.executedAt, since))),
+        db
+            .selectDistinct({ symbol: orderTracking.symbol })
+            .from(orderTracking)
+            .where(
+                and(
+                    eq(orderTracking.side, 'sell'),
+                    gte(orderTracking.submittedAt, since),
+                    sql`${orderTracking.status} NOT IN ('rejected', 'canceled')`,
+                ),
+            ),
+    ]);
+    return new Set([...tradeRows.map((r) => r.symbol), ...orderRows.map((r) => r.symbol)]);
+}
+
 // ---------------------------------------------------------------------------
 // Cron audit log
 // ---------------------------------------------------------------------------
@@ -1058,6 +1092,13 @@ export async function hasDecisionPhaseSince(db: Db, since: Date): Promise<boolea
  */
 export const MR_SIGNAL_ACTIONS = ['mr_buy', 'mr_skip_budget', 'mr_skip_breaker'] as const;
 
+/**
+ * `action`만으로는 신호 전부를 못 잡는다(A10) — `executeEntry`가 최종 결정 행동을 주문 결과로
+ * 덮어쓴다(`order_submitted`·`order_partial`·`needs_review`·`order_rejected`·
+ * `skipped_insufficient_cash`·`skipped_no_buying_power`·`already_open` 등). `MR_SIGNAL_ACTIONS`만
+ * 보면 그 행들이 리뷰 대상에서 빠진다. execute는 진입 신호로 평가된 모든 결정 행에
+ * `detail.mr.signal = true`를 남기므로(최종 action과 무관하게), 그 마커도 함께 본다.
+ */
 export async function getMrSignalDecisionsSince(db: Db, since: Date) {
     return db
         .select()
@@ -1066,13 +1107,16 @@ export async function getMrSignalDecisionsSince(db: Db, since: Date) {
             and(
                 eq(cronDecisions.cronType, 'execute'),
                 gte(cronDecisions.createdAt, since),
-                inArray(cronDecisions.action, [...MR_SIGNAL_ACTIONS]),
+                or(
+                    inArray(cronDecisions.action, [...MR_SIGNAL_ACTIONS]),
+                    sql`${cronDecisions.detail}->'mr'->>'signal' = 'true'`,
+                ),
             ),
         )
         .orderBy(asc(cronDecisions.id));
 }
 
-/** 이 상관 키의 감사 행이 이미 있는가 — 리뷰 멱등 키(`review-<decisionId>`). */
+/** 이 상관 키의 감사 행이 이미 있는가 — 리뷰 멱등 키(`review-<ET 날짜 YYYY-MM-DD>-<심볼>`, 심볼 없는 결정은 `review-<decisionId>`). */
 export async function hasTradeAuditCorrelation(db: Db, correlationId: string): Promise<boolean> {
     const rows = await db
         .select({ id: tradeAudit.id })

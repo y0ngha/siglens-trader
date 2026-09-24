@@ -27,6 +27,7 @@ import {
     insertCronDecisions,
     hasDecisionPhaseSince,
     setPositionStopPrice,
+    getSymbolsSoldSince,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import {
@@ -238,8 +239,11 @@ async function handler(req: Request): Promise<Response> {
             const params = await readMrParams(db);
             const dryRunCostBps = await readDryRunCostBps(db);
 
-            const openPositions = await getOpenPositions(db);
+            // in-flight 주문을 열린 포지션보다 먼저 읽는다(A7) — 둘 사이에 reconcile 지연 체결
+            // 복구가 끼어들면(주문을 지우고 포지션을 만듦) 순서가 반대였을 때 그 심볼이 이번
+            // 런의 두 스냅샷 어디에도 없어 물타기 가드가 통째로 비어 버린다.
             const pendingSubmittedOrders = await getPendingSubmittedOrders(db);
+            const openPositions = await getOpenPositions(db);
             const watchlistItems = decisionTick ? await getEnabledWatchlist(db) : [];
 
             // --- 시세 프리페치. 판단 틱이면 관심종목과 국면 지수까지 ---
@@ -255,8 +259,13 @@ async function handler(req: Request): Promise<Response> {
                 for (const w of watchlistItems) symbols.add(w.symbol);
                 symbols.add(REGIME_SYMBOL);
             }
+            // 마감으로 실행이 잘린 흔적. 시세 프리페치가 여기서 끊기면 판단 단계가 국면·후보
+            // 시세 없이 도는 것과 같으므로, 판단 단계의 다른 마감 감지와 같은 플래그로 합친다(A3).
+            let deadlineHit = false;
+            let closeCutoffHit = false;
             for (const sym of symbols) {
                 if (Date.now() > runDeadlineMs) {
+                    deadlineHit = true;
                     console.warn('[execute] 시세 프리페치가 실행 마감으로 잘렸다');
                     break;
                 }
@@ -435,7 +444,6 @@ async function handler(req: Request): Promise<Response> {
 
             // 이 실행에서 청산(또는 청산 주문)한 종목 — 같은 틱에 다시 사지 않는다(백테스트도 청산 다음 날부터).
             const exitedSymbols = new Set<string>();
-            let deadlineHit = false;
             let stopBackfilled = 0;
 
             // =====================================================================
@@ -474,6 +482,8 @@ async function handler(req: Request): Promise<Response> {
                     }
 
                     // 재난 손절가가 비어 있으면 채운다 — 승인·복구 경로로 열린 포지션이다(§4.2).
+                    // `params.stopAtr > 0` 가드가 없으면 손절 없는 포지션(`mr_stop_atr = 0`)까지
+                    // 매 틱 일봉을 받아 온다 — 어차피 `stopPriceFor`가 배수 0이면 null을 주므로 헛수고다.
                     let stopPrice =
                         position.stopPrice == null
                             ? null
@@ -498,6 +508,20 @@ async function handler(req: Request): Promise<Response> {
                             );
                             stopPrice = computed;
                             stopBackfilled++;
+                        } else {
+                            // 일봉 실패든 ATR 계산 불가든 손절이 계속 비어 있다 — 조용히 두면
+                            // 재난 손절이 다음 계산 성공 전까지 꺼진 채로 남는다(A6).
+                            decisions.push({
+                                symbol: position.symbol,
+                                action: 'stop_backfill_failed',
+                                score: 0,
+                                detail: { reason: bars ? 'atr_unavailable' : 'bars_unavailable' },
+                            });
+                            await notifyOncePerDay(
+                                `stop-backfill-${position.symbol}`,
+                                `재난 손절가 계산 실패: ${position.symbol}`,
+                                `${position.symbol} 포지션의 재난 손절가를 채우지 못했습니다(일봉 또는 ATR 계산 불가). 손절이 비어 있는 상태이니 수동 확인이 필요합니다.`,
+                            );
                         }
                     }
 
@@ -505,7 +529,15 @@ async function handler(req: Request): Promise<Response> {
                     if (price <= 0) {
                         // auto는 시장가라 가격 없이도 청산할 수 있다 — 한도 초과 중이면 평가할 수 없는
                         // 포지션은 나간다. dry_run(현재가로 기록)·semi_auto(지정가 대기)는 가격 없이는 못 한다.
-                        if (forceFullExit && tradingMode === 'auto' && !(await killSwitchOff())) {
+                        if (forceFullExit && tradingMode === 'auto') {
+                            if (await killSwitchOff()) {
+                                decisions.push({
+                                    symbol: position.symbol,
+                                    action: 'trading_disabled_mid_loop',
+                                    score: 0,
+                                });
+                                continue;
+                            }
                             exitedSymbols.add(position.symbol);
                             await exitPosition(
                                 position,
@@ -530,6 +562,10 @@ async function handler(req: Request): Promise<Response> {
                         continue;
                     }
 
+                    // 재난 손절가는 **진입 시점에 고정**된다(A4) — `mr_stop_atr`는 신규 진입과
+                    // 위의 백필(비어 있는 손절)에만 적용된다. 이미 손절가가 있는 포지션은 그 값을
+                    // 그대로 매 틱 비교할 뿐이라, 운영 중 `mr_stop_atr`를 0으로 바꿔도 이미 걸린
+                    // 손절은 사라지지 않는다 — 없애려면 포지션을 직접 청산해야 한다.
                     if (isStopHit(price, stopPrice)) {
                         if (await killSwitchOff()) {
                             decisions.push({
@@ -559,6 +595,26 @@ async function handler(req: Request): Promise<Response> {
             // =====================================================================
             let decisionPhaseDone = false;
             if (decisionTick) {
+                // A1: 이 시각 이후 매도된(또는 매도 진행 중인) 심볼 — 오늘 재매수 금지. 위험
+                // 단계의 exitedSymbols는 "이번 런"만 보므로, 앞선 틱의 재난 손절이나 판단 도중
+                // 죽은 런이 이미 낸 매도를 놓친다. 조회가 실패하면 그날 진입 전체를 막는다(fail-closed).
+                let soldTodaySymbols: Set<string>;
+                let soldTodayQueryFailed = false;
+                try {
+                    soldTodaySymbols = await getSymbolsSoldSince(db, etDayStart(startedAt));
+                } catch (err) {
+                    console.error(
+                        '[execute] getSymbolsSoldSince 조회 실패 — 오늘 진입 전체 차단',
+                        err,
+                    );
+                    soldTodaySymbols = new Set();
+                    soldTodayQueryFailed = true;
+                }
+                // A5a — 마감 1분 이내로는 새 주문을 내지 않는다. 판단 시점이 아니라 **제출 시점**의
+                // 현재 시각으로 매번 다시 잰다.
+                const closeCutoffNow = () =>
+                    minutesUntilUsMarketClose(new Date(), etMinutesOfDay(new Date())) <= 1;
+
                 const stillHeld = openPositions.filter((p) => !exitedSymbols.has(p.symbol));
                 const heldSymbols = new Set(stillHeld.map((p) => p.symbol));
                 const barSymbols = new Set<string>([
@@ -582,7 +638,12 @@ async function handler(req: Request): Promise<Response> {
                     ),
                 );
                 const spyBars = barsBySymbol.get(REGIME_SYMBOL) ?? null;
-                const regime = spyBars ? readRegime(spyBars) : null;
+                // A2: 실시간 SPY 가격이 없으면 `fetchDailyBars`가 전일 종가 계열을 그대로 돌려준다
+                // (오늘 봉을 합성하지 못했으므로) — 국면 필터가 켜진 채로 그 계열을 읽으면 어제
+                // 종가로 오늘 국면을 판단하게 된다. 필터가 켜져 있을 때는 국면 자체를 불가로
+                // 본다(fail-closed) — 이미 있는 SPY `mr_data_error` 분기를 그대로 태운다.
+                const regimeUnavailable = params.regimeFilter && priceOf(REGIME_SYMBOL) <= 0;
+                const regime = spyBars && !regimeUnavailable ? readRegime(spyBars) : null;
 
                 // --- 규칙 청산: 평가할 수 있으면 평가를 따르고, 못 하면(한도 초과 중) 나간다 ---
                 for (const position of stillHeld) {
@@ -591,6 +652,16 @@ async function handler(req: Request): Promise<Response> {
                         decisions.push({
                             symbol: position.symbol,
                             action: 'run_deadline',
+                            score: 0,
+                        });
+                        continue;
+                    }
+                    // A5a — 마감 1분 이내는 이 런에서 더 주문을 내지 않는다(규칙 청산·강제 청산 공용).
+                    if (closeCutoffHit || closeCutoffNow()) {
+                        closeCutoffHit = true;
+                        decisions.push({
+                            symbol: position.symbol,
+                            action: 'close_cutoff',
                             score: 0,
                         });
                         continue;
@@ -612,15 +683,23 @@ async function handler(req: Request): Promise<Response> {
                         const reading = bars ? readSymbol(bars) : null;
                         const openedDate = etDateOf(position.openedAt);
                         if (!bars || !reading) {
-                            if (forceFullExit && !(await killSwitchOff())) {
-                                exitedSymbols.add(position.symbol);
-                                await exitPosition(
-                                    position,
-                                    'mr_forced_exit',
-                                    '일일 손실 한도 초과 — 일봉 없이 강제 전량 청산',
-                                    true,
-                                    mrDetail(null, regime),
-                                );
+                            if (forceFullExit) {
+                                if (await killSwitchOff()) {
+                                    decisions.push({
+                                        symbol: position.symbol,
+                                        action: 'trading_disabled_mid_loop',
+                                        score: 0,
+                                    });
+                                } else {
+                                    exitedSymbols.add(position.symbol);
+                                    await exitPosition(
+                                        position,
+                                        'mr_forced_exit',
+                                        '일일 손실 한도 초과 — 일봉 없이 강제 전량 청산',
+                                        true,
+                                        mrDetail(null, regime),
+                                    );
+                                }
                             } else {
                                 decisions.push({
                                     symbol: position.symbol,
@@ -677,9 +756,36 @@ async function handler(req: Request): Promise<Response> {
                 }
 
                 // --- 진입 ---
-                const candidates = watchlistItems.filter(
+                const notHeldOrExited = watchlistItems.filter(
                     (w) => !heldSymbols.has(w.symbol) && !exitedSymbols.has(w.symbol),
                 );
+                // A1: 오늘 이미 팔렸거나 매도 진행 중인 심볼은 다시 사지 않는다(§3 "물타기 없음" —
+                // 백테스트도 청산 다음 날부터 재진입했다). 조회가 실패하면 오늘 진입 전체를 막는다.
+                let candidates = notHeldOrExited;
+                if (soldTodayQueryFailed) {
+                    // 후보가 없어도(전부 보유 중이라도) 조회 실패 자체를 기록해야 `hadDataError`가
+                    // true가 되어 그날이 재시도된다 — 후보 수로 게이팅하면 조용히 성공 처리된다.
+                    candidates = [];
+                    decisions.push({
+                        action: 'mr_data_error',
+                        score: 0,
+                        detail: { reason: 'sold_today_query_failed' },
+                    });
+                } else if (soldTodaySymbols.size > 0) {
+                    candidates = [];
+                    for (const w of notHeldOrExited) {
+                        if (soldTodaySymbols.has(w.symbol)) {
+                            decisions.push({
+                                symbol: w.symbol,
+                                action: 'mr_hold',
+                                score: 0,
+                                detail: mrDetail(null, regime, { reason: 'sold_today' }),
+                            });
+                        } else {
+                            candidates.push(w);
+                        }
+                    }
+                }
                 if (candidates.length > 0 && params.regimeFilter && regime === null) {
                     // SPY를 못 읽으면 그날 진입은 없다(fail-closed, §3). 고장과 "신호 없음"을 구분한다.
                     decisions.push({
@@ -749,12 +855,26 @@ async function handler(req: Request): Promise<Response> {
                             reading.atrPrev,
                             params.stopAtr,
                         );
-                        const detail = mrDetail(reading, regime, { rank, stopPrice });
+                        // A10: 이 심볼에 진입 신호가 있었음을 남긴다 — `executeEntry`가 아래에서
+                        // 최종 action을 주문 결과(`order_submitted`·`needs_review`·`already_open` …)로
+                        // 덮어써도 리뷰 크론이 `detail.mr.signal`로 이 결정 행을 여전히 찾을 수 있다.
+                        const detail = mrDetail(reading, regime, { rank, stopPrice, signal: true });
                         if (Date.now() > runDeadlineMs) {
                             deadlineHit = true;
                             decisions.push({
                                 symbol,
                                 action: 'run_deadline',
+                                score: reading.rsi2,
+                                detail,
+                            });
+                            continue;
+                        }
+                        // A5a — 마감 1분 이내는 이 런에서 더 매수 주문을 내지 않는다.
+                        if (closeCutoffHit || closeCutoffNow()) {
+                            closeCutoffHit = true;
+                            decisions.push({
+                                symbol,
+                                action: 'close_cutoff',
                                 score: reading.rsi2,
                                 detail,
                             });
@@ -878,8 +998,14 @@ async function handler(req: Request): Promise<Response> {
                         }
                     }
                 }
-                // 마감으로 잘린 판단은 끝난 것이 아니다 — 다음 틱이 이어서 하게 둔다.
-                decisionPhaseDone = !deadlineHit;
+                // 판단이 진짜 끝났다고 볼 수 있을 때만 멱등 행을 남긴다(A3) — 아니면 재시도할 다음
+                // 틱이 "오늘은 이미 끝났다"고 믿어 그날 판단이 통째로 사라진다. 넷 다 확인한다:
+                // 실행 마감(시세 프리페치가 잘린 경우 포함, deadlineHit에 합쳐져 있다), 마감 1분
+                // 컷오프, 국면 필요·불가(이미 `mr_data_error` 행으로 남는다), 그리고 이번 런에서
+                // 어떤 형태로든 `mr_data_error`가 하나라도 났는가 — 데이터 실패가 있었다는 뜻이므로
+                // 다음 틱이 다시 시도해야 한다.
+                const hadDataError = decisions.some((d) => d.action === 'mr_data_error');
+                decisionPhaseDone = !deadlineHit && !closeCutoffHit && !hadDataError;
             }
 
             if (deadlineHit) {
@@ -908,6 +1034,7 @@ async function handler(req: Request): Promise<Response> {
                     todayUnrealizedChange: unrealizedToday,
                     ...(stopBackfilled > 0 ? { stopBackfilled } : {}),
                     ...(deadlineHit ? { runDeadlineHit: true } : {}),
+                    ...(closeCutoffHit ? { closeCutoffHit: true } : {}),
                     ...(entryBlock
                         ? {
                               exitOnly: true,

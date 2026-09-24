@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Db } from '../index';
 import { checkSchemaReadiness } from '../schema-readiness';
+import { positions } from '../schema';
 
 /**
  * Minimal mock covering only the `.select({...}).from(...).limit(1)` chain
@@ -40,6 +41,11 @@ describe('checkSchemaReadiness', () => {
         const result = await checkSchemaReadiness(db);
 
         expect(result).toEqual({ ready: true });
+        // T3: the mock's `.from().limit` accepts any column, so without this the probe could
+        // select nothing at all (or the wrong column) and every test above would still pass.
+        expect((db as unknown as { select: ReturnType<typeof vi.fn> }).select).toHaveBeenCalledWith(
+            { stopPrice: positions.stopPrice },
+        );
     });
 
     it('reports ready on an empty table (no rows is not a schema mismatch)', async () => {

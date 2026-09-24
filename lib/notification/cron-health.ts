@@ -60,6 +60,12 @@ export function assessCronHealth(
     now: Date,
     /** 최근 `DECISION_SILENCE_MS` 안에 판단 단계를 끝낸 execute 런이 있었는가. 모르면 생략. */
     decisionPhaseSeen?: boolean,
+    /**
+     * 킬 스위치(`trading_enabled`) 상태 — 꺼져 있으면 execute가 판단 단계 전에 의도적으로
+     * 빠져나가므로 `no_decision`은 헛경보다(스펙 §6). 기본값 `true`는 하위호환용 —
+     * 이 인자를 안 넘기던 기존 호출부는 종전과 같이 판단 침묵을 경보한다.
+     */
+    tradingEnabled = true,
 ): CronHealthIssue[] {
     const issues: CronHealthIssue[] = [];
     const nowMs = now.getTime();
@@ -84,7 +90,7 @@ export function assessCronHealth(
     if (sinceMs === null || sinceMs > SILENCE_THRESHOLD_MS) {
         issues.push({ kind: 'silence', sinceMs });
     }
-    if (decisionPhaseSeen === false) {
+    if (decisionPhaseSeen === false && tradingEnabled) {
         issues.push({ kind: 'no_decision' });
     }
 

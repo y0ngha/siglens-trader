@@ -133,7 +133,7 @@ describe('review cron', () => {
         q.hasTradeAuditCorrelation.mockResolvedValue(true);
         expect(await run()).toEqual({ skipped: true, reason: 'nothing_pending' });
         expect(q.getMrSignalDecisionsSince).toHaveBeenCalledWith(fakeDb, TODAY_START);
-        expect(q.hasTradeAuditCorrelation).toHaveBeenCalledWith(fakeDb, 'review-1');
+        expect(q.hasTradeAuditCorrelation).toHaveBeenCalledWith(fakeDb, 'review-2026-01-05-NVDA');
         expect(q.startCronRun).not.toHaveBeenCalled();
     });
 
@@ -159,9 +159,11 @@ describe('review cron', () => {
         expect(input).toMatchObject({
             symbol: 'NVDA',
             executed: true,
+            action: 'mr_buy',
             modelId: 'deepseek-v4.1-pro',
-            correlationId: 'review-1',
+            correlationId: 'review-2026-01-05-NVDA',
         });
+        expect(input.reviewedAt).toBeInstanceOf(Date);
         expect(input.mr).toMatchObject({ price: 100, spyUp: true });
         expect(input.mr.change1d).toBeCloseTo((100 / 104 - 1) * 100);
         expect(input.mr.change5d).toBeCloseTo((100 / 95 - 1) * 100);
@@ -169,7 +171,7 @@ describe('review cron', () => {
             fakeDb,
             expect.objectContaining({
                 kind: 'entry_review',
-                correlationId: 'review-1',
+                correlationId: 'review-2026-01-05-NVDA',
                 fraction: 0.3,
                 confidence: 70,
                 status: 'ok',
@@ -179,7 +181,8 @@ describe('review cron', () => {
             expect.objectContaining({
                 symbol: 'NVDA',
                 action: 'reviewed',
-                detail: expect.objectContaining({ dropCause: 'news' }),
+                // NOW is 16:10 ET on 2026-01-05, after the 16:00 ET regular close (B4).
+                detail: expect.objectContaining({ dropCause: 'news', afterClose: true }),
             }),
         ]);
         expect(q.insertCronDecisions.mock.calls[0]![2]).toBe('review');
@@ -239,16 +242,19 @@ describe('review cron', () => {
             expect.objectContaining({
                 status: 'error',
                 gateError: 'timeout',
-                correlationId: 'review-1',
+                correlationId: 'review-2026-01-05-NVDA',
             }),
         );
         expect(decisions()[0]!.action).toBe('review_error');
     });
 
     it('processes at most MAX_REVIEWS_PER_RUN signals, skipped-budget ones included', async () => {
+        // Distinct symbols — same-symbol rows are deduped to one per day (B2), which is
+        // exercised separately below.
         q.getMrSignalDecisionsSince.mockResolvedValue(
             Array.from({ length: 7 }, (_, i) =>
                 signal(i + 1, {
+                    symbol: `SYM${i}`,
                     action: i % 2 ? 'mr_skip_budget' : 'mr_buy',
                     executed: i % 2 === 0,
                 }),
@@ -263,11 +269,37 @@ describe('review cron', () => {
         });
     });
 
-    it('an unreadable signal detail is recorded, not reviewed', async () => {
+    it('an unreadable signal detail is recorded, not reviewed, and still gets an audit row (B5)', async () => {
         q.getMrSignalDecisionsSince.mockResolvedValue([signal(1, { detail: {} })]);
         await run();
         expect(mockRunEntryReview).not.toHaveBeenCalled();
         expect(decisions()[0]!.action).toBe('review_error');
+        // Without this row the idempotency lookup never finds the signal and it is retried
+        // every tick until 21:50 UTC.
+        expect(q.insertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                kind: 'entry_review',
+                status: 'error',
+                correlationId: 'review-2026-01-05-NVDA',
+                gateError: 'signal detail unreadable',
+            }),
+        );
+    });
+
+    it('an unexpected mid-review exception still writes a best-effort audit row (B5)', async () => {
+        mockFetchDailyBars.mockRejectedValueOnce(new Error('bars boom'));
+        await run();
+        expect(decisions()[0]).toMatchObject({ action: 'error' });
+        expect(q.insertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                kind: 'entry_review',
+                status: 'error',
+                correlationId: 'review-2026-01-05-NVDA',
+                gateError: expect.stringContaining('bars boom'),
+            }),
+        );
     });
 
     it('disabled review model → skipped', async () => {
@@ -303,5 +335,58 @@ describe('review cron', () => {
         await run();
         expect(decisions()[0]).toMatchObject({ action: 'error' });
         expect(q.finishCronRun.mock.calls[0]![2]).toMatchObject({ status: 'completed' });
+        // The first insertTradeAudit call (the normal outcome write) failed — the catch block's
+        // best-effort retry (B5) is what actually lands here.
+        expect(q.insertTradeAudit).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({
+                kind: 'entry_review',
+                status: 'error',
+                correlationId: 'review-2026-01-05-NVDA',
+                gateError: expect.stringContaining('db'),
+            }),
+        );
+    });
+
+    it('does not flag a review that runs before the regular close (B4)', async () => {
+        vi.setSystemTime(new Date('2026-01-05T16:00:00Z')); // 11:00 ET — well before the 16:00 close
+        await handler(new Request('https://x/api/cron/review'));
+        expect(decisions()[0]!.detail).toMatchObject({ afterClose: false });
+    });
+
+    it('a stored analysis from a previous ET day is not reused (B6)', async () => {
+        q.getLatestAnalysisResult.mockResolvedValue({
+            result: { t: 'stale' },
+            analyzedAt: new Date('2026-01-04T20:00:00Z'), // yesterday ET
+            sourceAnalyzedAt: null,
+            modelId: 'm',
+            timeframe: '1Day',
+        });
+        await run();
+        expect(runners.technical).toHaveBeenCalled();
+        expect(runners.news).toHaveBeenCalled();
+        expect(runners.fundamental).toHaveBeenCalled();
+    });
+
+    it('a retried decision phase writing a second row for the same symbol is reviewed once (B2)', async () => {
+        // Two decisions for NVDA from the same ET day — a retry tick. The executed one wins.
+        q.getMrSignalDecisionsSince.mockResolvedValue([
+            signal(1, { action: 'mr_skip_budget', executed: false }),
+            signal(2, { action: 'mr_buy', executed: true }),
+        ]);
+        await run();
+        expect(mockRunEntryReview).toHaveBeenCalledTimes(1);
+        const [input] = mockRunEntryReview.mock.calls[0]!;
+        expect(input).toMatchObject({ executed: true, action: 'mr_buy' });
+        expect(q.hasTradeAuditCorrelation).toHaveBeenCalledWith(fakeDb, 'review-2026-01-05-NVDA');
+    });
+
+    it('a concurrent run finishing between the pending query and the lock skips the duplicate (B2 race)', async () => {
+        // First lookup (building `pending`) says not yet reviewed; the recheck right before
+        // running analyses says a concurrent run just finished it.
+        q.hasTradeAuditCorrelation.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+        await run();
+        expect(mockRunEntryReview).not.toHaveBeenCalled();
+        expect(decisions()[0]!.action).toBe('already_reviewed');
     });
 });

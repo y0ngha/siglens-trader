@@ -1,10 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
 const mockGetDb = vi.fn();
+// The approve route refuses outside the US regular session (A5c). Pin it open inside the approve suite only;
+// every other route keeps core's real calendar.
+const sessionOverride = vi.hoisted(() => ({ open: null as boolean | null }));
+vi.mock('@y0ngha/siglens-core', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@y0ngha/siglens-core')>();
+    return {
+        ...actual,
+        isEtRegularSessionOpen: (...args: Parameters<typeof actual.isEtRegularSessionOpen>) =>
+            sessionOverride.open ?? actual.isEtRegularSessionOpen(...args),
+    };
+});
+
 vi.mock('../_lib/db', () => ({
     getDb: () => mockGetDb(),
 }));
@@ -976,7 +988,12 @@ describe('POST /api/approve/[id]', () => {
     let handler: (req: Request) => Promise<Response>;
 
     beforeEach(async () => {
+        sessionOverride.open = true;
         handler = (await import('../approve/[id]')).POST;
+    });
+
+    afterEach(() => {
+        sessionOverride.open = null;
     });
 
     it('rejects non-POST methods', async () => {

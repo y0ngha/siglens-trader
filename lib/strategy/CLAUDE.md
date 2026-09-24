@@ -10,7 +10,7 @@ The trading rule is the daily RSI(2) mean-reversion in `mean-reversion.ts` —
 | File | Responsibility |
 |------|---------------|
 | `mean-reversion.ts` | **The rule.** Indicators (SMA, Wilder RSI, Wilder ATR — same formulas as the backtest), `readSymbol` / `readRegime` (≥ 200 bars, last bar = today at the live price), `isEntrySignal`, `rankSignals` (RSI(2) ascending), `stopPriceFor` / `isStopHit` (disaster stop), `holdDays` (distinct dates after entry), `evaluateRuleExit` (MA5 reclaim / time stop, never on the entry day). A parity test replays real FMP bars and must signal on exactly the backtest's dates — change a formula and the backtest has to be re-run and the fixture regenerated. |
-| `daily-loss.ts` | Today's unrealized change for the daily loss breaker: reference = entry price if opened today, else previous close (entry price when missing — substitute, never exclude). A quote > 25% from its reference counts as a corrupt tick (change 0). |
+| `daily-loss.ts` | Today's unrealized change for the daily loss breaker: reference = entry price if opened today, else previous close (entry price when missing — substitute, never exclude). A quote > 25% from its reference is flagged `divergent`; a loss still counts, a gain is dropped. |
 | `trade-plan.ts` | Budget → share count. `planEntry` = min(per-symbol cap, total-exposure cap, cash), sanitizing every input with `safeNumber` so a NaN budget cannot disable a cap; `planExit` turns a fraction into shares (`hard: true` = full). |
 | `execute-interval.ts` | execute cron interval gate. `EXECUTE_INTERVALS` = **5 / 10** — the decision window (last 20 minutes before the close) must contain at least two ticks so one missed tick doesn't lose the day. |
 | `pnl.ts` | `realizedPnlForSell`. |
