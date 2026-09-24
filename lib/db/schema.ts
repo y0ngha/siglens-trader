@@ -99,7 +99,7 @@ export const analysisResults = pgTable(
          * core 버전이 아니라 앱 태그인 이유: core의 `package.json`은 `exports`에 막혀
          * 런타임에 읽을 수 없고, core 업그레이드는 언제나 새 릴리스로만 나가므로 태그가
          * 세대를 그대로 가리킨다. 게다가 앱 태그는 **trader 자신의 프롬프트 변경**
-         * (`lib/analysis/trade-gate.ts`)까지 함께 잡는다. 태그 → core 버전은 그 태그의
+         * (`lib/analysis/entry-review.ts`)까지 함께 잡는다. 태그 → core 버전은 그 태그의
          * `package.json`으로 역추적한다.
          *
          * 로컬 개발에서는 `APP_VERSION`이 없어 NULL이다.
@@ -154,6 +154,15 @@ export const positions = pgTable(
         openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
         closedAt: timestamp('closed_at', { withTimezone: true }),
         closePrice: numeric('close_price'),
+        /**
+         * 재난 손절가 = 진입가 − `mr_stop_atr` × 진입 전일까지의 ATR(14)
+         * (docs/specs/2026-09-24-daily-mean-reversion-design.md §3). execute가 **매 틱** 현재가와 비교한다.
+         *
+         * NULL이 두 가지를 뜻한다: 손절 배수가 0이라 손절이 없는 포지션, 그리고 ATR 맥락이 없는
+         * 경로(semi_auto 승인·reconcile 지연 체결 복구)로 열린 포지션. 후자는 execute가 다음 틱에
+         * 일봉으로 계산해 채운다 — 비어 있는 동안 손절이 조용히 꺼져 있으면 안 된다(§4.2).
+         */
+        stopPrice: numeric('stop_price'),
         status: text('status').default('open').notNull(),
         userId: ownerUserId(),
     },

@@ -2,7 +2,10 @@
 
 ## Overview
 
-US equity auto-trading system. Generates trading signals from AI analysis (via siglens-core) and executes orders based on configured mode.
+US equity auto-trading system. Trades a **daily RSI(2) mean-reversion rule** (price-only, deterministic) and
+executes orders based on the configured mode. AI analysis (via siglens-core) runs only for symbols that signal,
+as a **record-only review** — it never changes an order. Design and evidence:
+[`docs/specs/2026-09-24-daily-mean-reversion-design.md`](docs/specs/2026-09-24-daily-mean-reversion-design.md).
 Personal use only (Toss Securities Terms — trading data for personal use only).
 
 ---
@@ -13,10 +16,10 @@ Personal use only (Toss Securities Terms — trading data for personal use only)
 api/              → Web-standard (Request) => Response handlers (HTTP + cron + reconcile)
 server/           → Hono app: serves the built SPA, mounts api/ handlers, runs node-cron
 src/              → React SPA (Dashboard UI)
-lib/strategy/     → Domain: pure logic (no external deps). Includes safe-extract helpers for NaN defense,
-                    trade-plan (sizing fraction → share count) and confluence (rule-based indicator score).
-lib/analysis/     → Application: siglens-core integration, incl. the AI sizing gate (trade-gate.ts)
-                    and confluence.ts (FMP bars → siglens-core indicators → confluence snapshot; no LLM)
+lib/strategy/     → Domain: pure logic (no external deps). mean-reversion (the trading rule), daily-loss
+                    (breaker's today-change), trade-plan (budget → share count), safe-extract (NaN defense for AI JSON)
+lib/analysis/     → Application: siglens-core integration — analysis runners, daily-bars.ts (FMP daily bars +
+                    today's live bar), entry-review.ts (record-only AI review prompt/parse)
 lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
 lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
 lib/notification/ → Infrastructure: Resend Email I/O
@@ -32,9 +35,7 @@ lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
 api/ → lib/strategy, lib/analysis, lib/trading, lib/notification, lib/db
 src/ → API calls only (NEVER import lib/ directly)
 lib/strategy/ → No external deps (pure functions only). Exceptions: safe-extract.ts and trade-plan.ts
-                import lib/validation; confluence.ts re-exports @y0ngha/siglens-core (그쪽 `domain/`이
-                "zero I/O, zero side effects"를 헌장으로 갖는 같은 성격의 순수 계층이라 규칙의 목적에
-                어긋나지 않는다 — 비순수한 부분은 lib/analysis/ 쪽에 남겼다).
+                import lib/validation.
 lib/analysis/ → @y0ngha/siglens-core, lib/data, lib/strategy (types + pure helpers only — the arrow never points back)
 lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
@@ -105,8 +106,9 @@ useQuery({
 
 1. **Domain/Infra separation** — Toss API format changes don't affect strategy logic
 2. **DRY_RUN first** — Full flow testable without live API
-3. **Decision tracking** — Every trade stores `reason` (AI judgment basis); included in email notifications. Future: user evaluation → AI improvement loop.
-4. **Configurable** — Models, weights, thresholds, watchlist all editable from dashboard
+3. **Decision tracking** — Every trade stores `reason` (the rule's numbers: RSI(2), SMA200, the exit that fired); every
+   decision tick stores `cron_decisions.detail.mr`; the AI review of every signal lands in `trade_audit`.
+4. **Configurable** — Strategy parameters, limits, models, watchlist all editable from dashboard
 5. **Security** — Config POST uses allowlist (`ALLOWED_CONFIG_KEYS`); position close uses atomic DB update (race condition guard)
 6. **MSW for dev** — `yarn dev:mock` enables Mock Service Worker for UI development without backend
 7. **진입만 조인다** — 킬 스위치, 일일 거래·손실 한도, 종목별 노출 상한. 전부 멈추는 것은
@@ -119,7 +121,7 @@ useQuery({
    두 트리거가 **같은 임계 상수**를 공유하는 바람에, 진입 문턱을 올리자 청산 신호가 실측
    5건 → 1건으로 함께 줄었다. 게이트만 보고 상수를 놓친 것이다. 조이는 변경은 어느 쪽에
    떨어지는지 **명시적으로 선언**해야 하고, 양쪽에 걸린다면 문턱을 분리해야 한다
-   (`CONFLUENCE_MIN` / `CONFLUENCE_EXIT_MIN`).
+   (당시의 `CONFLUENCE_MIN` / `CONFLUENCE_EXIT_MIN` — 컨플루언스 축은 2026-09-24에 걷어냈다).
 
 8. **Order lifecycle** — Idempotency keys per order, order_tracking table, reconciliation cron for timeout detection
 9. **DB atomicity** — Trade + position changes wrapped in DB transactions to prevent inconsistent state
@@ -134,11 +136,12 @@ useQuery({
     그 숫자는 아무도 의도하지 않았다. 조임을 추가할 때는 **결합 효과를 실측**하고, 신호율이
     관측 가능한 수준으로 남는지 확인한다.
 
-12. **임계값은 분포의 꼬리에 맞춘다** — 종합 점수는 6축의 가중평균이라 개별 축의 극단이
-    상쇄돼 중앙으로 모인다. "축 하나가 70이면 매수" 같은 직관에서 온 숫자는 그 분포와
-    맞지 않는다. 실측에서 매수 임계 70은 p99 위(신호 0.8%), 매도 임계 30은 분포 최소값
-    아래(신호 **0%**)였다 — 매도 경로가 구조적으로 죽어 있었다. 지금 값(65/40)은 상·하위
-    3.4% 꼬리다. **축 산식이나 가중치를 바꾸면 분포가 움직이므로 임계값도 같이 재측정한다.**
+12. **임계값은 통과 쪽의 전진 수익률로 정한다** — (2026-09까지의 종합 점수 시절 교훈) 가중평균
+    점수는 축의 극단이 상쇄돼 중앙으로 모여, 직관에서 온 임계 70은 신호 0.8%, 매도 임계 30은
+    **0%**였다. 꼬리 비율로 다시 잡아도 그 구간의 전진 수익률은 기준선과 같았다 — 그 점수는
+    +1일 수익률과 **역상관**이었다(스펙 §0). 지금 규칙의 임계(RSI(2) < 10)는 문헌값이고, 이웃
+    값(5·15)도 같은 부호임을 백테스트로 확인했다. **임계를 바꿀 때는 분포가 아니라 그 구간의
+    전진 수익률을 기준선과 나란히 본다.**
 
 
 13. **게이트의 방향은 전진 수익률로 정한다** — 게이트를 넣을 때 "막았어야 할 손실을 막는가"만
@@ -152,159 +155,46 @@ useQuery({
 
 ---
 
-## Signal Scoring
+## Strategy — 일봉 RSI(2) 눌림매수
 
-Priority-weighted average (weights sum to 35 on `1Hour`, 36 on `30Min`, 38 on `15Min` — a
-weighted average, so the sum itself carries no meaning):
-- Confluence: 12
-- Technical: 8
-- News: 6
-- Options: 5
-- Fundamental: 4
-- Congress: **0** — 축은 돌지만 점수에 투표하지 않는다. 프로덕션 실측 31/31 `bullish`
-  (분산 0)로, 투표가 아니라 상수 가산점이었다. 근거와 되돌리는 법은 `DEFAULT_WEIGHTS` 독스트링.
+`lib/strategy/mean-reversion.ts` (순수 함수, 백테스트 스크립트와 동등성 테스트로 고정).
 
-> **모델 선택이 축 품질을 좌우한다.** 기술 축은 `indicatorResults[].signals`(지표 가이드
-> 신호)를 세 입력 중 하나로 쓰는데, **DeepSeek 계열은 30k 토큰 프로덕션 프롬프트에서 이
-> 배열을 채우지 못한다** — 실측 824건 전부 빈 배열이고 같은 프롬프트에서 gemini는 143건
-> 100% 채운다(간단한 프롬프트로는 DeepSeek도 정상 생성하므로 구조적 무능이 아니라 긴
-> 프롬프트에서 지시를 놓치는 것이다). DeepSeek은 `response_format: json_schema`를 지원하지
-> 않아(`400 unavailable`) 스키마로 강제할 수도 없다. ~~기술 축 모델은 gemini 계열로 둔다.~~
-> **2026-09-10 갱신**: core 1.0.1이 DeepSeek 출력을 스키마로 강제하면서 `deepseek-v4.1-flash`가
-> 이 배열을 **100% 채운다**(실측 540/540틱, `technicalInputs` 3입력 전부 true). 지금 기술 축은
-> DeepSeek으로 돈다. 위 문단은 "모델을 바꾸면 축이 조용히 반쪽이 될 수 있다"는 경고로 남긴다.
-> 축이 반쪽이 되어도 점수는 그럴듯하므로, `cron_decisions.detail.technicalInputs`로 감시한다.
->
-> **같은 교체가 축의 분포도 옮겼다.** 구 모델은 `trend`가 90% `neutral`·`riskLevel` 100%
-> `medium`이라 기술 축이 사실상 상수(평균 44.7)였고, v4.1은 하락장에서 `bearish` 55%를 내
-> 평균 27.9다. 그리고 `entryRecommendation`은 역대 1,111건 중 `enter`가 **5건**, v4.1은
-> `wait` 136/136 — 수정자(−6)가 투표가 아니라 상수 감점이다(congress와 같은 형태). 점수식은
-> 건드리지 않았다: 빼면 분포가 +1.4점 올라 **매도가 어려워지는** 쪽으로도 떨어지기 때문이다(원칙 7).
+- **진입**: 가격 > SMA200 **그리고** RSI(2) < `mr_rsi_entry`(10) **그리고** (`mr_regime_filter`면) SPY > SMA200.
+  신호가 예산보다 많으면 RSI(2)가 낮은 순. 한 종목 한 포지션 — 물타기 없음. 오늘(ET) 판 종목은 다시 사지 않는다.
+- **청산**(전량): 가격 > SMA5 · 보유 `mr_max_hold_days`(10)거래일 · 재난 손절 `positions.stop_price`
+  (= 진입가 − `mr_stop_atr`(5) × 전일까지 ATR(14), 진입 시점에 고정). 재난 손절만 매 틱, 나머지는 판단 틱에서.
+- **판단은 하루 1회** — 장 마감 20분 전 창의 첫 execute 틱(반일장은 12:40 ET). 오늘 봉의 종가 자리에
+  실시간 가격을 넣는다. 멱등 기록은 `cron_runs.summary.decisionPhase = 'done'` — 데이터 오류·시한 초과·마감 임박
+  중단이 있으면 남기지 않아 창의 다음 틱이 재시도한다. 주문 직전 마감까지 1분 이하면 더 내지 않는다.
+- 비중은 규칙이 정한다: 종목 한도 ∩ 총 노출 한도 ∩ 현금(`planEntry`, fraction 1).
 
-Buy threshold: **65**, Sell threshold: **40** (configurable via dashboard). 두 값은 축 하나의
-크기가 아니라 **종합 점수 분포의 상·하위 3.4% 꼬리**를 가리키도록 잡았다 — 근거는 원칙 12.
-**그 측정은 30Min 시절 것이고 지금은 어긋나 있다**(2026-09-17, 1Hour 13세션 1,402틱): ≥65는
-3.2%(모델 교체 후 1.7%)로 비슷하지만 ≤40은 **12.7%**, 컨플루언스 제외 보정까지 합친 매도
-신호는 **21.8%**다. 옮기지 않은 이유는 전진 수익률이 어느 쪽 이동도 지지하지 않아서다
-(점수 ≤40 틱의 +60분 −0.14% vs 기준선 −0.12%). 임계를 다시 잡을 때는 꼬리 비율이 아니라
-그 구간의 전진 수익률로 정한다.
-`WEIGHTS_BY_TIMEFRAME` shifts weight toward price action on shorter timeframes (15Min raises
-confluence to 14 and technical to 10 while cutting fundamental/congress); `1Hour` is the default
-profile above. Stored `score_weights` overrides the profile key by key.
+**근거**(스펙 §2): 12년 · 성장주 16 / 부진주 22 / ETF 4 모두에서 같은 청산 규칙의 기준선 대비 우위, 승률
+60~72%. 부진주는 비용 차감 후 절대 수익 ≈ 0 — 우위는 있지만 수익의 크기는 종목의 드리프트가 정한다.
+동시 5포지션 포트폴리오는 약세장에서 SPY보다 낫고 강세장에서 비슷하거나 못하며, 2023-26 MDD 30%였다.
+종전 1시간봉 종합 점수·컨플루언스 전략은 비용 포함 거래당 −0.25~−0.30%(구조적 손실)였고, 컨플루언스를
+이 규칙의 필터·청산으로 얹는 변형 7가지도 일관된 개선이 없었다(§2.4).
 
-### Indicator Confluence
+**목표는 승률과 기대값을 같이 보는 것이다** — 익절을 짧게, 손절을 길게 두면 승률은 오르고 돈은 잃는다.
+청산 30건이 쌓이면 승률 ≥ 60%·거래당 평균 > 0을 확인한다(§0.5).
 
-여섯 축 중 **유일하게 LLM을 거치지 않는** 축이자 가장 무거운 축(가중치 12, 30Min 프로파일 13).
-룰과 채점은 **siglens-core가 소유한다** (`evaluateConfluence` / `scoreConfluence`) — 같은 룰이
-siglens 백테스트와 trader에 따로 구현돼 조용히 갈라지던 것을 한 곳으로 모았다. trader는 봉을
-구해 넘길 뿐이다(`lib/analysis/confluence.ts`).
+## AI Entry Review (기록 전용)
 
-**원형 룰**은 siglens 백테스트 우승안이었다: 강세 시그널 3종 동시 활성 + 그중 1종 신규 +
-종가 > SMA(50). 승률 70%로 같은 구간 LLM(61.5%)을 이겼다. **다만 그 측정은 일봉·10일
-보유였고 여기서는 30분봉·장중 보유로 돌린다** — 같은 상수가 같은 뜻이 아니라서 룰을
-그에 맞게 고쳤고, **수정본은 백테스트로 검증된 적이 없다.** 게이트 프롬프트도 그렇게 적는다.
-
-수정 내역과 이유:
-
-- **타입이 아니라 지표 계열을 센다.** core의 36종은 지표 14개에서 파생된다(RSI 4, MACD 4,
-  볼린저 6). 타입을 세면 같은 종가 시계열의 변형을 독립 투표로 취급한다 — 실측에서 "3종"에
-  도달한 스냅샷의 16%가 지표 2개뿐이었다. 타입 수 ≥ 계열 수이므로 조이는 방향으로만 작동한다.
-- **`expected` phase는 반표.** `support_proximity_bullish`는 "지지선 근처"라는 상태이지 사건이
-  아니다. 확정 교차와 같은 무게를 줄 근거가 없다.
-- **연속 점수 폭 15** (35..65). 트리거 스냅(92/8)만 백테스트가 뒷받침하고 연속 구간은 아니다.
-  폭 30에서는 지표 하나 크로스로 65점이 나와 종합 +5.4점 — 중립에서 임계까지 거리의 27%를
-  오실레이터 하나가 먹었다.
-- **상위 시간축 게이트**(기본 일봉)가 진입 트리거에 추가로 붙는다 — **일봉이 상승이 아닐
-  때만** 진입을 허용한다(`confluence_htf_mode: notUptrend`, core 기본값 `uptrend`와 **다르다**).
-  도입 당시에는 반대 방향("일봉이 상승일 때만")이었고 근거는 추론이었다: 같은 시간축의 MA50은
-  며칠짜리 평균이라 "중기 추세 필터"가 아니니 상위 추세에 정렬시키자. **전진 수익률을 재 보니
-  부호가 반대였다**(2026-09-17, 16종목 × 1년 1시간봉, 진입 창, 심볼·일 첫 트리거, 심볼 평균
-  대비 초과): 상승 요구 **−0.54%/1일**(n=230, t −2.1) / 게이트 off +0.10%(잡음) / 상승 제외
-  **+0.45%**(n=413, t 2.2, 중앙 ≈ 0). 이미 뻗은 일봉 위의 1시간봉 강세 컨플루언스는 늦은
-  추격이었다 — 프로덕션 매수 신호가 +30분 +0.10% 뒤 D+1 −1.61%로 되돌려진 것과 같은 그림이다.
-  확실한 것은 "종전 방향이 해롭다"이고 "새 방향이 이롭다"는 그보다 약하다(1년·단일 국면,
-  평균이 우측 꼬리에서 옴). 근거 전문은 `lib/analysis/confluence.ts`의 `DEFAULT_HTF_MODE`.
-- **거래량 확인**(CMF/MFI)은 **옵트인이고 기본 꺼짐**이다(`confluence_require_volume`). 실측에서
-  트리거를 절반으로 줄였을 뿐, 막으려던 손실 3건은 다른 가드가 이미 전부 막고 있었다.
-
-**둘 다 진입 전용이다.** 청산 트리거는 상위 추세도 거래량도 보지 않는다 — 트리거를 어렵게
-만드는 조건이라 청산에 걸면 원칙 7 위반이다.
-
-- **조건부 투표, congress와 같다.** 스냅샷 없음(FMP 장애, 봉 121개 미만, 마지막 봉이
-  타임프레임 3배보다 낡음) → 가중치 0, 분모에서 제외. FMP 장애가 **매도와 보류**를 도입 전과
-  똑같이 두고 신규 진입만 막는다 — 의도된 비대칭이다.
-- **트리거만으로는 못 산다.** 트리거(92)에 나머지가 전부 중립 50이면 `(92×12 + 50×23)/35 = 64`
-  — 보류다. 나머지가 60 언저리는 돼야 70에 닿는다.
-- **컨플루언스 기권도 매수를 막는다.** `null`은 중립이 아니라 **더 느슨한** 상태라, 지표를
-  읽을 수 없을 때 오히려 문이 열리는 역설이 생긴다. 그래서 스냅샷이 없으면 `buy` 판정을
-  `hold`로 내린다. 매도는 건드리지 않는다.
-- **매수는 막아도 매도는 못 막는다.** 축을 더하면 분모가 커져 양쪽 문턱이 대칭으로 오르는데,
-  매수가 어려워지는 건 목적이고 매도가 어려워지는 건 정반대다. `scoreSignals`가 컨플루언스
-  없이 재계산해 그쪽이 `sell`이면 `sell`을 유지한다.
-- **끄는 법**은 `POST /api/config`로 `score_weights.confluence = 0`. UI는 없다.
-
-**튜너블은 전부 설정이다** — 재배포 없이 되돌릴 수 있어야 한다.
-`confluence_min`(진입, 1~14) / `confluence_exit_min`(**청산, 진입과 독립**, 1~14) /
-`confluence_span`(0~50) / `confluence_expected_weight`(0~1) /
-`confluence_htf`(`analysis_timeframe`보다 상위여야 하며 `off` 가능) /
-`confluence_htf_mode`(`uptrend` | `notUptrend`, 기본 `notUptrend`) / `confluence_require_volume`.
-적용값은 스냅샷의 `params`에 기록되어 설정 변경 전후를 사후 비교할 수 있다 — 이 축을 튜닝할
-유일한 근거다. **측정으로 정한 값은 `confluence_htf_mode` 하나뿐이고 나머지 기본값은 여전히
-판단이다** — 같은 1년 백테스트에서 `fresh`·`close > MA50` 조건은 유의한 차이를 만들지 않았고
-`min` 2.0/3.0도 기준선을 못 이겼다.
-
-> 진입·청산 문턱이 **분리돼 있는** 이유는 원칙 7 참고 — 하나로 묶여 있던 탓에 진입을
-> 조이자 청산 신호가 실측 5건 → 1건으로 같이 줄었다. 하한이 1인 이유: 0이면 `>= 0` 비교가
-> 항상 참이라 눌림 신호 하나에 전량 청산된다.
-
-상위 시간축 게이트 방향 전환의 근거·한계·재현 스크립트:
-[`docs/specs/2026-09-18-audit-exit-constant-and-htf-mode-design.md`](docs/specs/2026-09-18-audit-exit-constant-and-htf-mode-design.md).
-
-원형 설계: [`docs/specs/2026-08-14-indicator-confluence-signal-design.md`](docs/specs/2026-08-14-indicator-confluence-signal-design.md)
-(30분봉 재설계는 그 문서를 대체한다 — 위 내용이 현행이다).
-
----
-
-## AI Sizing Gate
-
-The score above decides **whether** to buy or sell. It does not decide **how much** — that is a
-separate LLM call (`lib/analysis/trade-gate.ts`) made only on a path that is already going to
-place an order. It returns a `fraction` (0~1) that `lib/strategy/trade-plan.ts` turns into a
-share count: for an entry, a share of the executable budget (per-symbol cap ∩ total-exposure cap
-∩ cash); for an exit, a share of the held quantity.
-
-That split is the point. A 0-100 scalar throws away everything siglens-core produced —
-support/resistance, target prices, risk level, entry recommendation, per-axis sentiment — and the
-account state (cash, existing exposure, day's P&L headroom) never entered the number at all. The
-gate reads all of it and answers one question.
-
-- **Model**: `analysis_model_config['trade_gate']`, selected in 설정 > 분석 설정 like any analysis
-  axis. No schema migration — it is just another `analysis_type` row, defaulting to enabled.
-- **Entry fails closed, exit fails open.** A missed buy is a lost opportunity; a missed sell is a
-  realized loss. LLM error on entry → no order + email. LLM error on exit → full liquidation.
-- **`PositionEvaluation.hard`** (fixed stop-loss, corrupt price data) bypasses the gate entirely.
-  Risk controls are absolute; profit targets are not.
-- **Turning the gate OFF** restores `fraction = 1` — AI sizing off, no redeploy. It does *not*
-  restore the pre-gate code path: `planEntry`'s cash clamp applies unconditionally.
-- **Split entries multiply fill count** (one 20-share target can take ~9 fills). Review
-  `max_trades_per_day` before switching to `auto`. `entry_cooldown_min` (기본 60분) is what
-  actually bounds how many tranches one symbol can take per day.
-
-Design + audit trail: [`docs/specs/2026-08-12-ai-trade-gate-design.md`](docs/specs/2026-08-12-ai-trade-gate-design.md).
-
----
+`api/cron/review.ts` + `lib/analysis/entry-review.ts`. 판단 단계가 남긴 신호(`detail.mr.signal = true` — 주문 결과로 action이
+바뀐 행 포함, 종목당 하루 1건)마다 기술(1Day)·뉴스·펀더멘털 분석을 확보하고 "이 하락은 노이즈인가, 악재인가"를 물어
+`trade_audit`(kind `entry_review`, `correlation_id = review-<ET 날짜>-<종목>`)에 남긴다. **주문에 영향을 주지
+않고 주문도 기다리지 않는다.** 신호 30건이 쌓이면 AI가 거부한 쪽(`fraction 0`)과 나머지의 규칙 수익률을
+비교해 거부권·비중으로 승격할지 정한다(원칙 13). 모델은 `analysis_model_config['entry_review']`.
 
 ## Cron Schedule (요약)
 
-Cron은 node-cron으로 **인프로세스** 실행되고 스케줄은 UTC다 (`server/app.ts`의 `CRON_JOBS`).
-정규장 밖 발사는 `isEtRegularSessionOpen` 런타임 게이트가 `market_closed`로 조기 반환한다.
-분석 cron은 심볼을 **병렬로** 돌리고, cadence는 경과 시간이 아니라 **시계 창**으로 강제한다.
+Cron은 node-cron으로 **인프로세스** 실행되고 스케줄은 UTC다 (`server/app.ts`의 `CRON_JOBS`):
+`execute`(5분 호출, 5·10분 게이트), `reconcile`(10분), `digest`(매일 01:00 UTC), `review`(10분, 16-21 UTC).
+시간당 분석 크론은 없다 — AI 분석은 `review`가 신호 종목에만 부른다.
 
-- 스케줄 표, cadence 창, reasoning 정책 → [`server/CLAUDE.md`](server/CLAUDE.md)
-- 매매 실행 주기(`execute_interval_min`, 기본 10분), 진입 품질 가드, 진입 시간 창(기본 ET
-  11:00–15:00), quiet hours(00:00–09:59 KST) → [`api/CLAUDE.md`](api/CLAUDE.md)
+- 스케줄 표 → [`server/CLAUDE.md`](server/CLAUDE.md)
+- execute의 위험 단계·판단 단계, 차단기, quiet hours(00:00–09:59 KST) → [`api/CLAUDE.md`](api/CLAUDE.md)
 
-**진입만 막고 청산은 절대 막지 않는다** — 진입 시간 창도, 일일 손실/거래 한도도 마찬가지다
+**진입만 막고 청산은 절대 막지 않는다** — 일일 손실/거래 한도, 국면 필터, 예산 전부 진입만 막는다
 (원칙 7). 이 규칙은 어느 디렉터리에서 작업하든 유효하므로 여기 남긴다.
 
 ---

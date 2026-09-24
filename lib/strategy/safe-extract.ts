@@ -46,12 +46,6 @@ export function safeAnalysisRiskLevel(result: unknown): string | undefined {
     return r ? safeString(r.riskLevel) : undefined;
 }
 
-export function safeNumberArray(value: unknown): number[] | undefined {
-    if (!Array.isArray(value)) return undefined;
-    const nums = value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-    return nums.length > 0 ? nums : undefined;
-}
-
 /**
  * Extracts price levels from a support/resistance array. siglens-core's actual
  * `KeyLevels.support`/`.resistance` shape is `{ price: number; reason: string }[]`,
@@ -79,24 +73,6 @@ export function safePriceLevelArray(value: unknown): number[] | undefined {
     return levels.length > 0 ? levels : undefined;
 }
 
-export function safeAnalysisSupport(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return undefined;
-    const levels = safePriceLevelArray(keyLevels.support);
-    return levels?.[0];
-}
-
-export function safeAnalysisResistance(result: unknown): number | undefined {
-    const r = safeRecord(result);
-    if (!r) return undefined;
-    const keyLevels = safeRecord(r.keyLevels);
-    if (!keyLevels) return undefined;
-    const levels = safePriceLevelArray(keyLevels.resistance);
-    return levels?.[0];
-}
-
 /** One side of `priceTargets`: the projected levels plus the condition that triggers them. */
 export interface AnalysisPriceScenario {
     targets: number[];
@@ -109,9 +85,8 @@ export interface AnalysisPriceScenario {
  * siglens-core's real shape is `PriceScenario | null` =
  * `{ targets: { price: number; basis: string }[]; condition: string }` — there is **no**
  * `target` scalar. Reading `bullish.target` (which this module used to do) therefore always
- * produced `undefined` in production, silently killing the 95%-of-target take-profit branch
- * in `evaluateExistingPosition`. Same failure mode as the old `safeAnalysisSupport` bug, so
- * the fix is the same: go through `safePriceLevelArray`, which already accepts both the real
+ * produced `undefined` in production, silently killing an exit rule of the old strategy.
+ * The fix: go through `safePriceLevelArray`, which already accepts both the real
  * `{ price }` object shape and bare numbers. The legacy `{ target: number }` scalar is still
  * accepted so previously-stored analysis rows keep resolving.
  */
@@ -129,15 +104,6 @@ export function safeAnalysisPriceScenario(
 }
 
 /**
- * First (nearest) bullish price target. Return contract is deliberately a single `number`
- * — `api/cron/execute.ts` feeds it straight into `evaluateExistingPosition({ targetPrice })`.
- * Use `safeAnalysisPriceScenario` when the full ladder or the trigger condition is needed.
- */
-export function safeAnalysisTargetPrice(result: unknown): number | undefined {
-    return safeAnalysisPriceScenario(result, 'bullish')?.targets[0];
-}
-
-/**
  * `actionRecommendation`에서 가격 세 개를 읽는다 — 권장 진입 구간, 손절가, 익절가.
  *
  * `safeActionRecommendation`은 `entryRecommendation` 하나만 돌려주고 그 값이 유효하지
@@ -146,8 +112,7 @@ export function safeAnalysisTargetPrice(result: unknown): number | undefined {
  * **`reconciledLevels`가 있으면 그쪽이 이긴다.** core는 AI가 낸 손절/익절이 유효하지 않을
  * 때(예: 손절가가 현재가 위) 원본을 그대로 두고 도메인 보정값을 `reconciledLevels`에 따로
  * 붙인다. 원본을 그대로 트리거로 쓰면 core가 "이 값은 못 쓴다"고 판정한 숫자로 청산하게
- * 되므로, 보정값이 있으면 그 자리를 대체한다. `lib/analysis/trade-gate.ts`의 프롬프트가
- * 같은 규칙으로 렌더한다.
+ * 되므로, 보정값이 있으면 그 자리를 대체한다.
  */
 function actionRecommendationRecords(result: unknown): {
     rec: Record<string, unknown> | null;
@@ -187,64 +152,13 @@ export function safeAnalysisTakeProfitLadder(result: unknown): number[] | undefi
     return ladder === undefined ? undefined : [...ladder].sort((a, b) => a - b);
 }
 
-/** AI가 제시한 손절가 (보정값 우선). `evaluateExistingPosition`의 손절 트리거. */
+/** AI가 제시한 손절가 (보정값 우선). 과거 분석 맥락(`prior-analysis.ts`)이 읽는다. */
 export function safeAnalysisStopLoss(result: unknown): number | undefined {
     const { rec, reconciled } = actionRecommendationRecords(result);
     for (const candidate of [reconciled?.stopLoss, rec?.stopLoss]) {
         if (isFinitePositive(candidate)) return candidate;
     }
     return undefined;
-}
-
-/**
- * AI가 제시한 익절가 중 **가장 가까운 것** (보정값 우선).
- *
- * 사다리 전체가 아니라 첫 칸만 쓰는 이유는 `safeAnalysisTargetPrice`와 같다 — 트리거는
- * "여기 닿으면 판다"는 단일 숫자여야 하고, 먼저 닿는 것은 첫 칸이다.
- */
-export function safeAnalysisTakeProfit(result: unknown): number | undefined {
-    const { rec, reconciled } = actionRecommendationRecords(result);
-    const levels =
-        safePriceLevelArray(reconciled?.takeProfitPrices) ??
-        safePriceLevelArray(rec?.takeProfitPrices);
-    return levels?.[0];
-}
-
-/** `patternSummaries` / `strategyResults` / `candlePatterns`가 공통으로 갖는 방향 신호. */
-export interface AnalysisPatternSignal {
-    trend?: string;
-    confidenceWeight?: number;
-    detected?: boolean;
-}
-
-/**
- * core가 방향(`trend`)과 신뢰도 가중치(`confidenceWeight`)까지 붙여 내는 세 배열을 하나로 모은다.
- *
- * `patternSummaries`(차트 패턴), `strategyResults`(전략 스킬 판정), `candlePatterns`(캔들 패턴)는
- * 전부 `trend: Trend`를 갖고 앞의 둘은 `confidenceWeight`도 갖는데, 이 저장소 어디에서도 읽히지
- * 않고 있었다 — 죽은 추출(잘못된 모양을 읽어 undefined)이 아니라 **아예 배선되지 않은** 신호다.
- * `detected: false`인 항목은 방향을 주장하지 않으므로 호출부에서 걸러진다.
- */
-export function safeAnalysisPatterns(result: unknown): AnalysisPatternSignal[] {
-    const r = safeRecord(result);
-    if (!r) return [];
-    const out: AnalysisPatternSignal[] = [];
-    for (const key of ['patternSummaries', 'strategyResults', 'candlePatterns']) {
-        for (const item of safeArray(r, key) ?? []) {
-            const rec = safeRecord(item);
-            if (!rec) continue;
-            const trend = safeString(rec.trend);
-            if (trend === undefined) continue;
-            out.push({
-                trend,
-                confidenceWeight: isFinitePositive(rec.confidenceWeight)
-                    ? rec.confidenceWeight
-                    : undefined,
-                detected: typeof rec.detected === 'boolean' ? rec.detected : undefined,
-            });
-        }
-    }
-    return out;
 }
 
 export function safeArray(obj: unknown, key: string): unknown[] | undefined {
@@ -274,24 +188,6 @@ export function safeAnalysisIndicators(
             if (!s) continue;
             out.push({ trend: safeString(s.trend), strength: safeString(s.strength) });
         }
-    }
-    return out;
-}
-
-/**
- * Extracts per-category sentiments from a fundamental analysis result
- * (`categoryAssessments[]`). Returns a flat list of {sentiment}.
- */
-export function safeFundamentalCategories(result: unknown): Array<{ sentiment?: string }> {
-    const r = safeRecord(result);
-    if (!r) return [];
-    const cats = safeArray(r, 'categoryAssessments');
-    if (!cats) return [];
-    const out: Array<{ sentiment?: string }> = [];
-    for (const c of cats) {
-        const rec = safeRecord(c);
-        if (!rec) continue;
-        out.push({ sentiment: safeString(rec.sentiment) });
     }
     return out;
 }

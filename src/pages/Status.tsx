@@ -1,58 +1,35 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { Position, Trade } from '@/lib/api';
+import type { CronRun, Position, Trade } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const MAX_RECENT_TRADES = 10;
 
-// AI trade-gate decisions that never produce a trade row (no order was placed), so the
-// existing "skipped trades" alert below (which reads `trades`) can never see them. Surfacing
-// the latest execute run's blocked decisions is the lightest way to make that visible without
-// a new endpoint — see docs/specs/2026-08-12-ai-trade-gate-design.md §9.3.
-const GATE_BLOCKED_ACTIONS = new Set([
-    'entry_deferred',
-    'exit_deferred',
-    'gate_error',
-    'gate_skipped_deadline',
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Safely read `detail.gate.reason` from an untyped decision detail blob (untrusted JSONB). */
-function readGateReason(detail: unknown): string | null {
-    if (!isRecord(detail) || !isRecord(detail.gate)) return null;
-    const reason = detail.gate.reason;
-    return typeof reason === 'string' ? reason : null;
+/** 미국 동부시간(America/New_York) 기준 YYYY-MM-DD — 판단 틱의 "오늘"은 이 시간대다. */
+function nyDateString(d: Date): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(d);
 }
 
-function gateActionLabel(action: string): string {
-    switch (action) {
-        case 'entry_deferred':
-            return '진입 보류';
-        case 'exit_deferred':
-            return '청산 보류';
-        case 'gate_error':
-            return '게이트 오류';
-        case 'gate_skipped_deadline':
-            return '게이트 시간초과';
-        default:
-            return action;
-    }
+/** 이 런이 오늘(NY) 있었던 하루 1회 판단 틱인가(§4.1). */
+function isTodaysDecisionRun(run: CronRun, todayNy: string): boolean {
+    if (!isRecord(run.summary) || run.summary.decisionPhase !== 'done') return false;
+    return nyDateString(new Date(run.startedAt)) === todayNy;
 }
 
-function gateActionClass(action: string): string {
-    switch (action) {
-        case 'gate_error':
-            return 'bg-red-500/10 text-red-400';
-        case 'gate_skipped_deadline':
-            return 'bg-orange-500/10 text-orange-400';
-        default:
-            return 'bg-yellow-500/10 text-yellow-400';
+/** `summary.decisionsByAction`을 안전하게 읽는다 — 숫자가 아닌 값은 버린다. */
+function readDecisionsByAction(summary: unknown): Record<string, number> | null {
+    if (!isRecord(summary) || !isRecord(summary.decisionsByAction)) return null;
+    const result: Record<string, number> = {};
+    for (const [k, v] of Object.entries(summary.decisionsByAction)) {
+        if (typeof v === 'number') result[k] = v;
     }
+    return result;
 }
 
 function modeLabel(mode: string): string {
@@ -96,15 +73,24 @@ function formatUsd(value: number): string {
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function computePositionTargets(p: Position, takeProfitPercent: number, stopLossPercent: number) {
+/** 매수가·현재가와 손익 방향 — 목표가(TP/SL)는 더 이상 % 기반이 아니라 §3의 재난 손절뿐이다. */
+function computePositionView(p: Position) {
     const avg = parseFloat(p.avgPrice);
     const current = p.currentPrice != null ? parseFloat(p.currentPrice) : null;
     const isLong = p.side === 'long';
-    const tp = isLong ? avg * (1 + takeProfitPercent / 100) : avg * (1 - takeProfitPercent / 100);
-    const sl = isLong ? avg * (1 - stopLossPercent / 100) : avg * (1 + stopLossPercent / 100);
     const cur = current ?? avg;
     const profitable = current == null ? null : isLong ? current >= avg : current <= avg;
-    return { avg, cur, tp, sl, profitable };
+    return { avg, cur, profitable };
+}
+
+/**
+ * 재난 손절가 표시. stopPrice가 null인 이유는 둘 중 하나다 — `mr_stop_atr = 0`(손절 없음,
+ * 설정으로 끈 것) 또는 승인·복구 경로로 열린 포지션이 아직 채워지지 않은 것(집행 다음
+ * 틱에서 채워진다, §4.2). 후자를 "손절 없음"으로 보이면 재난 손절이 꺼진 줄 오인한다.
+ */
+function stopLabel(stopPrice: string | null | undefined, mrStopAtr: number): string {
+    if (stopPrice != null) return `손절 $${Number(stopPrice).toFixed(2)}`;
+    return mrStopAtr > 0 ? '손절 계산 전' : '손절 없음';
 }
 
 function computePortfolio(positions: Position[]) {
@@ -149,26 +135,15 @@ export function StatusPage() {
         queryFn: ({ signal }) => api.getConfig(signal),
     });
 
-    // Latest execute run → its decisions, filtered to gate-blocked ones. Two lightweight calls
-    // against the cron-runs API CronRuns.tsx already uses; see GATE_BLOCKED_ACTIONS above.
-    const { data: latestExecuteRun } = useQuery({
+    // Execute runs → find the run that actually made today's decision (§4.1). The
+    // *latest* execute run is almost never that one — later risk-only ticks or
+    // market_closed skips replace it. Default limit (200) covers several days of ticks.
+    const { data: executeRuns } = useQuery({
         queryKey: ['cron-runs', 'execute'] as const,
         queryFn: async ({ queryKey: [, qType], signal }) => {
             const { runs } = await api.getCronRuns({ type: qType }, signal);
-            return runs[0] ?? null;
+            return runs;
         },
-        refetchInterval: 30_000,
-    });
-
-    const latestExecuteRunId = latestExecuteRun?.runId;
-    const { data: latestExecuteDecisions } = useQuery({
-        queryKey: ['cron-decisions', latestExecuteRunId] as const,
-        queryFn: async ({ queryKey: [, qRunId], signal }) => {
-            if (!qRunId) return [];
-            const { decisions } = await api.getCronDecisions(qRunId, signal);
-            return decisions;
-        },
-        enabled: Boolean(latestExecuteRunId),
         refetchInterval: 30_000,
     });
 
@@ -189,21 +164,38 @@ export function StatusPage() {
     );
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
-    const gateBlocks = (latestExecuteDecisions ?? []).filter((d) =>
-        GATE_BLOCKED_ACTIONS.has(d.action),
-    );
+
+    // 오늘의 판단 — execute의 사이징 게이트는 더 이상 없다. 대신 오늘(NY) 하루 1회 판단
+    // 틱의 결정 분포를 보여준다(§7). 그 런이 없으면(아직 판단 전이거나 어제 판단만 있으면)
+    // 중립 상태를 보여준다 — 0건도 어제 값도 아니다(C1).
+    const todayNy = nyDateString(new Date());
+    const decisionRun = (executeRuns ?? []).find((r) => isTodaysDecisionRun(r, todayNy)) ?? null;
+    const dba = decisionRun ? readDecisionsByAction(decisionRun.summary) : null;
+    const actionCount = (key: string) => dba?.[key] ?? 0;
+    // 매수 집계는 mr_buy(모의투자/반자동 승인대기)뿐 아니라 실주문 체결(auto)까지 포함한다.
+    const mrBuyCount =
+        actionCount('mr_buy') + actionCount('order_submitted') + actionCount('order_partial');
+    // 예산 부족도 마찬가지 — auto의 fail-closed 현금 조회 실패·부족까지 예산 부족으로 센다.
+    const mrSkipBudgetCount =
+        actionCount('mr_skip_budget') +
+        actionCount('skipped_insufficient_cash') +
+        actionCount('skipped_no_buying_power');
+    const mrSkipBreakerCount = actionCount('mr_skip_breaker');
+    const mrRegimeOff = actionCount('mr_regime_off') > 0;
+    const mrDataError = actionCount('mr_data_error') > 0;
 
     const configEntries = configData as
         | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
         | undefined;
     const watchlistItems =
         (configEntries?.watchlist as { symbol: string; enabled?: boolean }[] | undefined) ?? [];
-    const takeProfitPercent = Number(
-        configEntries?.config?.find((c) => c.key === 'take_profit_percent')?.value ?? 5,
+    const mrMaxHoldDays = Number(
+        configEntries?.config?.find((c) => c.key === 'mr_max_hold_days')?.value ?? 10,
     );
-    const stopLossPercent = Number(
-        configEntries?.config?.find((c) => c.key === 'stop_loss_percent')?.value ?? 3,
+    const mrStopAtr = Number(
+        configEntries?.config?.find((c) => c.key === 'mr_stop_atr')?.value ?? 5,
     );
+    const exitRuleText = `5일선 회복 또는 ${mrMaxHoldDays}거래일`;
 
     return (
         <div className="space-y-4">
@@ -325,11 +317,7 @@ export function StatusPage() {
                                 {openPositions.length > 0 && (
                                     <div className="mt-1 flex flex-wrap gap-1">
                                         {openPositions.slice(0, 5).map((p) => {
-                                            const { profitable } = computePositionTargets(
-                                                p,
-                                                takeProfitPercent,
-                                                stopLossPercent,
-                                            );
+                                            const { profitable } = computePositionView(p);
                                             const chipClass =
                                                 profitable === null
                                                     ? 'bg-neutral-500/10 text-neutral-400'
@@ -413,12 +401,7 @@ export function StatusPage() {
                                     data-testid="position-targets-mobile"
                                 >
                                     {openPositions.slice(0, 5).map((p) => {
-                                        const { avg, cur, tp, sl, profitable } =
-                                            computePositionTargets(
-                                                p,
-                                                takeProfitPercent,
-                                                stopLossPercent,
-                                            );
+                                        const { avg, cur, profitable } = computePositionView(p);
                                         const curColor =
                                             profitable === null
                                                 ? ''
@@ -442,13 +425,14 @@ export function StatusPage() {
                                                     >
                                                         ${cur.toFixed(2)}
                                                     </span>
-                                                    <span className="text-neutral-500">익절</span>
-                                                    <span className="text-right font-mono text-green-400">
-                                                        ${tp.toFixed(2)}
+                                                    <span className="col-span-2 font-mono text-red-400">
+                                                        {stopLabel(p.stopPrice, mrStopAtr)}
                                                     </span>
-                                                    <span className="text-neutral-500">손절</span>
-                                                    <span className="text-right font-mono text-red-400">
-                                                        ${sl.toFixed(2)}
+                                                    <span className="text-neutral-500">
+                                                        청산조건
+                                                    </span>
+                                                    <span className="text-right text-neutral-300">
+                                                        {exitRuleText}
                                                     </span>
                                                 </div>
                                             </div>
@@ -478,21 +462,17 @@ export function StatusPage() {
                                                     현재가
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
-                                                    익절
+                                                    손절
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
-                                                    손절
+                                                    청산조건
                                                 </th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-[#262626]">
                                             {openPositions.slice(0, 5).map((p) => {
-                                                const { avg, cur, tp, sl, profitable } =
-                                                    computePositionTargets(
-                                                        p,
-                                                        takeProfitPercent,
-                                                        stopLossPercent,
-                                                    );
+                                                const { avg, cur, profitable } =
+                                                    computePositionView(p);
                                                 const curColor =
                                                     profitable === null
                                                         ? ''
@@ -512,11 +492,11 @@ export function StatusPage() {
                                                         >
                                                             ${cur.toFixed(2)}
                                                         </td>
-                                                        <td className="px-3 py-2 text-right font-mono text-green-400">
-                                                            ${tp.toFixed(2)}
-                                                        </td>
                                                         <td className="px-3 py-2 text-right font-mono text-red-400">
-                                                            ${sl.toFixed(2)}
+                                                            {stopLabel(p.stopPrice, mrStopAtr)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right text-neutral-400">
+                                                            {exitRuleText}
                                                         </td>
                                                     </tr>
                                                 );
@@ -574,34 +554,36 @@ export function StatusPage() {
                         </section>
                     )}
 
-                    {/* 경고: 최근 실행에서 AI 게이트가 막은 진입/청산 (거래 행이 없어 위 경고에 안 잡힘) */}
-                    {gateBlocks.length > 0 && (
-                        <section>
-                            <h2 className="text-xs font-medium text-yellow-500">게이트 알림</h2>
-                            <div className="mt-2 space-y-1.5">
-                                {gateBlocks.slice(0, 5).map((d) => (
-                                    <div
-                                        key={d.id}
-                                        className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2"
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs font-medium text-yellow-400">
-                                                {d.symbol ?? '—'}
-                                            </span>
-                                            <span
-                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${gateActionClass(d.action)}`}
-                                            >
-                                                {gateActionLabel(d.action)}
-                                            </span>
-                                        </div>
-                                        <p className="mt-0.5 text-[11px] text-yellow-500/60">
-                                            {readGateReason(d.detail) ?? d.reason ?? '사유 없음'}
-                                        </p>
-                                    </div>
-                                ))}
+                    {/* 오늘의 판단 — 오늘(NY) 하루 1회 판단 틱의 결정 분포 (§7, C1). 그 틱이 아직
+                        없으면(또는 어제 것뿐이면) 0건이 아니라 중립 상태를 보여준다. */}
+                    <section>
+                        <h2 className="text-xs font-medium text-neutral-500">오늘의 판단</h2>
+                        {decisionRun ? (
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                <span className="rounded bg-green-500/10 px-2 py-1 text-green-400">
+                                    매수 {mrBuyCount}
+                                </span>
+                                <span className="rounded bg-neutral-700 px-2 py-1 text-neutral-300">
+                                    예산 부족 {mrSkipBudgetCount}
+                                </span>
+                                <span className="rounded bg-orange-500/10 px-2 py-1 text-orange-400">
+                                    한도 차단 {mrSkipBreakerCount}
+                                </span>
+                                {mrRegimeOff && (
+                                    <span className="rounded bg-yellow-500/10 px-2 py-1 text-yellow-400">
+                                        국면 필터로 진입 없음
+                                    </span>
+                                )}
+                                {mrDataError && (
+                                    <span className="rounded bg-red-500/10 px-2 py-1 text-red-400">
+                                        데이터 오류
+                                    </span>
+                                )}
                             </div>
-                        </section>
-                    )}
+                        ) : (
+                            <p className="mt-2 text-xs text-neutral-500">오늘 판단 전</p>
+                        )}
+                    </section>
                 </div>
 
                 {/* Right column: 최근 활동 */}

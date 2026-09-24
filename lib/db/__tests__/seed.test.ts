@@ -45,7 +45,7 @@ describe('seed', () => {
         await expect(seed()).rejects.toThrow('DATABASE_URL is required');
     });
 
-    it('inserts default config values (13 entries)', async () => {
+    it('inserts default config values (12 entries)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -54,15 +54,29 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(13);
-        // `score_weights`는 심지 않는다 — 심으면 `WEIGHTS_BY_TIMEFRAME` 프로파일이
-        // 통째로 덮여 타임프레임을 바꿔도 1Hour 가중치로 매매한다.
-        expect(configValueCalls.map((call) => (call[0] as { key: string }).key)).not.toContain(
-            'score_weights',
+        expect(configValueCalls.length).toBe(12);
+        const keys = configValueCalls.map((call) => (call[0] as { key: string }).key);
+        expect(keys).toEqual(
+            expect.arrayContaining([
+                'mr_rsi_entry',
+                'mr_max_hold_days',
+                'mr_stop_atr',
+                'mr_regime_filter',
+                'dry_run_cost_bps',
+            ]),
         );
+        // 폐기된 전략 키는 심지 않는다(스펙 §6).
+        for (const retired of [
+            'buy_threshold',
+            'score_weights',
+            'entry_window',
+            'analysis_timeframe',
+        ]) {
+            expect(keys).not.toContain(retired);
+        }
     });
 
-    it('inserts analysis model configs (5 types)', async () => {
+    it('inserts analysis model configs (4 types)', async () => {
         const { seed } = await import('../seed');
         await seed();
 
@@ -75,7 +89,10 @@ describe('seed', () => {
                 'modelId' in call[0] &&
                 'useByok' in call[0],
         );
-        expect(modelConfigCalls.length).toBe(5);
+        expect(modelConfigCalls.length).toBe(4);
+        expect(modelConfigCalls.map(([v]) => (v as { analysisType: string }).analysisType)).toEqual(
+            ['technical', 'news', 'fundamental', 'entry_review'],
+        );
         expect(
             modelConfigCalls.every(
                 ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4.1-flash',
@@ -91,7 +108,7 @@ describe('seed', () => {
                 'modelId' in value &&
                 'useByok' in value,
         );
-        expect(modelConfigOperations).toHaveLength(5);
+        expect(modelConfigOperations).toHaveLength(4);
         for (const { onConflictDoNothing } of modelConfigOperations) {
             expect(onConflictDoNothing).toHaveBeenCalledOnce();
         }
@@ -175,8 +192,8 @@ describe('seed', () => {
                 'result' in call[0] &&
                 'cronRunId' in call[0],
         );
-        // 5 symbols x 5 types = 25
-        expect(analysisCalls.length).toBe(25);
+        // 5 symbols x 3 types = 15
+        expect(analysisCalls.length).toBe(15);
         expect(
             analysisCalls.every(
                 ([value]) => (value as { modelId?: unknown }).modelId === 'deepseek-v4.1-flash',

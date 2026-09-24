@@ -3,11 +3,18 @@ import { fmpGet } from './fmp-http.js';
 interface FmpQuote {
     price: number;
     symbol: string;
+    previousClose?: number;
 }
 
 export interface LivePriceDetail {
     source: 'fmp_quote';
     price: number | null;
+    /**
+     * 전일 종가. 일일 손실 차단기가 보유 포지션의 **오늘 변동분**을 재는 기준가다
+     * (`lib/strategy/daily-loss.ts`). 값이 없거나 비정상이면 null — 호출자가 진입가로 대체한다.
+     * 가격 조회 자체가 실패한 응답에는 없다.
+     */
+    previousClose?: number | null;
     reason?: 'empty_response' | 'malformed_response' | 'invalid_price' | 'request_failed';
     error?: string;
 }
@@ -77,7 +84,13 @@ export async function fetchLivePriceDetail(
                 log,
             );
         }
-        return { source: 'fmp_quote', price: quote.price };
+        const previousClose =
+            typeof quote.previousClose === 'number' &&
+            Number.isFinite(quote.previousClose) &&
+            quote.previousClose > 0
+                ? quote.previousClose
+                : null;
+        return { source: 'fmp_quote', price: quote.price, previousClose };
     } catch (err) {
         return unavailable(
             symbol,

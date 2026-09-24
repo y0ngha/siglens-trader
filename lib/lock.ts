@@ -97,3 +97,20 @@ export async function releaseLock(key: string, token: string | null | undefined)
         console.error('[lock] Redis error during releaseLock:', err);
     }
 }
+
+/**
+ * 키를 처음 잡은 호출만 true — "하루 1회" 같은 중복 억제용(예: 일일 손실 한도 초과 메일).
+ *
+ * 락과 달리 **fail-open**이다: Redis가 없거나 오류면 true를 돌려 호출자가 그 일을 한다. 억제 장치가
+ * 고장 났을 때 알림이 사라지는 것보다 두 번 오는 쪽이 낫다.
+ */
+export async function claimOnce(key: string, ttlSeconds: number): Promise<boolean> {
+    const r = getRedis();
+    if (!r) return true;
+    try {
+        return (await r.set(key, '1', { nx: true, ex: ttlSeconds })) === 'OK';
+    } catch (err) {
+        console.error('[lock] claimOnce failed — not suppressing', key, err);
+        return true;
+    }
+}

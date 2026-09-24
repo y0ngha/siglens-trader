@@ -11,7 +11,14 @@
  * 비용은 설정 조회 한 번이다.
  */
 
-export const EXECUTE_INTERVALS = [5, 10, 15, 20, 30, 60] as const;
+/**
+ * 허용값은 5·10분뿐이다. 매매 판단은 장 마감 20분 전 창의 **첫 틱**에서 하루 1회 하는데
+ * (docs/specs/2026-09-24-daily-mean-reversion-design.md §4.1), 게이트가 `(분 − 7) mod 간격`이라
+ * 창 안 틱 수가 간격마다 다르다 — 5분 4틱, 10분 2틱(:47·:57), 15·20분 1틱, 30·60분 0틱.
+ * 한 틱뿐이면 그 틱이 락 경합이나 일시 장애로 판단을 못 한 날은 판단이 통째로 사라진다.
+ * 재시도 틱이 최소 하나 있어야 한다.
+ */
+export const EXECUTE_INTERVALS = [5, 10] as const;
 export type ExecuteInterval = (typeof EXECUTE_INTERVALS)[number];
 
 /**
@@ -61,29 +68,4 @@ const LATE_TICK_TOLERANCE_MIN = 1;
 export function isExecuteTick(now: Date, interval: ExecuteInterval): boolean {
     const offset = (now.getUTCMinutes() - EXECUTE_BASE_MINUTE + 60) % interval;
     return offset <= LATE_TICK_TOLERANCE_MIN;
-}
-
-/**
- * 이 간격의 실행 틱이 진입 창 안에 하나라도 존재하는가.
- *
- * 실행 틱은 UTC 분(`(분 − 7) mod interval === 0`)에 고정인데 진입 창은 ET 시:분으로 임의
- * 지정할 수 있다. ET는 UTC에서 정시 오프셋(−4/−5시간)만큼만 다르므로 **분(minute)은 두 시계가
- * 같다** — 그래서 시(hour)를 몰라도 분만으로 교집합을 판정할 수 있다.
- *
- * 창의 길이가 간격 이상이면 어떤 위치에서도 틱이 하나는 들어가므로 곧바로 참이다. 그보다
- * 짧을 때만 창에 걸치는 분들을 훑는다.
- */
-export function hasTickInWindow(
-    intervalMin: number,
-    window: { startMinute: number; endMinute: number },
-): boolean {
-    const interval = isExecuteInterval(intervalMin) ? intervalMin : DEFAULT_EXECUTE_INTERVAL_MIN;
-    const span = window.endMinute - window.startMinute;
-    if (!Number.isFinite(span) || span <= 0) return false;
-    if (span >= interval) return true;
-    for (let m = window.startMinute; m < window.endMinute; m++) {
-        const offset = ((((m % 60) - EXECUTE_BASE_MINUTE + 60) % interval) + interval) % interval;
-        if (offset <= LATE_TICK_TOLERANCE_MIN) return true;
-    }
-    return false;
 }

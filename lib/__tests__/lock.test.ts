@@ -256,4 +256,31 @@ describe('lock', () => {
             expect(mockDel).not.toHaveBeenCalled();
         });
     });
+
+    describe('claimOnce', () => {
+        const withRedis = async () => {
+            process.env.UPSTASH_REDIS_REST_URL = 'https://x';
+            process.env.UPSTASH_REDIS_REST_TOKEN = 't';
+            vi.resetModules();
+            return (await import('../lock')).claimOnce;
+        };
+
+        it('true only for the first claim (SET NX EX)', async () => {
+            const claimOnce = await withRedis();
+            mockSet.mockResolvedValueOnce('OK').mockResolvedValueOnce(null);
+            expect(await claimOnce('mail:x', 60)).toBe(true);
+            expect(await claimOnce('mail:x', 60)).toBe(false);
+            expect(mockSet).toHaveBeenCalledWith('mail:x', '1', { nx: true, ex: 60 });
+        });
+
+        it('fails open without Redis or on a Redis error', async () => {
+            vi.resetModules();
+            const { claimOnce: noRedis } = await import('../lock');
+            expect(await noRedis('k', 60)).toBe(true);
+            const claimOnce = await withRedis();
+            vi.spyOn(console, 'error').mockImplementation(() => {});
+            mockSet.mockRejectedValueOnce(new Error('down'));
+            expect(await claimOnce('k', 60)).toBe(true);
+        });
+    });
 });

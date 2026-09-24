@@ -25,7 +25,9 @@ import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
 import {
+    getConfigValue,
     getCronRuns,
+    hasDecisionPhaseSince,
     getNotificationConfig,
     getPendingNotifications,
     markNotificationsSent,
@@ -37,6 +39,7 @@ import type { CronRunFinish } from '../../lib/db/queries.js';
 import { sendCronHealthEmail, sendDigestEmail } from '../../lib/notification/email.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import {
+    DECISION_SILENCE_MS,
     SILENCE_THRESHOLD_MS,
     assessCronHealth,
     describeCronHealth,
@@ -151,7 +154,17 @@ async function checkHealth(
             from: new Date(now.getTime() - SILENCE_THRESHOLD_MS),
             limit: 500,
         });
-        const issues = describeCronHealth(assessCronHealth(runs, now));
+        // 판단 단계 검사는 조회 실패 시 생략한다(undefined) — 조회 실패를 "판단 없음"으로 알리면 헛경보다.
+        const decisionPhaseSeen = await hasDecisionPhaseSince(
+            db,
+            new Date(now.getTime() - DECISION_SILENCE_MS),
+        ).catch(() => undefined);
+        // 킬 스위치가 꺼져 있으면 execute가 판단 단계 전에 의도적으로 빠져나간다 — execute와
+        // 같은 방식으로 읽어 no_decision 헛경보를 막는다(스펙 §6, A11).
+        const tradingEnabled = (await getConfigValue<boolean>(db, 'trading_enabled')) ?? true;
+        const issues = describeCronHealth(
+            assessCronHealth(runs, now, decisionPhaseSeen, tradingEnabled),
+        );
         if (issues.length === 0) return { issues: [], response: {} };
 
         await sendCronHealthEmail(issues, emailNotif?.target ?? undefined);

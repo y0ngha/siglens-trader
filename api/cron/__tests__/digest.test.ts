@@ -29,7 +29,11 @@ const mockGetNotificationConfig = vi.fn();
 const mockStartCronRun = vi.fn();
 const mockFinishCronRun = vi.fn();
 const mockFinalizeStaleCronRuns = vi.fn();
+const mockHasDecisionPhaseSince = vi.fn();
+const mockGetConfigValue = vi.fn();
 vi.mock('../../../lib/db/queries', () => ({
+    getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
+    hasDecisionPhaseSince: (...args: unknown[]) => mockHasDecisionPhaseSince(...args),
     getCronRuns: (...args: unknown[]) => mockGetCronRuns(...args),
     getPendingNotifications: (...args: unknown[]) => mockGetPendingNotifications(...args),
     markNotificationsSent: (...args: unknown[]) => mockMarkNotificationsSent(...args),
@@ -89,6 +93,8 @@ describe('digest cron', () => {
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
         mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
+        mockHasDecisionPhaseSince.mockResolvedValue(true);
+        mockGetConfigValue.mockResolvedValue(true); // trading_enabled default
     });
 
     it('rejects a request without the cron secret', async () => {
@@ -215,6 +221,46 @@ describe('digest cron', () => {
             expect(lines[0]).toContain('execute');
             expect(to).toBe('ops@example.com');
             expect((await res.json()).healthAlert).toHaveLength(1);
+        });
+
+        it('alerts when no decision phase finished in 100 hours (reconcile rows mask a dead execute)', async () => {
+            withHealthEvent(['cron_health']);
+            mockGetCronRuns.mockResolvedValue([
+                { cronType: 'reconcile', status: 'completed', startedAt: new Date() },
+            ]);
+            mockHasDecisionPhaseSince.mockResolvedValue(false);
+
+            await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).toHaveBeenCalledTimes(1);
+            expect(mockSendCronHealthEmail.mock.calls[0][0][0]).toContain('매매 판단 단계');
+            const since = mockHasDecisionPhaseSince.mock.calls[0][1] as Date;
+            expect(Date.now() - since.getTime()).toBeGreaterThanOrEqual(100 * 3_600_000 - 1000);
+        });
+
+        it('does not alert no_decision while trading_enabled is false (A11) — execute exits before deciding on purpose', async () => {
+            withHealthEvent(['cron_health']);
+            mockGetCronRuns.mockResolvedValue([
+                { cronType: 'reconcile', status: 'completed', startedAt: new Date() },
+            ]);
+            mockHasDecisionPhaseSince.mockResolvedValue(false);
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'trading_enabled' ? false : null),
+            );
+
+            const res = await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+            expect(await res.json()).toEqual({ skipped: true, reason: 'queue_empty' });
+        });
+
+        it('a failing decision query is not reported as a missing decision', async () => {
+            withHealthEvent(['cron_health']);
+            mockHasDecisionPhaseSince.mockRejectedValueOnce(new Error('db'));
+
+            await handler(makeRequest());
+
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
         });
 
         it('alerts when the crons have gone silent', async () => {

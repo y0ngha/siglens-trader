@@ -2,6 +2,7 @@ import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
 import { getCronRuns, getCronDecisions } from '../lib/db/queries.js';
 
+// 과거 분석 크론 타입(technical/news/options/fundamental)은 이력 조회용으로 남긴다.
 const VALID_CRON_TYPES = new Set([
     'technical',
     'news',
@@ -9,6 +10,8 @@ const VALID_CRON_TYPES = new Set([
     'fundamental',
     'execute',
     'reconcile',
+    'digest',
+    'review',
 ]);
 
 const VALID_STATUSES = new Set(['running', 'completed', 'skipped', 'error']);

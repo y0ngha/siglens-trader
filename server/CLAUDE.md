@@ -51,69 +51,14 @@ so there is no feed to fail. Unscheduled closures (a national day of mourning) a
 list in core and the broker remains the backstop for live orders.
 (UTC 13:00–20:59 ≈ KST 22:00–05:59.)
 
-| Analysis type | Schedule (UTC)          | Effective spacing | Rationale |
-|---------------|-------------------------|-------------------|-----------|
-| technical     | `*/15 13-21 * * 1-5`    | follows timeframe | Horizon-sensitive: a new bar only closes once per timeframe tick. Surplus ticks land in a window that is already covered and collapse (1Hour config → 1 LLM call/hour despite the 15-min schedule). |
-| options       | `*/15 13-21 * * 1-5`    | follows timeframe | Same as technical — option-chain snapshots are keyed by hash, so re-analysis before the next bar is pointless. |
-| news          | `*/15 13-21 * * 1-5`    | 60 minutes        | Event-driven; major catalysts surface within ~60 min. The extra ticks are retry slots, not extra analyses — the cadence guard drops them before any FMP/LLM call. |
-| fundamental   | `0 15-21 * * 1-5`       | 24 hours          | Quarterly filings do not move intraday. Hourly ticks exist only so a single missed tick does not cost the whole day. |
-| congress      | `0 16-21 * * 1-5`       | 24 hours          | Same — disclosures lag by weeks, the extra ticks are retries. |
-| execute       | `2-59/5 13-21 * * 1-5`  | `execute_interval_min` (기본 10분) | Cron fires every 5 min (`2-59/5` covers every minute the gate accepts, including the `:02` slot a `7-59/5` expression missed); the handler's interval gate decides whether this tick runs. `noOverlap: true` plus a 900s hard run deadline keep two runs from ever overlapping. The `:07` offset gives the top-of-hour analysis crons time to save, so a 60-min setting fires at exactly the old times. |
-| reconcile     | `*/10 13-21 * * 1-5`    | 10 minutes        | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
-| digest        | `0 1 * * *`             | daily             | Flushes the quiet-hours notification queue at 10:00 KST. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. Deliberately not wrapped in the analysis-cron helper, whose US-session gate would suppress it entirely (01:00 UTC is outside the session). |
+| Job | Schedule (UTC) | Effective spacing | Rationale |
+|-----|----------------|-------------------|-----------|
+| execute | `2-59/5 13-21 * * 1-5` | `execute_interval_min` (5 or 10) | Cron fires every 5 min (`2-59/5` covers every minute the gate accepts); the handler's interval gate decides whether this tick runs. Every run checks the disaster stops; the **decision phase** (entries + rule exits) runs once a day on the first tick in the last 20 minutes before the close — 13–21 UTC covers that window in both EDT and EST, and early closes move it to 12:40 ET. `noOverlap: true` plus a 900s hard run deadline keep two runs from ever overlapping. |
+| reconcile | `*/10 13-21 * * 1-5` | 10 minutes | Order timeout detection + DB consistency; must be more frequent than the order TTL. |
+| digest | `0 1 * * *` | daily | Flushes the quiet-hours notification queue at 10:00 KST and runs the cron-health check. **Every day, not weekdays** — Friday-night events must reach the operator on Saturday morning. |
+| review | `*/10 16-21 * * 1-5` | 10 minutes | Record-only AI review of today's signals (`api/cron/review.ts`). Starts at 16 UTC so an early-close decision (12:40 ET = 16:40 UTC in EST) is covered. A tick with nothing to review writes no audit row. |
 
-### Cadence windows
-
-Cadence is enforced by **clock windows**, not by elapsed time: `lib/analysis/cadence.ts` gives each
-type a window size, and `api/cron/_run-analysis-cron.ts` skips a symbol whose newest analysis
-already falls in the current window. Elapsed-time checks drift, because an analysis is stamped when
-it is *saved* — a 5-minute run starting at :00 is stamped :05, so the :30 tick would see only 25
-minutes and skip, silently turning a 30-minute cadence into a 45-minute one. Windows make the guard
-indifferent to run duration **as long as the run finishes inside its own window**. A run that
-crosses the boundary stamps its last symbols into the *next* window and so consumes it — that
-symbol then refreshes at 2× the window.
-
-**심볼은 병렬로 돈다** (`_run-analysis-cron.ts`의 `Promise.all`). 실행 시간이 종목 수에
-비례하지 않고 **가장 느린 심볼 하나**로 수렴하므로, 위의 창 넘어감은 종목을 늘려도 다시
-나타나지 않는다. 심볼당 상한은 `PER_SYMBOL_MAX_MS`(150초)이고, 한 심볼의 예외는 그 심볼만
-`error`로 기록되고 나머지 결과를 버리지 않는다.
-
-그 150초 AbortSignal은 **LLM 호출만** 덮는다 — FMP I/O는 signal을 받지 않고 `fmpGet`의
-세마포어 대기에는 타임아웃이 없다. 그래서 심볼 작업 전체를 실행 마감(1200초)으로 한 번 더
-감싼다. 이게 없으면 멈춘 심볼 하나가 핸들러를 영영 반환하지 않게 만들고, 락 해제도 감사 행
-마감도 없이 node-cron의 `noOverlap`이 그 축의 모든 후속 틱을 프로세스 재시작까지 막는다.
-
-**전 심볼이 실패한 실행은 `completed`가 아니라 `error`다.** 심볼 단위 try/catch를 넣으면서
-런 전체가 error가 되는 경로가 사라졌는데, `assessCronHealth`는 error 행만 실패로 세므로
-프로바이더 장애가 무음이 됐다. 부분 실패는 종전대로 completed.
-
-**technical은 core 분석 캐시를 우회한다**(`runAnalysis(..., force = true)`). 캐시 키에 입력
-해시가 없고 1Hour TTL이 케이던스 창과 같아서, 창마다 부르면 한 번 걸러 캐시 히트가 난다.
-히트한 결과의 `analyzedAt`은 최대 1시간 전인데 크론은 저장 시각으로 창을 소비하므로 실제
-신규 분석이 2시간에 한 번이 되고, execute가 `source_analyzed_at`으로 재는 나이가 1Hour
-한도(2시간)를 넘겨 `stale_analysis` — 그 종목의 청산 평가가 통째로 멈춘다. 호출 빈도는 이미
-케이던스 창이 제한하므로 캐시가 더 줄일 것이 없다.
-
-### Reasoning (상세 분석) policy
-
-Per-type, in `ANALYSIS_REASONING` (`lib/analysis/types.ts`). **All five axes and the trade gate
-run with reasoning off** as of 2026-09-17 (operator decision; they had been on since 2026-08-17).
-
-**There is no per-symbol timeout any more** — the run deadline (`cron start + 1200s`) is the only
-budget, and `symbolSignal()` derives the AbortSignal from it.
-
-The removed 150s cap was not a timeout, it was the failure: it cut the call at ~148s, DeepSeek
-returned a response with **no `finish_reason` instead of throwing**, and core classified that as
-retryable and blew its 240s retry budget — surfacing as `AI_SERVER_UNSTABLE` for a full day. The
-2026-08-10 note that blamed "truncation at 148s" was reading its own timeout: the same call
-finishing in 58s came back `finish_reason: stop` and saved normally. It was not replaced with a
-bigger number because there is no evidence for what that number should be; one budget is easier to
-reason about than two, and `withDeadline` in `_run-analysis-cron.ts` already guarantees the run
-ends.
-
-That cap was **ours, not core's** — core's DeepSeek adapter allows an hour. That is why the
-identical model + reasoning combination works in the siglens web app and failed here.
-
-`reasoning: true` overrides the model spec (`callAnalysisAi`), so `deepseek-v4-flash`
-(`spec.thinking: false`) does think when the policy says so — the model choice and the reasoning
-switch are independent knobs.
+The five hourly analysis crons (technical / news / options / fundamental / congress) and their cadence windows were
+removed on 2026-09-24 with the move to the daily RSI(2) rule
+([`docs/specs/2026-09-24-daily-mean-reversion-design.md`](../docs/specs/2026-09-24-daily-mean-reversion-design.md)).
+AI analysis now runs only inside `review`, only for symbols that signalled, with reasoning off.

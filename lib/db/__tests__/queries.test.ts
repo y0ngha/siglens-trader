@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
-import { analysisResults, orderTracking } from '../schema';
+import { and, desc, eq, gte, inArray, isNull } from 'drizzle-orm';
+import { analysisResults, orderTracking, positions, cronRuns, tradeAudit } from '../schema';
 import {
     getEnabledWatchlist,
     getAllWatchlist,
@@ -52,7 +52,14 @@ import {
     getCronDecisions,
     getNewsCards,
     upsertNewsCards,
+    setPositionStopPrice,
+    hasDecisionPhaseSince,
+    getMrSignalDecisionsSince,
+    hasTradeAuditCorrelation,
+    MR_SIGNAL_ACTIONS,
+    getSymbolsSoldSince,
 } from '../queries';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Db } from '../index';
 
 /**
@@ -716,6 +723,54 @@ describe('Positions queries', () => {
             );
             expect(db._chain.returning).toHaveBeenCalled();
             expect(result).toEqual(mockReturned);
+        });
+    });
+
+    describe('openPosition stopPrice', () => {
+        it('stores the stop as a string and NULL when omitted or null', async () => {
+            const db = createMockDb([]);
+            await openPosition(db as unknown as Db, {
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 1,
+                avgPrice: 100,
+                stopPrice: 90,
+            });
+            expect(db._chain.values).toHaveBeenLastCalledWith(
+                expect.objectContaining({ stopPrice: '90' }),
+            );
+            await openPosition(db as unknown as Db, {
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 1,
+                avgPrice: 100,
+            });
+            expect(db._chain.values).toHaveBeenLastCalledWith(
+                expect.objectContaining({ stopPrice: null }),
+            );
+            await openPosition(db as unknown as Db, {
+                symbol: 'AAPL',
+                side: 'long',
+                quantity: 1,
+                avgPrice: 100,
+                stopPrice: null,
+            });
+            expect(db._chain.values).toHaveBeenLastCalledWith(
+                expect.objectContaining({ stopPrice: null }),
+            );
+        });
+    });
+
+    describe('setPositionStopPrice', () => {
+        it('fills only an empty stop on an open position and reports whether it did', async () => {
+            const db = createMockDb([{ id: 7 }]);
+            expect(await setPositionStopPrice(db as unknown as Db, 7, 90)).toBe(true);
+            expect(db._chain.set).toHaveBeenCalledWith({ stopPrice: '90' });
+            expect(db._chain.where).toHaveBeenCalledWith(
+                and(eq(positions.id, 7), eq(positions.status, 'open'), isNull(positions.stopPrice)),
+            );
+            const none = createMockDb([]);
+            expect(await setPositionStopPrice(none as unknown as Db, 7, 90)).toBe(false);
         });
     });
 
@@ -2126,5 +2181,69 @@ describe('upsertNewsCards', () => {
             },
         ]);
         expect(db._chain.onConflictDoNothing).toHaveBeenCalled();
+    });
+});
+
+describe('mean-reversion decision/review queries', () => {
+    it('hasDecisionPhaseSince: execute runs since the cutoff with summary.decisionPhase = done', async () => {
+        const since = new Date('2026-01-05T05:00:00Z');
+        const db = createMockDb([{ id: 1 }]);
+        expect(await hasDecisionPhaseSince(db as unknown as Db, since)).toBe(true);
+        expect(db.select).toHaveBeenCalledWith({ id: cronRuns.id });
+        const query = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+        expect(query.sql).toContain(`"cron_runs"."cron_type" = $1`);
+        expect(query.sql).toContain(`"cron_runs"."started_at" >= $2`);
+        expect(query.sql).toContain(`"cron_runs"."summary"->>'decisionPhase' = 'done'`);
+        expect(query.params[0]).toBe('execute');
+        expect(db._chain.limit).toHaveBeenCalledWith(1);
+        const empty = createMockDb([]);
+        expect(await hasDecisionPhaseSince(empty as unknown as Db, since)).toBe(false);
+    });
+
+    it('getMrSignalDecisionsSince: execute rows with a signal action OR the detail.mr.signal marker (A10), oldest first', async () => {
+        const since = new Date('2026-01-05T05:00:00Z');
+        const rows = [{ id: 1, action: 'mr_buy' }];
+        const db = createMockDb(rows);
+        expect(await getMrSignalDecisionsSince(db as unknown as Db, since)).toEqual(rows);
+        const query = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+        expect(query.sql).toContain(`"cron_decisions"."cron_type" = $1`);
+        expect(query.sql).toContain(`"cron_decisions"."created_at" >= $2`);
+        expect(query.sql).toContain(`"cron_decisions"."action" in ($3, $4, $5)`);
+        expect(query.sql).toContain(`"cron_decisions"."detail"->'mr'->>'signal' = 'true'`);
+        expect(query.params[0]).toBe('execute');
+        expect(MR_SIGNAL_ACTIONS).toEqual(['mr_buy', 'mr_skip_budget', 'mr_skip_breaker']);
+    });
+
+    it('hasTradeAuditCorrelation: true only when a row with that key exists', async () => {
+        const db = createMockDb([{ id: 3 }]);
+        expect(await hasTradeAuditCorrelation(db as unknown as Db, 'review-9')).toBe(true);
+        expect(db._chain.where).toHaveBeenCalledWith(eq(tradeAudit.correlationId, 'review-9'));
+        expect(await hasTradeAuditCorrelation(createMockDb([]) as unknown as Db, 'review-9')).toBe(
+            false,
+        );
+    });
+
+    describe('getSymbolsSoldSince (A1)', () => {
+        it('unions sold-trade symbols and non-terminal sell order symbols since a cutoff', async () => {
+            const since = new Date('2026-01-05T05:00:00Z');
+            const db = createMockDb([{ symbol: 'NVDA' }]);
+            const result = await getSymbolsSoldSince(db as unknown as Db, since);
+            expect(result).toEqual(new Set(['NVDA']));
+            expect(db.selectDistinct).toHaveBeenCalledTimes(2);
+
+            const tradesQuery = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+            expect(tradesQuery.sql).toContain(`"trades"."side" = $1`);
+            expect(tradesQuery.sql).toContain(`"trades"."executed_at" >= $2`);
+
+            const orderQuery = new PgDialect().sqlToQuery(db._chain.where.mock.calls[1]![0]);
+            expect(orderQuery.sql).toContain(`"order_tracking"."side" = $1`);
+            expect(orderQuery.sql).toContain(`"order_tracking"."submitted_at" >= $2`);
+            expect(orderQuery.sql).toContain(`NOT IN ('rejected', 'canceled')`);
+        });
+
+        it('returns an empty set when nothing sold', async () => {
+            const db = createMockDb([]);
+            expect(await getSymbolsSoldSince(db as unknown as Db, new Date())).toEqual(new Set());
+        });
     });
 });

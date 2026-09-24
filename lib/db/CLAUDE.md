@@ -10,9 +10,9 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
-| `schema-readiness.ts` | `checkSchemaReadiness()` — probes that a specific column (currently `analysis_results.timeframe`) exists, for `/api/health?ready=true`. Only 42703/42P01 report not-ready; anything else (timeout included) reports ready, since it can't prove a mismatch |
+| `schema-readiness.ts` | `checkSchemaReadiness()` — probes that the most recently added column (currently `positions.stop_price`, migration 0019) exists, for `/api/health?ready=true`. Only 42703/42P01 report not-ready; anything else (timeout included) reports ready, since it can't prove a mismatch |
 | `migrate.ts` | Migration runner script (CLI) |
-| `seed.ts` | Mock data seeder for dashboard preview |
+| `seed.ts` | Mock data seeder for dashboard preview (strategy defaults: `mr_*`, `dry_run_cost_bps`, $25k / $5k slots) |
 | `seed-operator.ts` | Operator account provisioning + data-ownership backfill (CLI, `yarn db:seed-operator`) |
 | `clear.ts` | Deletes all data from all tables (with confirmation prompt) |
 
@@ -25,15 +25,15 @@ PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
 | `watchlist` | Symbols to monitor |
 | `analysis_model_config` | Per-analysis-type model + BYOK settings |
 | `analysis_results` | Latest analysis snapshots (JSONB). `app_version`은 이 결과를 만든 **프롬프트 세대**(배포 태그) — 프롬프트 원문은 저장하지 않으므로 전후 비교의 유일한 축이다 |
-| `positions` | Open/closed positions (unique index on symbol+open status) |
+| `positions` | Open/closed positions (unique index on symbol+open status). `stop_price` = disaster stop (NULL: no stop, or opened via approval/recovery — execute fills it) |
 | `trades` | Execution history (with reason + mode + cronRunId) |
-| `trade_audit` | 사이징 게이트 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. `cron_run_id` + `symbol` + `kind`로 `trades`/`cron_decisions`와 조인하고, 정확히 1:1이어야 하면 `correlation_id`를 쓴다 (한 런에서 같은 심볼이 `exit` 게이트를 두 번 탈 수 있다) |
+| `trade_audit` | AI 호출 1건의 **원문** — 나간 프롬프트와 받은 응답. 지금은 `kind = 'entry_review'`(기록 전용 리뷰, `correlation_id = review-<cron_decisions.id>`)만 쓰고, `entry`/`exit`는 2026-09-24 이전 사이징 게이트의 기록이다 |
 | `pending_orders` | Approval queue (semi_auto mode) |
 | `config` | Key-value settings (JSONB value) |
 | `order_tracking` | Order lifecycle tracking (unique idempotency key, `client_order_id` Toss idempotency key, status transitions) |
 | `notification_config` | Email channel settings |
 | `cron_runs` | One row per cron invocation (health: status, outcome, duration, summary) |
-| `cron_decisions` | Per-symbol/per-order decision audit (action + reason, linked to cron_runs by run_id) |
+| `cron_decisions` | Per-symbol/per-order decision audit (action + reason + `detail.mr`, linked to cron_runs by run_id) |
 | `news_cards` | Per-news LLM summary cards (keyed by news id) |
 | `notification_queue` | Notifications deferred during quiet hours, drained by the morning digest cron |
 
@@ -56,7 +56,10 @@ DEFAULT, and indexing `user_id`. See the comment on `ownerUserId` in `schema.ts`
 | `reducePositionQuantity(db, id, soldQty)` | Atomic position quantity reduction for partial sells |
 | `getTodayTradeCount(db)` | Count today's non-skipped trades (NY timezone) |
 | `getDryRunCashFlowUsd(db)` | `dry_run` 모의 계좌의 순현금흐름(매도 − 매수). 잔고를 저장하지 않고 체결 원장에서 도출한다 — 저장 잔고는 원장과 어긋나면 스스로 복구되지 않는다 |
-| `insertTradeAudit(db, params)` | 게이트 호출 1건의 프롬프트·원문 응답 적재. 주문이 나가지 않은 호출도 기록한다 — 호출부는 실패를 삼켜야 한다 |
+| `insertTradeAudit(db, params)` | AI 호출 1건의 프롬프트·원문 응답 적재(kind `entry_review`). 실패한 호출도 기록한다 |
+| `setPositionStopPrice(db, id, price)` | 비어 있는 재난 손절가만 채운다(이미 있으면 덮지 않음) |
+| `hasDecisionPhaseSince(db, since)` | 이 시각 이후 판단 단계를 끝낸 execute 런(`summary.decisionPhase = 'done'`)이 있는가 — 하루 1회 멱등 |
+| `getMrSignalDecisionsSince(db, since)` / `hasTradeAuditCorrelation(db, id)` | 리뷰 대상 신호 조회와 리뷰 멱등 키 확인 |
 | `getTodayRealizedPnl(db)` | Sums per-sell `realized_pnl` (recorded at execution as (sellPrice − cost basis) × qty) for today's non-dry/non-skipped sells |
 | `createOrderTracking(db, params)` | Insert order tracking record with idempotency key |
 | `updateOrderTracking(db, key, updates)` | Update order status/price by idempotency key |

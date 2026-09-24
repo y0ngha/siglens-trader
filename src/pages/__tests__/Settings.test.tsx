@@ -1,17 +1,23 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { SettingsPage } from '../Settings';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 
-vi.mock('@/lib/api', () => ({
-    api: {
-        getConfig: vi.fn(),
-        updateConfig: vi.fn(),
-        searchTickers: vi.fn(),
-    },
-}));
+// `ApiError` is imported for real (via importOriginal) so Settings.tsx's
+// `err instanceof ApiError` check still works when a mocked call rejects with one (C5).
+vi.mock('@/lib/api', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/api')>();
+    return {
+        ...actual,
+        api: {
+            getConfig: vi.fn(),
+            updateConfig: vi.fn(),
+            searchTickers: vi.fn(),
+        },
+    };
+});
 
 const mockedApi = vi.mocked(api);
 
@@ -22,35 +28,21 @@ function renderWithQuery(component: React.ReactElement) {
     return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 }
 
-function createDeferred<T>() {
-    let resolve!: (value: T | PromiseLike<T>) => void;
-    let reject!: (reason?: unknown) => void;
-    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-        resolve = resolvePromise;
-        reject = rejectPromise;
-    });
-    return { promise, resolve, reject };
-}
-
 const mockConfig = {
     config: [
         { key: 'trading_mode', value: 'dry_run', updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_position_size', value: 5000, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_total_exposure', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'stop_loss_percent', value: 5, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'take_profit_percent', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'buy_threshold', value: 70, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'sell_threshold', value: 30, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'analysis_timeframe', value: '1Hour', updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'fixed_exit_enabled', value: false, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_daily_loss_usd', value: 500, updatedAt: '2026-01-01T00:00:00Z' },
-        {
-            key: 'entry_window',
-            value: { start: '11:00', end: '15:00' },
-            updatedAt: '2026-01-01T00:00:00Z',
-        },
+        { key: 'execute_interval_min', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'mr_rsi_entry', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'mr_max_hold_days', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'mr_stop_atr', value: 5, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'mr_regime_filter', value: true, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'dry_run_cash_usd', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
+        { key: 'dry_run_cost_bps', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
     ],
     watchlist: [
         {
@@ -87,14 +79,6 @@ const mockConfig = {
         },
         {
             id: 3,
-            analysisType: 'options',
-            enabled: false,
-            modelId: 'gpt-5.6-luna',
-            useByok: true,
-            updatedAt: '2026-01-01T00:00:00Z',
-        },
-        {
-            id: 4,
             analysisType: 'fundamental',
             enabled: true,
             modelId: 'gemini-3.1-pro-preview',
@@ -102,8 +86,8 @@ const mockConfig = {
             updatedAt: '2026-01-01T00:00:00Z',
         },
         {
-            id: 5,
-            analysisType: 'trade_gate',
+            id: 4,
+            analysisType: 'entry_review',
             enabled: true,
             modelId: 'gpt-5.6-terra',
             useByok: false,
@@ -143,88 +127,12 @@ describe('SettingsPage', () => {
 
         expect(screen.getByText('시스템 제어')).toBeInTheDocument();
         expect(screen.getByText('일반')).toBeInTheDocument();
+        expect(screen.getByText('전략 설정')).toBeInTheDocument();
+        expect(screen.getByText('매매 실행 주기')).toBeInTheDocument();
         expect(screen.getByText('감시 종목')).toBeInTheDocument();
         expect(screen.getByText('분석 설정')).toBeInTheDocument();
-        expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
         expect(screen.getByText('투자 관리')).toBeInTheDocument();
-        expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
         expect(screen.getByText('알림')).toBeInTheDocument();
-    });
-
-    it('renders the configured technical analysis chart timeframe options', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        const select = await screen.findByRole('combobox', {
-            name: '기술 분석 차트 주기',
-        });
-        const options = Array.from((select as HTMLSelectElement).options).map((option) => ({
-            label: option.textContent,
-            value: option.value,
-        }));
-
-        expect(select).toHaveValue('1Hour');
-        expect(options).toEqual([
-            { label: '15분', value: '15Min' },
-            { label: '30분', value: '30Min' },
-            { label: '1시간', value: '1Hour' },
-        ]);
-    });
-
-    it('falls back to a 1-hour technical analysis chart timeframe', async () => {
-        mockedApi.getConfig.mockResolvedValue({
-            ...mockConfig,
-            config: mockConfig.config.filter((entry) => entry.key !== 'analysis_timeframe'),
-        });
-
-        renderWithQuery(<SettingsPage />);
-
-        expect(await screen.findByRole('combobox', { name: '기술 분석 차트 주기' })).toHaveValue(
-            '1Hour',
-        );
-    });
-
-    it('normalizes a legacy technical analysis chart timeframe to 1 hour', async () => {
-        mockedApi.getConfig.mockResolvedValue({
-            ...mockConfig,
-            config: mockConfig.config.map((entry) =>
-                entry.key === 'analysis_timeframe' ? { ...entry, value: '1Day' } : entry,
-            ),
-        });
-
-        renderWithQuery(<SettingsPage />);
-
-        expect(await screen.findByRole('combobox', { name: '기술 분석 차트 주기' })).toHaveValue(
-            '1Hour',
-        );
-    });
-
-    it('optimistically updates and rolls back technical analysis chart timeframe changes', async () => {
-        const user = userEvent.setup();
-        const update = createDeferred<undefined>();
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-        mockedApi.updateConfig.mockReturnValue(update.promise);
-
-        renderWithQuery(<SettingsPage />);
-
-        const select = await screen.findByRole('combobox', {
-            name: '기술 분석 차트 주기',
-        });
-        await user.selectOptions(select, '30Min');
-
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'config',
-            key: 'analysis_timeframe',
-            value: '30Min',
-        });
-        expect(select).toHaveValue('30Min');
-
-        update.reject(new Error('Save failed'));
-
-        await waitFor(() => {
-            expect(select).toHaveValue('1Hour');
-        });
     });
 
     it('displays watchlist items', async () => {
@@ -626,6 +534,76 @@ describe('SettingsPage', () => {
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
+    it('blocks adding a 31st symbol once the watchlist is at the 30-symbol cap', async () => {
+        const user = userEvent.setup();
+        const fullWatchlist = Array.from({ length: 30 }, (_, i) => ({
+            id: i + 1,
+            symbol: `SYM${i}`,
+            companyName: `Company ${i}`,
+            enabled: true,
+            createdAt: '2026-01-01T00:00:00Z',
+        }));
+        mockedApi.getConfig.mockResolvedValue({ ...mockConfig, watchlist: fullWatchlist });
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+        mockedApi.searchTickers.mockResolvedValue([
+            { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
+        ]);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('감시 종목')).toBeInTheDocument();
+        });
+
+        await user.type(screen.getByLabelText('종목 검색'), 'NV');
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+        await user.click(screen.getByText('NVDA').closest('button')!);
+
+        await waitFor(() => {
+            expect(
+                screen.getByText('감시 종목은 최대 30개까지 설정 가능합니다'),
+            ).toBeInTheDocument();
+        });
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('allows adding the 30th symbol when the watchlist has 29 items', async () => {
+        const user = userEvent.setup();
+        const almostFullWatchlist = Array.from({ length: 29 }, (_, i) => ({
+            id: i + 1,
+            symbol: `SYM${i}`,
+            companyName: `Company ${i}`,
+            enabled: true,
+            createdAt: '2026-01-01T00:00:00Z',
+        }));
+        mockedApi.getConfig.mockResolvedValue({ ...mockConfig, watchlist: almostFullWatchlist });
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+        mockedApi.searchTickers.mockResolvedValue([
+            { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ' },
+        ]);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('감시 종목')).toBeInTheDocument();
+        });
+
+        await user.type(screen.getByLabelText('종목 검색'), 'NV');
+        await waitFor(() => {
+            expect(screen.getByText('NVDA')).toBeInTheDocument();
+        });
+        await user.click(screen.getByText('NVDA').closest('button')!);
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'watchlist',
+            action: 'add',
+            symbol: 'NVDA',
+            companyName: 'NVIDIA Corporation',
+        });
+    });
+
     it('changing analysis model dropdown calls API with analysisType', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
@@ -647,24 +625,30 @@ describe('SettingsPage', () => {
         });
     });
 
-    it('renders the trade gate row and changing its model calls the API', async () => {
+    it('renders the entry_review row and its note, and changing its model calls the API', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
-        const tradeGateItem = (await screen.findByText('매매 게이트')).closest('li');
-        expect(tradeGateItem).not.toBeNull();
+        const entryReviewItem = (await screen.findByText('AI 진입 리뷰')).closest('li');
+        expect(entryReviewItem).not.toBeNull();
 
-        const modelSelect = within(tradeGateItem!).getByRole('combobox');
+        expect(
+            within(entryReviewItem!).getByText(
+                '신호가 난 종목의 하락 원인을 판단해 기록만 합니다 — 주문에는 영향을 주지 않습니다',
+            ),
+        ).toBeInTheDocument();
+
+        const modelSelect = within(entryReviewItem!).getByRole('combobox');
         expect(modelSelect).toHaveValue('gpt-5.6-terra');
 
         await user.selectOptions(modelSelect, 'claude-opus-5');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'analysis',
-            analysisType: 'trade_gate',
+            analysisType: 'entry_review',
             updates: { modelId: 'claude-opus-5' },
         });
     });
@@ -696,9 +680,9 @@ describe('SettingsPage', () => {
         const analysisList = analysisHeading.closest('section')?.querySelector('ul');
         expect(analysisList).not.toBeNull();
 
-        // technical, news, options, fundamental, congress, trade_gate
+        // technical, news, fundamental, entry_review
         const modelSelects = within(analysisList!).getAllByRole('combobox');
-        expect(modelSelects).toHaveLength(6);
+        expect(modelSelects).toHaveLength(4);
         modelSelects.forEach((select) => {
             expect(select).toHaveValue('deepseek-v4.1-flash');
         });
@@ -737,9 +721,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const stopLossInput = screen.getByDisplayValue('5');
-        await user.clear(stopLossInput);
-        await user.type(stopLossInput, '7');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '7000');
         await user.tab();
 
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
@@ -747,13 +731,7 @@ describe('SettingsPage', () => {
 
     it('shows save button when risk values are changed', async () => {
         const user = userEvent.setup();
-        const enabledConfig = {
-            ...mockConfig,
-            config: mockConfig.config.map((c) =>
-                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
-            ),
-        };
-        mockedApi.getConfig.mockResolvedValue(enabledConfig);
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
@@ -762,9 +740,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const stopLossInput = screen.getByDisplayValue('5');
-        await user.clear(stopLossInput);
-        await user.type(stopLossInput, '7');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '7000');
 
         // Save button should appear (floating below sections)
         expect(screen.getByRole('button', { name: '저장' })).toBeInTheDocument();
@@ -772,13 +750,7 @@ describe('SettingsPage', () => {
 
     it('saves all changed risk values when save button is clicked', async () => {
         const user = userEvent.setup();
-        const enabledConfig = {
-            ...mockConfig,
-            config: mockConfig.config.map((c) =>
-                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
-            ),
-        };
-        mockedApi.getConfig.mockResolvedValue(enabledConfig);
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
@@ -787,25 +759,25 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const stopLossInput = screen.getByDisplayValue('5');
-        await user.clear(stopLossInput);
-        await user.type(stopLossInput, '7');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '7000');
 
-        const takeProfitInput = screen.getByDisplayValue('10');
-        await user.clear(takeProfitInput);
-        await user.type(takeProfitInput, '15');
+        const exposureInput = strategyInput('전체 투자 한도 ($)');
+        await user.clear(exposureInput);
+        await user.type(exposureInput, '30000');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'stop_loss_percent',
-            value: 7,
+            key: 'max_position_size',
+            value: 7000,
         });
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'take_profit_percent',
-            value: 15,
+            key: 'max_total_exposure',
+            value: 30000,
         });
     });
 
@@ -889,14 +861,14 @@ describe('SettingsPage', () => {
             expect(screen.getByText('분석 설정')).toBeInTheDocument();
         });
 
-        // Toggle the 'options' analysis (currently disabled) ON
-        const optionsToggle = screen.getByLabelText('옵션 분석 활성화');
-        await user.click(optionsToggle);
+        // Toggle the 'entry_review' analysis (currently enabled) OFF
+        const entryReviewToggle = screen.getByLabelText('AI 진입 리뷰 비활성화');
+        await user.click(entryReviewToggle);
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'analysis',
-            analysisType: 'options',
-            updates: { enabled: true },
+            analysisType: 'entry_review',
+            updates: { enabled: false },
         });
     });
 
@@ -935,9 +907,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('70');
-        await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '80');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '8000');
 
         await user.click(screen.getByRole('button', { name: '취소' }));
 
@@ -958,76 +930,6 @@ describe('SettingsPage', () => {
         });
 
         expect(screen.getByLabelText('종목 검색')).toBeInTheDocument();
-    });
-
-    it('renders fixed exit toggle in risk section showing OFF by default', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('투자 관리')).toBeInTheDocument();
-        });
-
-        expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
-        expect(screen.getByText('OFF 시 AI 분석 기반으로만 판단합니다')).toBeInTheDocument();
-        expect(screen.getByLabelText('고정 손절/익절 활성화')).toHaveTextContent('OFF');
-    });
-
-    it('toggles fixed exit enabled on click and calls API', async () => {
-        const user = userEvent.setup();
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-        mockedApi.updateConfig.mockResolvedValue(undefined);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('고정 손절/익절')).toBeInTheDocument();
-        });
-
-        const toggleButton = screen.getByLabelText('고정 손절/익절 활성화');
-        await user.click(toggleButton);
-
-        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
-            type: 'config',
-            key: 'fixed_exit_enabled',
-            value: true,
-        });
-    });
-
-    it('greys out stop_loss and take_profit inputs when fixed exit is disabled', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('투자 관리')).toBeInTheDocument();
-        });
-
-        // The grid containing stop_loss and take_profit inputs should be greyed out
-        const stopLossInput = screen.getByDisplayValue('5');
-        const gridContainer = stopLossInput.closest('.grid');
-        expect(gridContainer).toHaveClass('opacity-40');
-    });
-
-    it('does not grey out stop_loss and take_profit inputs when fixed exit is enabled', async () => {
-        const enabledConfig = {
-            ...mockConfig,
-            config: mockConfig.config.map((c) =>
-                c.key === 'fixed_exit_enabled' ? { ...c, value: true } : c,
-            ),
-        };
-        mockedApi.getConfig.mockResolvedValue(enabledConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('투자 관리')).toBeInTheDocument();
-        });
-
-        const stopLossInput = screen.getByDisplayValue('5');
-        const gridContainer = stopLossInput.closest('.grid');
-        expect(gridContainer).not.toHaveClass('opacity-40');
     });
 
     // -----------------------------------------------------------------------
@@ -1112,7 +1014,7 @@ describe('SettingsPage', () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         // Simulate a server 400: updateConfig rejects on any call
-        mockedApi.updateConfig.mockRejectedValue(new Error('buy_threshold validation failed'));
+        mockedApi.updateConfig.mockRejectedValue(new Error('max_position_size validation failed'));
 
         renderWithQuery(<SettingsPage />);
 
@@ -1120,9 +1022,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('70');
-        await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '80');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '8000');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
@@ -1143,9 +1045,9 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const buyThresholdInput = screen.getByDisplayValue('70');
-        await user.clear(buyThresholdInput);
-        await user.type(buyThresholdInput, '80');
+        const positionSizeInput = screen.getByDisplayValue('5000');
+        await user.clear(positionSizeInput);
+        await user.type(positionSizeInput, '8000');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
@@ -1155,60 +1057,8 @@ describe('SettingsPage', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Signal threshold scale: 0-100 integer score (not 0..1 ratio)
+    // dollar-amount inputs have no 0-100 cap
     // -----------------------------------------------------------------------
-
-    it('displays buy_threshold default as 70 and sell_threshold default as 30', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
-        });
-
-        expect(screen.getByDisplayValue('70')).toBeInTheDocument();
-        expect(screen.getByDisplayValue('30')).toBeInTheDocument();
-    });
-
-    it('threshold inputs show 0-100 range labels and correct helper text', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
-        });
-
-        expect(screen.getByText('매수 신호 기준 (0~100점)')).toBeInTheDocument();
-        expect(
-            screen.getByText('AI 분석 점수가 이 값 이상이면 매수 (기본 70)'),
-        ).toBeInTheDocument();
-        expect(screen.getByText('매도 신호 기준 (0~100점)')).toBeInTheDocument();
-        expect(
-            screen.getByText('AI 분석 점수가 이 값 이하이면 매도 (기본 30)'),
-        ).toBeInTheDocument();
-    });
-
-    it('threshold inputs have min=0, max=100, step=1 attributes', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('AI 매매 신호 기준')).toBeInTheDocument();
-        });
-
-        const buyInput = screen.getByDisplayValue('70');
-        expect(buyInput).toHaveAttribute('min', '0');
-        expect(buyInput).toHaveAttribute('max', '100');
-        expect(buyInput).toHaveAttribute('step', '1');
-
-        const sellInput = screen.getByDisplayValue('30');
-        expect(sellInput).toHaveAttribute('min', '0');
-        expect(sellInput).toHaveAttribute('max', '100');
-        expect(sellInput).toHaveAttribute('step', '1');
-    });
 
     it('dollar-amount inputs (max_position_size) do NOT have max=100 cap', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
@@ -1224,193 +1074,301 @@ describe('SettingsPage', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Entry window (entry_window) — ET 기준 신규 진입 허용 구간
+    // dry_run_cash_usd / dry_run_cost_bps
     // -----------------------------------------------------------------------
 
-    function withEntryWindow(value: unknown) {
-        return {
-            ...mockConfig,
-            config: mockConfig.config.map((c) => (c.key === 'entry_window' ? { ...c, value } : c)),
-        };
-    }
-
-    async function findEntryWindowInputs() {
-        const start = await screen.findByLabelText('진입 시작 (ET)');
-        const end = screen.getByLabelText('진입 종료 (ET)');
-        return { start, end };
-    }
-
-    it('reflects the saved entry window in the time inputs', async () => {
-        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '12:30', end: '14:45' }));
+    it('displays dry_run_cash_usd and dry_run_cost_bps with their helper text', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
 
         renderWithQuery(<SettingsPage />);
 
-        const { start, end } = await findEntryWindowInputs();
-        expect(start).toHaveValue('12:30');
-        expect(end).toHaveValue('14:45');
-        expect(screen.getByLabelText('진입 시간 제한 비활성화')).toHaveTextContent('ON');
-    });
-
-    it('falls back to the default entry window when the config key is absent', async () => {
-        mockedApi.getConfig.mockResolvedValue({
-            ...mockConfig,
-            config: mockConfig.config.filter((c) => c.key !== 'entry_window'),
+        await waitFor(() => {
+            expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        renderWithQuery(<SettingsPage />);
-
-        const { start, end } = await findEntryWindowInputs();
-        expect(start).toHaveValue('11:00');
-        expect(end).toHaveValue('15:00');
-        expect(screen.getByLabelText('진입 시간 제한 비활성화')).toHaveTextContent('ON');
+        expect(strategyInput('모의 계좌 예치금 ($)')).toHaveValue(25000);
+        expect(strategyInput('모의 체결 비용 (bp, 편도)')).toHaveValue(10);
     });
 
-    it('shows the all-day entry window as OFF with disabled inputs holding the default', async () => {
-        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '00:00', end: '24:00' }));
+    // -----------------------------------------------------------------------
+    // 매매 실행 주기 — only 5/10 minutes
+    // -----------------------------------------------------------------------
+
+    it('실행 주기 선택지는 5분·10분뿐이다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
 
         renderWithQuery(<SettingsPage />);
 
-        const { start, end } = await findEntryWindowInputs();
-        expect(screen.getByLabelText('진입 시간 제한 활성화')).toHaveTextContent('OFF');
-        expect(start).toBeDisabled();
-        expect(end).toBeDisabled();
-        // 다시 켰을 때 빈 칸이 아니라 기본 창이 보여야 한다.
-        expect(start).toHaveValue('11:00');
-        expect(end).toHaveValue('15:00');
+        const select = await screen.findByLabelText('매매 실행 주기');
+        const options = Array.from((select as HTMLSelectElement).options).map((option) => ({
+            label: option.textContent,
+            value: option.value,
+        }));
+
+        expect(options).toEqual([
+            { label: '5분', value: '5' },
+            { label: '10분', value: '10' },
+        ]);
     });
 
     it('실행 주기는 저장된 값을 보여주고, 바꾸면 즉시 저장한다', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue({
             ...mockConfig,
-            config: [
-                ...mockConfig.config,
-                { key: 'execute_interval_min', value: 30, updatedAt: '2026-01-01T00:00:00Z' },
-            ],
+            config: mockConfig.config.map((c) =>
+                c.key === 'execute_interval_min' ? { ...c, value: 5 } : c,
+            ),
         });
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
         const select = await screen.findByLabelText('매매 실행 주기');
-        expect(select).toHaveValue('30');
+        expect(select).toHaveValue('5');
 
-        await user.selectOptions(select, '5');
+        await user.selectOptions(select, '10');
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
             key: 'execute_interval_min',
-            value: 5,
+            value: 10,
         });
     });
 
     it('실행 주기 설정이 없으면 기본 10분을 보여준다', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.filter((c) => c.key !== 'execute_interval_min'),
+        });
 
         renderWithQuery(<SettingsPage />);
 
         expect(await screen.findByLabelText('매매 실행 주기')).toHaveValue('10');
     });
 
-    it('saves the edited entry window as { start, end }', async () => {
+    // -----------------------------------------------------------------------
+    // 전략 설정 — mr_rsi_entry / mr_max_hold_days / mr_stop_atr / mr_regime_filter
+    // -----------------------------------------------------------------------
+
+    /** Strategy/investment fields now have htmlFor+id (C4) — this still works via the
+     * shared wrapper div, kept so the many existing call sites below don't need churn.
+     * New tests use `getByLabelText` directly to pin the accessibility fix itself. */
+    function strategyInput(labelText: string): HTMLInputElement {
+        const label = screen.getByText(labelText);
+        const input = label.closest('div')!.querySelector('input');
+        expect(input).not.toBeNull();
+        return input!;
+    }
+
+    it('전략 설정 입력이 기본값으로 렌더된다', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.filter((c) => !c.key.startsWith('mr_')),
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('전략 설정')).toBeInTheDocument();
+        });
+
+        expect(strategyInput('매수 기준 RSI(2)')).toHaveValue(10);
+        expect(strategyInput('최대 보유 거래일')).toHaveValue(10);
+        expect(strategyInput('재난 손절 ATR 배수')).toHaveValue(5);
+        expect(screen.getByLabelText('시장 국면 필터 비활성화')).toHaveTextContent('ON');
+    });
+
+    it('전략 설정 입력을 바꾸고 저장 버튼으로 저장한다', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
-        const { start, end } = await findEntryWindowInputs();
-        fireEvent.change(start, { target: { value: '10:30' } });
-        fireEvent.change(end, { target: { value: '14:00' } });
+        await waitFor(() => {
+            expect(screen.getByText('전략 설정')).toBeInTheDocument();
+        });
 
-        await user.click(screen.getByRole('button', { name: '진입 시간 창 저장' }));
+        const rsiInput = strategyInput('매수 기준 RSI(2)');
+        await user.clear(rsiInput);
+        await user.type(rsiInput, '15');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'entry_window',
-            value: { start: '10:30', end: '14:00' },
+            key: 'mr_rsi_entry',
+            value: 15,
         });
     });
 
-    it('saves the all-day off-switch when the entry window toggle is turned off', async () => {
+    it('mr_stop_atr 입력은 0~20, step 0.5 범위를 갖는다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('재난 손절 ATR 배수')).toBeInTheDocument();
+        });
+
+        const stopAtrInput = screen.getByDisplayValue('5');
+        expect(stopAtrInput).toHaveAttribute('min', '0');
+        expect(stopAtrInput).toHaveAttribute('max', '20');
+        expect(stopAtrInput).toHaveAttribute('step', '0.5');
+    });
+
+    it('시장 국면 필터 토글은 즉시 저장된다', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
-        await user.click(await screen.findByLabelText('진입 시간 제한 비활성화'));
-        await user.click(screen.getByRole('button', { name: '진입 시간 창 저장' }));
+        const toggle = await screen.findByLabelText('시장 국면 필터 비활성화');
+        await user.click(toggle);
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'entry_window',
-            value: { start: '00:00', end: '24:00' },
+            key: 'mr_regime_filter',
+            value: false,
         });
     });
 
-    it('blocks saving an entry window whose start is not before its end', async () => {
+    it('시장 국면 필터가 꺼져 있으면 OFF로 표시된다', async () => {
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: mockConfig.config.map((c) =>
+                c.key === 'mr_regime_filter' ? { ...c, value: false } : c,
+            ),
+        });
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByLabelText('시장 국면 필터 활성화')).toHaveTextContent('OFF');
+    });
+
+    // -----------------------------------------------------------------------
+    // 분석 설정 섹션 helper copy
+    // -----------------------------------------------------------------------
+
+    it('분석 설정 섹션에 기록 전용 안내 문구가 보인다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(
+            await screen.findByText(
+                '분석은 매수 신호가 난 종목에만, 장 마감 직후 실행됩니다 (기록 전용)',
+            ),
+        ).toBeInTheDocument();
+    });
+
+    // -----------------------------------------------------------------------
+    // Notifications footnote mentions the 100h decision-silence check
+    // -----------------------------------------------------------------------
+
+    it('알림 안내 문구에 매매 판단 단계 100시간 무응답 조건이 포함된다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(
+            await screen.findByText(
+                /크론이 실패했거나 72시간 이상 멈춘 경우, 또는 매매 판단 단계가 100시간 동안 돌지 않은 경우/,
+            ),
+        ).toBeInTheDocument();
+    });
+
+    // -----------------------------------------------------------------------
+    // C2 — clearing a numeric field blocks its save instead of sending 0
+    // -----------------------------------------------------------------------
+
+    it('clearing mr_stop_atr and saving sends no request for that key and shows an inline error', async () => {
+        const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         mockedApi.updateConfig.mockResolvedValue(undefined);
 
         renderWithQuery(<SettingsPage />);
 
-        const { start } = await findEntryWindowInputs();
-        fireEvent.change(start, { target: { value: '15:00' } });
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
 
-        expect(screen.getByRole('button', { name: '진입 시간 창 저장' })).toBeDisabled();
-        expect(screen.getByText('시작 시각은 종료 시각보다 빨라야 합니다')).toBeInTheDocument();
-        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        // Never sent as 0 — the field is excluded from the save entirely.
+        expect(mockedApi.updateConfig).not.toHaveBeenCalledWith(
+            expect.objectContaining({ key: 'mr_stop_atr' }),
+        );
+        expect(screen.getByText('숫자를 입력하세요')).toBeInTheDocument();
+        // The typed (empty) value is kept, not reverted to the last saved 5.
+        expect(stopAtrInput).toHaveValue(null);
     });
 
-    it('shows both the summer and winter KST translation of the entry window, marked as next-day', async () => {
+    it('a non-finite risk value also blocks its own save while other valid fields still save', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
+
+        const rsiInput = screen.getByLabelText('매수 기준 RSI(2)');
+        await user.clear(rsiInput);
+        await user.type(rsiInput, '15');
+
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'mr_rsi_entry',
+            value: 15,
+        });
+        expect(mockedApi.updateConfig).not.toHaveBeenCalledWith(
+            expect.objectContaining({ key: 'mr_stop_atr' }),
+        );
+    });
+
+    // -----------------------------------------------------------------------
+    // C4 — strategy/investment inputs are properly labelled (id + htmlFor)
+    // -----------------------------------------------------------------------
+
+    it('exposes strategy and investment inputs via getByLabelText (C4)', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
 
         renderWithQuery(<SettingsPage />);
 
-        // ET 11:00–15:00은 여름·겨울 모두 KST 익일이다 — 표기가 없으면 24시간을 오해한다.
-        expect(
-            await screen.findByText(
-                /ET 11:00–15:00 = 한국시간 여름 익일 00:00–04:00 \/ 겨울 익일 01:00–05:00/,
-            ),
-        ).toBeInTheDocument();
+        expect(await screen.findByLabelText('매수 기준 RSI(2)')).toHaveValue(10);
+        expect(screen.getByLabelText('최대 보유 거래일')).toHaveValue(10);
+        expect(screen.getByLabelText('재난 손절 ATR 배수')).toHaveValue(5);
+        expect(screen.getByLabelText('모의 체결 비용 (bp, 편도)')).toHaveValue(10);
+        expect(screen.getByLabelText('일일 최대 손실 한도 ($)')).toHaveValue(500);
     });
 
-    it('omits the next-day marker for a window that stays on the same KST day', async () => {
-        mockedApi.getConfig.mockResolvedValue(withEntryWindow({ start: '09:00', end: '10:00' }));
+    // -----------------------------------------------------------------------
+    // C5 — failed risk saves show the server's message and keep typed values
+    // -----------------------------------------------------------------------
 
-        renderWithQuery(<SettingsPage />);
-
-        // ET 09:00–10:00 → 여름 KST 22:00–23:00(당일), 겨울 23:00–익일 00:00(끝만 넘어감).
-        expect(
-            await screen.findByText(
-                /ET 09:00–10:00 = 한국시간 여름 22:00–23:00 \/ 겨울 23:00–익일 00:00/,
-            ),
-        ).toBeInTheDocument();
-    });
-
-    it('renders no KST translation while a time input is empty', async () => {
+    it('shows the server error message and keeps the typed value on a failed risk save (C5)', async () => {
+        const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockRejectedValue(
+            new ApiError(400, JSON.stringify({ error: 'mr_stop_atr must be between 0 and 20' })),
+        );
 
         renderWithQuery(<SettingsPage />);
 
-        const { end } = await findEntryWindowInputs();
-        fireEvent.change(end, { target: { value: '' } });
+        const stopAtrInput = await screen.findByLabelText('재난 손절 ATR 배수');
+        await user.clear(stopAtrInput);
+        await user.type(stopAtrInput, '25');
 
-        // '13:undefined' / NaN 같은 깨진 값을 보여주느니 환산 문구를 아예 내지 않는다.
-        expect(screen.queryByText(/한국시간/)).not.toBeInTheDocument();
-        expect(screen.queryByText(/undefined|NaN/)).not.toBeInTheDocument();
-    });
+        await user.click(screen.getByRole('button', { name: '저장' }));
 
-    it('states that exits are not restricted by the entry window', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        expect(
-            await screen.findByText(
-                '청산·손절은 정규장 내내 그대로 실행됩니다 — 이 창은 신규 진입만 제한합니다.',
-            ),
-        ).toBeInTheDocument();
+        await waitFor(() => {
+            expect(screen.getByText(/mr_stop_atr must be between 0 and 20/)).toBeInTheDocument();
+        });
+        // Typed value stays — it is not silently cleared back to the last saved 5.
+        expect(stopAtrInput).toHaveValue(25);
     });
 });

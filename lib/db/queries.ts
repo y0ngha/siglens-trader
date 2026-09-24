@@ -1,4 +1,4 @@
-import { eq, desc, and, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, desc, asc, and, or, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
@@ -165,7 +165,7 @@ export async function saveAnalysisResult(
          * 이 결과가 생성될 때 적용 중이던 `analysis_timeframe` 값.
          *
          * `appVersion`과 달리 함수 내부에서 유도하지 않고 호출부가 명시적으로 넘긴다 —
-         * 호출부(`api/cron/_run-analysis-cron.ts`)는 이미 어떤 타임프레임으로 분석을
+         * 호출부(`api/cron/review.ts`)는 이미 어떤 타임프레임으로 분석을
          * 돌렸는지 알고 있고, 여기서 기본값을 두면 새 호출부 하나가 빠뜨려도 컴파일이
          * 통과해 그 행만 조용히 잘못된 타임프레임으로 라벨링된다.
          */
@@ -269,7 +269,14 @@ export async function getOpenPositionBySymbol(db: Db, symbol: string) {
 
 export async function openPosition(
     db: DbOrTx,
-    params: { symbol: string; side: string; quantity: number; avgPrice: number },
+    params: {
+        symbol: string;
+        side: string;
+        quantity: number;
+        avgPrice: number;
+        /** 재난 손절가. 생략·null이면 NULL — execute가 다음 틱에 채운다(`setPositionStopPrice`). */
+        stopPrice?: number | null;
+    },
 ) {
     return db
         .insert(positions)
@@ -278,10 +285,25 @@ export async function openPosition(
             side: params.side,
             quantity: params.quantity,
             avgPrice: String(params.avgPrice),
+            stopPrice: params.stopPrice == null ? null : String(params.stopPrice),
             openedAt: new Date(),
             status: 'open',
         })
         .returning();
+}
+
+/**
+ * 비어 있는 재난 손절가만 채운다 — 이미 있는 값은 덮지 않는다(진입 시점에 정한 손절선이 나중의
+ * 변동성으로 움직이면 안 된다). semi_auto 승인·reconcile 복구처럼 ATR 맥락 없이 열린 포지션을
+ * execute가 채우는 경로다. 채웠으면 true.
+ */
+export async function setPositionStopPrice(db: DbOrTx, id: number, stopPrice: number) {
+    const rows = await db
+        .update(positions)
+        .set({ stopPrice: String(stopPrice) })
+        .where(and(eq(positions.id, id), eq(positions.status, 'open'), isNull(positions.stopPrice)))
+        .returning({ id: positions.id });
+    return rows.length > 0;
 }
 
 export async function closePosition(db: DbOrTx, id: number, closePrice: number) {
@@ -398,7 +420,8 @@ export async function insertTradeAudit(
     db: DbOrTx,
     params: {
         symbol: string;
-        kind: 'entry' | 'exit';
+        /** `entry_review` = 기록 전용 AI 리뷰(`api/cron/review.ts`). 주문에 영향이 없다. */
+        kind: 'entry' | 'exit' | 'entry_review';
         modelId: string;
         systemPrompt: string;
         userPrompt: string;
@@ -828,6 +851,40 @@ export async function getPendingSubmittedOrders(db: Db) {
         .orderBy(orderTracking.submittedAt);
 }
 
+/**
+ * 이 시각 이후 매도된(또는 매도 진행 중인) 심볼 집합 — 같은 날 재매수 가드(스펙 §3 "물타기 없음",
+ * A1).
+ *
+ * `exitedSymbols`(execute 한 런 안에서 청산한 종목)만으로는 부족하다: 14:07 위험 단계에서
+ * 재난 손절로 나간 종목, 또는 판단 단계 도중 죽어 `finishCronRun` 전에 끊긴 런이 이미 낸 매도
+ * 주문은 **이번 런의 `exitedSymbols`에 없다.** 그 상태에서 15:47 판단 틱이 같은 심볼을 다시
+ * 사면 청산 당일 재진입 금지가 깨진다(백테스트는 청산 다음 날부터만 재진입했다).
+ *
+ * 두 출처를 합친다 — `trades`의 실제 체결 매도(`side='sell'`)와, `order_tracking`의 아직 결말이
+ * 확정되지 않았거나 확정된 매도 주문(`rejected`/`canceled`만 제외 — 그 둘은 브로커가 받지 않았다는
+ * 뜻이다). 후자가 필요한 이유는 `submitted`/`error` 같은 in-flight 매도가 아직 `trades`에
+ * 반영되지 않았을 수 있어서다.
+ */
+export async function getSymbolsSoldSince(db: Db, since: Date): Promise<Set<string>> {
+    const [tradeRows, orderRows] = await Promise.all([
+        db
+            .selectDistinct({ symbol: trades.symbol })
+            .from(trades)
+            .where(and(eq(trades.side, 'sell'), gte(trades.executedAt, since))),
+        db
+            .selectDistinct({ symbol: orderTracking.symbol })
+            .from(orderTracking)
+            .where(
+                and(
+                    eq(orderTracking.side, 'sell'),
+                    gte(orderTracking.submittedAt, since),
+                    sql`${orderTracking.status} NOT IN ('rejected', 'canceled')`,
+                ),
+            ),
+    ]);
+    return new Set([...tradeRows.map((r) => r.symbol), ...orderRows.map((r) => r.symbol)]);
+}
+
 // ---------------------------------------------------------------------------
 // Cron audit log
 // ---------------------------------------------------------------------------
@@ -840,7 +897,8 @@ export type CronType =
     | 'congress'
     | 'execute'
     | 'reconcile'
-    | 'digest';
+    | 'digest'
+    | 'review';
 
 export type CronOutcome =
     | 'completed'
@@ -864,7 +922,7 @@ export type CronOutcome =
  * audit log never shows a perpetually-running invocation.
  *
  * Must stay greater than the longest a cron tick can run — the analysis crons stop
- * starting new work at 690s (see `_run-analysis-cron.ts`) and then finish in flight —
+ * starting new work at their run deadlines (execute 900s, review 1200s) and then finish in flight —
  * otherwise a live, still-running invocation could be swept mid-execution.
  */
 /**
@@ -1005,6 +1063,67 @@ export async function insertCronDecisions(
             detail: d.detail,
         })),
     );
+}
+
+/**
+ * 이 시각 이후 **판단 단계를 끝낸** execute 런이 있는가 — 하루 1회 멱등의 기록이다
+ * (docs/specs/2026-09-24-daily-mean-reversion-design.md §4.1). 런이 판단 도중 죽으면 이 요약이
+ * 남지 않으므로 다음 틱이 재시도한다.
+ */
+export async function hasDecisionPhaseSince(db: Db, since: Date): Promise<boolean> {
+    const rows = await db
+        .select({ id: cronRuns.id })
+        .from(cronRuns)
+        .where(
+            and(
+                eq(cronRuns.cronType, 'execute'),
+                gte(cronRuns.startedAt, since),
+                sql`${cronRuns.summary}->>'decisionPhase' = 'done'`,
+            ),
+        )
+        .limit(1);
+    return rows.length > 0;
+}
+
+/**
+ * AI 리뷰 대상 — 판단 단계가 남긴 **신호 결정 전부**. 체결된 것만이 아니라 예산·한도로 못 산
+ * 신호도 포함한다: 못 산 신호도 전진 수익률로 평가할 수 있고, 리뷰가 가치를 내는지 재려면 표본이
+ * 많아야 한다(스펙 §5).
+ */
+export const MR_SIGNAL_ACTIONS = ['mr_buy', 'mr_skip_budget', 'mr_skip_breaker'] as const;
+
+/**
+ * `action`만으로는 신호 전부를 못 잡는다(A10) — `executeEntry`가 최종 결정 행동을 주문 결과로
+ * 덮어쓴다(`order_submitted`·`order_partial`·`needs_review`·`order_rejected`·
+ * `skipped_insufficient_cash`·`skipped_no_buying_power`·`already_open` 등). `MR_SIGNAL_ACTIONS`만
+ * 보면 그 행들이 리뷰 대상에서 빠진다. execute는 진입 신호로 평가된 모든 결정 행에
+ * `detail.mr.signal = true`를 남기므로(최종 action과 무관하게), 그 마커도 함께 본다.
+ */
+export async function getMrSignalDecisionsSince(db: Db, since: Date) {
+    return db
+        .select()
+        .from(cronDecisions)
+        .where(
+            and(
+                eq(cronDecisions.cronType, 'execute'),
+                gte(cronDecisions.createdAt, since),
+                or(
+                    inArray(cronDecisions.action, [...MR_SIGNAL_ACTIONS]),
+                    sql`${cronDecisions.detail}->'mr'->>'signal' = 'true'`,
+                ),
+            ),
+        )
+        .orderBy(asc(cronDecisions.id));
+}
+
+/** 이 상관 키의 감사 행이 이미 있는가 — 리뷰 멱등 키(`review-<ET 날짜 YYYY-MM-DD>-<심볼>`, 심볼 없는 결정은 `review-<decisionId>`). */
+export async function hasTradeAuditCorrelation(db: Db, correlationId: string): Promise<boolean> {
+    const rows = await db
+        .select({ id: tradeAudit.id })
+        .from(tradeAudit)
+        .where(eq(tradeAudit.correlationId, correlationId))
+        .limit(1);
+    return rows.length > 0;
 }
 
 export async function getCronRuns(

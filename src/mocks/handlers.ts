@@ -7,9 +7,22 @@ function genId() {
     return nextId++;
 }
 
+// api/config.ts MAX_WATCHLIST_SIZE 미러 — 18종목 결정(§1)에 맞춰 30으로 올렸다.
+const MAX_WATCHLIST_SIZE = 30;
+
+// api/config.ts NUMERIC_BOUNDS 미러 — 전략 파라미터의 키별 범위(스펙 §6). 손절 배수 0은
+// "손절 없음"이라 허용한다. 실제 API와 같은 에러 메시지 형식을 반환해야 Settings의 실패
+// 문구 테스트가 실제 백엔드와 어긋나지 않는다(C8).
+const NUMERIC_BOUNDS: Record<string, { min: number; max: number; integer?: boolean }> = {
+    mr_rsi_entry: { min: 1, max: 50 },
+    mr_max_hold_days: { min: 1, max: 60, integer: true },
+    mr_stop_atr: { min: 0, max: 20 },
+    dry_run_cost_bps: { min: 0, max: 100 },
+};
+
 interface ConfigEntry {
     key: string;
-    // entry_window처럼 객체 값을 갖는 키가 있어 unknown이다 (API도 JSON을 그대로 저장한다).
+    // mr_regime_filter처럼 boolean 값을 갖는 키가 있어 unknown이다 (API도 JSON을 그대로 저장한다).
     value: unknown;
     updatedAt: string;
 }
@@ -18,22 +31,16 @@ const configEntries: ConfigEntry[] = [
     { key: 'trading_mode', value: 'dry_run', updatedAt: new Date().toISOString() },
     { key: 'max_position_size', value: 1000, updatedAt: new Date().toISOString() },
     { key: 'max_total_exposure', value: 5000, updatedAt: new Date().toISOString() },
-    { key: 'stop_loss_percent', value: 3, updatedAt: new Date().toISOString() },
-    { key: 'take_profit_percent', value: 5, updatedAt: new Date().toISOString() },
-    { key: 'buy_threshold', value: 70, updatedAt: new Date().toISOString() },
-    { key: 'sell_threshold', value: 30, updatedAt: new Date().toISOString() },
-    { key: 'analysis_timeframe', value: '1Hour', updatedAt: new Date().toISOString() },
-    { key: 'fixed_exit_enabled', value: false, updatedAt: new Date().toISOString() },
     { key: 'trading_enabled', value: true, updatedAt: new Date().toISOString() },
     { key: 'max_trades_per_day', value: 20, updatedAt: new Date().toISOString() },
     { key: 'max_daily_loss_usd', value: 500, updatedAt: new Date().toISOString() },
-    {
-        key: 'entry_window',
-        value: { start: '11:00', end: '15:00' },
-        updatedAt: new Date().toISOString(),
-    },
     { key: 'execute_interval_min', value: 10, updatedAt: new Date().toISOString() },
-    { key: 'entry_cooldown_min', value: 60, updatedAt: new Date().toISOString() },
+    { key: 'dry_run_cash_usd', value: 25000, updatedAt: new Date().toISOString() },
+    { key: 'mr_rsi_entry', value: 10, updatedAt: new Date().toISOString() },
+    { key: 'mr_max_hold_days', value: 10, updatedAt: new Date().toISOString() },
+    { key: 'mr_stop_atr', value: 5, updatedAt: new Date().toISOString() },
+    { key: 'mr_regime_filter', value: true, updatedAt: new Date().toISOString() },
+    { key: 'dry_run_cost_bps', value: 10, updatedAt: new Date().toISOString() },
 ];
 
 let watchlist = [
@@ -93,14 +100,6 @@ const analysisConfigs = [
     },
     {
         id: 3,
-        analysisType: 'options',
-        enabled: true,
-        modelId: 'deepseek-v4.1-flash',
-        useByok: true,
-        updatedAt: new Date().toISOString(),
-    },
-    {
-        id: 4,
         analysisType: 'fundamental',
         enabled: true,
         modelId: 'deepseek-v4.1-flash',
@@ -108,8 +107,8 @@ const analysisConfigs = [
         updatedAt: new Date().toISOString(),
     },
     {
-        id: 5,
-        analysisType: 'trade_gate',
+        id: 4,
+        analysisType: 'entry_review',
         enabled: true,
         modelId: 'deepseek-v4.1-flash',
         useByok: true,
@@ -135,6 +134,7 @@ const positions = [
         quantity: 5,
         avgPrice: '189.50',
         currentPrice: '195.20',
+        stopPrice: '180.00',
         openedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
         status: 'open',
     },
@@ -145,6 +145,7 @@ const positions = [
         quantity: 3,
         avgPrice: '875.20',
         currentPrice: '892.50',
+        stopPrice: '830.00',
         openedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
         status: 'open',
     },
@@ -155,6 +156,7 @@ const positions = [
         quantity: 8,
         avgPrice: '248.60',
         currentPrice: '252.10',
+        stopPrice: null,
         openedAt: new Date(Date.now() - 86400000).toISOString(),
         status: 'open',
     },
@@ -676,9 +678,88 @@ const cronRuns: CronRunFixture[] = [
         error: null,
         createdAt: new Date(Date.now() - 18 * 3600000).toISOString(),
     },
+    {
+        id: 9,
+        runId: 'execute-20260924-2007',
+        cronType: 'execute',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 10 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 9 * 60000).toISOString(),
+        durationMs: 3210,
+        summary: {
+            symbolsEvaluated: 3,
+            decisionTick: true,
+            decisionPhase: 'done',
+            pendingBuyExposure: 0,
+            todayRealizedPnl: 0,
+            todayUnrealizedChange: 42.5,
+            decisionsByAction: { mr_buy: 1, mr_hold: 2 },
+        },
+        error: null,
+        createdAt: new Date(Date.now() - 10 * 60000).toISOString(),
+    },
+    {
+        id: 10,
+        runId: 'review-20260924-2010',
+        cronType: 'review',
+        status: 'completed',
+        outcome: 'completed',
+        startedAt: new Date(Date.now() - 8 * 60000).toISOString(),
+        finishedAt: new Date(Date.now() - 7 * 60000).toISOString(),
+        durationMs: 5400,
+        summary: { pending: 1, processed: 1, decisionsByAction: { reviewed: 1 } },
+        error: null,
+        createdAt: new Date(Date.now() - 8 * 60000).toISOString(),
+    },
 ];
 
 const cronDecisions: CronDecisionFixture[] = [
+    // Decisions for execute-20260924-2007 (일봉 RSI(2) 눌림매수)
+    {
+        id: 5,
+        runId: 'execute-20260924-2007',
+        cronType: 'execute',
+        symbol: 'AAPL',
+        // 실제 프로듀서(api/cron/execute.ts)는 score 칼럼에 rsi2를 문자열로 담는다 — mr 행에
+        // score:null을 쓰지 않는다.
+        action: 'mr_buy',
+        executed: true,
+        score: '8.2',
+        reason: 'RSI(2) 8.2 < 10, 가격 > SMA200',
+        detail: {
+            mr: { price: 195.2, rsi2: 8.2, sma200: 180.1, sma5: 190.0, atr14: 3.1, rank: 1 },
+        },
+        createdAt: new Date(Date.now() - 9 * 60000 + 1000).toISOString(),
+    },
+    {
+        id: 6,
+        runId: 'execute-20260924-2007',
+        cronType: 'execute',
+        symbol: 'NVDA',
+        action: 'mr_hold',
+        executed: false,
+        score: '42.0',
+        reason: '신호 없음',
+        detail: {
+            mr: { price: 892.5, rsi2: 42.0, sma200: 800.0, sma5: 880.0, atr14: 20.5 },
+        },
+        createdAt: new Date(Date.now() - 9 * 60000 + 2000).toISOString(),
+    },
+    {
+        id: 7,
+        runId: 'review-20260924-2010',
+        cronType: 'review',
+        symbol: 'AAPL',
+        action: 'reviewed',
+        executed: false,
+        score: null,
+        reason: '뉴스·펀더멘털상 특이 하락 사유 없음',
+        // 실제 모양(api/cron/review.ts): detail.mr이 아니라 dropCause/fraction/confidence가
+        // detail에 바로 얹힌다.
+        detail: { dropCause: 'noise', fraction: 1, confidence: 0.82 },
+        createdAt: new Date(Date.now() - 7 * 60000).toISOString(),
+    },
     // Decisions for execute-20260612-1307
     {
         id: 1,
@@ -907,6 +988,7 @@ export const handlers = [
                         quantity: order.quantity,
                         avgPrice: order.priceLimit ?? '0',
                         currentPrice: order.priceLimit ?? '0',
+                        stopPrice: null,
                         openedAt: new Date().toISOString(),
                         status: 'open',
                     });
@@ -935,6 +1017,23 @@ export const handlers = [
             case 'config': {
                 const key = body.key as string;
                 const value = body.value;
+                const bounds = NUMERIC_BOUNDS[key];
+                if (bounds) {
+                    if (
+                        typeof value !== 'number' ||
+                        !Number.isFinite(value) ||
+                        value < bounds.min ||
+                        value > bounds.max ||
+                        (bounds.integer === true && !Number.isInteger(value))
+                    ) {
+                        return HttpResponse.json(
+                            {
+                                error: `${key} must be ${bounds.integer ? 'an integer ' : ''}between ${bounds.min} and ${bounds.max}`,
+                            },
+                            { status: 400 },
+                        );
+                    }
+                }
                 const entry = configEntries.find((c) => c.key === key);
                 if (entry) {
                     entry.value = value as string | number | boolean;
@@ -952,9 +1051,11 @@ export const handlers = [
             case 'watchlist': {
                 const action = body.action as string;
                 if (action === 'add') {
-                    if (watchlist.length >= 5) {
+                    if (watchlist.length >= MAX_WATCHLIST_SIZE) {
                         return HttpResponse.json(
-                            { error: '감시 종목은 최대 5개까지 설정 가능합니다' },
+                            {
+                                error: `감시 종목은 최대 ${MAX_WATCHLIST_SIZE}개까지 설정 가능합니다`,
+                            },
                             { status: 400 },
                         );
                     }

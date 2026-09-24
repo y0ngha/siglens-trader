@@ -23,8 +23,9 @@ export default defineConfig({
                 'api/analysis.ts',
                 // 2026-08-21 감사 대응: 진입·청산 판정을 실제로 내리는 순수 모듈이
                 // 측정 대상 밖이라 90% 기준이 "측정"이 아니라 "구성"으로 충족되고 있었다.
-                'lib/strategy/entry-zone.ts',
-                'lib/strategy/risk-manager.ts',
+                // 일봉 눌림매수의 판정 모듈(docs/specs/2026-09-24-daily-mean-reversion-design.md §9).
+                'lib/strategy/mean-reversion.ts',
+                'lib/strategy/daily-loss.ts',
             ],
             exclude: [
                 'lib/trading/**/*.test.ts',

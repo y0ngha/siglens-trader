@@ -134,6 +134,13 @@
       "when": 1788430862064,
       "tag": "0018_flawless_puck",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790252579872,
+      "tag": "0019_serious_big_bertha",
+      "breakpoints": true
     }
   ]
 }
