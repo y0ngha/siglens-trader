@@ -41,6 +41,7 @@ const mockPositions = [
         quantity: 5,
         avgPrice: '189.50',
         currentPrice: '195.20',
+        stopPrice: '180.00',
         openedAt: '2026-05-21T10:00:00Z',
         status: 'open',
     },
@@ -51,6 +52,7 @@ const mockPositions = [
         quantity: 3,
         avgPrice: '875.20',
         currentPrice: '892.50',
+        stopPrice: null,
         openedAt: '2026-05-19T10:00:00Z',
         status: 'open',
     },
@@ -127,10 +129,7 @@ describe('StatusPage', () => {
         mockedApi.getCronRuns.mockResolvedValue({ runs: [] });
         mockedApi.getCronDecisions.mockResolvedValue({ decisions: [] });
         mockedApi.getConfig.mockResolvedValue({
-            config: [
-                { key: 'take_profit_percent', value: 5, updatedAt: '' },
-                { key: 'stop_loss_percent', value: 3, updatedAt: '' },
-            ],
+            config: [{ key: 'mr_max_hold_days', value: 10, updatedAt: '' }],
             watchlist: [
                 { id: 1, symbol: 'AAPL', companyName: 'Apple Inc.', enabled: true, createdAt: '' },
                 {
@@ -595,9 +594,9 @@ describe('StatusPage', () => {
         expect(screen.getAllByText('SYM6')).toHaveLength(1); // recent trades only
     });
 
-    // --- Gate-blocked decisions alert tests (AI trade gate — no trade row is created) ---
+    // --- "오늘의 판단" — latest execute run's decision distribution (§7, sizing gate removed) ---
 
-    it('shows gate 알림 section when the latest execute run has gate-blocked decisions', async () => {
+    it('shows 오늘의 판단 counts from the latest execute run decisions', async () => {
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getCronRuns.mockResolvedValue({
             runs: [
@@ -623,11 +622,23 @@ describe('StatusPage', () => {
                     runId: 'run-exec-1',
                     cronType: 'execute',
                     symbol: 'AMZN',
-                    action: 'entry_deferred',
+                    action: 'mr_buy',
+                    executed: true,
+                    score: null,
+                    reason: null,
+                    detail: {},
+                    createdAt: new Date().toISOString(),
+                },
+                {
+                    id: 502,
+                    runId: 'run-exec-1',
+                    cronType: 'execute',
+                    symbol: 'MSFT',
+                    action: 'mr_skip_budget',
                     executed: false,
-                    score: '71.0',
-                    reason: '신호 71/100 — 매수',
-                    detail: { gate: { reason: '현금 여유 부족으로 이번 틱 진입 보류' } },
+                    score: null,
+                    reason: null,
+                    detail: {},
                     createdAt: new Date().toISOString(),
                 },
             ],
@@ -636,15 +647,15 @@ describe('StatusPage', () => {
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('게이트 알림')).toBeInTheDocument();
+            expect(screen.getByText('오늘의 판단')).toBeInTheDocument();
         });
 
-        expect(screen.getByText('AMZN')).toBeInTheDocument();
-        expect(screen.getByText('진입 보류')).toBeInTheDocument();
-        expect(screen.getByText('현금 여유 부족으로 이번 틱 진입 보류')).toBeInTheDocument();
+        expect(screen.getByText('매수 1')).toBeInTheDocument();
+        expect(screen.getByText('예산 부족 1')).toBeInTheDocument();
+        expect(screen.getByText('한도 차단 0')).toBeInTheDocument();
     });
 
-    it('does not show gate 알림 section when the latest run has no gate-blocked decisions', async () => {
+    it('shows the 국면 필터로 진입 없음 tag when mr_regime_off occurred', async () => {
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getCronRuns.mockResolvedValue({
             runs: [
@@ -666,13 +677,13 @@ describe('StatusPage', () => {
         mockedApi.getCronDecisions.mockResolvedValue({
             decisions: [
                 {
-                    id: 502,
+                    id: 503,
                     runId: 'run-exec-1',
                     cronType: 'execute',
-                    symbol: 'AAPL',
-                    action: 'buy',
-                    executed: true,
-                    score: '82.0',
+                    symbol: null,
+                    action: 'mr_regime_off',
+                    executed: false,
+                    score: null,
                     reason: null,
                     detail: {},
                     createdAt: new Date().toISOString(),
@@ -683,13 +694,11 @@ describe('StatusPage', () => {
         renderWithQuery(<StatusPage />);
 
         await waitFor(() => {
-            expect(screen.getByText('시스템 상태')).toBeInTheDocument();
+            expect(screen.getByText('국면 필터로 진입 없음')).toBeInTheDocument();
         });
-
-        expect(screen.queryByText('게이트 알림')).not.toBeInTheDocument();
     });
 
-    it('does not show gate 알림 section when there is no execute run yet', async () => {
+    it('does not show 오늘의 판단 section when there is no execute run yet', async () => {
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getCronRuns.mockResolvedValue({ runs: [] });
 
@@ -699,7 +708,7 @@ describe('StatusPage', () => {
             expect(screen.getByText('시스템 상태')).toBeInTheDocument();
         });
 
-        expect(screen.queryByText('게이트 알림')).not.toBeInTheDocument();
+        expect(screen.queryByText('오늘의 판단')).not.toBeInTheDocument();
         expect(mockedApi.getCronDecisions).not.toHaveBeenCalled();
     });
 
@@ -829,14 +838,58 @@ describe('StatusPage', () => {
 
         expect(screen.getByTestId('position-targets-table')).toBeInTheDocument();
 
-        // Mobile cards: each position has label:value pairs
+        // Mobile cards: each position shows the disaster stop and the exit rule text
         const mobileSection = container.querySelector('[data-testid="position-targets-mobile"]')!;
         expect(mobileSection).toHaveTextContent('AAPL');
         expect(mobileSection).toHaveTextContent('NVDA');
         expect(mobileSection).toHaveTextContent('매수가');
         expect(mobileSection).toHaveTextContent('현재가');
-        expect(mobileSection).toHaveTextContent('익절');
-        expect(mobileSection).toHaveTextContent('손절');
+        expect(mobileSection).toHaveTextContent('청산조건');
+    });
+
+    // --- Disaster stop display (from positions.stopPrice, §3/§6) ---
+
+    it('shows the disaster stop price for a position with a stopPrice', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('position-targets-mobile')).toBeInTheDocument();
+        });
+
+        expect(screen.getAllByText('손절 $180.00').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('shows "손절 없음" for a position with a null stopPrice', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('position-targets-mobile')).toBeInTheDocument();
+        });
+
+        expect(screen.getAllByText('손절 없음').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('shows the exit rule text using mr_max_hold_days from config', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(mockPositions);
+        mockedApi.getConfig.mockResolvedValue({
+            config: [{ key: 'mr_max_hold_days', value: 7, updatedAt: '' }],
+            watchlist: [],
+            analysis: [],
+            notification: [],
+        });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getAllByText('5일선 회복 또는 7거래일').length).toBeGreaterThanOrEqual(1);
+        });
     });
 
     // --- Responsive layout tests ---

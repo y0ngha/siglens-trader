@@ -8,14 +8,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
-type CronTypeFilter =
-    | 'all'
-    | 'technical'
-    | 'news'
-    | 'options'
-    | 'fundamental'
-    | 'execute'
-    | 'reconcile';
+type CronTypeFilter = 'all' | 'execute' | 'review' | 'reconcile';
 
 type StatusFilter = 'all' | 'completed' | 'skipped' | 'error' | 'running';
 
@@ -82,6 +75,19 @@ function readGateDetail(detail: unknown): GateInfo | null {
     };
 }
 
+type MrDetail = {
+    rsi2: number;
+    rank: number | null;
+};
+
+/** Safely read `detail.mr` (일봉 RSI(2) 전략 판단 근거, §7) from an untyped decision detail blob. */
+function readMrDetail(detail: unknown): MrDetail | null {
+    if (!isRecord(detail) || !isRecord(detail.mr)) return null;
+    const mr = detail.mr;
+    if (typeof mr.rsi2 !== 'number') return null;
+    return { rsi2: mr.rsi2, rank: typeof mr.rank === 'number' ? mr.rank : null };
+}
+
 function timeAgo(dateStr: string): string {
     const diff = Date.now() - new Date(dateStr).getTime();
     const minutes = Math.floor(diff / 60_000);
@@ -137,6 +143,8 @@ function cronTypeLabel(type: string): string {
             return '펀더멘털';
         case 'execute':
             return '실행';
+        case 'review':
+            return 'AI 리뷰';
         case 'reconcile':
             return '정합';
         default:
@@ -148,6 +156,8 @@ function cronTypeChipClass(type: string): string {
     switch (type) {
         case 'execute':
             return 'bg-blue-500/10 text-blue-400';
+        case 'review':
+            return 'bg-purple-500/10 text-purple-400';
         case 'reconcile':
             return 'bg-violet-500/10 text-violet-400';
         case 'technical':
@@ -232,19 +242,67 @@ function actionChipClass(action: string): string {
     switch (action) {
         case 'buy':
         case 'average_in':
+        case 'mr_buy':
+        case 'reviewed':
             return 'bg-green-500/10 text-green-400';
         case 'sell':
         case 'error':
         case 'gate_error':
+        case 'mr_stop_atr':
+        case 'mr_data_error':
+        case 'mr_forced_exit':
+        case 'review_error':
             return 'bg-red-500/10 text-red-400';
         case 'gate_skipped_deadline':
         case 'entry_blocked':
+        case 'mr_skip_breaker':
             return 'bg-orange-500/10 text-orange-400';
         case 'entry_deferred':
         case 'exit_deferred':
+        case 'mr_regime_off':
+        case 'mr_skip_budget':
             return 'bg-yellow-500/10 text-yellow-400';
+        case 'mr_exit_ma5':
+        case 'mr_exit_time':
+            return 'bg-blue-500/10 text-blue-400';
         default:
             return 'bg-neutral-700 text-neutral-400';
+    }
+}
+
+/**
+ * 새 전략(mr_*)·AI 리뷰 액션의 한글 라벨. 구 액션(buy/hold/entry_blocked 등)은 매핑이
+ * 없으므로 원문을 그대로 보여준다 — 과거 결정 행이 화면에서 다른 문구로 바뀌면 감사 로그와
+ * 어긋난다.
+ */
+function decisionActionLabel(action: string): string {
+    switch (action) {
+        case 'mr_buy':
+            return '매수';
+        case 'mr_skip_budget':
+            return '예산 부족';
+        case 'mr_skip_breaker':
+            return '한도 차단';
+        case 'mr_regime_off':
+            return '국면 필터';
+        case 'mr_hold':
+            return '신호 없음';
+        case 'mr_exit_ma5':
+            return 'MA5 회복 청산';
+        case 'mr_exit_time':
+            return '보유기간 청산';
+        case 'mr_stop_atr':
+            return '재난 손절';
+        case 'mr_data_error':
+            return '데이터 오류';
+        case 'mr_forced_exit':
+            return '한도 강제청산';
+        case 'reviewed':
+            return 'AI 리뷰';
+        case 'review_error':
+            return 'AI 리뷰 오류';
+        default:
+            return action;
     }
 }
 
@@ -280,6 +338,13 @@ function parseSummary(cronType: string, summary: unknown): string {
             if (typeof s.symbolsEvaluated === 'number') {
                 parts.push(`${s.symbolsEvaluated}종목`);
             }
+            // 판단 단계가 하루 한 번으로 모인 뒤(§4.1), 이 틱이 그 판단을 실제로 돌렸는지가
+            // 손절 확인만 하고 지나간 틱과 구분되는 핵심 신호다(cron-health §6 참조).
+            if (s.decisionPhase === 'done') parts.push('판단');
+            if (typeof s.todayUnrealizedChange === 'number') {
+                const sign = s.todayUnrealizedChange >= 0 ? '+' : '';
+                parts.push(`평가손익 ${sign}${s.todayUnrealizedChange.toFixed(2)}`);
+            }
             if (s.decisionsByAction && typeof s.decisionsByAction === 'object') {
                 const dba = s.decisionsByAction as Record<string, number>;
                 const entries = Object.entries(dba)
@@ -289,6 +354,13 @@ function parseSummary(cronType: string, summary: unknown): string {
                 if (entries.length > 0) parts.push(entries.join('·'));
             }
             return parts.join(' / ');
+        }
+
+        if (cronType === 'review') {
+            const parts: string[] = [];
+            if (typeof s.pending === 'number') parts.push(`대상 ${s.pending}`);
+            if (typeof s.processed === 'number') parts.push(`처리 ${s.processed}`);
+            return parts.join(' · ');
         }
 
         if (isAnalysisCronType(cronType)) {
@@ -446,7 +518,7 @@ function DecisionsList({ runId }: { runId: string }) {
                         <span
                             className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${actionChipClass(decision.action)}`}
                         >
-                            {decision.action}
+                            {decisionActionLabel(decision.action)}
                         </span>
                         {/* EXEC badge */}
                         {decision.executed ? (
@@ -470,6 +542,17 @@ function DecisionsList({ runId }: { runId: string }) {
                         </p>
                     )}
                     {(() => {
+                        // 신 전략 결정은 detail.mr만 있다 — 구 컨플루언스 점수 분해는 렌더하지
+                        // 않는다(과거 행에는 애초에 mr이 없으니 아래 분기로 자연히 넘어간다).
+                        const mr = readMrDetail(decision.detail);
+                        if (mr) {
+                            return (
+                                <span className="font-mono text-[10px] leading-relaxed text-neutral-500">
+                                    RSI2 {mr.rsi2.toFixed(1)}
+                                    {mr.rank !== null && ` · 순위 ${mr.rank}`}
+                                </span>
+                            );
+                        }
                         const components = readScoreComponents(decision.detail);
                         const gate = readGateDetail(decision.detail);
                         if (components || gate) {
@@ -636,11 +719,8 @@ export function CronRunsPage() {
                     {(
                         [
                             ['all', '전체'],
-                            ['technical', '기술'],
-                            ['news', '뉴스'],
-                            ['options', '옵션'],
-                            ['fundamental', '펀더멘털'],
                             ['execute', '실행'],
+                            ['review', 'AI 리뷰'],
                             ['reconcile', '정합'],
                         ] as const
                     ).map(([value, label]) => (

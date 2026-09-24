@@ -19,26 +19,21 @@ export async function seed() {
     const db = drizzle(sql);
 
     console.log('Seeding default config...');
+    // 일봉 RSI(2) 눌림매수 기본값(docs/specs/2026-09-24-daily-mean-reversion-design.md §6).
+    // 예치금 $25k · 종목당 $5k = 동시 5슬롯.
     const defaults = [
         { key: 'trading_mode', value: 'dry_run' },
-        { key: 'max_position_size', value: 1000 },
-        { key: 'max_total_exposure', value: 5000 },
-        { key: 'stop_loss_percent', value: 3 },
-        { key: 'take_profit_percent', value: 5 },
-        { key: 'buy_threshold', value: 70 },
-        { key: 'sell_threshold', value: 30 },
-        { key: 'analysis_timeframe', value: '1Hour' },
-        // `score_weights`는 심지 않는다. 이 행이 있으면 `WEIGHTS_BY_TIMEFRAME`이 통째로
-        // 무력화된다 — execute는 `{ ...weightsForTimeframe(tf), ...stored }`로 병합하므로
-        // 6키가 다 찬 행은 프로파일을 한 키도 남기지 않는다. 그러면 `15Min`으로 바꿔도
-        // 1Hour 가중치로 매매한다(문서가 약속한 "짧은 타임프레임은 가격 행동에 무게").
-        // 운영자가 대시보드/API로 명시 저장한 값만 프로파일을 이겨야 한다.
-        { key: 'fixed_exit_enabled', value: false },
         { key: 'trading_enabled', value: true },
+        { key: 'max_position_size', value: 5000 },
+        { key: 'max_total_exposure', value: 25000 },
         { key: 'max_trades_per_day', value: 20 },
         { key: 'max_daily_loss_usd', value: 500 },
-        // 신규 진입 허용 시간 창 (ET). `{ start: '00:00', end: '24:00' }`이면 제한 없음.
-        { key: 'entry_window', value: { start: '11:00', end: '15:00' } },
+        { key: 'dry_run_cash_usd', value: 25000 },
+        { key: 'mr_rsi_entry', value: 10 },
+        { key: 'mr_max_hold_days', value: 10 },
+        { key: 'mr_stop_atr', value: 5 },
+        { key: 'mr_regime_filter', value: true },
+        { key: 'dry_run_cost_bps', value: 10 },
     ];
     for (const d of defaults) {
         await db
@@ -48,6 +43,7 @@ export async function seed() {
     }
 
     console.log('Seeding analysis model configs...');
+    // AI 진입 리뷰(기록 전용)가 쓰는 분석 3종과 리뷰 모델(§5).
     const models = [
         {
             analysisType: 'technical',
@@ -55,18 +51,7 @@ export async function seed() {
             enabled: true,
             useByok: false,
         },
-        {
-            analysisType: 'news',
-            modelId: 'deepseek-v4.1-flash',
-            enabled: true,
-            useByok: false,
-        },
-        {
-            analysisType: 'options',
-            modelId: 'deepseek-v4.1-flash',
-            enabled: true,
-            useByok: false,
-        },
+        { analysisType: 'news', modelId: 'deepseek-v4.1-flash', enabled: true, useByok: false },
         {
             analysisType: 'fundamental',
             modelId: 'deepseek-v4.1-flash',
@@ -74,7 +59,7 @@ export async function seed() {
             useByok: false,
         },
         {
-            analysisType: 'congress',
+            analysisType: 'entry_review',
             modelId: 'deepseek-v4.1-flash',
             enabled: true,
             useByok: false,
@@ -249,7 +234,7 @@ export async function seed() {
     }
 
     console.log('Seeding mock analysis results...');
-    const analysisTypes = ['technical', 'news', 'options', 'fundamental', 'congress'] as const;
+    const analysisTypes = ['technical', 'news', 'fundamental'] as const;
     for (const symbol of ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOGL']) {
         for (const type of analysisTypes) {
             await db.insert(analysisResults).values({

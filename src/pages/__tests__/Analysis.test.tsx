@@ -7,18 +7,11 @@ import { api } from '@/lib/api';
 vi.mock('@/lib/api', () => ({
     api: {
         getAnalysis: vi.fn(),
-        getConfig: vi.fn(),
         triggerAnalysis: vi.fn(),
     },
 }));
 
 const mockedApi = vi.mocked(api);
-
-function mockTimeframe(value: string) {
-    mockedApi.getConfig.mockResolvedValue({
-        config: [{ key: 'analysis_timeframe', value }],
-    } as never);
-}
 
 function renderWithQuery(component: React.ReactElement) {
     const queryClient = new QueryClient({
@@ -30,7 +23,6 @@ function renderWithQuery(component: React.ReactElement) {
 describe('AnalysisPage', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        mockTimeframe('1Hour');
     });
 
     it('shows loading skeleton initially', () => {
@@ -72,7 +64,7 @@ describe('AnalysisPage', () => {
 
         expect(screen.getByText('AAPL')).toBeInTheDocument();
         expect(screen.getByText('TSLA')).toBeInTheDocument();
-        expect(screen.getAllByText('기술적')).toHaveLength(2);
+        expect(screen.getAllByText('기술적 (일봉)')).toHaveLength(2);
         expect(screen.getByText('뉴스')).toBeInTheDocument();
         expect(screen.getByText('강세')).toBeInTheDocument();
         expect(screen.getByText('약세')).toBeInTheDocument();
@@ -120,16 +112,16 @@ describe('AnalysisPage', () => {
         expect(screen.getByText('중립')).toBeInTheDocument();
     });
 
-    // --- Staleness indicator tests ---
+    // --- Staleness indicator tests (single 24h threshold for all types) ---
 
-    it('shows "오래됨" badge for stale analysis (older than 4 hours)', async () => {
+    it('shows "오래됨" badge for stale analysis (older than 24 hours)', async () => {
         mockedApi.getAnalysis.mockResolvedValue([
             {
                 id: 1,
                 symbol: 'AAPL',
                 analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
             },
         ]);
 
@@ -140,14 +132,14 @@ describe('AnalysisPage', () => {
         });
     });
 
-    it('does not show "오래됨" badge for fresh analysis (less than 4 hours)', async () => {
+    it('does not show "오래됨" badge for fresh analysis (less than 24 hours)', async () => {
         mockedApi.getAnalysis.mockResolvedValue([
             {
                 id: 1,
                 symbol: 'AAPL',
                 analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+                createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
             },
         ]);
 
@@ -160,6 +152,24 @@ describe('AnalysisPage', () => {
         expect(screen.queryByText('오래됨')).not.toBeInTheDocument();
     });
 
+    it('applies the same 24h staleness threshold to non-technical analysis', async () => {
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'news',
+                result: JSON.stringify({ signal: 'neutral' }),
+                createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('오래됨')).toBeInTheDocument();
+        });
+    });
+
     it('uses yellow border for stale analysis group', async () => {
         mockedApi.getAnalysis.mockResolvedValue([
             {
@@ -167,7 +177,7 @@ describe('AnalysisPage', () => {
                 symbol: 'AAPL',
                 analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
             },
         ]);
 
@@ -190,7 +200,7 @@ describe('AnalysisPage', () => {
                 result: JSON.stringify({ signal: 'bullish' }),
                 createdAt: new Date().toISOString(),
                 analyzedAt: new Date().toISOString(),
-                sourceAnalyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                sourceAnalyzedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
             },
         ]);
 
@@ -199,7 +209,7 @@ describe('AnalysisPage', () => {
         await waitFor(() => {
             expect(screen.getByText('오래됨')).toBeInTheDocument();
         });
-        expect(screen.getByText('5시간 전')).toHaveClass('text-yellow-500');
+        expect(screen.getByText('1일 전')).toHaveClass('text-yellow-500');
     });
 
     it('falls back from null sourceAnalyzedAt to analyzedAt', async () => {
@@ -210,7 +220,7 @@ describe('AnalysisPage', () => {
                 analysisType: 'technical',
                 result: JSON.stringify({ signal: 'bullish' }),
                 createdAt: new Date().toISOString(),
-                analyzedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+                analyzedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
                 sourceAnalyzedAt: null,
             },
         ]);
@@ -220,68 +230,7 @@ describe('AnalysisPage', () => {
         await waitFor(() => {
             expect(screen.getByText('오래됨')).toBeInTheDocument();
         });
-        expect(screen.getByText('5시간 전')).toHaveClass('text-yellow-500');
-    });
-
-    it('marks technical analysis stale at the 1Hour timeframe limit (2h), not the old 4h', async () => {
-        mockTimeframe('1Hour');
-        // 3h old: fresh under the old 4h rule, but stale under the 1Hour→2h execute gate
-        mockedApi.getAnalysis.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                analysisType: 'technical',
-                result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-            },
-        ]);
-
-        renderWithQuery(<AnalysisPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('오래됨')).toBeInTheDocument();
-        });
-    });
-
-    it('applies the tighter 15Min limit (45m) to technical analysis', async () => {
-        mockTimeframe('15Min');
-        // 1h old: stale under 15Min→45m, even though fresh under 1Hour→2h
-        mockedApi.getAnalysis.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                analysisType: 'technical',
-                result: JSON.stringify({ signal: 'bullish' }),
-                createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-            },
-        ]);
-
-        renderWithQuery(<AnalysisPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('오래됨')).toBeInTheDocument();
-        });
-    });
-
-    it('keeps the default 4h threshold for non-technical analysis', async () => {
-        mockTimeframe('1Hour');
-        // 3h old news: not gated by the technical timeframe limit, stays fresh under 4h
-        mockedApi.getAnalysis.mockResolvedValue([
-            {
-                id: 1,
-                symbol: 'AAPL',
-                analysisType: 'news',
-                result: JSON.stringify({ signal: 'neutral' }),
-                createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-            },
-        ]);
-
-        renderWithQuery(<AnalysisPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('AAPL')).toBeInTheDocument();
-        });
-        expect(screen.queryByText('오래됨')).not.toBeInTheDocument();
+        expect(screen.getByText('1일 전')).toHaveClass('text-yellow-500');
     });
 
     // --- Re-analysis trigger visibility ---
@@ -369,5 +318,28 @@ describe('AnalysisPage', () => {
         await waitFor(() => {
             expect(screen.getByText('강세')).toBeInTheDocument();
         });
+    });
+
+    // --- entry_review type + fallback label ---
+
+    it('renders an entry_review row with the AI review note', async () => {
+        mockedApi.getAnalysis.mockResolvedValue([
+            {
+                id: 1,
+                symbol: 'AAPL',
+                analysisType: 'entry_review',
+                result: JSON.stringify({ signal: 'neutral' }),
+                createdAt: new Date().toISOString(),
+            },
+        ]);
+
+        renderWithQuery(<AnalysisPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        // 새 타입 라벨이 없으므로 원문 그대로(fallback) 렌더된다.
+        expect(screen.getByText('entry_review')).toBeInTheDocument();
     });
 });

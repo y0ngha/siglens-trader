@@ -1,6 +1,7 @@
 /**
  * Status page tests — portfolio display and position targets.
- * Focuses on computePositionTargets correctness: long vs short side handling.
+ * Focuses on the disaster-stop display (positions.stopPrice) and profitable-direction
+ * coloring for long vs short positions (computePositionView).
  */
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
@@ -32,10 +33,7 @@ const MOCK_STATUS: StatusResponse = {
 };
 
 const MOCK_CONFIG = {
-    config: [
-        { key: 'take_profit_percent', value: 5 },
-        { key: 'stop_loss_percent', value: 3 },
-    ],
+    config: [{ key: 'mr_max_hold_days', value: 10 }],
     watchlist: [],
 };
 
@@ -47,6 +45,7 @@ function makePosition(overrides: Partial<Position>): Position {
         quantity: 10,
         avgPrice: '100.00',
         currentPrice: '105.00',
+        stopPrice: '92.00',
         openedAt: new Date().toISOString(),
         status: 'open',
         ...overrides,
@@ -66,46 +65,37 @@ function renderStatus() {
     );
 }
 
-describe('StatusPage — position targets long/short', () => {
+describe('StatusPage — disaster stop + exit rule display', () => {
     beforeEach(() => {
         mockedApi.getStatus.mockResolvedValue(MOCK_STATUS);
         mockedApi.getTrades.mockResolvedValue([]);
         mockedApi.getConfig.mockResolvedValue(MOCK_CONFIG);
     });
 
-    it('long position: TP > avg, SL < avg', async () => {
-        // avg=100, TP=5% => 105, SL=3% => 97
-        const longPos = makePosition({
-            side: 'long',
+    it('shows the disaster stop from positions.stopPrice and the exit rule text', async () => {
+        const pos = makePosition({
             avgPrice: '100.00',
             currentPrice: '105.00',
+            stopPrice: '92.00',
         });
-        mockedApi.getPositions.mockResolvedValue([longPos]);
+        mockedApi.getPositions.mockResolvedValue([pos]);
 
         renderStatus();
 
-        // Wait for desktop table or mobile cards to render
-        const tpCell = await screen.findAllByText('$105.00');
-        const slCell = await screen.findAllByText('$97.00');
-        expect(tpCell.length).toBeGreaterThan(0);
-        expect(slCell.length).toBeGreaterThan(0);
+        const stopCells = await screen.findAllByText('손절 $92.00');
+        const exitRuleCells = screen.getAllByText('5일선 회복 또는 10거래일');
+        expect(stopCells.length).toBeGreaterThan(0);
+        expect(exitRuleCells.length).toBeGreaterThan(0);
     });
 
-    it('short position: TP < avg, SL > avg', async () => {
-        // avg=100, short: TP = 100*(1-5/100)=95, SL = 100*(1+3/100)=103
-        const shortPos = makePosition({
-            side: 'short',
-            avgPrice: '100.00',
-            currentPrice: '95.00',
-        });
-        mockedApi.getPositions.mockResolvedValue([shortPos]);
+    it('shows "손절 없음" when stopPrice is null', async () => {
+        const pos = makePosition({ stopPrice: null });
+        mockedApi.getPositions.mockResolvedValue([pos]);
 
         renderStatus();
 
-        const tpCell = await screen.findAllByText('$95.00');
-        const slCell = await screen.findAllByText('$103.00');
-        expect(tpCell.length).toBeGreaterThan(0);
-        expect(slCell.length).toBeGreaterThan(0);
+        const stopCells = await screen.findAllByText('손절 없음');
+        expect(stopCells.length).toBeGreaterThan(0);
     });
 
     it('short position: current below avg is profitable (green), not red', async () => {

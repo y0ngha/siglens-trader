@@ -6,19 +6,13 @@ import {
     safeAnalysisTrend,
     safeAnalysisSentiment,
     safeAnalysisRiskLevel,
-    safeAnalysisSupport,
-    safeAnalysisResistance,
-    safeAnalysisTargetPrice,
     safeAnalysisPriceScenario,
     safeActionRecommendation,
     safeAnalysisEntryPrices,
     safeAnalysisStopLoss,
-    safeAnalysisTakeProfit,
     safeAnalysisTakeProfitLadder,
     safeAnalysisIndicators,
-    safeFundamentalCategories,
     safeArray,
-    safeNumberArray,
     safePriceLevelArray,
 } from '../safe-extract';
 
@@ -122,98 +116,6 @@ describe('safeAnalysisRiskLevel', () => {
 
     it('returns undefined when riskLevel is not a string', () => {
         expect(safeAnalysisRiskLevel({ riskLevel: 3 })).toBeUndefined();
-    });
-});
-
-describe('safeAnalysisSupport', () => {
-    it('extracts first support level from valid structure', () => {
-        expect(safeAnalysisSupport({ keyLevels: { support: [95, 90, 85] } })).toBe(95);
-    });
-
-    it('returns undefined for null input', () => {
-        expect(safeAnalysisSupport(null)).toBeUndefined();
-    });
-
-    it('returns undefined when keyLevels is missing', () => {
-        expect(safeAnalysisSupport({})).toBeUndefined();
-    });
-
-    it('returns undefined when support is not an array', () => {
-        expect(safeAnalysisSupport({ keyLevels: { support: 95 } })).toBeUndefined();
-    });
-
-    it('returns undefined when support is an empty array', () => {
-        expect(safeAnalysisSupport({ keyLevels: { support: [] } })).toBeUndefined();
-    });
-
-    it('returns undefined when support contains only non-numbers', () => {
-        expect(safeAnalysisSupport({ keyLevels: { support: ['ninety', null] } })).toBeUndefined();
-    });
-
-    it('filters out NaN values in support array', () => {
-        expect(safeAnalysisSupport({ keyLevels: { support: [NaN, 90] } })).toBe(90);
-    });
-
-    it('returns undefined when keyLevels is an array (not object)', () => {
-        expect(safeAnalysisSupport({ keyLevels: [{ support: [95] }] })).toBeUndefined();
-    });
-
-    // Regression: siglens-core's real KeyLevels.support is { price, reason }[], not
-    // number[]. This is the shape that used to make safeAnalysisSupport always
-    // return undefined in production (see lib/strategy/CLAUDE.md).
-    it('extracts price from real core-shaped KeyLevel objects', () => {
-        expect(
-            safeAnalysisSupport({
-                keyLevels: {
-                    support: [
-                        { price: 95, reason: 'prior swing low' },
-                        { price: 90, reason: '200-day MA' },
-                    ],
-                },
-            }),
-        ).toBe(95);
-    });
-});
-
-describe('safeAnalysisResistance', () => {
-    it('extracts first resistance level from valid structure', () => {
-        expect(safeAnalysisResistance({ keyLevels: { resistance: [110, 120] } })).toBe(110);
-    });
-
-    it('returns undefined for null input', () => {
-        expect(safeAnalysisResistance(null)).toBeUndefined();
-    });
-
-    it('returns undefined when resistance is missing', () => {
-        expect(safeAnalysisResistance({ keyLevels: {} })).toBeUndefined();
-    });
-
-    it('returns undefined when keyLevels itself is missing', () => {
-        expect(safeAnalysisResistance({})).toBeUndefined();
-    });
-
-    it('returns undefined when resistance is not an array', () => {
-        expect(safeAnalysisResistance({ keyLevels: { resistance: 'high' } })).toBeUndefined();
-    });
-
-    it('returns undefined for nested nulls', () => {
-        expect(
-            safeAnalysisResistance({ keyLevels: { resistance: [null, undefined] } }),
-        ).toBeUndefined();
-    });
-
-    // Regression: same core-shape bug as safeAnalysisSupport, mirrored here.
-    it('extracts price from real core-shaped KeyLevel objects', () => {
-        expect(
-            safeAnalysisResistance({
-                keyLevels: {
-                    resistance: [
-                        { price: 110, reason: 'prior swing high' },
-                        { price: 120, reason: 'psychological round number' },
-                    ],
-                },
-            }),
-        ).toBe(110);
     });
 });
 
@@ -342,70 +244,6 @@ describe('safeAnalysisPriceScenario', () => {
     });
 });
 
-describe('safeAnalysisTargetPrice', () => {
-    it('extracts the nearest bullish target from the real core shape', () => {
-        expect(
-            safeAnalysisTargetPrice({
-                priceTargets: {
-                    bullish: {
-                        targets: [
-                            { price: 205, basis: '측정 목표' },
-                            { price: 212, basis: '확장 목표' },
-                        ],
-                        condition: '$195 돌파 시',
-                    },
-                },
-            }),
-        ).toBe(205);
-    });
-
-    it('still extracts the legacy bullish target scalar', () => {
-        expect(safeAnalysisTargetPrice({ priceTargets: { bullish: { target: 200 } } })).toBe(200);
-    });
-
-    it('returns undefined for null input', () => {
-        expect(safeAnalysisTargetPrice(null)).toBeUndefined();
-    });
-
-    it('returns undefined when priceTargets is missing', () => {
-        expect(safeAnalysisTargetPrice({})).toBeUndefined();
-    });
-
-    it('returns undefined when bullish is missing', () => {
-        expect(safeAnalysisTargetPrice({ priceTargets: {} })).toBeUndefined();
-    });
-
-    it('returns undefined when target is not a positive number', () => {
-        expect(
-            safeAnalysisTargetPrice({ priceTargets: { bullish: { target: 0 } } }),
-        ).toBeUndefined();
-    });
-
-    it('returns undefined when target is NaN', () => {
-        expect(
-            safeAnalysisTargetPrice({ priceTargets: { bullish: { target: NaN } } }),
-        ).toBeUndefined();
-    });
-
-    it('returns undefined when target is a string', () => {
-        expect(
-            safeAnalysisTargetPrice({ priceTargets: { bullish: { target: '200' } } }),
-        ).toBeUndefined();
-    });
-
-    it('returns undefined when priceTargets is an array', () => {
-        expect(
-            safeAnalysisTargetPrice({ priceTargets: [{ bullish: { target: 200 } }] }),
-        ).toBeUndefined();
-    });
-
-    it('returns undefined when bullish is an array', () => {
-        expect(
-            safeAnalysisTargetPrice({ priceTargets: { bullish: [{ target: 200 }] } }),
-        ).toBeUndefined();
-    });
-});
-
 describe('safeActionRecommendation', () => {
     it('extracts valid enter recommendation', () => {
         const result = safeActionRecommendation({
@@ -527,33 +365,6 @@ describe('safeAnalysisIndicators', () => {
     });
 });
 
-describe('safeFundamentalCategories', () => {
-    it('extracts per-category sentiments', () => {
-        const result = safeFundamentalCategories({
-            categoryAssessments: [
-                { category: 'valuation', sentiment: 'bearish' },
-                { category: 'growth', sentiment: 'neutral' },
-            ],
-        });
-        expect(result).toEqual([{ sentiment: 'bearish' }, { sentiment: 'neutral' }]);
-    });
-
-    it('returns [] when categoryAssessments is missing', () => {
-        expect(safeFundamentalCategories({})).toEqual([]);
-    });
-
-    it('returns [] for null/non-object input', () => {
-        expect(safeFundamentalCategories(null)).toEqual([]);
-    });
-
-    it('skips non-object category entries', () => {
-        const result = safeFundamentalCategories({
-            categoryAssessments: [null, 'x', { sentiment: 'bullish' }],
-        });
-        expect(result).toEqual([{ sentiment: 'bullish' }]);
-    });
-});
-
 describe('safeArray', () => {
     it('extracts array from valid key', () => {
         expect(safeArray({ signals: [1, 2, 3] }, 'signals')).toEqual([1, 2, 3]);
@@ -573,32 +384,6 @@ describe('safeArray', () => {
 
     it('returns empty array when value is empty array', () => {
         expect(safeArray({ signals: [] }, 'signals')).toEqual([]);
-    });
-});
-
-describe('safeNumberArray', () => {
-    it('filters out non-number values', () => {
-        expect(safeNumberArray([1, 'two', 3, null, 4])).toEqual([1, 3, 4]);
-    });
-
-    it('filters out NaN and Infinity', () => {
-        expect(safeNumberArray([NaN, Infinity, -Infinity, 5])).toEqual([5]);
-    });
-
-    it('returns undefined for non-array', () => {
-        expect(safeNumberArray('not-array')).toBeUndefined();
-    });
-
-    it('returns undefined for null', () => {
-        expect(safeNumberArray(null)).toBeUndefined();
-    });
-
-    it('returns undefined for empty array after filtering', () => {
-        expect(safeNumberArray([NaN, 'string', null])).toBeUndefined();
-    });
-
-    it('returns valid numbers from mixed array', () => {
-        expect(safeNumberArray([0, -5, 10])).toEqual([0, -5, 10]);
     });
 });
 
@@ -717,43 +502,6 @@ describe('safeAnalysisStopLoss', () => {
         ).toBeUndefined();
         expect(safeAnalysisStopLoss(null)).toBeUndefined();
         expect(safeAnalysisStopLoss({})).toBeUndefined();
-    });
-});
-
-describe('safeAnalysisTakeProfit', () => {
-    it('가장 가까운 익절가(첫 칸)를 읽는다', () => {
-        expect(
-            safeAnalysisTakeProfit(
-                withAction({ ...baseAction, takeProfitPrices: [170, 185, 200] }),
-            ),
-        ).toBe(170);
-    });
-
-    it('보정값 배열이 있으면 보정값이 이긴다', () => {
-        expect(
-            safeAnalysisTakeProfit(
-                withAction({
-                    ...baseAction,
-                    takeProfitPrices: [90],
-                    reconciledLevels: {
-                        takeProfitPrices: [170],
-                        exit: '',
-                        riskReward: '',
-                        reason: 'AI 익절가가 현재가 아래였습니다',
-                    },
-                }),
-            ),
-        ).toBe(170);
-    });
-
-    it('없거나 전부 비정상이면 undefined', () => {
-        expect(safeAnalysisTakeProfit(withAction(baseAction))).toBeUndefined();
-        expect(
-            safeAnalysisTakeProfit({
-                actionRecommendation: { ...baseAction, takeProfitPrices: [0, -3] },
-            }),
-        ).toBeUndefined();
-        expect(safeAnalysisTakeProfit(null)).toBeUndefined();
     });
 });
 

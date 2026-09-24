@@ -21,7 +21,7 @@ export type AnalysisType = 'technical' | 'news' | 'options' | 'fundamental';
  * 상한을 다시 "적당한 큰 값"으로 고쳐 잡지 않는 이유: 그 값이 얼마여야 하는지 알 방법이
  * 없다. 실측은 58초 성공과 강제중단뿐이라 진짜 필요한 시간의 분포를 모른다. 그래서 예산을
  * **하나로** 줄인다 — 실행 마감(`analysisDeadlineMs`, cron 시작 + 1200초). 그 마감은
- * `_run-analysis-cron.ts`의 `withDeadline`이 런 레벨에서도 강제하므로, 심볼 하나가
+ * `api/cron/_analysis-io.ts`의 `withDeadline`이 런 레벨에서도 강제하므로, 심볼 하나가
  * 매달려도 런은 반드시 끝나고 이 signal이 인플라이트 호출까지 취소한다.
  *
  * 마감이 없으면(테스트/수동 호출) signal도 없다 — core의 자체 예산(DeepSeek 어댑터 1시간,
@@ -119,10 +119,8 @@ export const DEFAULT_ANALYSIS_REASONING = false;
  */
 export const ANALYSIS_REASONING: Readonly<Record<string, boolean>> = {
     technical: false,
-    options: false,
     news: false,
     fundamental: false,
-    congress: false,
 };
 
 /** 해당 분석 타입의 reasoning 설정. 정책이 없으면 {@link DEFAULT_ANALYSIS_REASONING}. */

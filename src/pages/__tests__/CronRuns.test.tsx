@@ -346,10 +346,13 @@ describe('CronRunsPage', () => {
 
         const typeGroup = screen.getByRole('group', { name: '크론 유형 필터' });
         expect(within(typeGroup).getByRole('button', { name: '전체' })).toBeInTheDocument();
-        expect(within(typeGroup).getByRole('button', { name: '기술' })).toBeInTheDocument();
-        expect(within(typeGroup).getByRole('button', { name: '뉴스' })).toBeInTheDocument();
-        expect(within(typeGroup).getByRole('button', { name: '옵션' })).toBeInTheDocument();
-        expect(within(typeGroup).getByRole('button', { name: '펀더멘털' })).toBeInTheDocument();
+        expect(within(typeGroup).getByRole('button', { name: '실행' })).toBeInTheDocument();
+        expect(within(typeGroup).getByRole('button', { name: 'AI 리뷰' })).toBeInTheDocument();
+        expect(within(typeGroup).getByRole('button', { name: '정합' })).toBeInTheDocument();
+        // 시간당 분석 크론(기술·뉴스·옵션·펀더멘털)은 스케줄에서 빠졌으니 필터에도 없다 —
+        // 과거 행은 여전히 '전체'로 조회되고 화면에서 라벨링만 유지된다.
+        expect(within(typeGroup).queryByRole('button', { name: '기술' })).not.toBeInTheDocument();
+        expect(within(typeGroup).queryByRole('button', { name: '뉴스' })).not.toBeInTheDocument();
     });
 
     it('calls api.getCronRuns with type when type filter is clicked', async () => {
@@ -377,17 +380,17 @@ describe('CronRunsPage', () => {
         renderWithQuery(<CronRunsPage />);
 
         await waitFor(() => {
-            expect(screen.getByRole('button', { name: '뉴스' })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'AI 리뷰' })).toBeInTheDocument();
         });
 
         const typeGroup = screen.getByRole('group', { name: '크론 유형 필터' });
 
-        // Select news first
-        await user.click(screen.getByRole('button', { name: '뉴스' }));
+        // Select review first
+        await user.click(screen.getByRole('button', { name: 'AI 리뷰' }));
 
         await waitFor(() => {
             const lastCall = mockedApi.getCronRuns.mock.calls.at(-1);
-            expect(lastCall?.[0]).toMatchObject({ type: 'news' });
+            expect(lastCall?.[0]).toMatchObject({ type: 'review' });
         });
 
         // Then back to 전체 within the type group to disambiguate from status 전체
@@ -798,6 +801,139 @@ describe('CronRunsPage', () => {
         await waitFor(() => {
             expect(screen.getByText(/의사결정 기록 없음/)).toBeInTheDocument();
         });
+    });
+
+    // ─── daily mean-reversion decisions (mr_*) and review cron type ────────────
+
+    it('labels a review cron run and its reviewed decision in Korean', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 20,
+                    runId: 'run-review-1',
+                    cronType: 'review',
+                    status: 'completed',
+                    outcome: 'completed',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 5400,
+                    summary: { pending: 1, processed: 1 },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 301,
+                    runId: 'run-review-1',
+                    cronType: 'review',
+                    symbol: 'AAPL',
+                    action: 'reviewed',
+                    executed: false,
+                    score: null,
+                    reason: '특이 하락 사유 없음',
+                    detail: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        // 요약: 대상 N · 처리 M
+        await waitFor(() => {
+            expect(screen.getByText(/대상 1/)).toBeInTheDocument();
+        });
+        expect(screen.getByText(/처리 1/)).toBeInTheDocument();
+
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+        // 액션 칩 라벨은 'reviewed' 원문이 아니라 한글 'AI 리뷰'다.
+        expect(screen.getAllByText('AI 리뷰').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('labels an mr_buy decision and shows its RSI2/rank detail instead of score components', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 302,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'AAPL',
+                    action: 'mr_buy',
+                    executed: true,
+                    score: null,
+                    reason: 'RSI(2) 8.2 < 10, 가격 > SMA200',
+                    detail: {
+                        mr: {
+                            price: 195.2,
+                            rsi2: 8.2,
+                            sma200: 180.1,
+                            sma5: 190.0,
+                            atr14: 3.1,
+                            rank: 1,
+                        },
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('AAPL')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('매수')).toBeInTheDocument();
+        expect(screen.getByText(/RSI2 8\.2/)).toHaveTextContent('RSI2 8.2 · 순위 1');
+        // 구 컨플루언스 점수 분해나 raw JSON 폴백은 렌더되지 않는다.
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
+    it('shows the execute summary 판단 marker and unrealized change when decisionPhase is done', async () => {
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [
+                {
+                    id: 21,
+                    runId: 'run-mr-exec-1',
+                    cronType: 'execute',
+                    status: 'completed',
+                    outcome: 'completed',
+                    startedAt: new Date().toISOString(),
+                    finishedAt: new Date().toISOString(),
+                    durationMs: 3210,
+                    summary: {
+                        symbolsEvaluated: 3,
+                        decisionPhase: 'done',
+                        todayUnrealizedChange: 42.5,
+                    },
+                    error: null,
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText(/판단/)).toBeInTheDocument();
+        });
+        expect(screen.getByText(/평가손익 \+42\.50/)).toBeInTheDocument();
     });
 
     // ─── empty state ────────────────────────────────────────────────────────

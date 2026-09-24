@@ -4,23 +4,16 @@ import { existsSync, readdirSync } from 'node:fs';
 import { app, CRON_JOBS, startCron } from '../app.js';
 
 describe('CRON_JOBS', () => {
-    it('keeps the 8 cron schedules with technical/options on 15-min ticks (UTC)', () => {
+    it('keeps the 4 cron schedules (UTC) — no hourly analysis crons', () => {
         expect(CRON_JOBS.map((j) => [j.name, j.schedule])).toEqual([
-            ['technical', '*/15 13-21 * * 1-5'],
-            // 창(60분)당 틱을 여러 개 둔다 — 하나를 놓쳐도 그 창을 잃지 않는다.
-            // 케이던스 가드가 runner 호출 전에 스킵하므로 잉여 틱의 쿼터 비용은 0이다.
-            ['news', '*/15 13-21 * * 1-5'],
-            ['options', '*/15 13-21 * * 1-5'],
-            ['fundamental', '0 15-21 * * 1-5'],
-            ['congress', '0 16-21 * * 1-5'],
-            // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가
-            // 정한다. :07 오프셋은 종전 `7 13-21`에서 그대로 이어받았다 — 간격 60분이면
-            // 실행 시각이 종전과 같다.
+            // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가 정한다.
             ['execute', '2-59/5 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
             // Daily, not weekday-only: Friday-night events must reach the operator on
             // Saturday morning. 01:00 UTC = 10:00 KST, just after quiet hours end.
             ['digest', '0 1 * * *'],
+            // 판단 창(ET 15:40, 반일장 12:40) 이후를 덮는다.
+            ['review', '*/10 16-21 * * 1-5'],
         ]);
     });
 
@@ -88,7 +81,7 @@ describe('app routing', () => {
     it('mounts cron endpoints behind the CRON_SECRET gate (401, not 404)', async () => {
         // No CRON_SECRET in the test env → the handler's own auth rejects with 401,
         // which also proves the route is registered (a missing route would 404).
-        const res = await app.request('/api/cron/technical');
+        const res = await app.request('/api/cron/review');
         expect(res.status).toBe(401);
     });
 });

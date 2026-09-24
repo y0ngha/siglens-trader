@@ -66,7 +66,7 @@ export default tseslint.config(
     },
     // Vercel Node 런타임: API 라우트는 명명 HTTP-메서드 export(GET/POST/…)여야 Web Request/Response
     // 모드로 동작한다. `export default`는 레거시 (req,res) 핸들러로 해석되어 런타임 500을 유발한다.
-    // (_lib, _run-analysis-cron 등 `_` 접두 파일은 라우트가 아니므로 제외)
+    // (_lib, _orders, _analysis-io 등 `_` 접두 파일은 라우트가 아니므로 제외)
     {
         files: ['api/**/*.ts'],
         ignores: ['**/__tests__/**', '**/_*.ts'],

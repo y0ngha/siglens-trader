@@ -2,7 +2,6 @@ import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
 import {
     getAllConfig,
-    getConfigValue,
     setConfigValue,
     getAllWatchlist,
     addToWatchlist,
@@ -13,30 +12,15 @@ import {
     getNotificationConfig,
     updateNotificationConfig,
 } from '../lib/db/queries.js';
-import { isAnalysisTimeframe } from '../lib/analysis/timeframe.js';
-import { DEFAULT_BUY_THRESHOLD, DEFAULT_SELL_THRESHOLD } from '../lib/strategy/types.js';
+import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
 
 /**
- * 시간축 정렬 순서. 값 자체는 의미 없고 **대소 비교**만 쓴다 —
- * `confluence_htf`가 `analysis_timeframe`보다 실제로 상위인지 검증하는 용도.
+ * 관심종목 상한. 종전 5는 종목마다 매시간 LLM 분석 5축이 돌던 시절의 비용 상한이었다. 지금은 규칙이
+ * 가격만 보고 AI는 신호가 난 종목에만 불리므로(docs/specs/2026-09-24-daily-mean-reversion-design.md §5)
+ * 종목 수의 비용은 FMP 호출뿐이다. 30은 판단 틱 한 번의 일봉·시세 조회(종목당 2회)가 실행 마감
+ * 안에 여유 있게 끝나는 수다.
  */
-const TIMEFRAME_RANK: Record<string, number> = {
-    '15Min': 1,
-    '30Min': 2,
-    '1Hour': 3,
-    '1Day': 4,
-};
-import {
-    formatEntryWindow,
-    parseEntryWindow,
-    parseTimeOfDay,
-} from '../lib/strategy/entry-window.js';
-import {
-    DEFAULT_EXECUTE_INTERVAL_MIN,
-    EXECUTE_INTERVALS,
-    isExecuteInterval,
-    hasTickInWindow,
-} from '../lib/strategy/execute-interval.js';
+export const MAX_WATCHLIST_SIZE = 30;
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -78,54 +62,42 @@ async function handler(req: Request): Promise<Response> {
             'trading_enabled',
             'max_position_size',
             'max_total_exposure',
-            'stop_loss_percent',
-            'take_profit_percent',
-            'buy_threshold',
-            'sell_threshold',
-            'analysis_timeframe',
-            'score_weights',
-            'fixed_exit_enabled',
             'max_trades_per_day',
             'max_daily_loss_usd',
-            'entry_window',
             'execute_interval_min',
-            'entry_cooldown_min',
-            'min_stop_room_pct',
-            'min_rr',
             'dry_run_cash_usd',
-            'confluence_min',
-            'confluence_exit_min',
-            'confluence_span',
-            'confluence_expected_weight',
-            'confluence_htf',
-            'confluence_htf_mode',
-            'confluence_require_volume',
+            'mr_rsi_entry',
+            'mr_max_hold_days',
+            'mr_stop_atr',
+            'mr_regime_filter',
+            'dry_run_cost_bps',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
             'max_position_size',
             'max_total_exposure',
-            'stop_loss_percent',
-            'take_profit_percent',
-            'buy_threshold',
-            'sell_threshold',
             'max_trades_per_day',
             'max_daily_loss_usd',
-            'entry_cooldown_min',
-            'min_stop_room_pct',
-            'min_rr',
             'dry_run_cash_usd',
-            'confluence_min',
-            'confluence_exit_min',
-            'confluence_span',
-            'confluence_expected_weight',
+            'mr_rsi_entry',
+            'mr_max_hold_days',
+            'mr_stop_atr',
+            'dry_run_cost_bps',
         ]);
 
-        const BOOLEAN_CONFIG_KEYS = new Set([
-            'trading_enabled',
-            'fixed_exit_enabled',
-            'confluence_require_volume',
-        ]);
+        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'mr_regime_filter']);
+
+        /**
+         * 전략 파라미터의 키별 범위(스펙 §6). 양 끝은 "그 값을 넘으면 규칙이 다른 전략이 되는" 지점이다 —
+         * RSI(2) 기준 50은 과매도가 아니라 중립이고, 보유 60거래일은 단기 반전이 아니라 추세 보유다.
+         * 손절 배수 0은 "손절 없음"이라 허용한다. 범위가 없는 숫자 키는 아래 공통 범위(0~1,000,000)를 쓴다.
+         */
+        const NUMERIC_BOUNDS: Record<string, { min: number; max: number; integer?: boolean }> = {
+            mr_rsi_entry: { min: 1, max: 50 },
+            mr_max_hold_days: { min: 1, max: 60, integer: true },
+            mr_stop_atr: { min: 0, max: 20 },
+            dry_run_cost_bps: { min: 0, max: 100 },
+        };
 
         switch (payload.type) {
             case 'config': {
@@ -151,114 +123,9 @@ async function handler(req: Request): Promise<Response> {
                 if (BOOLEAN_CONFIG_KEYS.has(key) && typeof value !== 'boolean') {
                     return Response.json({ error: `${key} must be a boolean` }, { status: 400 });
                 }
-                if (key === 'analysis_timeframe') {
-                    if (!isAnalysisTimeframe(value)) {
-                        return Response.json(
-                            {
-                                error: 'analysis_timeframe must be one of: 15Min, 30Min, 1Hour',
-                            },
-                            { status: 400 },
-                        );
-                    }
-                }
-                if (key === 'score_weights') {
-                    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-                        return Response.json(
-                            { error: 'score_weights must be an object' },
-                            { status: 400 },
-                        );
-                    }
-                    const w = value as Record<string, unknown>;
-                    const requiredKeys = ['technical', 'news', 'options', 'fundamental'];
-                    // `congress` is accepted but not required: it was added after this endpoint
-                    // shipped, so a caller still posting the original four keys must keep
-                    // working (the runtime fills the missing weight from the timeframe profile).
-                    // Without listing it here the unknown-key check below rejects any object
-                    // that does include it — which would make the weight unsettable.
-                    // `confluence`도 같은 이유로 선택 키다.
-                    const optionalKeys = ['congress', 'confluence'];
-                    const knownKeySet = new Set([...requiredKeys, ...optionalKeys]);
-                    const extraKeys = Object.keys(w).filter((k) => !knownKeySet.has(k));
-                    if (extraKeys.length > 0) {
-                        return Response.json(
-                            {
-                                error: `score_weights contains unknown key(s): ${extraKeys.join(', ')}`,
-                            },
-                            { status: 400 },
-                        );
-                    }
-                    const presentKeys = [
-                        ...requiredKeys,
-                        ...optionalKeys.filter((k) => w[k] !== undefined),
-                    ];
-                    for (const k of presentKeys) {
-                        if (
-                            typeof w[k] !== 'number' ||
-                            !Number.isFinite(w[k] as number) ||
-                            (w[k] as number) < 0
-                        ) {
-                            return Response.json(
-                                {
-                                    error: `score_weights.${k} must be a non-negative number`,
-                                },
-                                { status: 400 },
-                            );
-                        }
-                    }
-                    const weightSum = presentKeys.reduce((sum, k) => sum + (w[k] as number), 0);
-                    if (weightSum <= 0) {
-                        return Response.json(
-                            { error: 'score_weights sum must be greater than 0' },
-                            { status: 400 },
-                        );
-                    }
-                }
-                // `parseEntryWindow`를 여기 쓰지 않는 이유: 그건 잘못된 값을 조용히 기본 창으로
-                // 되돌리는 런타임 방어다. API는 거부해야 운영자가 오타를 안다. 'HH:MM' 파싱만
-                // 공유해서 대시보드가 받아준 값을 런타임이 다르게 읽는 일이 없게 한다.
-                if (key === 'entry_window') {
-                    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-                        return Response.json(
-                            { error: 'entry_window must be an object' },
-                            { status: 400 },
-                        );
-                    }
-                    const w = value as Record<string, unknown>;
-                    const extraKeys = Object.keys(w).filter((k) => k !== 'start' && k !== 'end');
-                    if (extraKeys.length > 0) {
-                        return Response.json(
-                            {
-                                error: `entry_window contains unknown key(s): ${extraKeys.join(', ')}`,
-                            },
-                            { status: 400 },
-                        );
-                    }
-                    const startMinute = parseTimeOfDay(w.start);
-                    const endMinute = parseTimeOfDay(w.end);
-                    for (const [k, m] of [
-                        ['start', startMinute],
-                        ['end', endMinute],
-                    ] as const) {
-                        if (m === null) {
-                            return Response.json(
-                                {
-                                    error: `entry_window.${k} must be a "HH:MM" string between 00:00 and 24:00`,
-                                },
-                                { status: 400 },
-                            );
-                        }
-                    }
-                    if ((startMinute as number) >= (endMinute as number)) {
-                        return Response.json(
-                            { error: 'entry_window.start must be earlier than entry_window.end' },
-                            { status: 400 },
-                        );
-                    }
-                }
-                // 실행 간격은 열거값이다 — 60의 약수만 허용한다. 임의의 분을 받으면
-                // `isExecuteTick`의 모듈로가 시(hour) 경계에서 어긋나 실행이 불규칙해진다.
-                // `parseExecuteInterval`(손상된 행을 조용히 기본값으로 되돌리는 런타임 방어)을
-                // 여기 쓰지 않는 이유는 entry_window와 같다 — API는 거부해야 오타가 드러난다.
+                // 실행 간격은 열거값이다(5·10분) — 이유는 `EXECUTE_INTERVALS` 주석. `parseExecuteInterval`
+                // (손상된 행을 조용히 기본값으로 되돌리는 런타임 방어)을 여기 쓰지 않는 이유는, API가
+                // 거부해야 운영자가 오타를 알기 때문이다.
                 if (key === 'execute_interval_min' && !isExecuteInterval(value)) {
                     return Response.json(
                         {
@@ -266,32 +133,6 @@ async function handler(req: Request): Promise<Response> {
                         },
                         { status: 400 },
                     );
-                }
-                // 실행 틱과 진입 창의 교집합이 비면 매수가 영구히 0이 된다.
-                //
-                // 실행 틱은 UTC 분에 고정(`(분 − 7) mod interval === 0`)인데 진입 창은 ET 시:분으로
-                // 임의 지정이라, 예컨대 간격 60분(매시 :07 하나)에 창을 11:10–14:50으로 잡으면
-                // 창 안에 틱이 하나도 없다. 로그에는 `outside_entry_window`만 남아 설정 오류와
-                // 정상 상태가 구분되지 않으므로, 저장 시점에 거부한다.
-                if (key === 'execute_interval_min' || key === 'entry_window') {
-                    const interval =
-                        key === 'execute_interval_min'
-                            ? (value as number)
-                            : ((await getConfigValue<number>(db, 'execute_interval_min')) ??
-                              DEFAULT_EXECUTE_INTERVAL_MIN);
-                    const windowValue =
-                        key === 'entry_window'
-                            ? value
-                            : await getConfigValue<unknown>(db, 'entry_window');
-                    const window = parseEntryWindow(windowValue);
-                    if (!hasTickInWindow(interval, window)) {
-                        return Response.json(
-                            {
-                                error: `실행 주기 ${interval}분과 진입 창 ${formatEntryWindow(window)} (ET)의 교집합이 비어 있어 신규 진입이 영구히 발생하지 않습니다`,
-                            },
-                            { status: 400 },
-                        );
-                    }
                 }
                 if (NUMERIC_CONFIG_KEYS.has(key)) {
                     const MAX_VALUE = 1_000_000;
@@ -308,160 +149,17 @@ async function handler(req: Request): Promise<Response> {
                             { status: 400 },
                         );
                     }
-                }
-                // Logical validation: minimum thresholds for risk parameters
-                // 재진입 쿨다운 상한은 하루(1440분) — 그보다 길면 "오늘은 이 종목 재진입
-                // 없음"이고, 그건 워치리스트에서 빼는 게 맞다.
-                if (key === 'entry_cooldown_min' && (value as number) > 1440) {
-                    return Response.json(
-                        { error: 'entry_cooldown_min must be between 0 and 1440' },
-                        { status: 400 },
-                    );
-                }
-                // 진입가–손절 레벨 최소 간격. 0은 "가드 off"라서 허용하고, 상한은 5%다 —
-                // 그보다 크면 분석이 그어 주는 손절선(폴백은 진입가 − 1.5×ATR)을 상시
-                // 넘어서므로 가드가 아니라 매수 정지 버튼이 된다. 무필 상태는 "신호 없음"과
-                // 로그상 구분되지 않으므로, 그렇게 되는 값은 애초에 저장하지 않는다.
-                // 최소 손익비. 상한 10은 그 위가 사실상 매수 정지다 — 실측 손익비 p90이
-                // 10.62라, 10을 넘기면 진입의 90%가 걸린다. 0은 게이트 off.
-                if (key === 'min_rr' && (value as number) > 10) {
-                    return Response.json(
-                        { error: 'min_rr must be between 0 and 10' },
-                        { status: 400 },
-                    );
-                }
-                if (key === 'min_stop_room_pct' && (value as number) > 5) {
-                    return Response.json(
-                        { error: 'min_stop_room_pct must be between 0 and 5' },
-                        { status: 400 },
-                    );
-                }
-                // 컨플루언스 튜너블 범위. 양 끝 모두 "그 값을 넘으면 축이 제 기능을 잃는" 지점이다.
-                //
-                // **하한 1이 중요하다.** `min`은 진입뿐 아니라 **청산** 트리거의 문턱이기도
-                // 하다(`bearish 가중 계열 >= min`). 0이면 그 비교가 항상 참이라 청산 조건이
-                // `신규 약세 1종 + 종가 < MA50`으로 무너진다 — 보유 종목이 평범한 눌림 신호
-                // 하나에 전량 청산된다. 상한 14는 계열 수라, 넘으면 트리거가 영원히 안 선다.
-                if (key === 'confluence_min' && ((value as number) < 1 || (value as number) > 14)) {
-                    return Response.json(
-                        { error: 'confluence_min must be between 1 and 14' },
-                        { status: 400 },
-                    );
-                }
-                // 청산 문턱은 진입과 **분리돼 있다**. 진입을 조인다고 청산이 따라 조여지면
-                // 리스크 축소 경로가 좁아진다(원칙 7). 하한 1은 진입과 같은 이유 —
-                // 0이면 `bearish >= 0`이 항상 참이라 눌림 신호 하나에 전량 청산된다.
-                if (
-                    key === 'confluence_exit_min' &&
-                    ((value as number) < 1 || (value as number) > 14)
-                ) {
-                    return Response.json(
-                        { error: 'confluence_exit_min must be between 1 and 14' },
-                        { status: 400 },
-                    );
-                }
-                // `span` 상한: 50이면 강세 9계열에서 연속 점수가 95가 되어 트리거 스냅(92)을
-                // 넘어선다 — 트리거와 연속 구간의 구분이 사라지는 지점이다. (연속 점수만으로
-                // 매수 임계 70을 넘지는 못한다. 다른 축이 전부 중립이면 최대 66이다.)
-                if (key === 'confluence_span' && (value as number) > 50) {
-                    return Response.json(
-                        { error: 'confluence_span must be between 0 and 50' },
-                        { status: 400 },
-                    );
-                }
-                if (key === 'confluence_expected_weight' && (value as number) > 1) {
-                    return Response.json(
-                        { error: 'confluence_expected_weight must be between 0 and 1' },
-                        { status: 400 },
-                    );
-                }
-                if (
-                    key === 'confluence_htf' &&
-                    !['15Min', '30Min', '1Hour', '1Day', 'off'].includes(value as string)
-                ) {
-                    return Response.json(
-                        { error: 'confluence_htf must be one of 15Min/30Min/1Hour/1Day/off' },
-                        { status: 400 },
-                    );
-                }
-                // 열거값만 받는다 — 런타임은 모르는 값을 기본 모드로 되돌리는데, 그 폴백은
-                // 손상된 행에 대한 방어이지 운영자의 오타를 숨기는 장치가 아니다.
-                if (
-                    key === 'confluence_htf_mode' &&
-                    !['uptrend', 'notUptrend'].includes(value as string)
-                ) {
-                    return Response.json(
-                        { error: 'confluence_htf_mode must be one of uptrend/notUptrend' },
-                        { status: 400 },
-                    );
-                }
-                // 이름 그대로 **상위** 시간축이어야 한다. `analysis_timeframe`이 1Hour인데
-                // htf를 15Min으로 두면 진입 봉보다 더 잡음이 많은 축에 정렬을 요구하는 것이라
-                // 게이트의 전제가 통째로 뒤집힌다. 두 키가 따로 저장되므로 여기서 교차 검증
-                // 한다 — `execute_interval_min` × `entry_window`와 같은 이유다.
-                // 역방향도 막는다. `confluence_htf`를 쓸 때만 검사하면, 나중에
-                // `analysis_timeframe`을 올려 두 값이 같아지거나 뒤집혀도 아무도 모른다 —
-                // 저장 시점엔 유효했던 조합이 조용히 무효가 되는 경로다.
-                if (key === 'analysis_timeframe') {
-                    const htf = await getConfigValue<string>(db, 'confluence_htf');
+                    const bounds = NUMERIC_BOUNDS[key];
                     if (
-                        typeof htf === 'string' &&
-                        htf !== 'off' &&
-                        (TIMEFRAME_RANK[htf] ?? 0) <= (TIMEFRAME_RANK[value as string] ?? 0)
+                        bounds &&
+                        (value < bounds.min ||
+                            value > bounds.max ||
+                            (bounds.integer === true && !Number.isInteger(value)))
                     ) {
                         return Response.json(
                             {
-                                error: `analysis_timeframe (${String(value)}) must be lower than confluence_htf (${htf}) — 상위 시간축이 진입 봉보다 낮으면 정렬 게이트의 전제가 뒤집힌다`,
+                                error: `${key} must be ${bounds.integer ? 'an integer ' : ''}between ${bounds.min} and ${bounds.max}`,
                             },
-                            { status: 400 },
-                        );
-                    }
-                }
-                if (key === 'confluence_htf' && value !== 'off') {
-                    const current =
-                        (await getConfigValue<string>(db, 'analysis_timeframe')) ?? '1Hour';
-                    if (TIMEFRAME_RANK[value as string] <= (TIMEFRAME_RANK[current] ?? 0)) {
-                        return Response.json(
-                            {
-                                error: `confluence_htf (${String(value)}) must be higher than analysis_timeframe (${current})`,
-                            },
-                            { status: 400 },
-                        );
-                    }
-                }
-                if (key === 'stop_loss_percent' && (value as number) < 1) {
-                    return Response.json(
-                        { error: 'stop_loss_percent must be at least 1' },
-                        { status: 400 },
-                    );
-                }
-                if (key === 'take_profit_percent' && (value as number) < 1) {
-                    return Response.json(
-                        { error: 'take_profit_percent must be at least 1' },
-                        { status: 400 },
-                    );
-                }
-                // Range + logical validation for buy_threshold / sell_threshold
-                // Lower bound (>= 0) is enforced by the generic NUMERIC_CONFIG_KEYS guard above.
-                if (key === 'buy_threshold' || key === 'sell_threshold') {
-                    const numVal = value as number;
-                    if (numVal > 100) {
-                        return Response.json(
-                            { error: `${key} must be between 0 and 100` },
-                            { status: 400 },
-                        );
-                    }
-                    const otherKey = key === 'buy_threshold' ? 'sell_threshold' : 'buy_threshold';
-                    const otherValue = await getConfigValue<number>(db, otherKey);
-                    // 폴백은 상수를 쓴다 — 숫자를 박아 두면 기본값을 바꿀 때 검증만 옛
-                    // 값으로 남아, 새 기본 조합이 스스로의 교차 검증에 걸린다.
-                    const buyT =
-                        key === 'buy_threshold' ? numVal : (otherValue ?? DEFAULT_BUY_THRESHOLD);
-                    const sellT =
-                        key === 'sell_threshold' ? numVal : (otherValue ?? DEFAULT_SELL_THRESHOLD);
-                    if (buyT <= sellT) {
-                        return Response.json(
-                            { error: 'buy_threshold must be greater than sell_threshold' },
                             { status: 400 },
                         );
                     }
@@ -481,9 +179,11 @@ async function handler(req: Request): Promise<Response> {
                         );
                     }
                     const currentWatchlist = await getAllWatchlist(db);
-                    if (currentWatchlist.length >= 5) {
+                    if (currentWatchlist.length >= MAX_WATCHLIST_SIZE) {
                         return Response.json(
-                            { error: '감시 종목은 최대 5개까지 설정 가능합니다' },
+                            {
+                                error: `감시 종목은 최대 ${MAX_WATCHLIST_SIZE}개까지 설정 가능합니다`,
+                            },
                             { status: 400 },
                         );
                     }
@@ -520,12 +220,12 @@ async function handler(req: Request): Promise<Response> {
                         { status: 400 },
                     );
                 }
+                // AI 리뷰(`entry_review`)가 쓰는 분석 3종과 리뷰 모델 자체(스펙 §5).
                 const ALLOWED_ANALYSIS_TYPES = new Set([
                     'technical',
                     'news',
-                    'options',
                     'fundamental',
-                    'trade_gate',
+                    'entry_review',
                 ]);
                 if (!ALLOWED_ANALYSIS_TYPES.has(analysisType)) {
                     return Response.json({ error: 'Unknown analysis type' }, { status: 400 });

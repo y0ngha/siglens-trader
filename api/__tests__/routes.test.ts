@@ -535,7 +535,7 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'stop_loss_percent',
+                key: 'max_daily_loss_usd',
                 value: -5,
             }),
         );
@@ -548,7 +548,7 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'buy_threshold',
+                key: 'max_position_size',
                 value: Infinity,
             }),
         );
@@ -609,100 +609,6 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(400);
     });
 
-    it('accepts a valid entry_window', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'entry_window',
-                value: { start: '11:00', end: '15:00' },
-            }),
-        );
-        expect(res.status).toBe(200);
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'entry_window', {
-            start: '11:00',
-            end: '15:00',
-        });
-    });
-
-    it('accepts an all-day entry_window (the documented off-switch)', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'entry_window',
-                value: { start: '00:00', end: '24:00' },
-            }),
-        );
-        expect(res.status).toBe(200);
-    });
-
-    it('rejects a non-object entry_window', async () => {
-        for (const value of [null, 42, 'abc', ['11:00', '15:00'], true]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'entry_window',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(400);
-            expect((await res.json()).error).toContain('entry_window must be an object');
-        }
-    });
-
-    it('rejects malformed entry_window times', async () => {
-        for (const value of [
-            { start: '11', end: '15:00' },
-            { start: '11:00', end: '25:00' },
-            { start: '11:00', end: '11:60' },
-            { start: 660, end: 900 },
-            { start: '11:00' },
-            { start: '11:00', end: null },
-        ]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'entry_window',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(400);
-            expect((await res.json()).error).toContain('"HH:MM"');
-        }
-    });
-
-    it('rejects entry_window with start >= end', async () => {
-        for (const value of [
-            { start: '11:00', end: '11:00' },
-            { start: '15:00', end: '11:00' },
-        ]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'entry_window',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(400);
-            expect((await res.json()).error).toContain('must be earlier than');
-        }
-    });
-
-    it('rejects entry_window with unknown keys', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'entry_window',
-                value: { start: '11:00', end: '15:00', timezone: 'Asia/Seoul' },
-            }),
-        );
-        expect(res.status).toBe(400);
-        expect((await res.json()).error).toContain('unknown key(s): timezone');
-    });
-
     it('accepts a valid execute_interval_min', async () => {
         mockSetConfigValue.mockResolvedValue(undefined);
 
@@ -729,64 +635,6 @@ describe('POST /api/config', () => {
             );
             expect(res.status).toBe(400);
             expect((await res.json()).error).toContain('execute_interval_min must be one of');
-        }
-    });
-
-    it('accepts entry_cooldown_min within range, including 0 (off)', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        for (const value of [0, 60, 1440]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'entry_cooldown_min',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(200);
-        }
-    });
-
-    it('rejects entry_cooldown_min above one day or non-numeric', async () => {
-        for (const value of [1441, -1, 'soon', null]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'entry_cooldown_min',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(400);
-        }
-    });
-
-    it('accepts min_stop_room_pct within range, including 0 (off)', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        for (const value of [0, 0.5, 1, 5]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'min_stop_room_pct',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(200);
-        }
-    });
-
-    it('rejects min_stop_room_pct above 5 — 그보다 크면 가드가 아니라 매수 정지 버튼이다', async () => {
-        // 분석의 폴백 손절가는 진입가 − 1.5×ATR이라, 요구 여유가 그 거리를 상시 넘으면
-        // 모든 매수가 `entry_no_stop_room`으로 빠지고 로그상 "신호 없음"과 구분되지 않는다.
-        for (const value of [5.1, 100, -1, 'wide', null]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'min_stop_room_pct',
-                    value,
-                }),
-            );
-            expect(res.status).toBe(400);
         }
     });
 
@@ -818,189 +666,6 @@ describe('POST /api/config', () => {
         }
     });
 
-    it('accepts confluence tunables within range', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-        const cases: Array<[string, unknown]> = [
-            ['confluence_min', 1],
-            ['confluence_min', 3],
-            ['confluence_min', 14],
-            ['confluence_span', 0],
-            ['confluence_span', 15],
-            ['confluence_span', 50],
-            ['confluence_expected_weight', 0],
-            ['confluence_expected_weight', 0.5],
-            ['confluence_expected_weight', 1],
-            ['confluence_htf', '1Day'],
-            ['confluence_htf', 'off'],
-            ['confluence_htf_mode', 'uptrend'],
-            ['confluence_htf_mode', 'notUptrend'],
-            ['confluence_require_volume', true],
-            ['confluence_require_volume', false],
-        ];
-        for (const [key, value] of cases) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key,
-                    value,
-                }),
-            );
-            expect(res.status, `${key}=${String(value)}`).toBe(200);
-        }
-    });
-
-    it('rejects confluence tunables that would disable the axis outright', async () => {
-        // 상한은 "그 값을 넘으면 축이 제 기능을 잃는" 지점이다 — min > 계열 수(14)면 트리거가
-        // 영원히 안 서고, span > 50이면 연속 점수만으로 매수 임계를 넘겨 트리거가 무의미해진다.
-        const cases: Array<[string, unknown]> = [
-            ['confluence_min', 15],
-            ['confluence_min', -1],
-            // 0은 **청산** 트리거를 무장해제한다 — `bearish >= 0`은 항상 참이라
-            // 보유 종목이 평범한 눌림 신호 하나에 전량 청산된다.
-            ['confluence_min', 0],
-            ['confluence_span', 51],
-            ['confluence_expected_weight', 1.5],
-            ['confluence_expected_weight', -0.1],
-            ['confluence_htf', '5Min'],
-            ['confluence_htf', 'daily'],
-            // 이름 그대로 **상위**여야 한다. analysis_timeframe 기본값이 1Hour이므로
-            // 같거나 낮은 축은 게이트의 전제를 뒤집는다.
-            ['confluence_htf', '1Hour'],
-            ['confluence_htf', '15Min'],
-            // 열거값만 — 런타임 폴백(모르는 값 → 기본 모드)이 운영자의 오타를 숨기면 안 된다.
-            ['confluence_htf_mode', 'downtrend'],
-            ['confluence_htf_mode', 'NotUptrend'],
-            ['confluence_htf_mode', true],
-            ['confluence_require_volume', 'yes'],
-        ];
-        for (const [key, value] of cases) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key,
-                    value,
-                }),
-            );
-            expect(res.status, `${key}=${String(value)}`).toBe(400);
-        }
-    });
-
-    it('accepts confluence_exit_min independently of confluence_min', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-        for (const value of [1, 2.5, 14]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'confluence_exit_min',
-                    value,
-                }),
-            );
-            expect(res.status, `exit_min=${value}`).toBe(200);
-        }
-    });
-
-    it('rejects confluence_exit_min of 0 — 청산 트리거가 무장해제된다', async () => {
-        for (const value of [0, -1, 15, 'low']) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'confluence_exit_min',
-                    value,
-                }),
-            );
-            expect(res.status, `exit_min=${String(value)}`).toBe(400);
-        }
-    });
-
-    it('analysis_timeframe을 올려 confluence_htf와 역전되는 조합을 막는다', async () => {
-        // 저장 시점엔 유효했던 조합이 반대쪽 키를 바꾸며 조용히 무효가 되는 경로다.
-        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
-            Promise.resolve(key === 'confluence_htf' ? '1Hour' : null),
-        );
-
-        // 1Hour htf에 analysis 1Hour → 같은 축, 거부
-        const same = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'analysis_timeframe',
-                value: '1Hour',
-            }),
-        );
-        expect(same.status).toBe(400);
-        expect((await same.json()).error).toContain('confluence_htf');
-
-        // 30Min이면 여전히 하위라 통과
-        mockSetConfigValue.mockResolvedValue(undefined);
-        const ok = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'analysis_timeframe',
-                value: '30Min',
-            }),
-        );
-        expect(ok.status).toBe(200);
-    });
-
-    it("confluence_htf: 'off'면 analysis_timeframe 변경을 막지 않는다", async () => {
-        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
-            Promise.resolve(key === 'confluence_htf' ? 'off' : null),
-        );
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'analysis_timeframe',
-                value: '1Hour',
-            }),
-        );
-        expect(res.status).toBe(200);
-    });
-
-    it('accepts min_rr within range, including 0 (off)', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-        for (const value of [0, 1.5, 3, 10]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'min_rr',
-                    value,
-                }),
-            );
-            expect(res.status, `min_rr=${value}`).toBe(200);
-        }
-    });
-
-    it('rejects min_rr above 10 — 그 위는 사실상 매수 정지다', async () => {
-        // 실측 손익비 p90이 10.62라, 10을 넘기면 진입의 90%가 걸린다.
-        for (const value of [10.1, 100, -1, 'high', null]) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'min_rr',
-                    value,
-                }),
-            );
-            expect(res.status, `min_rr=${String(value)}`).toBe(400);
-        }
-    });
-
-    it('rejects an interval/entry_window combination with no overlapping tick', async () => {
-        mockGetConfigValue.mockResolvedValue(60);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'entry_window',
-                // 실행은 매시 :07 하나뿐인데 창이 11:10–11:50이면 매수가 영구히 0이 된다.
-                value: { start: '11:10', end: '11:50' },
-            }),
-        );
-
-        expect(res.status).toBe(400);
-        expect((await res.json()).error).toContain('교집합');
-    });
-
     it('handles watchlist add', async () => {
         mockGetAllWatchlist.mockResolvedValue([{ id: 1, symbol: 'NVDA' }]);
         mockAddToWatchlist.mockResolvedValue([{ id: 2, symbol: 'AAPL' }]);
@@ -1015,6 +680,31 @@ describe('POST /api/config', () => {
         );
         expect(res.status).toBe(200);
         expect(mockAddToWatchlist).toHaveBeenCalledWith(fakeDb, 'AAPL', 'Apple Inc.');
+    });
+
+    it('watchlist cap is 30 — AI no longer runs per symbol, so the old cap of 5 is gone', async () => {
+        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 29 }, (_, i) => ({ id: i })));
+        mockAddToWatchlist.mockResolvedValue([{ id: 99, symbol: 'SPY' }]);
+        const ok = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'add',
+                symbol: 'SPY',
+                companyName: 'SPDR S&P 500 ETF',
+            }),
+        );
+        expect(ok.status).toBe(200);
+        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 30 }, (_, i) => ({ id: i })));
+        const full = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'watchlist',
+                action: 'add',
+                symbol: 'QQQ',
+                companyName: 'Invesco QQQ',
+            }),
+        );
+        expect(full.status).toBe(400);
+        expect(await full.json()).toEqual({ error: '감시 종목은 최대 30개까지 설정 가능합니다' });
     });
 
     it('handles watchlist remove', async () => {
@@ -1097,31 +787,6 @@ describe('POST /api/config', () => {
         expect(res.status).toBe(400);
     });
 
-    it('accepts score_weights including the congress weight', async () => {
-        // Regression guard: congress was added after this endpoint shipped. If it is not in
-        // the known-key set, the unknown-key check rejects every object that carries it and
-        // the weight becomes impossible to configure.
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 8, news: 6, options: 5, fundamental: 4, congress: 3 },
-            }),
-        );
-        expect(res.status).toBe(200);
-    });
-
-    it('accepts score_weights without congress (legacy four-key payload)', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 8, news: 6, options: 5, fundamental: 4 },
-            }),
-        );
-        expect(res.status).toBe(200);
-    });
-
     it('rejects a negative congress weight', async () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
@@ -1131,124 +796,6 @@ describe('POST /api/config', () => {
             }),
         );
         expect(res.status).toBe(400);
-    });
-
-    it('rejects score_weights that is not an object', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: 'not_an_object',
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('score_weights must be an object');
-    });
-
-    it('rejects score_weights that is an array', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: [1, 2, 3],
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('score_weights must be an object');
-    });
-
-    it('rejects score_weights with missing required key', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 30, news: 20, options: 20 },
-                // missing 'fundamental'
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('score_weights.fundamental must be a non-negative number');
-    });
-
-    it('rejects score_weights with negative value', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: -5, news: 20, options: 20, fundamental: 20 },
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('score_weights.technical must be a non-negative number');
-    });
-
-    it('rejects score_weights with non-numeric value', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 'high', news: 20, options: 20, fundamental: 20 },
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('score_weights.technical must be a non-negative number');
-    });
-
-    it('accepts valid score_weights object', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 30, news: 20, options: 20, fundamental: 20 },
-            }),
-        );
-        expect(res.status).toBe(200);
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'score_weights', {
-            technical: 30,
-            news: 20,
-            options: 20,
-            fundamental: 20,
-        });
-    });
-
-    it('rejects score_weights with unknown extra keys', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: {
-                    technical: 30,
-                    news: 20,
-                    options: 20,
-                    fundamental: 20,
-                    sentiment: 5,
-                },
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toContain('unknown key');
-        expect(data.error).toContain('sentiment');
-    });
-
-    it('rejects score_weights where all weights are zero (sum <= 0)', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'score_weights',
-                value: { technical: 0, news: 0, options: 0, fundamental: 0 },
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toContain('sum must be greater than 0');
     });
 
     // K1 — Boolean config key validation (kill-switch integrity)
@@ -1317,129 +864,90 @@ describe('POST /api/config', () => {
         expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'trading_enabled', false);
     });
 
-    it('rejects string value for fixed_exit_enabled', async () => {
+    // 폐기 키(종합 점수·컨플루언스·진입 창·고정 청산·분석 타임프레임)는 이제 모르는 키다 — 스펙 §6.
+    it.each([
+        'buy_threshold',
+        'sell_threshold',
+        'score_weights',
+        'confluence_min',
+        'entry_window',
+        'entry_cooldown_min',
+        'min_rr',
+        'min_stop_room_pct',
+        'fixed_exit_enabled',
+        'stop_loss_percent',
+        'take_profit_percent',
+        'analysis_timeframe',
+    ])('rejects the retired key %s as unknown', async (key) => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'fixed_exit_enabled',
-                value: 'false',
+                key,
+                value: 1,
             }),
         );
         expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toContain('must be a boolean');
+        expect(await res.json()).toEqual({ error: `Unknown config key: "${key}"` });
     });
 
-    // K1b — analysis_timeframe enum validation
-    it.each(['5Min', '4Hour', '1Day', 'arbitrary'])(
-        'rejects unsupported analysis_timeframe value %s',
-        async (timeframe) => {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'analysis_timeframe',
-                    value: timeframe,
-                }),
-            );
-            expect(res.status).toBe(400);
-            expect(await res.json()).toEqual({
-                error: 'analysis_timeframe must be one of: 15Min, 30Min, 1Hour',
-            });
-        },
-    );
-
-    it('accepts supported analysis_timeframe values', async () => {
+    it.each([
+        ['mr_rsi_entry', 1],
+        ['mr_rsi_entry', 50],
+        ['mr_max_hold_days', 1],
+        ['mr_max_hold_days', 60],
+        ['mr_stop_atr', 0],
+        ['mr_stop_atr', 20],
+        ['dry_run_cost_bps', 0],
+        ['dry_run_cost_bps', 100],
+    ] as const)('accepts strategy key %s = %s (range edge)', async (key, value) => {
         mockSetConfigValue.mockResolvedValue(undefined);
-        for (const tf of ['15Min', '30Min', '1Hour']) {
-            const res = await handler(
-                makeRequest('https://example.com/api/config', 'POST', {
-                    type: 'config',
-                    key: 'analysis_timeframe',
-                    value: tf,
-                }),
-            );
-            expect(res.status).toBe(200);
-        }
-        expect(mockSetConfigValue).toHaveBeenCalledTimes(3);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', { type: 'config', key, value }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, key, value);
+    });
+
+    it.each([
+        ['mr_rsi_entry', 0, 'mr_rsi_entry must be between 1 and 50'],
+        ['mr_rsi_entry', 51, 'mr_rsi_entry must be between 1 and 50'],
+        ['mr_max_hold_days', 0, 'mr_max_hold_days must be an integer between 1 and 60'],
+        ['mr_max_hold_days', 5.5, 'mr_max_hold_days must be an integer between 1 and 60'],
+        ['mr_stop_atr', 21, 'mr_stop_atr must be between 0 and 20'],
+        ['dry_run_cost_bps', 101, 'dry_run_cost_bps must be between 0 and 100'],
+    ] as const)('rejects strategy key %s = %s', async (key, value, error) => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', { type: 'config', key, value }),
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error });
+    });
+
+    it('mr_regime_filter must be a boolean', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const bad = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'mr_regime_filter',
+                value: 'true',
+            }),
+        );
+        expect(bad.status).toBe(400);
+        const ok = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'mr_regime_filter',
+                value: false,
+            }),
+        );
+        expect(ok.status).toBe(200);
     });
 
     // -----------------------------------------------------------------------
     // T1 — buy_threshold / sell_threshold range validation (0–100)
     // -----------------------------------------------------------------------
 
-    it('rejects buy_threshold above 100', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'buy_threshold',
-                value: 150,
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toContain('buy_threshold must be between 0 and 100');
-    });
-
-    it('rejects sell_threshold below 0', async () => {
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'sell_threshold',
-                value: -5,
-            }),
-        );
-        // Negative values are caught by the generic 0–1,000,000 numeric guard
-        // (which fires before the 0–100 range check), so we only assert 400 status
-        expect(res.status).toBe(400);
-    });
-
-    it('accepts buy_threshold=70 and sell_threshold=30 (engine defaults)', async () => {
-        mockSetConfigValue.mockResolvedValue(undefined);
-        mockGetConfigValue.mockResolvedValue(30); // existing sell_threshold for buy check
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'buy_threshold',
-                value: 70,
-            }),
-        );
-        expect(res.status).toBe(200);
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'buy_threshold', 70);
-    });
-
-    it('rejects buy_threshold <= sell_threshold (buy=20, existing sell=30)', async () => {
-        mockGetConfigValue.mockResolvedValue(30); // existing sell_threshold
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'buy_threshold',
-                value: 20,
-            }),
-        );
-        expect(res.status).toBe(400);
-        const data = await res.json();
-        expect(data.error).toBe('buy_threshold must be greater than sell_threshold');
-    });
-
     // T2 — transition-scale: new-scale buy_threshold accepted when stored sell is old-scale
-    it('accepts buy_threshold=70 when stored sell_threshold is old-scale (e.g. 30)', async () => {
-        // Documents that the buy > sell cross-check reads the stored counterpart via getConfigValue.
-        // A stored sell of 30 (valid 0–100 scale) satisfies buy(70) > sell(30).
-        mockSetConfigValue.mockResolvedValue(undefined);
-        mockGetConfigValue.mockResolvedValue(30); // stored sell_threshold counterpart
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'config',
-                key: 'buy_threshold',
-                value: 70,
-            }),
-        );
-        expect(res.status).toBe(200);
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'buy_threshold', 70);
-    });
 });
 
 describe('GET /api/pending', () => {
@@ -2055,7 +1563,7 @@ describe('POST /api/config — analysis type allowlist', () => {
     it('accepts valid analysis types', async () => {
         mockUpdateAnalysisConfig.mockResolvedValue(undefined);
 
-        for (const analysisType of ['technical', 'news', 'options', 'fundamental']) {
+        for (const analysisType of ['technical', 'news', 'fundamental', 'entry_review']) {
             const res = await handler(
                 makeRequest('https://example.com/api/config', 'POST', {
                     type: 'analysis',
@@ -2068,22 +1576,17 @@ describe('POST /api/config — analysis type allowlist', () => {
         expect(mockUpdateAnalysisConfig).toHaveBeenCalledTimes(4);
     });
 
-    it('accepts the trade_gate analysis type', async () => {
-        // trade_gate reuses the analysis-config allowlist so the AI trade gate's model
-        // picks up ON/OFF + model + BYOK from the same dashboard UI as the other axes.
-        mockUpdateAnalysisConfig.mockResolvedValue(undefined);
-
-        const res = await handler(
-            makeRequest('https://example.com/api/config', 'POST', {
-                type: 'analysis',
-                analysisType: 'trade_gate',
-                updates: { enabled: true },
-            }),
-        );
-        expect(res.status).toBe(200);
-        expect(mockUpdateAnalysisConfig).toHaveBeenCalledWith(fakeDb, 'trade_gate', {
-            enabled: true,
-        });
+    it('rejects the retired types (options, congress, trade_gate)', async () => {
+        for (const analysisType of ['options', 'congress', 'trade_gate']) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'analysis',
+                    analysisType,
+                    updates: { enabled: true },
+                }),
+            );
+            expect(res.status).toBe(400);
+        }
     });
 });
 
@@ -2174,6 +1677,17 @@ describe('GET /api/cron-runs', () => {
         expect(mockGetCronRuns).toHaveBeenCalledWith(
             fakeDb,
             expect.objectContaining({ cronType: 'technical' }),
+        );
+    });
+
+    it('accepts the review cron type (AI entry review runs)', async () => {
+        mockGetCronRuns.mockResolvedValue([]);
+
+        const res = await handler(makeRequest('https://example.com/api/cron-runs?type=review'));
+        expect(res.status).toBe(200);
+        expect(mockGetCronRuns).toHaveBeenCalledWith(
+            fakeDb,
+            expect.objectContaining({ cronType: 'review' }),
         );
     });
 

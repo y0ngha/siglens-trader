@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    DECISION_SILENCE_MS,
     ERROR_LOOKBACK_MS,
     SILENCE_THRESHOLD_MS,
     assessCronHealth,
@@ -117,5 +118,23 @@ describe('describeCronHealth', () => {
                 { kind: 'silence', sinceMs: null },
             ]),
         ).toHaveLength(2);
+    });
+});
+
+describe('decision-phase check', () => {
+    const now = new Date('2026-01-06T01:00:00Z');
+    const healthy = [
+        { cronType: 'reconcile', status: 'completed', startedAt: new Date('2026-01-05T21:50:00Z') },
+    ];
+
+    it('reports no_decision only when told the decision phase was not seen', () => {
+        expect(assessCronHealth(healthy, now, false)).toEqual([{ kind: 'no_decision' }]);
+        expect(assessCronHealth(healthy, now, true)).toEqual([]);
+        expect(assessCronHealth(healthy, now)).toEqual([]);
+    });
+
+    it('describes it in Korean with the window', () => {
+        expect(describeCronHealth([{ kind: 'no_decision' }])[0]).toContain('100시간');
+        expect(DECISION_SILENCE_MS).toBe(100 * 3_600_000);
     });
 });

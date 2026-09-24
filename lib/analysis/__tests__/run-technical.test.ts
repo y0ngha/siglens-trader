@@ -108,10 +108,10 @@ describe('runTechnicalAnalysis', () => {
 
         await runTechnicalAnalysis({ ...baseOptions, userApiKey: 'sk-123' });
 
-        // 4번째 인자 `force = true` — core 캐시를 우회한다. 캐시 TTL(1Hour)이 케이던스
-        // 창과 같아, 캐시를 쓰면 신규 분석이 2시간에 한 번이 되고 execute가
-        // `source_analyzed_at` 기준으로 `stale_analysis` 처리해 청산 평가가 멈춘다.
-        expect(mockedRun).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Hour', true, undefined, {
+        // 타임프레임을 넘기지 않으면 일봉이다 — 전략이 일봉 규칙이다.
+        // 4번째 인자 `force = true` — core 캐시를 우회한다. 리뷰는 신호가 난 그 순간의 판단을
+        // 남기는 것이라, 캐시된(최대 TTL만큼 낡은) 분석을 받으면 리뷰 근거가 신호보다 앞선다.
+        expect(mockedRun).toHaveBeenCalledWith('AAPL', 'Apple Inc.', '1Day', true, undefined, {
             modelId: baseOptions.modelId,
             userApiKey: 'sk-123',
             marketDataProvider: mockProvider,

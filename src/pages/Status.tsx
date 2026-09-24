@@ -7,54 +7,6 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 const MAX_RECENT_TRADES = 10;
 
-// AI trade-gate decisions that never produce a trade row (no order was placed), so the
-// existing "skipped trades" alert below (which reads `trades`) can never see them. Surfacing
-// the latest execute run's blocked decisions is the lightest way to make that visible without
-// a new endpoint — see docs/specs/2026-08-12-ai-trade-gate-design.md §9.3.
-const GATE_BLOCKED_ACTIONS = new Set([
-    'entry_deferred',
-    'exit_deferred',
-    'gate_error',
-    'gate_skipped_deadline',
-]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return value != null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** Safely read `detail.gate.reason` from an untyped decision detail blob (untrusted JSONB). */
-function readGateReason(detail: unknown): string | null {
-    if (!isRecord(detail) || !isRecord(detail.gate)) return null;
-    const reason = detail.gate.reason;
-    return typeof reason === 'string' ? reason : null;
-}
-
-function gateActionLabel(action: string): string {
-    switch (action) {
-        case 'entry_deferred':
-            return '진입 보류';
-        case 'exit_deferred':
-            return '청산 보류';
-        case 'gate_error':
-            return '게이트 오류';
-        case 'gate_skipped_deadline':
-            return '게이트 시간초과';
-        default:
-            return action;
-    }
-}
-
-function gateActionClass(action: string): string {
-    switch (action) {
-        case 'gate_error':
-            return 'bg-red-500/10 text-red-400';
-        case 'gate_skipped_deadline':
-            return 'bg-orange-500/10 text-orange-400';
-        default:
-            return 'bg-yellow-500/10 text-yellow-400';
-    }
-}
-
 function modeLabel(mode: string): string {
     switch (mode) {
         case 'paper':
@@ -96,15 +48,20 @@ function formatUsd(value: number): string {
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function computePositionTargets(p: Position, takeProfitPercent: number, stopLossPercent: number) {
+/** 매수가·현재가와 손익 방향 — 목표가(TP/SL)는 더 이상 % 기반이 아니라 §3의 재난 손절뿐이다. */
+function computePositionView(p: Position) {
     const avg = parseFloat(p.avgPrice);
     const current = p.currentPrice != null ? parseFloat(p.currentPrice) : null;
     const isLong = p.side === 'long';
-    const tp = isLong ? avg * (1 + takeProfitPercent / 100) : avg * (1 - takeProfitPercent / 100);
-    const sl = isLong ? avg * (1 - stopLossPercent / 100) : avg * (1 + stopLossPercent / 100);
     const cur = current ?? avg;
     const profitable = current == null ? null : isLong ? current >= avg : current <= avg;
-    return { avg, cur, tp, sl, profitable };
+    return { avg, cur, profitable };
+}
+
+/** 재난 손절가 표시 — `mr_stop_atr = 0`이거나 아직 계산 전이면 stopPrice가 null이다. */
+function stopLabel(stopPrice: string | null | undefined): string {
+    if (stopPrice == null) return '손절 없음';
+    return `손절 $${Number(stopPrice).toFixed(2)}`;
 }
 
 function computePortfolio(positions: Position[]) {
@@ -149,8 +106,8 @@ export function StatusPage() {
         queryFn: ({ signal }) => api.getConfig(signal),
     });
 
-    // Latest execute run → its decisions, filtered to gate-blocked ones. Two lightweight calls
-    // against the cron-runs API CronRuns.tsx already uses; see GATE_BLOCKED_ACTIONS above.
+    // Latest execute run → its decisions, summarized below as "오늘의 판단". Two lightweight
+    // calls against the cron-runs API CronRuns.tsx already uses.
     const { data: latestExecuteRun } = useQuery({
         queryKey: ['cron-runs', 'execute'] as const,
         queryFn: async ({ queryKey: [, qType], signal }) => {
@@ -189,21 +146,26 @@ export function StatusPage() {
     );
     const cashBalance = data.cashBalance;
     const totalAssets = currentValue + (cashBalance ?? 0);
-    const gateBlocks = (latestExecuteDecisions ?? []).filter((d) =>
-        GATE_BLOCKED_ACTIONS.has(d.action),
-    );
+
+    // 오늘의 판단 — execute의 사이징 게이트는 더 이상 없다. 대신 최신 execute 런의 결정
+    // 분포를 보여준다(§7). 결정이 하나도 없으면(아직 오늘 판단이 없거나 런 자체가 없으면)
+    // 아무것도 렌더하지 않는다.
+    const todayDecisions = latestExecuteDecisions ?? [];
+    const mrBuyCount = todayDecisions.filter((d) => d.action === 'mr_buy').length;
+    const mrSkipBudgetCount = todayDecisions.filter((d) => d.action === 'mr_skip_budget').length;
+    const mrSkipBreakerCount = todayDecisions.filter((d) => d.action === 'mr_skip_breaker').length;
+    const mrRegimeOff = todayDecisions.some((d) => d.action === 'mr_regime_off');
+    const mrDataError = todayDecisions.some((d) => d.action === 'mr_data_error');
 
     const configEntries = configData as
         | { config?: { key: string; value: unknown }[]; watchlist?: { symbol: string }[] }
         | undefined;
     const watchlistItems =
         (configEntries?.watchlist as { symbol: string; enabled?: boolean }[] | undefined) ?? [];
-    const takeProfitPercent = Number(
-        configEntries?.config?.find((c) => c.key === 'take_profit_percent')?.value ?? 5,
+    const mrMaxHoldDays = Number(
+        configEntries?.config?.find((c) => c.key === 'mr_max_hold_days')?.value ?? 10,
     );
-    const stopLossPercent = Number(
-        configEntries?.config?.find((c) => c.key === 'stop_loss_percent')?.value ?? 3,
-    );
+    const exitRuleText = `5일선 회복 또는 ${mrMaxHoldDays}거래일`;
 
     return (
         <div className="space-y-4">
@@ -325,11 +287,7 @@ export function StatusPage() {
                                 {openPositions.length > 0 && (
                                     <div className="mt-1 flex flex-wrap gap-1">
                                         {openPositions.slice(0, 5).map((p) => {
-                                            const { profitable } = computePositionTargets(
-                                                p,
-                                                takeProfitPercent,
-                                                stopLossPercent,
-                                            );
+                                            const { profitable } = computePositionView(p);
                                             const chipClass =
                                                 profitable === null
                                                     ? 'bg-neutral-500/10 text-neutral-400'
@@ -413,12 +371,7 @@ export function StatusPage() {
                                     data-testid="position-targets-mobile"
                                 >
                                     {openPositions.slice(0, 5).map((p) => {
-                                        const { avg, cur, tp, sl, profitable } =
-                                            computePositionTargets(
-                                                p,
-                                                takeProfitPercent,
-                                                stopLossPercent,
-                                            );
+                                        const { avg, cur, profitable } = computePositionView(p);
                                         const curColor =
                                             profitable === null
                                                 ? ''
@@ -442,13 +395,14 @@ export function StatusPage() {
                                                     >
                                                         ${cur.toFixed(2)}
                                                     </span>
-                                                    <span className="text-neutral-500">익절</span>
-                                                    <span className="text-right font-mono text-green-400">
-                                                        ${tp.toFixed(2)}
+                                                    <span className="col-span-2 font-mono text-red-400">
+                                                        {stopLabel(p.stopPrice)}
                                                     </span>
-                                                    <span className="text-neutral-500">손절</span>
-                                                    <span className="text-right font-mono text-red-400">
-                                                        ${sl.toFixed(2)}
+                                                    <span className="text-neutral-500">
+                                                        청산조건
+                                                    </span>
+                                                    <span className="text-right text-neutral-300">
+                                                        {exitRuleText}
                                                     </span>
                                                 </div>
                                             </div>
@@ -478,21 +432,17 @@ export function StatusPage() {
                                                     현재가
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
-                                                    익절
+                                                    손절
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
-                                                    손절
+                                                    청산조건
                                                 </th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-[#262626]">
                                             {openPositions.slice(0, 5).map((p) => {
-                                                const { avg, cur, tp, sl, profitable } =
-                                                    computePositionTargets(
-                                                        p,
-                                                        takeProfitPercent,
-                                                        stopLossPercent,
-                                                    );
+                                                const { avg, cur, profitable } =
+                                                    computePositionView(p);
                                                 const curColor =
                                                     profitable === null
                                                         ? ''
@@ -512,11 +462,11 @@ export function StatusPage() {
                                                         >
                                                             ${cur.toFixed(2)}
                                                         </td>
-                                                        <td className="px-3 py-2 text-right font-mono text-green-400">
-                                                            ${tp.toFixed(2)}
-                                                        </td>
                                                         <td className="px-3 py-2 text-right font-mono text-red-400">
-                                                            ${sl.toFixed(2)}
+                                                            {stopLabel(p.stopPrice)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right text-neutral-400">
+                                                            {exitRuleText}
                                                         </td>
                                                     </tr>
                                                 );
@@ -574,31 +524,30 @@ export function StatusPage() {
                         </section>
                     )}
 
-                    {/* 경고: 최근 실행에서 AI 게이트가 막은 진입/청산 (거래 행이 없어 위 경고에 안 잡힘) */}
-                    {gateBlocks.length > 0 && (
+                    {/* 오늘의 판단 — 최신 execute 런의 결정 분포 (§7). 사이징 게이트는 이제 없다. */}
+                    {todayDecisions.length > 0 && (
                         <section>
-                            <h2 className="text-xs font-medium text-yellow-500">게이트 알림</h2>
-                            <div className="mt-2 space-y-1.5">
-                                {gateBlocks.slice(0, 5).map((d) => (
-                                    <div
-                                        key={d.id}
-                                        className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2"
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs font-medium text-yellow-400">
-                                                {d.symbol ?? '—'}
-                                            </span>
-                                            <span
-                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${gateActionClass(d.action)}`}
-                                            >
-                                                {gateActionLabel(d.action)}
-                                            </span>
-                                        </div>
-                                        <p className="mt-0.5 text-[11px] text-yellow-500/60">
-                                            {readGateReason(d.detail) ?? d.reason ?? '사유 없음'}
-                                        </p>
-                                    </div>
-                                ))}
+                            <h2 className="text-xs font-medium text-neutral-500">오늘의 판단</h2>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                <span className="rounded bg-green-500/10 px-2 py-1 text-green-400">
+                                    매수 {mrBuyCount}
+                                </span>
+                                <span className="rounded bg-neutral-700 px-2 py-1 text-neutral-300">
+                                    예산 부족 {mrSkipBudgetCount}
+                                </span>
+                                <span className="rounded bg-orange-500/10 px-2 py-1 text-orange-400">
+                                    한도 차단 {mrSkipBreakerCount}
+                                </span>
+                                {mrRegimeOff && (
+                                    <span className="rounded bg-yellow-500/10 px-2 py-1 text-yellow-400">
+                                        국면 필터로 진입 없음
+                                    </span>
+                                )}
+                                {mrDataError && (
+                                    <span className="rounded bg-red-500/10 px-2 py-1 text-red-400">
+                                        데이터 오류
+                                    </span>
+                                )}
                             </div>
                         </section>
                     )}

@@ -57,6 +57,8 @@ export interface Position {
     quantity: number;
     avgPrice: string;
     currentPrice?: string;
+    /** 재난 손절가 (진입가 − mr_stop_atr × ATR14). null이면 mr_stop_atr=0이거나 미계산. */
+    stopPrice?: string | null;
     openedAt: string;
     status: string;
 }

@@ -25,6 +25,15 @@ describe('fetchLivePrice', () => {
         expect(mockFmpGet).toHaveBeenCalledWith('quote', { symbol: 'AAPL' });
     });
 
+    it('carries previousClose when finite positive, null otherwise', async () => {
+        mockFmpGet.mockResolvedValueOnce([{ symbol: 'NVDA', price: 100, previousClose: 98.5 }]);
+        expect((await fetchLivePriceDetail('NVDA')).previousClose).toBe(98.5);
+        mockFmpGet.mockResolvedValueOnce([{ symbol: 'NVDA', price: 100, previousClose: 0 }]);
+        expect((await fetchLivePriceDetail('NVDA')).previousClose).toBeNull();
+        mockFmpGet.mockResolvedValueOnce([{ symbol: 'NVDA', price: 100 }]);
+        expect((await fetchLivePriceDetail('NVDA')).previousClose).toBeNull();
+    });
+
     it('다른 심볼의 시세가 오면 거절한다 — A의 가격으로 B를 손절할 수 없다', async () => {
         mockFmpGet.mockResolvedValue([{ symbol: 'MSFT', price: 400 }]);
 

@@ -1,4 +1,4 @@
-import { analysisResults } from './schema.js';
+import { positions } from './schema.js';
 import type { Db } from './index.js';
 
 /** Health-probe query must not itself wedge the health endpoint if Neon hangs. */
@@ -65,16 +65,18 @@ function extractSqlState(err: unknown): string | undefined {
 }
 
 /**
- * Confirms `analysis_results.timeframe` (migration 0018) actually exists in the
- * connected database before `/api/health?ready=true` reports healthy.
+ * Confirms `positions.stop_price` (migration 0019) actually exists in the connected
+ * database before `/api/health?ready=true` reports healthy.
+ *
+ * **The probe always targets the most recently added column.** It used to read
+ * `analysis_results.timeframe` (0018); left there, an image deployed before 0019 would
+ * pass readiness and then fail every position insert/read at runtime with `42703`.
  *
  * WHY THIS EXISTS: Drizzle never emits `SELECT *` — `.select()` builds an explicit
  * column list from the schema object. If this image's code ships before
- * `yarn db:migrate` runs, every `analysis_results` query breaks, including
- * `getLatestAnalysisResult` (the execute cron's staleness gate across all five score
- * axes). Each cron's per-symbol/per-position try/catch absorbs that error — no wrong
- * order goes out — but every open position's stop-loss/target evaluation goes dark for
- * the whole window, silently. `infra/aws/deploy.sh` already gates deploy success on
+ * `yarn db:migrate` runs, every `positions` query breaks — `getOpenPositions` is the first
+ * read of every execute tick, so the disaster stop and every rule exit go dark for the
+ * whole window. `infra/aws/deploy.sh` already gates deploy success on
  * `/api/health`; this probe gives that gate something to actually catch (see
  * docs/DEPLOYMENT.md §12).
  *
@@ -90,7 +92,7 @@ export async function checkSchemaReadiness(
 ): Promise<SchemaReadinessResult> {
     try {
         await withTimeout(
-            db.select({ timeframe: analysisResults.timeframe }).from(analysisResults).limit(1),
+            db.select({ stopPrice: positions.stopPrice }).from(positions).limit(1),
             timeoutMs,
         );
         return { ready: true };

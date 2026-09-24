@@ -46,62 +46,46 @@ Single-purpose routes can also export the method function directly
 
 ## Config POST Security
 
-The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitrary key writes. Numeric keys are bounds-checked (0 to 1,000,000).
+The config endpoint uses an allowlist (`ALLOWED_CONFIG_KEYS`) to prevent arbitrary key writes. Numeric keys are
+bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUMERIC_BOUNDS`):
 
-Allowed keys: `trading_mode`, `trading_enabled`, `max_position_size`, `max_total_exposure`,
-`stop_loss_percent`, `take_profit_percent`, `buy_threshold`, `sell_threshold`,
-`analysis_timeframe`, `score_weights`, `fixed_exit_enabled`, `max_trades_per_day`,
-`max_daily_loss_usd`, `entry_window`, `execute_interval_min`, `entry_cooldown_min`,
-`min_stop_room_pct` (0~5, 퍼센트; 0이면 진입 손절-여유 가드 off),
-`min_rr` (0~10; 0이면 손익비 가드 off), `dry_run_cash_usd`,
-`confluence_min`·`confluence_exit_min` (각 1~14, **서로 독립** — 원칙 7),
-`confluence_span` (0~50), `confluence_expected_weight` (0~1),
-`confluence_htf` (`analysis_timeframe`보다 상위여야 하며 `off` 가능 — 양방향 교차 검증),
-`confluence_htf_mode` (`uptrend` | `notUptrend` — 열거값만, 기본 `notUptrend`),
-`confluence_require_volume`.
+| Key | Range / type | Default |
+|---|---|---|
+| `trading_mode` | `dry_run` / `semi_auto` / `auto` | `dry_run` |
+| `trading_enabled` | boolean (kill switch) | true |
+| `max_position_size`, `max_total_exposure` | USD, cost basis | 5,000 / 25,000 |
+| `max_trades_per_day` | count | 20 |
+| `max_daily_loss_usd` | USD — realized + **today's** unrealized change | 500 |
+| `execute_interval_min` | **5 or 10** only (the decision window needs ≥ 2 ticks) | 10 |
+| `dry_run_cash_usd` | USD | 5,000 (seed 25,000) |
+| `mr_rsi_entry` | 1–50 | 10 |
+| `mr_max_hold_days` | integer 1–60 | 10 |
+| `mr_stop_atr` | 0–20 (0 = no disaster stop) | 5 |
+| `mr_regime_filter` | boolean | true |
+| `dry_run_cost_bps` | 0–100 (one-way) | 10 |
 
-`execute_interval_min` and `entry_window` are **cross-validated**: a combination whose tick set
-does not intersect the window (e.g. 60-minute interval — ticks at `:07` only — with an
-11:10–11:50 window) makes entries permanently impossible, and the logs would show only
-`outside_entry_window`, which is indistinguishable from normal operation.
+Retired keys (`buy_threshold`, `sell_threshold`, `score_weights`, `confluence_*`, `min_rr`, `min_stop_room_pct`,
+`entry_window`, `entry_cooldown_min`, `fixed_exit_enabled`, `stop_loss_percent`, `take_profit_percent`,
+`analysis_timeframe`) are rejected as unknown and their stored rows were deleted by migration 0019.
+The endpoint **rejects** bad values rather than coercing them — the runtime readers (`api/_lib/mr-config.ts`,
+`parseExecuteInterval`) fall back to defaults only as defense against a corrupt row, and using that fallback here
+would hide the operator's typo.
 
-`execute_interval_min` is an **enum** (`EXECUTE_INTERVALS` = 5/10/15/20/30/60), not a free
-number: the runtime gate is `(minute − 7) mod interval === 0`, so a value that does not divide
-60 makes the cadence break at every hour boundary. Rejected rather than coerced through
-`parseExecuteInterval` — that fallback is runtime defense against a corrupt row, and using it
-here would hide the operator's typo (same reasoning as `entry_window`). `entry_cooldown_min` is
-a normal numeric key capped at 1440 (one day); 0 turns the cooldown off.
-
-`trading_enabled` / `fixed_exit_enabled` must be booleans; `trading_mode` is checked against
-`dry_run` / `semi_auto` / `auto`; `analysis_timeframe` against `15Min` / `30Min` / `1Hour`.
-`score_weights` requires `technical` / `news` / `options` / `fundamental` and accepts `congress` /
-`confluence` as optional — both were added after the endpoint shipped, so a caller posting only the
-original four must keep working, while an object that *does* include them must not trip the
-unknown-key check. Present weights are non-negative finite numbers summing above 0, which is what
-makes `score_weights.confluence = 0` the documented off-switch for the indicator confluence axis:
-it needs no flag of its own.
-
-`entry_window` must be `{ start: 'HH:MM', end: 'HH:MM' }` — exactly those two keys, both parsed by
-`lib/strategy/entry-window.ts`'s `parseTimeOfDay` (00:00–24:00, `'24:00'` meaning end of day), with
-`start < end` (no midnight wrap). `{ start: '00:00', end: '24:00' }` is the off-switch.
-The endpoint **rejects** bad values rather than calling `parseEntryWindow`, which silently falls
-back to the default window — that fallback is runtime defense against a corrupt row, and using it
-here would hide the operator's typo. The dashboard posts this key from 설정 > 진입 시간 창 (two
-`<input type="time">` fields plus an ON/OFF toggle that sends the off-switch), and it pre-checks
-`start < end` client-side, so a 400 from here now means a hand-rolled request.
+Watchlist cap: **30** (`MAX_WATCHLIST_SIZE`). It was 5 while every symbol cost hourly LLM calls; the rule is
+price-only now and AI runs only on signals. Analysis types: `technical`, `news`, `fundamental`, `entry_review`.
 
 ## Market calendar
 
 `isEtRegularSessionOpen` (siglens-core ≥0.44) knows NYSE holidays and 13:00 half days, so the
 session gate at the top of every cron now closes the market on Thanksgiving and after an early
 bell — **in every mode, dry_run included**. Before 0.44 it read weekday + clock only, and the
-`isUsMarketOpen()` broker call in `execute` was the sole holiday defense, which left dry_run and
-all five analysis crons running on closed days.
+`isUsMarketOpen()` broker call in `execute` was the sole holiday defense, which left dry_run (and
+the analysis crons that existed then) running on closed days.
 
 That broker call stays, with a narrower job: **unscheduled closures** (a national day of mourning).
 Those cannot be derived from rules and reach core's literal list only when someone updates it, so
-the live-order path asks the broker directly. Analysis crons accept the residual risk — a missing
-entry costs one day of wasted quota, not a bad trade.
+the live-order path asks the broker directly. The review cron has no session gate — it only reads
+today's recorded signals, so on a closed day there is nothing to review.
 
 **`reconcile` deliberately has no session gate.** Its job is order aftercare, not market activity:
 an order placed Friday afternoon and left unfilled needs its 30-minute timeout processed over a
@@ -119,183 +103,51 @@ broken check.
 
 ## Execute Cron Flow
 
-0. **Interval gate** — node-cron fires every 5 minutes (`2-59/5`, which covers every minute the
-   gate accepts; `7-59/5` missed the `:02` slot and left a 10-minute hole at a 5-minute setting); `execute_interval_min`
-   (5/10/15/20/30/60, default 10) decides whether this tick actually runs
-   (`lib/strategy/execute-interval.ts`). Runs **before** `startCronRun` so skipped ticks leave
-   no audit row, and before the lock. A failed config read falls through to the default rather
-   than dropping the tick. `?force=1` bypasses it for manual triggering
-1. Acquire distributed lock (`cron:execute:lock`, **30min TTL**) — the TTL must exceed the longest
-   possible run, or the next tick acquires the lock while this one is still alive and two runs
-   place orders against independent exposure/cash snapshots. A **900s hard run deadline**
-   (`run_deadline` decisions) bounds the run — checked in the position, watchlist **and the two
-   preceding price loops**, since a sustained FMP outage can burn the whole budget on quotes
-   alone — and `noOverlap: true` on the node-cron task blocks in-process overlap as a second
-   layer. Contention records `status='skipped'`; a lock **backend failure** records
-   `status='error'` (`acquireLockDetailed`) — the two are different events and only the latter
-   should reach the cron-health alert. Same rule in reconcile and the analysis crons
-2. Circuit breaker checks: kill switch → **entry window (ET)** → daily trade limit → daily loss limit (realized + unrealized)
-3. Expire old pending orders
-4. Fetch live prices for all symbols (FMP quote API, cached per run)
-5. Fetch pending submitted orders (for sell-guard checks)
-5.5. Load the AI sizing gate config (`analysis_model_config['trade_gate']`, once per run) and
-   set the gate cutoff at cron start + 600s
-6. Re-evaluate existing positions (dynamic stop/take profit from fresh analysis)
-   - `evaluateExistingPosition` receives `aiStopLoss` / `aiTakeProfit`
-     (`actionRecommendation.stopLoss` / `takeProfitPrices[0]`, core's `reconciledLevels`
-     winning when present) as priorities 1.5 / 4.5 — the only *explicit* exit prices the
-     analysis produces. They were prompt-only until now, so with `fixed_exit_enabled` off the
-     active stop paths were all indirect (support break, trend reversal, confluence)
-   - It also receives `confluenceExit` (`isConfluenceExit(snapshot)`) —
-     the bearish inverse of the entry rule, checked right after the technical trend reversal.
-     It leaves `hard` unset, so the exit sizing gate still decides how much to cut
-   - Skip positions with a sell in-flight (`order_tracking`) **or** queued for approval
-     (`pending_orders`, semi_auto)
-   - Non-`hold` exits go through the **exit sizing gate** (see below) → `exitQty`; a partial
-     exit calls `reducePositionQuantity`, a full one `closePosition`, in all three modes
-   - Track stop-loss closures for cooldown — registered on the *trigger*, so a partial
-     stop-loss blocks a same-run re-buy just like a full one
-7. Recalculate exposure after any closures (using market prices)
-8. Score signals for watchlist symbols
-   - The **confluence snapshot** (`computeConfluence`, no LLM) is the heaviest axis. 룰·채점은
-     **core가 소유**하고(`evaluateConfluence`) trader는 봉만 구해 넘긴다. 본 봉과 상위
-     시간축 봉(기본 일봉)을 **동시에** 띄운다 — 순차로 기다리면 FMP가 느려질 때 심볼당 지연이
-     두 배가 되고, 두 루프가 순차라 그 지연이 곧 런 마감 안에 평가받는 심볼 수를 깎는다.
-     평가받지 못한 보유 종목은 그 틱에 청산 판정 자체가 없으므로 원칙 7에 걸린다.
-     상위 봉은 모듈 캐시(성공 1시간 / **실패 5분**)를 타고, 본 봉은 run-scoped
-     `confluenceCache`가 두 루프 간에 공유한다. `null` 스냅샷(FMP 장애, 봉 부족, 봉 낡음)은
-     가중치를 0으로 떨어뜨릴 뿐 매매를 막지 않는다
-   - Technical freshness uses `getAnalysisReferenceTime` (the LLM result's real `source_analyzed_at`, falling back to `analyzed_at`) against a per-timeframe limit from `getTechnicalMaxAgeMs` (`analysis_timeframe`: 15Min→45min, 30Min→90min, 1Hour→2h). Too-old technical analysis is treated as `stale_analysis` (no trade).
-9. Make trade decisions (buy/sell/hold/average_in)
-   - `planEntry` (not `calculatePositionSize`) computes the budget ceiling from the per-symbol
-     cap, the total-exposure cap and — in `auto` only — real buying power. It is the
-     `calculatedSize` handed to `makeTradeDecision`. Because it already subtracts
-     `existingSymbolExposure`, the old average_in-specific cap block is gone
-   - A buy signal with a zero budget is handled **after the kill switch**, not before the
-     guards: `symbol_limit_reached` when `limitedBy === 'symbol'` (a full per-symbol cap is a
-     normal steady state, no alert), otherwise the '잔고 부족' skipped-trade row + email. Both
-     record the real cause in `detail.budget`. Running it earlier meant mailing the operator
-     about an unfunded buy on a run that could not have placed an order anyway
-   - semi_auto's duplicate-approval guard runs **before** the gate — behind it, every tick
-     with an unanswered approval burned a 25s LLM call whose answer was discarded
-   - The entry guards share one `isEntryDecision` condition (buy / average_in / unfunded buy):
-     - Stop-loss cooldown: skip buy/average_in for recently stop-lossed symbols — the
-       zero-budget buy case is included because it decides as 'hold' and would otherwise slip
-       past and mail a 잔고 부족 alert for a symbol we refuse to buy anyway
-     - `entry_out_of_zone`: live price above `actionRecommendation.entryPrices` max + 1%
-       (`exceedsEntryZone`). Upper bound only, fail-open when the analysis carries no zone
-     - `entry_poor_rr`: the risk:reward at entry is below `min_rr` (default **1.5**) —
-       reward is the **first** upside exit that would fire (the analysis take-profit; only
-       when that is absent, the resistance band's lower edge or 95% of target, whichever is
-       nearer — rules 5/5b are fallbacks for 4.5), risk is the distance to the
-       first stop trigger. Fail-open when either side is unknown. Measured: analysis
-       take-profit sat **below** the current price on 11.5% of ticks and resistance on 14.6%,
-       so those entries hit their exit the moment they filled. Worse, score and R:R are
-       *inversely* correlated — median R:R is 1.27 in the 45-49 score band and **0.00** in the
-       65+ band, i.e. by the time the composite says buy, price has passed what the analysis
-       was aiming at
-     - `entry_no_stop_room`: the entry price sits less than `min_stop_room_pct` (default
-       **0.5%**) above `max(supportLevel, aiStopLoss)` (`hasStopRoom`). Fail-open when the
-       analysis carries neither level. **Not the same layer as `entry_out_of_zone`**: that one
-       asks "are we paying more than the analysis said", this one asks "is the stop outside the
-       noise band". The three losing entries of 2026-08-19~20 passed the first and failed the
-       second (여유 0.03~0.2%)
-     - `entry_not_recommended`: the analysis says `entryRecommendation: 'avoid'`. Enforced here
-       rather than as a score penalty, and `entry_out_of_zone` cannot substitute — core fills a
-       *contingent* `entryPrices` range even on `avoid`, usually **above** the current price
-     - `entry_exit_standing`: the exit chain (`evaluateExistingPosition`, evaluated at
-       avgPrice = current price for a new buy, the existing average for an average-in)
-       already returns a non-`hold` verdict. The three price guards above only look at
-       *levels*; the chain also exits on a bearish technical trend, a bearish confluence
-       and bearish news, and a buy made while one of those stands is sold on the next tick.
-       Asking the chain itself — rather than mirroring each rule — also turns the recurring
-       "an exit rule silently became a constant" failure (resistance band 99.2%, target
-       price 100%) from a buy/sell pair 10 minutes apart into rows that pile up with the
-       rule's name in `detail.exitReason`. Entry-only: it reads the exit verdict, it never
-       blocks an exit
-     - `entry_cooldown`: this symbol had any real fill (buy **or sell**) inside
-       `entry_cooldown_min` (default 60). Counting sells is what stops a re-buy minutes after a
-       stop-loss — `recentStopLossSymbols` is run-scoped and resets on the next tick. Reads
-       `getRecentTrades(db, 200)` once per run; `mode: 'skipped'` rows are not fills
-     - `entry_after_exit_blocked`: this run already reduced the position
-   - Pending sell guard: skip sell if submitted sell order exists
-   - Re-check kill switch before each trade
-   - Every score-based decision (incl. hold) persists a `reason` + `detail` audit (`scoreDecisionDetail`: component breakdown, raw signal, active thresholds, `source_analyzed_at`) so a held/executed decision can be explained after the fact
-10. **Sizing gate** — last, after every guard above, so an LLM call only happens on a path that
-    is actually going to place an order (see below)
-11. Execute per mode:
-    - `dry_run` → DB transaction (trade + position atomically)
-    - `semi_auto` → pending order + email notification
-    - `auto` → order tracking + Toss API + DB transaction + email
-12. Release lock in `finally` block
+Design: [`docs/specs/2026-09-24-daily-mean-reversion-design.md`](../docs/specs/2026-09-24-daily-mean-reversion-design.md) §4.
+The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_auto approval / auto broker order +
+`order_tracking` + partial/rejected/needs_review handling — moved verbatim from the old handler).
 
-## AI Sizing Gate
+0. **Interval gate** — node-cron fires every 5 min (`2-59/5`); `execute_interval_min` (5 or 10) decides whether the
+   tick runs. Before the audit row. `?force=1` bypasses it.
+1. **Decision tick?** — inside the last 20 minutes before the close (`minutesUntilUsMarketClose`, so early closes
+   move the window) on a trading day, **and** no execute run since ET midnight has `summary.decisionPhase = 'done'`.
+   A lookup failure counts as "not done": deciding twice is guarded (below), skipping a day is not recoverable.
+2. **Idle exit** — not a decision tick and nothing held → return **without an audit row**.
+3. Audit row, session gate (`market_closed`), lock `cron:execute:lock` (30 min TTL, 900s run deadline),
+   kill switch (stops everything, exits included), expire pending approvals.
+4. Quotes (`fetchLivePriceDetail`, with `previousClose`) for held symbols + in-flight orders (+ watchlist + SPY on a
+   decision tick).
+5. **Breakers** — daily trade limit, realized loss, then realized + **today's** unrealized change
+   (`lib/strategy/daily-loss.ts`). A tripped loss breaker blocks entries and sets `forceFullExit`. Breach and
+   quote-divergence mails go **once per ET day** (`claimOnce`).
+6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`).
+7. Exposure (cost basis + in-flight buys + pending approvals) and cash (`getAvailableCashUsd`).
+8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
+   `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`); no price → `skipped_no_price`
+   (auto under the loss breaker exits at market instead: `mr_forced_exit`); price ≤ `stop_price` → full exit
+   `mr_stop_atr`.
+9. **Decision phase (once a day)** — daily bars for SPY + held + watchlist (`lib/analysis/daily-bars.ts`, today's
+   close = live price). Held positions: no live price → `mr_data_error`; bars unreadable → `mr_forced_exit` under the
+   loss breaker else `mr_data_error`; otherwise `evaluateRuleExit` → `mr_exit_ma5` / `mr_exit_time` / `mr_hold`.
+   Entries: SPY unreadable with the regime filter on → one `mr_data_error` row, no entries; SPY < SMA200 → one
+   `mr_regime_off` row; otherwise signals ranked by RSI(2) → `mr_skip_breaker` (entry block) /
+   `pending_order_in_progress` (in-flight buy incl. `error`, or needs_review — **the idempotency guard for a retried
+   decision**) / `pending_exists` (semi_auto) / `mr_skip_budget` (`planEntry` quantity 0) / kill-switch re-check /
+   `executeEntry` → `mr_buy` (or the order outcome's action). A symbol sold this run is not re-bought today.
+10. `summary.decisionPhase = 'done'` only if the decision phase finished inside the run deadline.
+11. `finishCronRun` + `cron_decisions` (every decision carries `detail.mr`).
 
-`lib/analysis/trade-gate.ts` answers one question per order — *how large* — and returns a
-`fraction` that `lib/strategy/trade-plan.ts` turns into a share count. Design:
-[`docs/specs/2026-08-12-ai-trade-gate-design.md`](../docs/specs/2026-08-12-ai-trade-gate-design.md) §8–9.
+## AI Entry Review (review cron)
 
-The gate runs with **reasoning off** (2026-09-17, operator decision) and a **120s** per-call timeout.
-The reasoning-on rationale below (2026-08-17) is kept as history. It is the only
-place where the six axes, the account state and the budget are weighed together, so the review that
-produces the fraction is worth paying for; the total is bounded by the gate deadline (cron start +
-600s), not by this timeout. It was 25s with reasoning off, which would now abort mid-thought — and
-a gate abort is expensive in both directions (entry fails closed, exit fails open).
+`api/cron/review.ts` — **record-only**; it never touches an order. Every 10 min 16–21 UTC it picks today's signal
+decisions (`mr_buy`, `mr_skip_budget`, `mr_skip_breaker`) without a `trade_audit` row keyed `review-<decisionId>`,
+up to 5 per run. Nothing pending → no audit row. For each: reuse today's technical (1Day) / news / fundamental rows or
+run them (`lib/analysis/run-*.ts`, saved to `analysis_results` with `timeframe = '1Day'`), then
+`runEntryReview` (`lib/analysis/entry-review.ts`, `callAnalysisAi`, pro tier, reasoning off) and write
+`trade_audit` kind `entry_review` — **also on error**, so a failing signal is not retried every tick.
+Output: `{ fraction, dropCause: noise|news|earnings|macro|unknown, confidence, reason }`.
 
-`runTradeGate` **never throws**; branch on the returned `status`, never wrap it in try/catch.
-Config comes from `analysis_model_config['trade_gate']`, which defaults to enabled — the gate
-is live on deploy, and switching it off in 설정 > 분석 설정 restores the old behavior with no
-redeploy.
-
-| Situation | Entry (fail-**closed**) | Exit (fail-**open**) |
-|---|---|---|
-| Gate OFF | `fraction = 1`, no email | `fraction = 1`, no email |
-| LLM error / timeout / bad JSON | no order, `gate_error` + email | full exit + email |
-| Past cron start + 600s | no order, `gate_skipped_deadline` + email | full exit + email |
-| `fraction = 0` | `entry_deferred`, no email | `exit_deferred`, no email |
-| `PositionEvaluation.hard` | — | gate not called at all, full exit |
-
-The asymmetry is deliberate: a missed buy is a lost opportunity, a missed sell is a realized
-loss. Missing analysis axes are passed to the gate as `result: null` rather than dropped — the
-prompt prints "데이터 없음" on purpose. In the re-evaluation loop the three extra axes
-(options/fundamental/congress) are read **only** when the gate is actually going to be called.
-
-The confluence snapshot is handed to the gate as an analysis axis too, **first** in `ANALYSIS_ORDER`
-(label `지표 컨플루언스 (규칙 기반)`), and its component score leads the `구성요소 점수` block. It
-carries `modelId: 'rule-engine'` and the bar time as `analyzedAt` — it is not LLM output, and the
-prompt says so, telling the model to weigh it more heavily when the axes disagree. It comes from the
-same run-scoped cache as the scoring path, so entering the gate costs no extra fetch.
-
-Decision actions from the entry guards: `entry_out_of_zone`, `entry_no_stop_room`,
-`entry_poor_rr`, `entry_exit_standing`, `entry_cooldown` (all carry a `detail` block naming
-the price/zone, the stop room and its trigger, the risk:reward, the exit rule already
-standing, or the last fill time, so "why didn't it buy" is answerable after the fact). Gate-related actions: `entry_deferred`, `exit_deferred`, `gate_error`, `gate_skipped_deadline`,
-`exit_already_handled` (the re-evaluation loop already sold this symbol this tick),
-`entry_blocked` (a risk breaker is up and this symbol's signal is not a sell).
-Every decision the gate took part in carries a `detail.gate` block (`kind`, `source` of
-`ai`/`disabled`/`hard`/`error`/`deadline`/`risk_halt`, `model`, `fraction`, `confidence`,
-`reason`, `fullBudget`, `trancheBudget`, `limitedBy`, `quantity`) merged alongside
-`scoreDecisionDetail`. `source: 'risk_halt'` means a tripped loss breaker forced a full exit
-without asking the model. Branches that end **without** a trade (rejected, not sellable,
-needs_review, already_closed, pending/partial, mid-loop kill switch) carry the same block
-plus a `detail.order` sub-block (`intendedQty`, `submittedQty`, broker status/reason) — the
-gate's sizing decision has to survive a broker rejection to be auditable.
-
-**One symbol is never sold twice in a tick.** The re-evaluation loop records every symbol it
-acted on; the watchlist sell path skips those with `exit_already_handled`. The two loops also
-use distinct idempotency keys (`…-reeval-sell` vs `…-signal-sell`) since a partial exit leaves
-a position behind and `order_tracking.idempotency_key` is unique.
-
-**게이트 호출 원문은 `trade_audit`에 남는다.** `runTradeGate`의 결과에 실린
-`transcript`(system/user 프롬프트 + 파싱 전 응답 원문)를 호출 **직후** 적재한다 — 주문 성사
-여부와 무관하게. 트레이드 행에 매달면 fraction 0·게이트 오류·브로커 거절처럼 주문이 안 나간
-호출이 통째로 사라지는데, "왜 안 샀나"를 되짚을 때 필요한 게 정확히 그 행들이다.
-`cron_decisions.detail.gate`는 *결론*(fraction·confidence·reason)을 남기고 이쪽이 *입력*을
-남긴다 — 수 KB짜리 프롬프트를 모든 결정 행의 jsonb에 넣지 않으려는 분리다.
-적재 실패는 삼키고(`auditGate`의 자체 try/catch), **await하지 않는다** — 이 호출은 게이트
-응답과 주문 사이에 있고, 청산 경로에서는 그 사이가 곧 손절이 나가기까지의 지연이다(원칙 7).
-`(cron_run_id, symbol, kind)`는 유일하지 않으므로(재평가 청산이 미뤄지면 같은 런에서 시그널
-매도가 같은 심볼을 다시 태운다) 게이트에 넘긴 `correlation_id`를 같이 저장한다.
+## 매수 가능 현금
 
 **매수 가능 현금은 세 모드 모두 같은 뜻의 숫자다 — "지금 쓸 수 있는 돈".**
 계산은 `api/_lib/cash.ts`의 `getAvailableCashUsd` 하나뿐이고 **execute cron과
@@ -318,24 +170,14 @@ a position behind and `order_tracking.idempotency_key` is unique.
 노출 $1,000 = 총액 $5,000). 런 안에서는 매수마다 차감한다 — 그러지 않으면 한 런의 매수 여러
 건이 전부 같은 잔고를 보고 승인된다.
 
-종전 `dry_run`은 `null`이었고, 그 결과 두 가지가 동시에 죽어 있었다: 게이트 프롬프트에
-"매수 가능 현금: 미상"이 찍혀 사이징의 1차 제약이 모델에게 안 보였고, `planEntry`의 현금
-클램프도 걸리지 않았다.
-
-**프롬프트의 현금 줄은 모드별로 갈리지 않는다.** 출처는 바로 위 `매매 모드` 줄이 이미
-말하고, 문구를 갈라 두면 같은 결정에 서로 다른 사이징 습관이 붙는다. 이제 `미상`은
-"조회하지 않는 모드"가 아니라 **조회 실패**를 뜻한다.
+dry_run 체결가에는 `dry_run_cost_bps`가 붙는다(매수 ×(1+c), 매도 ×(1−c)) — 현금 원장과 실현 손익이
+같은 가격에서 나와야 어긋나지 않으므로 trade·포지션·알림 모두 그 값을 쓴다(`api/cron/_orders.ts`).
 
 > **운영 주의 — Toss는 IP 허용목록을 쓴다.** 로컬에서 `/oauth2/token`을 호출하면
 > `403 access_denied / "IP address not allowed"`가 난다(2026-08-22 확인). 프로덕션 EC2의 IP만
 > 등록돼 있다는 뜻이고, **그 IP가 바뀌면(인스턴스 교체·EIP 변경) `auto`는 매 런 fail closed로
 > 매수가 전부 막힌다.** 증상은 `skipped_no_buying_power` 감사 행뿐이라 조용하다.
 > 실거래 전환 전에 EC2에서 `getBuyingPower('USD')`가 실제로 값을 내는지 확인할 것.
-
-**Gate OFF is not byte-identical to the pre-gate build.** `planEntry` clamps the budget by
-real buying power (`auto` only), which `calculatePositionSize` never did — e.g. price $100 /
-cash $250 used to be `skipped_insufficient_cash` (no order) and now buys 2 shares. This is
-intentional (fewer broker rejections) and applies with the gate off too.
 
 **노출 한도는 투입 원가 기준이다 (2026-08-17 변경).** `existingSymbolExposure`와
 `currentExposure`는 `avgPrice × quantity`, 즉 **투자 금액**이다. 종전에는 `currentPrice ×
@@ -395,258 +237,36 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 ## Circuit Breakers
 
 | Breaker | Config Key | Default | Behavior |
-|---------|-----------|---------|----------|
-| Entry zone | — (analysis-driven) | +1% over `entryPrices` max | Blocks buy/average_in only — `entry_out_of_zone`. Not a breaker row in the audit: it is per-symbol, so it decides inside the watchlist loop rather than setting `entryBlock` |
-| Risk:reward | `min_rr` | 1.5 | Blocks buy/average_in only — `entry_poor_rr`. Per-symbol. Fail-open when upside or downside is unknown. 0 disables |
-| Stop room | `min_stop_room_pct` | 0.5% above `max(support, aiStopLoss)` | Blocks buy/average_in only — `entry_no_stop_room`. Per-symbol, same as above. Fail-open with no support/stop level. 0 disables |
-| Standing exit | — (exit chain) | exit chain returns non-`hold` at entry | Blocks buy/average_in only — `entry_exit_standing`. Per-symbol, same as above. `detail.exitReason` names the rule that was already standing |
-| Re-entry cooldown | `entry_cooldown_min` | 60 min | Blocks buy/average_in only — `entry_cooldown`. Per-symbol, same as above. 0 disables |
-| Entry window | `entry_window` | ET 11:00–15:00 | Blocks entries only — `entry_blocked`, `CronOutcome: outside_entry_window`. **Not a risk breaker**: no email, no `forceFullExit`, and the exit sizing gate keeps sizing normally. Evaluated *before* the two below so a risk cause overwrites it in the audit row |
-| Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each trade *and again right after the gate answers*, in both loops |
-| Daily trade limit | `max_trades_per_day` | `20` | Blocks entries only — `entry_blocked`. Position exits and watchlist **sell** signals still run, gate-sized |
-| Daily loss limit | `max_daily_loss_usd` | `500` | Realized + unrealized (live prices). Blocks entries **and forces every exit to full size** (gate bypassed, `source: 'risk_halt'`) |
+|---|---|---|---|
+| Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each order |
+| Daily trade limit | `max_trades_per_day` | 20 | Blocks entries only (`mr_skip_breaker`). Exits still run |
+| Daily loss limit | `max_daily_loss_usd` | 500 | Realized today + **today's** unrealized change. Blocks entries and sets `forceFullExit` |
+| Regime filter | `mr_regime_filter` | on | SPY < SMA200 → no entries that day (`mr_regime_off`). Not a risk breaker, no mail |
+| Budget | `max_position_size` / `max_total_exposure` / cash | 5k / 25k | `planEntry` quantity 0 → `mr_skip_budget` |
 
-**A risk breaker stops new risk, never risk reduction.** Blocking liquidation would be a
-bug, not a safety net: with split exits the gate can defer a sell indefinitely, so an early
-`return` on the loss breaker would mean the position is never stopped out at all — the
-breaker would cap nothing while the loss kept growing. So the loss/trade breakers set an
-internal `entryBlock` instead of returning, and the loss breakers additionally force
-`hard`-style full exits.
+**A risk breaker stops new risk, never risk reduction.** The loss breaker used to sum the unrealized P&L **since
+entry**. With multi-day holds one −10% position filled the $500 limit and blocked every entry for days — exactly the
+days this strategy buys (backtest: 366 signals blocked in 2023-26, annual return 19.6% → 12.7%, MDD 30% → 28%). The
+unrealized term is now `quantity × (price − reference)`, reference = entry price if opened today, else FMP
+`previousClose` (entry price when missing — substitute, never exclude). A quote more than 25% away from its reference
+is treated as a corrupt tick (change 0, one mail per day); the disaster stop still sees the live price.
 
-Three consequences that are easy to get wrong, and were:
+`forceFullExit` (loss breaker tripped): every exit is already full-size under this strategy, so what it adds is
+**leaving positions that cannot be evaluated** — no live price in `auto` (market order) or no daily bars in the
+decision phase (`mr_forced_exit`). A position with data is judged by the rule as usual: 평가 가능하면 평가를
+따르고, 불가능하면 나간다.
 
-- **The watchlist loop still runs.** Only symbols whose signal is not `sell` short-circuit
-  with `entry_blocked`. `evaluateExistingPosition` is *not* a superset of the sell signal —
-  it reads the technical trend and news sentiment only, while `scoreSignals` also weighs
-  options/fundamentals/congress — so a neutral-trend position with a 25/100 composite score
-  holds in the re-evaluation loop and would otherwise have no exit path at all. The in-loop
-  `max_trades_per_day` re-check exempts sells for the same reason.
-- **A forced exit survives missing analysis.** Under `forceFullExit` the staleness guard is
-  skipped and the position is sold whole without consulting `evaluateExistingPosition` or the
-  gate. The gate and the technical cron share one LLM provider, so the outage that makes the
-  gate defer is the same outage that makes every symbol stale, and `fixed_exit_enabled`
-  defaults off — bailing on staleness meant selling nothing exactly when it mattered. No
-  stop-loss/take-profit label is invented from analysis known to be stale.
-- **No price → mode-dependent.** `auto` sends a market order and liquidates anyway; `dry_run`
-  (books at `currentPrice`) and `semi_auto` (queues a price limit) cannot, so they skip with
-  `skipped_no_price` + `detail.forcedLiquidationBlocked` **and an email** saying the forced
-  liquidation could not be carried out.
-
-"Every exit" is literal and includes the **watchlist signal sell**: under `forceFullExit` that
-path skips `runTradeGate` entirely and passes `hard: true` to `planExit`, exactly like the
-re-evaluation loop (`source: 'risk_halt'`). It has to — for a position the rule engine holds and
-only the composite score wants sold, it is the *sole* remaining exit route, so letting the model
-size it meant a `fraction: 0` could defer the last risk-reduction path indefinitely while the
-loss limit was already breached.
-
-A tripped loss breaker therefore liquidates a stale/priceless position whole, while a position
-with fresh analysis evaluating to `hold` **and** scoring above the sell threshold is left alone.
-That is one rule, not an asymmetry: **평가 가능하면 평가를 따르고, 불가능하면 나간다.**
-
-- The daily loss limit means "take no more risk today", not "flatten the book" — liquidating
-  healthy positions on a trip would realize losses for nothing.
-- With fresh analysis the evaluation is trusted; what changes is that a triggered exit is
-  upsized to the full position. There is a basis for judgment, so it is used.
-- With stale analysis or no price there is **no evaluation possible at all**. Holding a
-  position you cannot evaluate while already past the risk limit is the more dangerous of the
-  two, so it is closed out.
-
-The price feeding the unrealized-PnL breaker is **cross-checked against the technical
-snapshot** (the confluence snapshot's last-bar `close`): if the live FMP quote diverges from it by more than **25%**,
-the snapshot price is summed instead, and one batched `시세 출처 불일치` mail per run lists every
-affected symbol (per-symbol mails would arrive ~8×/day for the whole duration of a real gap).
-`fetchLivePrice` only checks "finite positive", and a wrong tick now liquidates the whole book
-rather than merely halting trading.
-
-**This guard did not run at all until 2026-08-17.** Its snapshot side read
-`keyLevels.currentPrice`, a field siglens-core does not have (`KeyLevels` is
-`{ support, resistance, poc }`, and `normalizeKeyLevels` rebuilds the object from exactly those
-three keys), so `snapshotPrice > 0` was never true. The source is now the confluence snapshot's
-`close` — FMP OHLC, which is the comparison this paragraph always described. It also restores the
-analysis fallback price: before, a failed FMP quote meant `skipped_no_price` for that symbol with
-no second source.
-
-**What this guard does and does not buy — the two sources are not independent.** Both come from
-FMP (quote endpoint vs OHLC through `getMarketDataProvider`). It
-therefore catches the dominant failure, a single bad quote tick, and catches **nothing**
-vendor-wide: a symbol-mapping error, an unadjusted split or a currency mixup corrupts both values
-together and sails through. A genuinely independent check would use the Yahoo provider already in
-`lib/data/`; that is a follow-up, not something this guard delivers.
-
-Two properties matter more than the threshold:
-
-- **Substitute, never exclude.** Dropping a suspicious position from the sum always
-  *understates* the loss and so delays the breaker — trading a wrong liquidation for a blunted
-  risk control. Priority is live → snapshot → `avgPrice` (the last yields unrealized 0, the
-  neutral "unknown", not a claim of "no loss").
-- **The yardstick is the snapshot, not `avgPrice`.** The entry price can be weeks old, so an
-  entry-relative band flags a position genuinely down 70% on *every* run and silently
-  under-counts it. Two same-vendor sources normally differ by a fraction of a percent, which
-  is why 25% is both safe and far tighter than an entry-relative band could ever be.
-
-**One run can value the same position at two different prices, on purpose.** The aggregate
-breaker uses the price chosen above (possibly the snapshot); the per-position exit decision uses
-`priceCache`, i.e. the live quote. On a real -30% gap the breaker is therefore blunt for up to one
-analysis cycle while the stop-loss path fires normally on the live drop. The blunt side fails
-toward doing nothing destructive, which is the right direction — but it will confuse someone
-reading two different unrealized numbers in one run, so it is stated here.
-
-The unrealized breaker runs in **`dry_run` too** — a simulation that behaves differently from live
-is worthless as a rehearsal — so its alerts name the mode and say the figures are simulated,
-keeping a rehearsal from reading as a live incident.
-
-The kill switch is the one exception and still stops everything: it is not a risk breaker
-but the operator's explicit "touch nothing" (e.g. they are about to trade the account by
-hand), and halting every order on it is the pre-existing contract. Because of that, the
-breaker alert text is mode-aware (`auto` sells / `semi_auto` only queues an approval /
-`dry_run` only simulates) instead of promising a liquidation that will not happen.
-
-The response and audit row when a breaker trips:
-
-- **Nothing held** → unchanged: `{ skipped: true, reason: 'daily_loss_limit_reached' | 'daily_trade_limit_reached', … }`, `cron_runs.status='skipped'`.
-- **Positions held** → the run proceeds exit-only. Response gains `exitOnly: true` +
-  `entriesBlockedBy`; `cron_runs.status='completed'` with the breaker's **existing** outcome
-  (`daily_loss_limit` / `daily_trade_limit` — no new `CronOutcome` values) and
-  `summary.exitOnly` / `summary.entriesBlockedBy` / `summary.exitsForcedFull`.
-
-`max_trades_per_day` interacts badly with split entries: one target position now takes
-several fills instead of one (a `fraction 0.3` ladder to a 20-share target is ~9 trades,
-not 1), so the default 20 can be spent on three symbols. Review the setting upwards when
-turning the gate on — the limit is deliberately left as the operator's own knob.
+The response and audit row when a breaker trips with nothing held and no decision to make:
+`{ skipped: true, reason: 'daily_loss_limit_reached' | 'daily_trade_limit_reached' }`, `cron_runs.status='skipped'`.
+Otherwise the run proceeds and `summary.entriesBlockedBy` / `exitsForcedFull` record it.
 
 ## 매매 실행 주기 (execute_interval_min)
 
-가격 조건 — 진입 구간, 손절선, 익절선 — 은 전부 `execute` 틱 안에서만 판정된다. 그래서 이 간격이
-곧 **반응 지연의 상한**이다. 종전 `7 13-21` 스케줄은 하루 6틱(진입 창 안은 4틱), 즉 최소 60분
-간격이었고, 손절선이 뚫려도 최대 60분 방치됐다.
-
-cron은 5분마다 핸들러를 부르고, 실제 실행 여부는 `lib/strategy/execute-interval.ts`의 게이트가
-`config.execute_interval_min`(5·10·15·20·30·60, 기본 **10**)으로 정한다. 스케줄 문자열을 설정으로
-만들지 않은 이유는 node-cron 태스크가 등록 시점에 고정되기 때문 — 게이트는 대시보드에서 바꾼
-즉시 다음 틱부터 먹는다. **설정 > 매매 실행 주기**.
-
-- 허용값이 60의 약수뿐인 이유: 게이트는 `(분 − 7) mod 간격 === 0`이라, 약수가 아니면 시(hour)
-  경계에서 주기가 어긋난다. 60분 설정은 종전 스케줄과 실행 시각이 분 단위로 같다.
-- 게이트는 `startCronRun`보다 **앞**이다 — 건너뛴 틱까지 감사 행을 남기면 하루 78행 중 6행만
-  실제 실행이라 `cron_runs`가 잡음으로 덮인다. `?force=1`은 수동 트리거용 우회.
-- 설정 조회 실패는 기본값으로 **진행**한다. DB 일시 장애로 매매 틱이 사라지는 쪽이 더 나쁘다.
-- 한 틱은 심볼당 FMP 호출 2회(quote + 컨플루언스 봉). 5분으로 줄이면 호출량이 두 배가 된다.
-
-## 진입 품질 가드
-
-실행 주기를 좁히는 것만으로는 **추격 매수**가 남는다. 분석이 "$150 진입"이라 한 뒤 가격이
-$180이 돼도, 신선도 한도(1Hour 기준 2시간) 안이면 같은 분석이 그대로 쓰여 매수 신호가 살아
-있기 때문이다. 손절선·목표가만 $150 기준인 포지션이 생긴다.
-
-- **`entry_out_of_zone`** — 현재가가 `actionRecommendation.entryPrices` 최대값 + 1%를 넘으면
-  매수/추가매수를 건너뛴다(`lib/strategy/entry-zone.ts`). **상단만** 본다 — 구간 아래는 매수에
-  불리하지 않다. `entryPrices`가 없으면 통과(fail-open). 사이징 게이트보다 앞이라 어차피 사지
-  않을 주문에 LLM 호출을 태우지 않는다. 매도에는 걸지 않는다.
-- **`entry_no_stop_room`** — 진입가와 `max(지지선, 분석 손절가)` 사이가
-  `config.min_stop_room_pct`(기본 **0.5%**, 0이면 off) 미만이면 매수/추가매수를
-  건너뛴다(`lib/strategy/entry-zone.ts`의 `hasStopRoom`). 청산 규칙이 두 레벨을 각각 보므로
-  **높은** 쪽이 먼저 걸린다. 레벨이 없으면 통과(fail-open).
-  손실 크기를 제한하는 장치가 아니라 **손절선이 노이즈 대역 밖인지**를 보는 장치다.
-
-  **기본값이 0.5%인 이유는 위쪽 경계 때문이다.** siglens-core의 폴백 손절가는
-  `진입가 − 1.5×ATR`이라 확보 가능한 여유가 곧 `1.5×ATR/가격`이다. 1%로 잡으면 ATR이
-  가격의 0.667% 미만인 종목이 매 틱 영구 차단되는데, 30분봉에서는 흔한 영역이라 게이트가
-  아니라 정지 버튼이 된다. 그리고 그 상태는 로그상 `entry_no_stop_room`만 쌓여 **"신호가
-  없는 날"과 구분되지 않는다** — 설정 키로 뺀 것도, 상한을 5%로 막아 둔 것도 그래서다.
-  `SUPPORT_BREAK_BUFFER`는 여기 관여하지 않는다: 두 상수를 곱하면 한쪽을 조정할 때 다른
-  쪽 문턱이 조용히 따라 움직인다.
-  실측(2026-08-19~20) 3건이 전부 여유 0.03~0.2%에서 진입해 전건 손실로 끝났다 — 방향이
-  틀려서가 아니라 손절선이 호가 스프레드 안이라서 털렸다. `entry_out_of_zone`은 이걸 못
-  잡는다: 그 셋은 전부 권장 진입 구간 **안**이었다. 매도에는 걸지 않는다(원칙 7).
-- **`entry_cooldown`** — 같은 심볼 재진입 최소 간격(`config.entry_cooldown_min`, 기본 60분,
-  0이면 off). 기준은 마지막 **체결**이다 — 매수뿐 아니라 **매도도 쿨다운을 건다.** 매수만 보면
-  손절이 마지막 매수보다 쿨다운 뒤에 일어났을 때 손절 10분 뒤 같은 분석으로 재매수가 가능했다
-  (`recentStopLossSymbols`는 실행 스코프라 다음 틱에 초기화된다). **설정 > 투자 관리**.
-- **`entry_not_recommended`** — 분석의 `entryRecommendation`이 `avoid`면 점수와 무관하게 매수를
-  막는다. core는 `avoid`에서도 "돌파 시 진입" **조건부** 구간을 채우므로 `entryPrices` 상단
-  검사로는 걸러지지 않는다.
-- **`entry_exit_standing`** — 사는 순간 청산 체인이 이미 `hold`가 아니면 매수/추가매수를
-  건너뛴다. 위 가드들은 **가격 레벨**만 보는데, 청산 체인에는 레벨이 아닌 트리거가 더 있다
-  (기술 추세 bearish, 하락 컨플루언스, 뉴스 악재). 레벨을 하나씩 흉내 내지 않고 실제
-  `evaluateExistingPosition`에 묻는다 — 신규 매수는 평단 = 현재가, 추가 매수는 기존 평단.
-  실측(13세션 매수 신호 45틱)에서 이 가드가 **새로** 막는 틱은 0건이다(서 있던 16건은 전부
-  앞의 세 가드가 먼저 잡았다). 그래도 두는 이유는 관측이다: 청산 규칙 하나가 다시 상수가
-  되면 증상이 10분 간격 매수·매도 한 쌍이 아니라 `detail.exitReason`이 찍힌 행으로 쌓인다.
-  매도에는 걸지 않는다(원칙 7).
-- **`entry_after_exit_blocked`** — 같은 틱에 부분 청산한 종목은 다시 늘리지 않는다.
-
-**노출 한도는 원가(투자 금액) 기준이다.** `max_position_size` / `max_total_exposure`는
-`avgPrice × quantity`로 계산한다 — 평가액 기준이면 가격이 내릴수록 예산이 커져 한도가
-아무것도 한정하지 못한다.
-
-**물타기는 규칙으로 막지 않는다.** 점수 ≥70 + 6축 합의 + 사이징 게이트를 통과했다면 그것이
-이미 AI의 추천이고, 규칙 엔진이 방향만 보고 뒤집는 것은 판단 층을 잘못 고른 것이다. 대신
-게이트가 **물타기인 줄 알고** 크기를 정하도록 프롬프트에 성격을 명시한다 — 특히 모델이 계산으로
-얻을 수 없는 사실 하나를 못박는다: 고정 손절선은 평단이 기준이므로 추가 매수가
-손절선을 함께 내린다 (진입 지침 5번).
-
-익절 트리거가 **손실 구간에서** 서면 `structural: true`가 붙는다 (`aiTakeProfit`·저항선·목표가).
-분석이 그은 익절 레벨은 우리 매수가와 무관한 절대 가격이라, 그림보다 비싸게 산 포지션은
-미실현 손실 상태에서 그 선에 닿는다. 그때 게이트에 `take_profit` 트리거가 그대로 가면
-프롬프트가 "목표 달성형"으로 읽고 일부만 덜어낸 뒤 나머지를 태운다 — 손실 포지션에 정반대
-사이징이다. 라벨을 `stop_loss`로 바꾸지는 않는다(재진입 쿨다운·손절 이력 오염).
-
-청산 트리거 자체의 오차도 같이 잡았다 — **지지선 이탈에는 0.5% 버퍼**(`SUPPORT_BREAK_BUFFER`),
-**저항선 근접은 ±2% 밴드**다. 종전에는 손절만 오차 0(`< supportLevel`)이고 익절은 2%·5%로
-관대해, 그 비대칭이 승률을 깎는 방향으로만 작동했다. 저항선 쪽은 상한이 없어 **돌파를 저항
-거부로 오독**했다(실측: 저항 172.33에 현재가 176.375를 "저항선 근접"으로 청산). 목표가는
-상한을 두지 않는다 — 목표가 위는 "도달"이지만 저항선 위는 "돌파"라 뜻이 다르다.
-
-**목표가 근접(5b)도 같은 폴백이다.** v0.30.0(core 1.0.x의 DeepSeek 스키마 강제)부터
-`priceTargets`가 99% 채워지는데, 첫 목표는 현재가에서 가장 가까운 목표라 중앙 +0.80%(최대
-+4.69%)이고 `>= target * 0.95`는 +5.26% 안쪽이면 항상 참이다 — 실측 **537/537틱**, 리플레이
-1틱 청산 100%. 그전 모델은 목표가를 한 번도 내지 않아(0/862) 잠들어 있었을 뿐이다. 첫
-목표가는 77%의 틱에서 `aiTakeProfit`과 같은 가격이라 "도달"은 4.5가 이미 잡는다.
-수정 후에도 평균 수익은 좋아지지 않는다(−0.02% → −0.37%, 추세 비약세 틱) — 10분 청산은
-"매매를 하지 않는 것"이었고, 고치면 우위 없는 진입을 실제로 들고 가기 때문이다. 그 진입
-쪽 원인은 컨플루언스 상위 시간축 게이트였다(루트 CLAUDE.md).
-
-**저항선 근접은 `aiTakeProfit`이 없을 때만 발동한다** — 4.5의 폴백이다. 밴드를 씌워도
-상수였기 때문이다: `keyLevels.resistance[0]`은 현재가에서 가장 가까운 저항이고 매시간
-재계산돼 가격을 따라다녀서, 실측 706틱에서 현재가 대비 중앙 +0.19%(1Hour 실현 이동
-중앙값 0.25~0.49%보다 작다)였고 **99.2%의 틱에서 조건이 참**이었다. 결과는 "사자마자
-청산"이고 프로덕션에서도 그렇게 났다(2026-09-02 NVDA: 227.53 매수 / 저항 227 / 10분 뒤
-227.45 청산). `entry-zone.ts`의 `firstUpsideExit`이 같은 규칙을 미러링한다.
-
-청산 쪽에는 대칭 **진입 게이트**를 두지 **않았다** — 가격 조건으로 매도를 막는 것은 원칙 7 위반이다.
-대신 빠져 있던 트리거를 채웠다: `actionRecommendation.stopLoss` / `takeProfitPrices`(core의
-`reconciledLevels` 보정값 우선)가 `evaluateExistingPosition`의 우선순위 1.5 / 4.5로 들어간다.
-`fixed_exit_enabled`가 기본 꺼짐이라, 그전까지 활성 손절 경로는 지지선 이탈·추세 반전·하락
-컨플루언스 같은 **간접** 신호뿐이었다.
-
-설계 근거: [`docs/specs/2026-08-16-execution-cadence-design.md`](../docs/specs/2026-08-16-execution-cadence-design.md),
-감사 대응: [`docs/specs/2026-08-17-audit-fixes-design.md`](../docs/specs/2026-08-17-audit-fixes-design.md).
-
-## Entry window (신규 진입 시간 창)
-
-신규 진입은 `config.entry_window`(기본 **ET 11:00–15:00**) 안에서만 열린다. **cron 스케줄은
-바뀌지 않는다** — 창은 스케줄이 아니라 진입 게이트다. `execute` cron은 정규장 내내 그대로 돌고,
-창 밖에도 포지션 재평가·손절·청산·신호 매도는 전부 정상 동작한다. cron 창을 좁히면 마감 전
-손절 경로까지 같이 죽으므로, 원칙 7에 따라 진입만 막는다.
-
-창은 **ET에 고정**한다. 회피 대상(개장 갭, 첫 30분 변동성, 마감 MOC 임밸런스)이 전부 ET 기준
-현상이라, UTC/KST에 고정하면 서머타임마다 창이 한 시간씩 밀려 목적이 반년마다 깨진다.
-
-일일 손실/거래 한도가 쓰는 `entryBlock` 메커니즘을 그대로 재사용하되, 창은 리스크 사건이
-아니므로 이메일도 `forceFullExit`도 없다. 두 사유가 동시에 성립하면 감사 로그에는 리스크 쪽이
-남는다.
-
-**설정 > 진입 시간 창**에서 조정한다. 시간 입력 두 개(ET)와 ON/OFF 토글이며, OFF가 곧
-`{ start: '00:00', end: '24:00' }`(= 제한 없음)이다. 재배포도 API 직접 호출도 필요 없다.
-
-`semi_auto` 승인은 창을 다시 보지 않는다 — 대기 주문 TTL(15분)만큼 창을 넘겨 체결될 수 있고,
-운영자가 명시적으로 누른 승인을 시간으로 되돌리는 쪽이 더 혼란스러우므로 의도적으로 둔다.
-또한 기본 창(ET 4시간)은 실행 주기 10분 기준 하루 39틱 중 24틱만 덮으므로, AI 사이징 게이트의
-분할 진입과 겹치면 하루에 도달 가능한 포지션 크기가 줄어든다. 다만 실제 상한을 정하는 것은
-`entry_cooldown_min`(기본 60분)이라 심볼당 창 안에서 4회 — 실행 주기 도입 전과 같은 숫자다.
-`auto` 전환 시 `max_trades_per_day`와 함께 확인할 것.
-
-설계 근거: [`docs/specs/2026-08-15-entry-window-design.md`](../docs/specs/2026-08-15-entry-window-design.md).
+`execute_interval_min`은 **5 또는 10분**이다. 이 간격이 정하는 것은 재난 손절의 반응 지연뿐이다 — 진입과
+규칙 청산은 하루 1회 판단 틱에서만 한다. 게이트가 `(분 − 7) mod 간격`이라 마감 20분 창 안의 틱 수가
+간격마다 다르다(5분 4틱, 10분 2틱, 15·20분 1틱, 30·60분 0틱). 한 틱뿐이면 그 틱이 락 경합이나 일시
+장애로 판단을 못 한 날은 판단이 통째로 사라지므로, 재시도 틱이 있는 값만 허용한다. 설정 조회 실패는
+기본값으로 **진행**한다.
 
 ## Quiet hours
 
@@ -674,14 +294,13 @@ createOrderTracking(submitted) → API call → updateOrderTracking(filled/rejec
 - Files prefixed with `_` are shared helpers, never mounted as routes.
 - Dashboard routes enforce HTTP method (405 on mismatch).
 - **There is no platform-imposed run limit** — the process is long-lived, so every bound is one
-  the code sets: the analysis cron's 1200s deadline, `PER_SYMBOL_MAX_MS` (150s), execute's 900s
-  run deadline, and the Redis lock TTLs. The old `maxDuration: 800` (Vercel Pro) is gone, which
-  is why those numbers were re-derived rather than inherited.
-- Errors are caught **per symbol** in both the execute cron and the analysis cron — one symbol's
-  failure never drops the other symbols' results. The analysis cron additionally runs its symbols
-  in parallel (`Promise.all`), so its run time is the slowest single symbol, not the sum.
+  the code sets: execute's 900s run deadline, the review cron's 1200s deadline, and the Redis lock
+  TTLs. The old `maxDuration: 800` (Vercel Pro) is gone, which is why those numbers were re-derived
+  rather than inherited.
+- Errors are caught **per symbol** in both the execute cron and the review cron — one symbol's
+  failure never drops the other symbols' results.
 - Position close uses atomic DB update (`WHERE status = 'open'`) — returns 409 on race condition.
-- Execute and reconcile crons use distributed locks (Redis SETNX) — concurrent invocations return `{ skipped: true }`.
+- Execute, reconcile and review crons use distributed locks (Redis SETNX) — concurrent invocations return `{ skipped: true }`.
 - Cron runs write a `cron_runs` audit row (`running` → `completed`/`skipped`/`error`). A row stuck in `running` past `CRON_STALE_AFTER_MS` (45 min — must exceed both the longest run and the analysis lock TTL of 30 min, or the sweeper stomps a live run's row) belongs to an invocation that timed out before writing its finish row; the next cron invocation finalizes it to `error`/`timeout` via `finalizeStaleCronRuns` (never deletes).
 - Trade + position mutations are wrapped in DB transactions for atomicity.
 - `health.ts` requires no authentication — designed for uptime monitoring services.

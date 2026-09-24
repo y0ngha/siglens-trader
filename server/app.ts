@@ -22,14 +22,10 @@ import { POST as positionClosePOST } from '../api/positions/[id]/close.js';
 import { GET as searchGET } from '../api/search.js';
 import { GET as statusGET } from '../api/status.js';
 import { GET as tradesGET, POST as tradesPOST } from '../api/trades.js';
-import { GET as cronTechnical } from '../api/cron/technical.js';
-import { GET as cronNews } from '../api/cron/news.js';
-import { GET as cronOptions } from '../api/cron/options.js';
-import { GET as cronFundamental } from '../api/cron/fundamental.js';
-import { GET as cronCongress } from '../api/cron/congress.js';
 import { GET as cronExecute } from '../api/cron/execute.js';
 import { GET as cronReconcile } from '../api/cron/reconcile.js';
 import { GET as cronDigest } from '../api/cron/digest.js';
+import { GET as cronReview } from '../api/cron/review.js';
 
 type WebHandler = (req: Request) => Promise<Response>;
 
@@ -40,35 +36,22 @@ const fwd = (h: WebHandler) => (c: { req: { raw: Request } }) => h(c.req.raw);
  * Scheduled jobs (UTC schedules; `isEtRegularSessionOpen` narrows to the actual US session).
  * Double execution across instances is prevented by the Redis SETNX lock (lib/lock.ts).
  *
- * technical and options tick every 15 minutes so a short configured horizon (15Min/30Min) is
- * actually honored. The cadence guard in `_run-analysis-cron.ts` collapses surplus ticks when
- * the configured horizon is longer — a 1Hour config still produces only one LLM call per hour.
+ * 시간당 분석 크론 5종(technical/news/options/fundamental/congress)은 없다 — 전략이 가격만 보는
+ * 일봉 규칙이 되면서 AI 분석은 신호가 난 종목에만 `review`가 부른다
+ * (docs/specs/2026-09-24-daily-mean-reversion-design.md §5).
  */
 export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler: WebHandler }> = [
-    { name: 'technical', schedule: '*/15 13-21 * * 1-5', handler: cronTechnical },
-    // 창(60분)당 틱이 하나뿐이면 그 한 번을 놓칠 때 그 시간대 뉴스 분석이 통째로 없다
-    // (락 경합·재시작·DB 일시 오류). 케이던스 가드가 runner **호출 전에** 스킵하므로
-    // 잉여 틱의 비용은 심볼당 DB 조회 한 번이고 LLM/FMP 쿼터는 0이다.
-    { name: 'news', schedule: '*/15 13-21 * * 1-5', handler: cronNews },
-    { name: 'options', schedule: '*/15 13-21 * * 1-5', handler: cronOptions },
-    // 하루 1틱이면 그 틱을 놓친 날은 펀더멘털이 없다. 케이던스 창이 24시간이라
-    // 그날 첫 성공 이후의 틱은 전부 스킵된다 — 여유 틱은 재시도 창일 뿐이다.
-    { name: 'fundamental', schedule: '0 15-21 * * 1-5', handler: cronFundamental },
-    // Congressional disclosures lag the actual trade by weeks, so once per weekday is plenty —
-    // hourly would just burn LLM calls on data that won't have changed since the last run.
-    { name: 'congress', schedule: '0 16-21 * * 1-5', handler: cronCongress },
-    // 5분마다 호출하고, 실제 실행 여부는 핸들러 안의 `execute_interval_min` 게이트가 정한다
-    // (`lib/strategy/execute-interval.ts`). 스케줄 문자열을 설정으로 바꾸려면 태스크 재등록
-    // = 재시작이 필요한데, 게이트는 대시보드에서 바꾼 즉시 다음 틱부터 먹는다.
-    // `7-59/5`의 :07 오프셋은 정각에 시작하는 분석 cron 결과가 저장될 시간을 준다 — 간격을
-    // 60분으로 두면 종전 `7 13-21` 스케줄과 실행 시각이 분 단위로 같다.
-    // `2-59/5`는 매 5분(:02 :07 :12 …)이라 게이트가 인정하는 모든 분을 덮는다. `7-59/5`는
-    // :02를 빼먹어 `execute_interval_min = 5`에서 :57 → 다음 시 :07이 10분 공백이 됐다.
+    // 5분마다 호출하고, 실제 실행 여부는 핸들러 안의 `execute_interval_min` 게이트(5·10분)가
+    // 정한다. `2-59/5`는 게이트가 인정하는 모든 분(:02 :07 :12 …)을 덮는다. 판단 단계는 마감
+    // 20분 전 창의 첫 틱에서 하루 1회 돈다 — 13~21시 UTC가 EDT·EST 양쪽의 창을 모두 덮는다.
     { name: 'execute', schedule: '2-59/5 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
     // 01:00 UTC = 10:00 KST. Runs daily (including weekends) — there are no day-of-week
     // restrictions because quiet-hours notifications can be queued any day US market trades.
     { name: 'digest', schedule: '0 1 * * *', handler: cronDigest },
+    // AI 진입 리뷰(기록 전용). 판단은 ET 15:40~16:00(반일장 12:40~13:00)이라 16:00 UTC부터 덮는다.
+    // 처리할 신호가 없는 틱은 감사 행 없이 끝난다.
+    { name: 'review', schedule: '*/10 16-21 * * 1-5', handler: cronReview },
 ];
 
 export const app = new Hono();
