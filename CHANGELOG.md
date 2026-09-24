@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.33.0](https://github.com/y0ngha/siglens-trader/compare/v0.32.0...v0.33.0) (2026-09-24)
+
+
+### Bug Fixes
+
+* 다각도 리뷰 반영 — 당일 재매수 금지, 마감 임박 주문 중단, 리뷰 멱등 키, 대시보드 판단 표시 ([57f8190](https://github.com/y0ngha/siglens-trader/commit/57f819007b2f881140b7e54555f1e59ebf20e48b))
+
+
+### Features
+
+* 일봉 RSI(2) 눌림매수로 전략 교체 ([941550c](https://github.com/y0ngha/siglens-trader/commit/941550cd5a73593285a4cd4cfe89ca646a101b6c))
+
 # [0.32.0](https://github.com/y0ngha/siglens-trader/compare/v0.31.0...v0.32.0) (2026-09-19)
 
 
