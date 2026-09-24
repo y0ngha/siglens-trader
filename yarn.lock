@@ -22,9 +22,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@anthropic-ai/sdk@npm:^0.110.0":
-  version: 0.110.0
-  resolution: "@anthropic-ai/sdk@npm:0.110.0"
+"@anthropic-ai/sdk@npm:^0.128.0":
+  version: 0.128.0
+  resolution: "@anthropic-ai/sdk@npm:0.128.0"
   dependencies:
     json-schema-to-ts: "npm:^3.1.1"
     standardwebhooks: "npm:^1.0.0"
@@ -35,7 +35,7 @@ __metadata:
       optional: true
   bin:
     anthropic-ai-sdk: bin/cli
-  checksum: 10c0/c62fc7aa3570d6e00395f8d0262eca149191366fb868ba7389e601e9ee2280dc2220d4f9692a0a50a0c220ff3e6341ecabfc7bcb193aa36434f42b5fd574aeff
+  checksum: 10c0/88f33de9cb0886c7783b80d4861457d33ddd3e08d4af6c949d97561d954be2e8c39ebc32c1c81d5633246d48579c4c9c208ea25aedae5bcd8df1783ef4d79b8a
   languageName: node
   linkType: hard
 
@@ -2231,9 +2231,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@google/genai@npm:^2.10.0":
-  version: 2.15.0
-  resolution: "@google/genai@npm:2.15.0"
+"@google/genai@npm:^2.24.0":
+  version: 2.24.0
+  resolution: "@google/genai@npm:2.24.0"
   dependencies:
     google-auth-library: "npm:^10.3.0"
     p-retry: "npm:^4.6.2"
@@ -2244,7 +2244,7 @@ __metadata:
   peerDependenciesMeta:
     "@modelcontextprotocol/sdk":
       optional: true
-  checksum: 10c0/70a70d25149c228e88a561651188bee8ce7a29ca7ecae50f2b90be6608f72ec6b456d7769f62b9f3d4ecbd60b0b59ff03d0c7601d992b54d77b29a274ca59963
+  checksum: 10c0/8a1eee79b535171b1b7329e034e66bef62fbf2b964f6263760c02aedf7e2aca1e65fcf159b2ef996b4a2f3cd6f5f163b0cfd1dc0e38676bdc719bf447e7eb464
   languageName: node
   linkType: hard
 
@@ -4126,17 +4126,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@y0ngha/siglens-core@npm:1.11.1":
-  version: 1.11.1
-  resolution: "@y0ngha/siglens-core@npm:1.11.1::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F1.11.1%2F560af0c69866197dc913dcdd9232f015c2b8aa47"
+"@y0ngha/siglens-core@npm:1.15.1":
+  version: 1.15.1
+  resolution: "@y0ngha/siglens-core@npm:1.15.1::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F1.15.1%2F4561fe65d613e4048b0ab1db1cd7a43fe552672f"
   dependencies:
-    "@anthropic-ai/sdk": "npm:^0.110.0"
-    "@google/genai": "npm:^2.10.0"
-    jsonrepair: "npm:^3.14.0"
-    openai: "npm:6.35.0"
+    "@anthropic-ai/sdk": "npm:^0.128.0"
+    "@google/genai": "npm:^2.24.0"
+    jsonrepair: "npm:^3.15.0"
+    openai: "npm:7.23.0"
   peerDependencies:
     "@upstash/redis": ^1.37.0
-  checksum: 10c0/10da67cc687fc34aabd5be151186a94b8423108fc849d1c791a2523aed73cbf5db22658546795278d1a1142a6d015d79e55eafddcd57393b68c5bee11ffeb8b7
+  checksum: 10c0/5d64d633e7b3e0886ac5f151aab9713f76354254f7d3b4fc204816820d806a430f4ccc1a4f2c6175491faa2b9693150f4f688d52b484ded7a00a8e69b692c43e
   languageName: node
   linkType: hard
 
@@ -8052,12 +8052,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"jsonrepair@npm:^3.14.0":
-  version: 3.14.0
-  resolution: "jsonrepair@npm:3.14.0"
+"jsonrepair@npm:^3.15.0":
+  version: 3.15.0
+  resolution: "jsonrepair@npm:3.15.0"
   bin:
     jsonrepair: bin/cli.js
-  checksum: 10c0/8c2f6691c37f9c811abe08e1cb525221652eb789b1804e4fd439b332faed97cda81ddeb06284cb500823dbbc98fdbebb3b3f58da17048f0608c1feb68ce2af94
+  checksum: 10c0/9e3e18e6ab1d00731731bd21bffba4e3f0238c581da7824a0b28c410690ecf52601c6fae3f4913a49d03daed6b47f807ac3ede938990168ed08aef87e2bf58d2
   languageName: node
   linkType: hard
 
@@ -9274,20 +9274,30 @@ __metadata:
   languageName: node
   linkType: hard
 
-"openai@npm:6.35.0":
-  version: 6.35.0
-  resolution: "openai@npm:6.35.0"
+"openai@npm:7.23.0":
+  version: 7.23.0
+  resolution: "openai@npm:7.23.0"
   peerDependencies:
-    ws: ^8.18.0
+    "@aws-sdk/credential-provider-node": ">=3.972.0 <4"
+    "@smithy/hash-node": ">=4.3.0 <5"
+    "@smithy/signature-v4": ">=5.4.0 <6"
+    undici: ">=5 <9"
+    ws: ^8.21.0
     zod: ^3.25 || ^4.0
   peerDependenciesMeta:
+    "@aws-sdk/credential-provider-node":
+      optional: true
+    "@smithy/hash-node":
+      optional: true
+    "@smithy/signature-v4":
+      optional: true
+    undici:
+      optional: true
     ws:
       optional: true
     zod:
       optional: true
-  bin:
-    openai: bin/cli
-  checksum: 10c0/b5be8c9c26b8991bc06e94d2de9ec046d7e8497f3828f8ff3cd7796cfd5e39e464a52afa2f4959003183e61a909c6ee261ca4380a61cb1f2e9a56629058314ed
+  checksum: 10c0/0db651c394f2da0481e62a059198e050ec1f919cbd8f1f11754140123d192e48d77f1f9500a86c199b358c5ed61a67d87f0f8068c8e3e457ff1c75d54fc4d62c
   languageName: node
   linkType: hard
 
@@ -10583,7 +10593,7 @@ __metadata:
     "@upstash/redis": "npm:^1.37.0"
     "@vitejs/plugin-react": "npm:^4.5.2"
     "@vitest/coverage-v8": "npm:3.2.4"
-    "@y0ngha/siglens-core": "npm:1.11.1"
+    "@y0ngha/siglens-core": "npm:1.15.1"
     bcryptjs: "npm:^3.0.2"
     clsx: "npm:^2.1.1"
     dotenv-cli: "npm:^11.0.0"
