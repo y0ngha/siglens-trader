@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.1](https://github.com/y0ngha/siglens-trader/compare/v0.33.0...v0.33.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **db:** Pool·클라이언트 연결 오류가 프로세스를 죽이지 않게 한다 ([1695d68](https://github.com/y0ngha/siglens-trader/commit/1695d68e6dad109f0d4a07f039aaa51740b37a78))
+
 # [0.33.0](https://github.com/y0ngha/siglens-trader/compare/v0.32.0...v0.33.0) (2026-09-24)
 
 
