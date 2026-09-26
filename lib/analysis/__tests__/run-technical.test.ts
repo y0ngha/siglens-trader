@@ -12,6 +12,13 @@ vi.mock('@lib/data/fmp-market-data-provider', () => ({
     getMarketDataProvider: () => mockProvider,
 }));
 
+const mockGetEarningsReports = vi.fn();
+vi.mock('../../data/fmp-fundamental.js', () => ({
+    FmpFundamentalClient: class {
+        getEarningsReports = (...args: unknown[]) => mockGetEarningsReports(...args);
+    },
+}));
+
 const { runAnalysis } = await import('@y0ngha/siglens-core');
 const { runTechnicalAnalysis } = await import('../run-technical');
 
@@ -26,6 +33,58 @@ const baseOptions: RunAnalysisOptions = {
 describe('runTechnicalAnalysis', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mockGetEarningsReports.mockResolvedValue([]);
+    });
+
+    describe('실적 이벤트 (core 1.17.2 눌림 판정 뉴스 게이트)', () => {
+        const optionsOf = () =>
+            mockedRun.mock.calls.at(-1)?.[5] as { marketEvents?: unknown[] } | undefined;
+
+        it('일봉에서 최근 실적 발표일이 있으면 marketEvents로 넘긴다', async () => {
+            const today = new Date().toISOString().slice(0, 10);
+            mockGetEarningsReports.mockResolvedValue([{ symbol: 'AAPL', earningsDate: today }]);
+            mockedRun.mockResolvedValue({ status: 'done', result: {} } as any);
+
+            await runTechnicalAnalysis({ ...baseOptions, timeframe: '1Day' });
+
+            expect(optionsOf()?.marketEvents).toEqual([
+                expect.objectContaining({
+                    category: 'earnings',
+                    sentiment: 'neutral',
+                    impact: 'high',
+                }),
+            ]);
+        });
+
+        it('최근 실적이 없으면 marketEvents를 생략한다(프롬프트 바이트 불변)', async () => {
+            mockGetEarningsReports.mockResolvedValue([
+                { symbol: 'AAPL', earningsDate: '2020-01-01' },
+            ]);
+            mockedRun.mockResolvedValue({ status: 'done', result: {} } as any);
+
+            await runTechnicalAnalysis({ ...baseOptions, timeframe: '1Day' });
+
+            expect(optionsOf()).not.toHaveProperty('marketEvents', expect.anything());
+        });
+
+        it('실적 조회가 실패해도 분석은 이벤트 없이 진행한다', async () => {
+            mockGetEarningsReports.mockRejectedValue(new Error('FMP down'));
+            mockedRun.mockResolvedValue({ status: 'done', result: { ok: 1 } } as any);
+
+            const result = await runTechnicalAnalysis({ ...baseOptions, timeframe: '1Day' });
+
+            expect(result).toEqual({ status: 'done', result: { ok: 1 } });
+            expect(optionsOf()?.marketEvents).toBeUndefined();
+        });
+
+        it('일봉이 아니면 실적을 조회하지 않는다', async () => {
+            mockedRun.mockResolvedValue({ status: 'done', result: {} } as any);
+
+            await runTechnicalAnalysis({ ...baseOptions, timeframe: '1Hour' });
+
+            expect(mockGetEarningsReports).not.toHaveBeenCalled();
+            expect(optionsOf()?.marketEvents).toBeUndefined();
+        });
     });
 
     it('returns cached result when runAnalysis returns cached', async () => {
