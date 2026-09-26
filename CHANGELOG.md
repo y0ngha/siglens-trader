@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.34.0](https://github.com/y0ngha/siglens-trader/compare/v0.33.3...v0.34.0) (2026-09-26)
+
+
+### Features
+
+* **analysis:** 기술 분석에 최근 실적 발표일을 marketEvents로 넘긴다 ([653b65d](https://github.com/y0ngha/siglens-trader/commit/653b65da6f08b69f64885c6c8dd524075b74b16a))
+
 ## [0.33.3](https://github.com/y0ngha/siglens-trader/compare/v0.33.2...v0.33.3) (2026-09-26)
 
 ## [0.33.2](https://github.com/y0ngha/siglens-trader/compare/v0.33.1...v0.33.2) (2026-09-25)
