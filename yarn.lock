@@ -4126,9 +4126,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@y0ngha/siglens-core@npm:1.18.0":
-  version: 1.18.0
-  resolution: "@y0ngha/siglens-core@npm:1.18.0::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F1.18.0%2F84b9b22fec14efc4c0ad3c4f7cc2b2f9e53069b6"
+"@y0ngha/siglens-core@npm:2.0.1":
+  version: 2.0.1
+  resolution: "@y0ngha/siglens-core@npm:2.0.1::__archiveUrl=https%3A%2F%2Fnpm.pkg.github.com%2Fdownload%2F%40y0ngha%2Fsiglens-core%2F2.0.1%2Fb3d130fdb40c146dcc03161b92ae81f438c5b5f3"
   dependencies:
     "@anthropic-ai/sdk": "npm:^0.128.0"
     "@google/genai": "npm:^2.24.0"
@@ -4136,7 +4136,7 @@ __metadata:
     openai: "npm:7.23.0"
   peerDependencies:
     "@upstash/redis": ^1.37.0
-  checksum: 10c0/0223315b6ccc68d85905459464894e61e05a0142360c48ca543c875815ed9282b90d874fc200c33f0236fad9ad60969a06f51cc8f830e73fb6c5c7aea549aa9d
+  checksum: 10c0/2ec68490275fe70356b2edf2de883b33a0f455c131e4a1bc03ac23b749a74724f5f40498ada542a4b98df10962db1395542f0da7376c875a3dc1a7a2f31d8526
   languageName: node
   linkType: hard
 
@@ -10593,7 +10593,7 @@ __metadata:
     "@upstash/redis": "npm:^1.37.0"
     "@vitejs/plugin-react": "npm:^4.5.2"
     "@vitest/coverage-v8": "npm:3.2.4"
-    "@y0ngha/siglens-core": "npm:1.18.0"
+    "@y0ngha/siglens-core": "npm:2.0.1"
     bcryptjs: "npm:^3.0.2"
     clsx: "npm:^2.1.1"
     dotenv-cli: "npm:^11.0.0"
