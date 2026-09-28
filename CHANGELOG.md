@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.34.1](https://github.com/y0ngha/siglens-trader/compare/v0.34.0...v0.34.1) (2026-09-28)
+
 # [0.34.0](https://github.com/y0ngha/siglens-trader/compare/v0.33.3...v0.34.0) (2026-09-26)
 
 
