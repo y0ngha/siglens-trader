@@ -62,6 +62,7 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 | `mr_max_hold_days` | integer 1–60 | 10 |
 | `mr_stop_atr` | 0–20 (0 = no disaster stop) | 5 |
 | `mr_regime_filter` | boolean | true |
+| `mr_slots` | integer 1–20 — per-entry budget = equity ÷ slots | 8 |
 | `dry_run_cost_bps` | 0–100 (one-way) | 10 |
 
 Retired keys (`buy_threshold`, `sell_threshold`, `score_weights`, `confluence_*`, `min_rr`, `min_stop_room_pct`,
@@ -121,7 +122,8 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
    (`lib/strategy/daily-loss.ts`). A tripped loss breaker blocks entries and sets `forceFullExit`. Breach and
    quote-divergence mails go **once per ET day** (`claimOnce`).
 6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`).
-7. Exposure (cost basis + in-flight buys + pending approvals) and cash (`getAvailableCashUsd`).
+7. Exposure (cost basis + in-flight buys + pending approvals) and cash (`getAvailableCashUsd`). Slot budget =
+   (cash + open positions at live price, avg price fallback) ÷ `mr_slots`, fixed for the run; `null` cash → no slot cap.
 8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
    `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`; bars unavailable → `stop_backfill_failed`
    + one mail per symbol per ET day); no price → `skipped_no_price`

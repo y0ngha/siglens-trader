@@ -1217,6 +1217,22 @@ describe('SettingsPage', () => {
         expect(stopAtrInput).toHaveAttribute('step', '0.5');
     });
 
+    it('mr_slots는 저장값이 없으면 기본 8, 정수 1~20 범위를 갖는다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('동시 보유 칸 수')).toBeInTheDocument();
+        });
+
+        const slotsInput = strategyInput('동시 보유 칸 수');
+        expect(slotsInput).toHaveValue(8);
+        expect(slotsInput).toHaveAttribute('min', '1');
+        expect(slotsInput).toHaveAttribute('max', '20');
+        expect(slotsInput).toHaveAttribute('step', '1');
+    });
+
     it('시장 국면 필터 토글은 즉시 저장된다', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);

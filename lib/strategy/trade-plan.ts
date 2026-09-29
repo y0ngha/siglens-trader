@@ -62,6 +62,11 @@ export interface EntryPlanParams {
     existingSymbolExposure: number;
     /** null/undefined = unknown (dry_run/semi_auto don't know real cash) → unconstrained. */
     availableCash?: number | null;
+    /**
+     * 칸 예산 = 계좌 총자산 ÷ 칸 수 ({@link slotBudgetFor}). 종목당 매수 금액을 정하는 **주 규칙**이고,
+     * 위의 세 한도는 그 위의 안전 상한이다. null/undefined = 총자산을 모름 → 이 제약 없음.
+     */
+    slotBudget?: number | null;
 }
 
 export interface EntryPlan {
@@ -70,7 +75,17 @@ export interface EntryPlan {
     fullBudget: number;
     /** Budget after `fraction` is applied. */
     trancheBudget: number;
-    limitedBy: 'symbol' | 'total' | 'cash' | 'none';
+    limitedBy: 'slot' | 'symbol' | 'total' | 'cash' | 'none';
+}
+
+/**
+ * 칸 예산 = 총자산 ÷ 칸 수. 총자산을 모르면(브로커 잔고 조회 실패) null — 호출자는 칸 제약 없이
+ * 기존 한도만으로 사이징한다. 백테스트(스펙 §2.4.2)의 "칸 = 자산 ÷ K, 복리"와 같은 식이다.
+ */
+export function slotBudgetFor(equity: number | null, slots: number): number | null {
+    if (equity === null || !Number.isFinite(equity)) return null;
+    if (!Number.isFinite(slots) || slots < 1) return null;
+    return Math.max(0, equity) / Math.floor(slots);
 }
 
 export function planEntry(params: EntryPlanParams): EntryPlan {
@@ -82,6 +97,7 @@ export function planEntry(params: EntryPlanParams): EntryPlan {
         currentExposure,
         existingSymbolExposure,
         availableCash,
+        slotBudget,
     } = params;
 
     if (!Number.isFinite(price) || price <= 0) {
@@ -105,15 +121,20 @@ export function planEntry(params: EntryPlanParams): EntryPlan {
         ? Math.max(0, availableCash as number)
         : Infinity;
 
-    const fullBudget = Math.min(symbolBudget, totalBudget, cashBudget);
+    const slotCap = Number.isFinite(slotBudget) ? Math.max(0, slotBudget as number) : Infinity;
 
-    // Tie-break priority symbol > total > cash, matching the order the budgets are
+    const fullBudget = Math.min(slotCap, symbolBudget, totalBudget, cashBudget);
+
+    // Tie-break priority (slot >) symbol > total > cash, matching the order the budgets are
     // listed in the design doc (§5.1) — an audit reading "limitedBy: symbol" should
     // stay stable even when two constraints happen to bind at the same value. This is
     // a label only; `fullBudget` above is the actual min, computed independently so a
     // stale/diverging comparison chain here can't desync the two.
+    // 칸이 주 규칙이라 동률이면 칸이 먼저다. 칸이 없으면(Infinity) 기존 순서 그대로.
     let limitedBy: EntryPlan['limitedBy'];
-    if (symbolBudget <= totalBudget && symbolBudget <= cashBudget) {
+    if (slotCap <= symbolBudget && slotCap <= totalBudget && slotCap <= cashBudget) {
+        limitedBy = 'slot';
+    } else if (symbolBudget <= totalBudget && symbolBudget <= cashBudget) {
         limitedBy = 'symbol';
     } else if (totalBudget <= cashBudget) {
         limitedBy = 'total';

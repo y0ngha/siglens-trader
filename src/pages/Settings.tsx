@@ -123,6 +123,8 @@ function riskFieldLabel(key: string): string {
             return '최대 보유 거래일';
         case 'mr_stop_atr':
             return '재난 손절 ATR 배수';
+        case 'mr_slots':
+            return '동시 보유 칸 수';
         case 'max_position_size':
             return '종목당 최대 투자 금액';
         case 'max_total_exposure':
@@ -264,6 +266,7 @@ export function SettingsPage() {
         mr_rsi_entry: 10,
         mr_max_hold_days: 10,
         mr_stop_atr: 5,
+        mr_slots: 8,
         dry_run_cash_usd: 25000,
         dry_run_cost_bps: 10,
     };
@@ -548,6 +551,14 @@ export function SettingsPage() {
                                 20,
                                 0.5,
                             ],
+                            [
+                                'mr_slots',
+                                '동시 보유 칸 수',
+                                '종목당 매수 금액 = 계좌 총자산 ÷ 칸 수. 신호일에 전액 한 번에 매수 (기본 8)',
+                                1,
+                                20,
+                                1,
+                            ],
                         ] as const
                     ).map(([key, label, helper, min, max, step]) => {
                         const fieldId = `risk-${key}`;
@@ -805,7 +816,7 @@ export function SettingsPage() {
                             [
                                 'max_position_size',
                                 '종목당 최대 투자 금액 ($)',
-                                '한 종목에 투자할 수 있는 최대 금액',
+                                '한 종목 매수 금액의 안전 상한 — 실제 금액은 총자산 ÷ 칸 수가 정한다',
                             ],
                             [
                                 'max_total_exposure',

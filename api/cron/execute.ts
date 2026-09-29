@@ -7,7 +7,7 @@ import {
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { getAvailableCashUsd } from '../_lib/cash.js';
-import { readDryRunCostBps, readMrParams } from '../_lib/mr-config.js';
+import { readDryRunCostBps, readMrParams, readMrSlots } from '../_lib/mr-config.js';
 import {
     getEnabledWatchlist,
     getConfigValue,
@@ -51,7 +51,7 @@ import {
     type SymbolReading,
 } from '../../lib/strategy/mean-reversion.js';
 import { todayUnrealizedChange } from '../../lib/strategy/daily-loss.js';
-import { planEntry } from '../../lib/strategy/trade-plan.js';
+import { planEntry, slotBudgetFor } from '../../lib/strategy/trade-plan.js';
 import {
     etDateOf,
     etDayStart,
@@ -238,6 +238,7 @@ async function handler(req: Request): Promise<Response> {
 
             const params = await readMrParams(db);
             const dryRunCostBps = await readDryRunCostBps(db);
+            const mrSlots = await readMrSlots(db);
 
             // in-flight 주문을 열린 포지션보다 먼저 읽는다(A7) — 둘 사이에 reconcile 지연 체결
             // 복구가 끼어들면(주문을 지우고 포지션을 만듦) 순서가 반대였을 때 그 심볼이 이번
@@ -411,6 +412,20 @@ async function handler(req: Request): Promise<Response> {
 
             // 세 모드 모두 "지금 쓸 수 있는 돈"(auto·semi_auto = 브로커 잔고, dry_run = 예치금 + 원장).
             let remainingBuyingPower: number | null = await getAvailableCashUsd(db, tradingMode);
+            // 칸 예산(§3.1) = 총자산 ÷ 칸 수. 총자산 = 현금 + 보유 평가액(실시간 가격, 없으면 평단).
+            // 런 시작 시점에 한 번 고정한다 — 이번 런의 청산 대금·매수 지출로 칸 크기가 흔들리지 않게.
+            // 미체결 매수는 넣지 않는다: 브로커가 이미 현금에서 뺐는지 모드마다 달라, 넣으면 이중
+            // 계산이 될 수 있다(빼면 칸이 약간 작아지는 보수적 오차).
+            const equity =
+                remainingBuyingPower === null
+                    ? null
+                    : remainingBuyingPower +
+                      openPositions.reduce((sum, p) => {
+                          const px = priceOf(p.symbol);
+                          const mark = px > 0 ? px : safeNumber(Number(p.avgPrice), 0);
+                          return sum + mark * p.quantity;
+                      }, 0);
+            const slotBudget = slotBudgetFor(equity, mrSlots);
 
             const orderCtx = { db, tradingMode, cronRunId, dispatcher, notifyError, dryRunCostBps };
             const killSwitchOff = async () =>
@@ -929,6 +944,7 @@ async function handler(req: Request): Promise<Response> {
                                 currentExposure,
                                 existingSymbolExposure: 0,
                                 availableCash: remainingBuyingPower,
+                                slotBudget,
                             });
                             if (plan.quantity === 0) {
                                 decisions.push({
@@ -940,6 +956,9 @@ async function handler(req: Request): Promise<Response> {
                                         budget: {
                                             fullBudget: plan.fullBudget,
                                             limitedBy: plan.limitedBy,
+                                            equity,
+                                            slots: mrSlots,
+                                            slotBudget,
                                         },
                                     },
                                 });
@@ -983,6 +1002,9 @@ async function handler(req: Request): Promise<Response> {
                                         fullBudget: plan.fullBudget,
                                         limitedBy: plan.limitedBy,
                                         quantity: plan.quantity,
+                                        equity,
+                                        slots: mrSlots,
+                                        slotBudget,
                                     },
                                     ...(outcome.order ? { order: outcome.order } : {}),
                                 },

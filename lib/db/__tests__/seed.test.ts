@@ -54,7 +54,7 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(12);
+        expect(configValueCalls.length).toBe(13);
         const keys = configValueCalls.map((call) => (call[0] as { key: string }).key);
         expect(keys).toEqual(
             expect.arrayContaining([
@@ -62,6 +62,7 @@ describe('seed', () => {
                 'mr_max_hold_days',
                 'mr_stop_atr',
                 'mr_regime_filter',
+                'mr_slots',
                 'dry_run_cost_bps',
             ]),
         );
