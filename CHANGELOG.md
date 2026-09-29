@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.35.0](https://github.com/y0ngha/siglens-trader/compare/v0.34.1...v0.35.0) (2026-09-29)
+
+
+### Features
+
+* **strategy:** 칸 사이징 — 종목당 매수 금액 = 총자산 ÷ mr_slots(기본 8) ([186fc33](https://github.com/y0ngha/siglens-trader/commit/186fc33464ae7647f520ec2164b4a97605f83359))
+
 ## [0.34.1](https://github.com/y0ngha/siglens-trader/compare/v0.34.0...v0.34.1) (2026-09-28)
 
 # [0.34.0](https://github.com/y0ngha/siglens-trader/compare/v0.33.3...v0.34.0) (2026-09-26)
