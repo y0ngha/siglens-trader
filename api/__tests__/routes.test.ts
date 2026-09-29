@@ -911,6 +911,8 @@ describe('POST /api/config', () => {
         ['mr_stop_atr', 20],
         ['dry_run_cost_bps', 0],
         ['dry_run_cost_bps', 100],
+        ['mr_slots', 1],
+        ['mr_slots', 20],
     ] as const)('accepts strategy key %s = %s (range edge)', async (key, value) => {
         mockSetConfigValue.mockResolvedValue(undefined);
         const res = await handler(
@@ -927,6 +929,9 @@ describe('POST /api/config', () => {
         ['mr_max_hold_days', 5.5, 'mr_max_hold_days must be an integer between 1 and 60'],
         ['mr_stop_atr', 21, 'mr_stop_atr must be between 0 and 20'],
         ['dry_run_cost_bps', 101, 'dry_run_cost_bps must be between 0 and 100'],
+        ['mr_slots', 0, 'mr_slots must be an integer between 1 and 20'],
+        ['mr_slots', 21, 'mr_slots must be an integer between 1 and 20'],
+        ['mr_slots', 2.5, 'mr_slots must be an integer between 1 and 20'],
     ] as const)('rejects strategy key %s = %s', async (key, value, error) => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', { type: 'config', key, value }),

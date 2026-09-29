@@ -319,6 +319,74 @@ describe('risk phase — every tick', () => {
     });
 });
 
+describe('§3.1 slot sizing — equity ÷ mr_slots, caps on top', () => {
+    const budgetOf = () =>
+        (
+            decisionsOf().find((d) => d.symbol === 'AAA')!.detail as {
+                budget: Record<string, unknown>;
+            }
+        ).budget;
+    const signalAAA = () => {
+        watch('AAA');
+        const aaa = dipAbove();
+        setBars({ SPY: rising(), AAA: aaa, HLD: falling() });
+        // 전일 종가 = 현재가 → 오늘 변동 0, 일일 손실 차단기를 건드리지 않는다.
+        setQuotes({ SPY: lastOf(rising()), AAA: lastOf(aaa), HLD: 50 }, { HLD: 50 });
+        return lastOf(aaa);
+    };
+
+    it('equity counts held positions at the live price', async () => {
+        const px = signalAAA();
+        mockCash.mockResolvedValue(19000);
+        // 100주 × 실시간 50 = 5,000(평단 60이 아니라) → 총자산 24,000 → 칸 3,000
+        q.getOpenPositions.mockResolvedValue([
+            position({ symbol: 'HLD', quantity: 100, avgPrice: '60', stopPrice: '1' }),
+        ]);
+        await run(DECISION_NOW);
+        const args = mockExecuteEntry.mock.calls.find(
+            (c) => (c[1] as { symbol: string }).symbol === 'AAA',
+        )![1];
+        expect(args).toMatchObject({ quantity: Math.floor(3000 / px) });
+        expect(budgetOf()).toMatchObject({
+            limitedBy: 'slot',
+            equity: 24000,
+            slots: 8,
+            slotBudget: 3000,
+        });
+    });
+
+    it('mr_slots changes the slot size', async () => {
+        const px = signalAAA();
+        config.mr_slots = 10;
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
+            quantity: Math.floor(2500 / px),
+        });
+        expect(budgetOf()).toMatchObject({ slots: 10, slotBudget: 2500 });
+    });
+
+    it('max_position_size still caps a slot bigger than it', async () => {
+        const px = signalAAA();
+        mockCash.mockResolvedValue(100_000); // 칸 12,500 > 종목 한도 5,000
+        config.max_total_exposure = 100_000;
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
+            quantity: Math.floor(5000 / px),
+        });
+        expect(budgetOf()).toMatchObject({ limitedBy: 'symbol', slotBudget: 12500 });
+    });
+
+    it('unknown cash (broker read failed) → no slot cap, old caps only', async () => {
+        const px = signalAAA();
+        mockCash.mockResolvedValue(null);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
+            quantity: Math.floor(5000 / px),
+        });
+        expect(budgetOf()).toMatchObject({ limitedBy: 'symbol', equity: null, slotBudget: null });
+    });
+});
+
 describe('decision phase — entries', () => {
     it('buys a signal: RSI(2) dip above SMA200 in an up regime, stop from ATR', async () => {
         watch('NVDA');
@@ -329,7 +397,8 @@ describe('decision phase — entries', () => {
         const [, args] = mockExecuteEntry.mock.calls[0]!;
         expect(args).toMatchObject({
             symbol: 'NVDA',
-            quantity: Math.floor(5000 / lastOf(nvda)),
+            // 칸 예산 = 총자산 25,000 ÷ 기본 8칸 (§3.1)
+            quantity: Math.floor(25000 / 8 / lastOf(nvda)),
             price: lastOf(nvda),
         });
         // 손절 = 진입가 − 5 × ATR(14, 오늘 봉 제외)

@@ -70,6 +70,7 @@ async function handler(req: Request): Promise<Response> {
             'mr_max_hold_days',
             'mr_stop_atr',
             'mr_regime_filter',
+            'mr_slots',
             'dry_run_cost_bps',
         ]);
 
@@ -82,6 +83,7 @@ async function handler(req: Request): Promise<Response> {
             'mr_rsi_entry',
             'mr_max_hold_days',
             'mr_stop_atr',
+            'mr_slots',
             'dry_run_cost_bps',
         ]);
 
@@ -96,6 +98,7 @@ async function handler(req: Request): Promise<Response> {
             mr_rsi_entry: { min: 1, max: 50 },
             mr_max_hold_days: { min: 1, max: 60, integer: true },
             mr_stop_atr: { min: 0, max: 20 },
+            mr_slots: { min: 1, max: 20, integer: true },
             dry_run_cost_bps: { min: 0, max: 100 },
         };
 

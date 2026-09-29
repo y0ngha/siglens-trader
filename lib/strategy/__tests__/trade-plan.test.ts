@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { clampFraction, fallbackEntryFraction, planEntry, planExit } from '../trade-plan';
+import {
+    clampFraction,
+    fallbackEntryFraction,
+    planEntry,
+    planExit,
+    slotBudgetFor,
+} from '../trade-plan';
 import type { ExitTrigger } from '../trade-plan';
 
 describe('clampFraction', () => {
@@ -150,6 +156,60 @@ describe('planEntry', () => {
             });
             expect(result.fullBudget).toBe(100);
             expect(result.limitedBy).toBe('symbol');
+        });
+
+        it('is limited by the slot budget when it is the smallest', () => {
+            const result = planEntry({
+                price: 10,
+                fraction: 1,
+                maxPositionSize: 5000,
+                maxTotalExposure: 25_000,
+                currentExposure: 0,
+                existingSymbolExposure: 0,
+                availableCash: 25_000,
+                slotBudget: 3125,
+            });
+            expect(result.limitedBy).toBe('slot');
+            expect(result.fullBudget).toBe(3125);
+            expect(result.quantity).toBe(312);
+        });
+
+        it('keeps the caps above the slot: a large slot is cut to the symbol cap', () => {
+            const result = planEntry({
+                price: 10,
+                fraction: 1,
+                maxPositionSize: 5000,
+                maxTotalExposure: 100_000,
+                currentExposure: 0,
+                existingSymbolExposure: 0,
+                availableCash: 100_000,
+                slotBudget: 12_500,
+            });
+            expect(result.limitedBy).toBe('symbol');
+            expect(result.fullBudget).toBe(5000);
+        });
+
+        it('slot wins a tie, and a null/NaN slot means no slot constraint', () => {
+            const base = {
+                price: 10,
+                fraction: 1,
+                maxPositionSize: 100,
+                maxTotalExposure: 100,
+                currentExposure: 0,
+                existingSymbolExposure: 0,
+                availableCash: 100,
+            };
+            expect(planEntry({ ...base, slotBudget: 100 }).limitedBy).toBe('slot');
+            expect(planEntry({ ...base, slotBudget: null }).limitedBy).toBe('symbol');
+            expect(planEntry({ ...base, slotBudget: Number.NaN })).toMatchObject({
+                limitedBy: 'symbol',
+                fullBudget: 100,
+            });
+            expect(planEntry({ ...base, slotBudget: -50 })).toMatchObject({
+                limitedBy: 'slot',
+                fullBudget: 0,
+                quantity: 0,
+            });
         });
 
         it('ties break total > cash when symbol budget is not the (tied) minimum', () => {
@@ -563,5 +623,23 @@ describe('planExit', () => {
             const quantity = planExit({ positionQuantity: 37, fraction: 0.4, trigger });
             expect(quantity).toBe(14); // floor(37 * 0.4) = 14, identical for every trigger
         });
+    });
+});
+
+describe('slotBudgetFor', () => {
+    it('is equity divided by the slot count', () => {
+        expect(slotBudgetFor(25_000, 8)).toBe(3125);
+        expect(slotBudgetFor(25_000, 5)).toBe(5000);
+    });
+
+    it('is null when equity is unknown or the slot count is unusable', () => {
+        expect(slotBudgetFor(null, 8)).toBeNull();
+        expect(slotBudgetFor(Number.NaN, 8)).toBeNull();
+        expect(slotBudgetFor(25_000, 0)).toBeNull();
+        expect(slotBudgetFor(25_000, Number.NaN)).toBeNull();
+    });
+
+    it('floors negative equity to a zero budget', () => {
+        expect(slotBudgetFor(-100, 8)).toBe(0);
     });
 });
