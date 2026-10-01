@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.36.0](https://github.com/y0ngha/siglens-trader/compare/v0.35.1...v0.36.0) (2026-10-01)
+
+
+### Features
+
+* **config:** 감시 종목 상한 30 → 50 + 4시간봉·종목 확장 백테스트 기록 ([08fddf3](https://github.com/y0ngha/siglens-trader/commit/08fddf3b8f2983ba35aa745cad348700ba116c9b))
+
 ## [0.35.1](https://github.com/y0ngha/siglens-trader/compare/v0.35.0...v0.35.1) (2026-10-01)
 
 
