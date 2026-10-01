@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.1](https://github.com/y0ngha/siglens-trader/compare/v0.35.0...v0.35.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **dashboard:** 포지션 현재가·MA5 목표가 표시 + dry_run 체결가 센트 반올림 ([abecd13](https://github.com/y0ngha/siglens-trader/commit/abecd13ac2918a91b8c2b6514c62dc8f3def0b17))
+
 # [0.35.0](https://github.com/y0ngha/siglens-trader/compare/v0.34.1...v0.35.0) (2026-09-29)
 
 
