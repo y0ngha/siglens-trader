@@ -725,7 +725,7 @@ describe('POST /api/config', () => {
     });
 
     it('watchlist cap is 30 — AI no longer runs per symbol, so the old cap of 5 is gone', async () => {
-        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 29 }, (_, i) => ({ id: i })));
+        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 49 }, (_, i) => ({ id: i })));
         mockAddToWatchlist.mockResolvedValue([{ id: 99, symbol: 'SPY' }]);
         const ok = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
@@ -736,7 +736,7 @@ describe('POST /api/config', () => {
             }),
         );
         expect(ok.status).toBe(200);
-        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 30 }, (_, i) => ({ id: i })));
+        mockGetAllWatchlist.mockResolvedValue(Array.from({ length: 50 }, (_, i) => ({ id: i })));
         const full = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'watchlist',
@@ -746,7 +746,7 @@ describe('POST /api/config', () => {
             }),
         );
         expect(full.status).toBe(400);
-        expect(await full.json()).toEqual({ error: '감시 종목은 최대 30개까지 설정 가능합니다' });
+        expect(await full.json()).toEqual({ error: '감시 종목은 최대 50개까지 설정 가능합니다' });
     });
 
     it('handles watchlist remove', async () => {

@@ -72,8 +72,9 @@ The endpoint **rejects** bad values rather than coercing them — the runtime re
 `parseExecuteInterval`) fall back to defaults only as defense against a corrupt row, and using that fallback here
 would hide the operator's typo.
 
-Watchlist cap: **30** (`MAX_WATCHLIST_SIZE`). It was 5 while every symbol cost hourly LLM calls; the rule is
-price-only now and AI runs only on signals. Analysis types: `technical`, `news`, `fundamental`, `entry_review`.
+Watchlist cap: **50** (`MAX_WATCHLIST_SIZE`). It was 5 while every symbol cost hourly LLM calls; the rule is
+price-only now and AI runs only on signals. Raised 30 → 50 (2026-10-01) for the 40-symbol universe (current 18 +
+semis 9 + software 13): 8 slots, 2018–2026.09 annual 8.9% → 14.7%, MDD 23.3% → 21.6% in backtest. Analysis types: `technical`, `news`, `fundamental`, `entry_review`.
 
 ## Market calendar
 

@@ -48,7 +48,7 @@ const NOTIFICATION_EVENTS = [
     { key: 'cron_health', label: '시스템 이상 감지' },
 ] as const;
 
-const MAX_WATCHLIST_SIZE = 30;
+const MAX_WATCHLIST_SIZE = 50;
 
 interface WatchlistItem {
     id: number;

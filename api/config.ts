@@ -20,7 +20,7 @@ import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-in
  * 종목 수의 비용은 FMP 호출뿐이다. 30은 판단 틱 한 번의 일봉·시세 조회(종목당 2회)가 실행 마감
  * 안에 여유 있게 끝나는 수다.
  */
-export const MAX_WATCHLIST_SIZE = 30;
+export const MAX_WATCHLIST_SIZE = 50;
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
