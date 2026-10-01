@@ -93,6 +93,11 @@ function stopLabel(stopPrice: string | null | undefined, mrStopAtr: number): str
     return mrStopAtr > 0 ? '손절 계산 전' : '손절 없음';
 }
 
+/** MA5 회복 청산가(직전 4종가 평균) — 판단 틱에 현재가가 이 값을 넘으면 전량 청산. */
+function targetLabel(targetPrice: string | null | undefined): string {
+    return targetPrice != null ? `$${Number(targetPrice).toFixed(2)}` : '—';
+}
+
 function computePortfolio(positions: Position[]) {
     const totalInvested = positions.reduce((sum, p) => sum + Number(p.avgPrice) * p.quantity, 0);
     const currentValue = positions.reduce(
@@ -123,6 +128,8 @@ export function StatusPage() {
     const { data: positions } = useQuery({
         queryKey: ['positions'],
         queryFn: ({ signal }) => api.getPositions(signal),
+        // 현재가·목표가는 조회 시점 시세다(종목당 FMP 2회) — 30초 status보다 느리게.
+        refetchInterval: 60_000,
     });
 
     const { data: trades } = useQuery({
@@ -425,6 +432,10 @@ export function StatusPage() {
                                                     >
                                                         ${cur.toFixed(2)}
                                                     </span>
+                                                    <span className="text-neutral-500">목표가</span>
+                                                    <span className="text-right font-mono text-green-400">
+                                                        {targetLabel(p.targetPrice)}
+                                                    </span>
                                                     <span className="col-span-2 font-mono text-red-400">
                                                         {stopLabel(p.stopPrice, mrStopAtr)}
                                                     </span>
@@ -462,6 +473,9 @@ export function StatusPage() {
                                                     현재가
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
+                                                    목표가
+                                                </th>
+                                                <th className="px-3 py-2 text-right font-medium">
                                                     손절
                                                 </th>
                                                 <th className="px-3 py-2 text-right font-medium">
@@ -491,6 +505,9 @@ export function StatusPage() {
                                                             className={`px-3 py-2 text-right font-mono ${curColor}`}
                                                         >
                                                             ${cur.toFixed(2)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right font-mono text-green-400">
+                                                            {targetLabel(p.targetPrice)}
                                                         </td>
                                                         <td className="px-3 py-2 text-right font-mono text-red-400">
                                                             {stopLabel(p.stopPrice, mrStopAtr)}
@@ -617,7 +634,7 @@ export function StatusPage() {
                                     </div>
                                     <div className="flex items-center gap-3">
                                         <span className="font-mono text-sm text-[#fafafa]">
-                                            ${trade.price}
+                                            {formatUsd(Number(trade.price))}
                                         </span>
                                         <span className="text-xs text-neutral-500">
                                             {timeAgo(trade.executedAt)}

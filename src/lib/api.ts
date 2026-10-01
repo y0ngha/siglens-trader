@@ -59,6 +59,8 @@ export interface Position {
     currentPrice?: string;
     /** 재난 손절가 (진입가 − mr_stop_atr × ATR14). null이면 mr_stop_atr=0이거나 미계산. */
     stopPrice?: string | null;
+    /** MA5 회복 청산가 = 직전 4거래일 종가 평균. 시세 조회 실패면 null. */
+    targetPrice?: string | null;
     openedAt: string;
     status: string;
 }

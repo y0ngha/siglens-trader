@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fixture from './fixtures/mr-parity.json';
 import {
+    ma5ExitPrice,
     sma,
     wilderRsi,
     wilderAtr,
@@ -228,5 +229,21 @@ describe('evaluateRuleExit', () => {
                 maxHoldDays: 10,
             }),
         ).toBeNull();
+    });
+});
+
+describe('ma5ExitPrice', () => {
+    const bar = (close: number) => ({ date: 'd', open: close, high: close, low: close, close });
+
+    it('직전 4종가 평균 — 그 가격을 넘는 오늘 종가부터 price > SMA5', () => {
+        const bars = [10, 20, 30, 40, 99].map(bar);
+        expect(ma5ExitPrice(bars)).toBe(25);
+        const sma5At = (p: number) => sma([10, 20, 30, 40, p], 5)!;
+        expect(25.01 > sma5At(25.01)).toBe(true);
+        expect(24.99 > sma5At(24.99)).toBe(false);
+    });
+
+    it('봉이 모자라면 null', () => {
+        expect(ma5ExitPrice([1, 2, 3, 4].map(bar))).toBeNull();
     });
 });
