@@ -7,8 +7,8 @@ function genId() {
     return nextId++;
 }
 
-// api/config.ts MAX_WATCHLIST_SIZE 미러 — 18종목 결정(§1)에 맞춰 30으로 올렸다.
-const MAX_WATCHLIST_SIZE = 30;
+// api/config.ts MAX_WATCHLIST_SIZE 미러 — 40종목 확장(반도체·소프트웨어, 2026-10-01)에 맞춰 50으로 올렸다.
+const MAX_WATCHLIST_SIZE = 50;
 
 // api/config.ts NUMERIC_BOUNDS 미러 — 전략 파라미터의 키별 범위(스펙 §6). 손절 배수 0은
 // "손절 없음"이라 허용한다. 실제 API와 같은 에러 메시지 형식을 반환해야 Settings의 실패

@@ -534,9 +534,9 @@ describe('SettingsPage', () => {
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
     });
 
-    it('blocks adding a 31st symbol once the watchlist is at the 30-symbol cap', async () => {
+    it('blocks adding a 51st symbol once the watchlist is at the 50-symbol cap', async () => {
         const user = userEvent.setup();
-        const fullWatchlist = Array.from({ length: 30 }, (_, i) => ({
+        const fullWatchlist = Array.from({ length: 50 }, (_, i) => ({
             id: i + 1,
             symbol: `SYM${i}`,
             companyName: `Company ${i}`,
@@ -563,7 +563,7 @@ describe('SettingsPage', () => {
 
         await waitFor(() => {
             expect(
-                screen.getByText('감시 종목은 최대 30개까지 설정 가능합니다'),
+                screen.getByText('감시 종목은 최대 50개까지 설정 가능합니다'),
             ).toBeInTheDocument();
         });
         expect(mockedApi.updateConfig).not.toHaveBeenCalled();
