@@ -136,6 +136,7 @@ const positions = [
         quantity: 5,
         avgPrice: '189.50',
         currentPrice: '195.20',
+        targetPrice: '193.40',
         stopPrice: '180.00',
         openedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
         status: 'open',

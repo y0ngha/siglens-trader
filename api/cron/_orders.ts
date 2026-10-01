@@ -62,7 +62,9 @@ export interface OrderOutcome {
  * 실현 손익이 **같은 가격**에서 나와야 어긋나지 않으므로 trade·포지션·알림 모두 이 값을 쓴다.
  */
 export function dryRunFillPrice(price: number, side: 'buy' | 'sell', bps: number): number {
-    return side === 'buy' ? price * (1 + bps / 10_000) : price * (1 - bps / 10_000);
+    const raw = side === 'buy' ? price * (1 + bps / 10_000) : price * (1 - bps / 10_000);
+    // 실제 체결가처럼 센트 단위 — 안 자르면 trade·포지션에 $153.90374999999997이 그대로 남는다.
+    return Math.round(raw * 100) / 100;
 }
 
 const noop = (exposureDelta = 0, cashDebit = 0) => ({ exposureDelta, cashDebit });

@@ -57,6 +57,14 @@ vi.mock('../../lib/notification/email', () => ({
 }));
 
 const mockGetOpenPositions = vi.fn();
+const mockFetchLivePrice = vi.fn();
+const mockFetchDailyBars = vi.fn();
+vi.mock('../../lib/data/live-price', () => ({
+    fetchLivePrice: (...args: unknown[]) => mockFetchLivePrice(...args),
+}));
+vi.mock('../../lib/analysis/daily-bars', () => ({
+    fetchDailyBars: (...args: unknown[]) => mockFetchDailyBars(...args),
+}));
 const mockGetConfigValue = vi.fn();
 const mockGetTodayTradeCount = vi.fn();
 const mockGetRecentTrades = vi.fn();
@@ -320,13 +328,35 @@ describe('GET /api/positions', () => {
         expect(res.status).toBe(405);
     });
 
-    it('returns open positions', async () => {
-        const positions = [{ id: 1, symbol: 'AAPL', status: 'open' }];
-        mockGetOpenPositions.mockResolvedValue(positions);
+    it('returns open positions with live price and MA5 target', async () => {
+        mockGetOpenPositions.mockResolvedValue([{ id: 1, symbol: 'AAPL', status: 'open' }]);
+        mockFetchLivePrice.mockResolvedValue(101.5);
+        mockFetchDailyBars.mockResolvedValue(
+            [10, 20, 30, 40, 101.5].map((close) => ({
+                date: 'd',
+                open: close,
+                high: close,
+                low: close,
+                close,
+            })),
+        );
 
         const res = await handler(makeRequest('https://example.com/api/positions'));
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual(positions);
+        expect(await res.json()).toEqual([
+            { id: 1, symbol: 'AAPL', status: 'open', currentPrice: '101.5', targetPrice: '25.00' },
+        ]);
+    });
+
+    it('leaves price/target empty when the quote fails', async () => {
+        mockGetOpenPositions.mockResolvedValue([{ id: 1, symbol: 'AAPL', status: 'open' }]);
+        mockFetchLivePrice.mockResolvedValue(null);
+
+        const res = await handler(makeRequest('https://example.com/api/positions'));
+        expect(await res.json()).toEqual([
+            { id: 1, symbol: 'AAPL', status: 'open', targetPrice: null },
+        ]);
+        expect(mockFetchDailyBars).not.toHaveBeenCalled();
     });
 });
 

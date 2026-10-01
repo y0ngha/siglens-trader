@@ -150,7 +150,7 @@ export function TradesPage() {
                                         <span>
                                             가격{' '}
                                             <span className="font-mono text-[#fafafa]">
-                                                ${trade.price}
+                                                ${Number(trade.price).toFixed(2)}
                                             </span>
                                         </span>
                                         <span>

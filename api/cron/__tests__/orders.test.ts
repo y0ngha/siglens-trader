@@ -93,6 +93,9 @@ describe('dryRunFillPrice', () => {
         expect(dryRunFillPrice(100, 'buy', 10)).toBeCloseTo(100.1);
         expect(dryRunFillPrice(100, 'sell', 10)).toBeCloseTo(99.9);
         expect(dryRunFillPrice(100, 'buy', 0)).toBe(100);
+        // 센트 단위로 자른다 — 153.75 × 1.001 = 153.90374999999997
+        expect(dryRunFillPrice(153.75, 'buy', 10)).toBe(153.9);
+        expect(dryRunFillPrice(153.75, 'sell', 10)).toBe(153.6);
     });
 });
 

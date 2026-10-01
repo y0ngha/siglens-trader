@@ -193,6 +193,17 @@ export function holdDays(bars: readonly DailyBar[], entryDate: string): number {
 export type RuleExit = { kind: 'ma5' | 'time'; reason: string } | null;
 
 /**
+ * MA5 회복 청산이 켜지는 오늘 종가 — `P > (직전 4종가 합 + P) / 5` ⇔ `P > 직전 4종가 평균`.
+ * 마지막 봉 = 오늘(`readSymbol`과 같은 전제). 봉이 모자라면 null.
+ */
+export function ma5ExitPrice(bars: readonly DailyBar[]): number | null {
+    return sma(
+        bars.slice(0, -1).map((b) => b.close),
+        EXIT_MA_PERIOD - 1,
+    );
+}
+
+/**
  * 판단 틱의 규칙 청산 — MA5 회복, 보유 기간. **진입 당일은 판단하지 않는다**(백테스트는 진입 다음
  * 날부터 청산을 봤다). 재난 손절은 매 틱 `isStopHit`으로 따로 본다.
  */

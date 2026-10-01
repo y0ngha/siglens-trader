@@ -969,6 +969,21 @@ describe('StatusPage', () => {
         });
     });
 
+    it('shows the MA5 target price, or a dash when it is missing', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue([
+            { ...mockPositions[0]!, targetPrice: '123.45' },
+            { ...mockPositions[0]!, id: 999, symbol: 'ZZZ', targetPrice: null },
+        ]);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getAllByText('$123.45').length).toBeGreaterThanOrEqual(1);
+        });
+        expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
+    });
+
     // --- Responsive layout tests ---
 
     it('has responsive grid classes', async () => {

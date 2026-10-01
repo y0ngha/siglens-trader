@@ -123,14 +123,14 @@ export function PositionsPage() {
                                 <span>
                                     평균가{' '}
                                     <span className="font-mono text-[#fafafa]">
-                                        ${position.avgPrice}
+                                        ${Number(position.avgPrice).toFixed(2)}
                                     </span>
                                 </span>
                                 {position.currentPrice && (
                                     <span>
                                         현재가{' '}
                                         <span className="font-mono text-[#fafafa]">
-                                            ${position.currentPrice}
+                                            ${Number(position.currentPrice).toFixed(2)}
                                         </span>
                                     </span>
                                 )}

@@ -1,5 +1,5 @@
 import { fileURLToPath, URL } from 'node:url';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
     resolve: {
@@ -12,6 +12,8 @@ export default defineConfig({
         globals: true,
         environment: 'jsdom',
         setupFiles: ['./src/__tests__/setup.ts'],
+        // .claude/worktrees/의 다른 브랜치 사본을 집으면 React가 두 벌 로드돼 hook 오류가 난다.
+        exclude: [...configDefaults.exclude, '.claude/**'],
         coverage: {
             provider: 'v8',
             include: [
