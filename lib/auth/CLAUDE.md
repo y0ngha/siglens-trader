@@ -4,15 +4,6 @@ Password verification, session lifecycle, and login throttling for the dashboard
 own login. There is **no signup** — accounts are provisioned by
 `lib/db/seed-operator.ts`.
 
-## Files
-
-| File | Responsibility |
-|------|---------------|
-| `cookie.ts` | Pure cookie string handling: `readCookie` / `readSessionCookie`, `serializeSessionCookie`, `serializeClearedSessionCookie`, `SESSION_COOKIE_NAME`, `SESSION_TTL_SECONDS`. No I/O. |
-| `password.ts` | bcrypt wrapper — `hashPassword` / `verifyPassword` at `BCRYPT_SALT_ROUNDS = 12` |
-| `session.ts` | DB-backed session lifecycle: `authenticate`, `createSession`, `resolveSessionUser`, `destroySession`, `destroyUserSessions`, `normalizeEmail`, `isSessionId`, `SessionUser` |
-| `throttle.ts` | In-process failed-login counter: `clientKey`, `isThrottled`, `recordFailure`, `clearFailures`, `retryAfterSeconds` |
-
 ## Dependency Direction
 
 ```

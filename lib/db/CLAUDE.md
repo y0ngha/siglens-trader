@@ -90,17 +90,6 @@ await db.transaction(async (tx) => {
 - `getTodayRealizedPnl()` sums each sell trade's recorded `realized_pnl` (single query) — avoids false alarms on buy-heavy days and the prior positions-join double-counting / same-symbol-reopen misattribution. Sell trades booked before the `realized_pnl` column existed carry null and are excluded (negligible deploy-day edge).
 - `checkConsistency()` / `autoRecoverFilledOrders()` match a booked trade by `client_order_id` when the order has one (precise), else fall back to the loose symbol+side+executed-after condition.
 
-## Commands
-
-```bash
-yarn db:generate    # Generate migration from schema changes
-yarn db:migrate     # Run pending migrations
-yarn db:seed        # Insert mock data (positions, trades, analysis results)
-yarn db:seed-operator  # Create/rotate the operator account (OPERATOR_EMAIL + OPERATOR_PASSWORD),
-                       # backfill user_id on owned tables and set the column DEFAULT
-yarn db:clear       # Delete all data (with Y/n confirmation prompt)
-```
-
 ## Testing
 
 Tested with mocked Drizzle builder chain.

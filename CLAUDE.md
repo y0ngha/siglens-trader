@@ -12,22 +12,7 @@ Personal use only (Toss Securities Terms — trading data for personal use only)
 
 ## Layer Structure
 
-```
-api/              → Web-standard (Request) => Response handlers (HTTP + cron + reconcile)
-server/           → Hono app: serves the built SPA, mounts api/ handlers, runs node-cron
-src/              → React SPA (Dashboard UI)
-lib/strategy/     → Domain: pure logic (no external deps). mean-reversion (the trading rule), daily-loss
-                    (breaker's today-change), trade-plan (budget → share count), safe-extract (NaN defense for AI JSON)
-lib/analysis/     → Application: siglens-core integration — analysis runners, daily-bars.ts (FMP daily bars +
-                    today's live bar), entry-review.ts (record-only AI review prompt/parse)
-lib/trading/      → Infrastructure: Toss API I/O (idempotency keys, retry policy)
-lib/data/         → Infrastructure: FMP, Yahoo Finance I/O, live price fetch
-lib/notification/ → Infrastructure: Resend Email I/O
-lib/auth/         → Application: login/session lifecycle (bcrypt, session cookie, login throttle)
-lib/db/           → Infrastructure: Neon PostgreSQL I/O (16 tables, DB transactions, consistency checker)
-lib/lock.ts       → Distributed lock (Redis SETNX + UUID owner + Lua script release)
-lib/validation.ts → Shared NaN guards (isFinitePositive, safeNumber)
-```
+Each directory has its own `CLAUDE.md` (role, files, invariants).
 
 ### Dependency Direction
 
@@ -56,49 +41,15 @@ lib/validation.ts → No external deps (pure guards)
 
 ## Authentication
 
-Primary path is the app's own login: `POST /api/auth/login` verifies the password
-(bcrypt cost 12) against `users`, opens a `sessions` row, and returns it as the
-`trader_session` HttpOnly cookie. There is **no signup endpoint** — accounts are
-provisioned with `yarn db:seed-operator` (`OPERATOR_EMAIL` / `OPERATOR_PASSWORD`).
+The app's own login (session cookie) is the primary path; a Cloudflare Access JWT is still
+accepted. Details: [`api/CLAUDE.md`](api/CLAUDE.md) §Authentication, [`lib/auth/CLAUDE.md`](lib/auth/CLAUDE.md).
 
-`users` / `sessions` deliberately mirror siglens' column shapes so the two account
-systems can be merged later without a schema redesign.
-
-A Cloudflare Access JWT is still accepted (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`)
-so the site keeps working while Access sits in front of the origin. There is **no
-`cf-access-authenticated-user-email` header-trust fallback**: with Access off the
-origin is reachable directly and a forged header would be an auth bypass.
-
-For local development, set `DISABLE_AUTH=true` in `.env.local`. It is ignored in
-production, and it never fabricates an identity — `getSessionUser()` still returns
-null, only `isAuthenticated()` short-circuits.
-
-All dashboard API endpoints (non-cron) check `isAuthenticated(req)` from `api/_lib/auth.ts`.
-Cron endpoints use `CRON_SECRET` header verification via `api/_lib/cron-auth.ts`.
-
-### Data ownership
-
-Operator-owned tables (`watchlist`, `analysis_model_config`, `positions`, `trades`,
-`pending_orders`, `config`, `order_tracking`, `notification_config`) carry a `user_id`
-column. `db:seed-operator` backfills existing rows and sets the column DEFAULT to the
-operator, so trading and cron insert paths need no user plumbing. Reads are **not**
-scoped by `user_id` — that is correct only while signup is absent and exactly one
-account exists. Adding signup means dropping the DEFAULT and scoping every read.
-
----
-
-## React Query Best Practice
-
-All `useQuery` hooks must destructure `queryKey` inside `queryFn` to avoid stale closure over external state:
-
-```typescript
-useQuery({
-    queryKey: ['positions', symbol],
-    queryFn: async ({ queryKey: [, qSymbol], signal }) => {
-        return fetchPositions(qSymbol, signal);
-    },
-});
-```
+- There is **no signup endpoint** — accounts are provisioned with `yarn db:seed-operator`.
+- There is **no `cf-access-authenticated-user-email` header-trust fallback**: with Access off the
+  origin is reachable directly and a forged header would be an auth bypass.
+- Every dashboard (non-cron) endpoint checks `isAuthenticated(req)`; cron endpoints verify `CRON_SECRET`.
+- Reads are **not** scoped by `user_id` — correct only while exactly one account exists. Adding signup
+  means dropping the column DEFAULT and scoping every read ([`lib/db/CLAUDE.md`](lib/db/CLAUDE.md) §Data Ownership).
 
 ---
 
@@ -179,11 +130,8 @@ useQuery({
 
 ## AI Entry Review (기록 전용)
 
-`api/cron/review.ts` + `lib/analysis/entry-review.ts`. 판단 단계가 남긴 신호(`detail.mr.signal = true` — 주문 결과로 action이
-바뀐 행 포함, 종목당 하루 1건)마다 기술(1Day)·뉴스·펀더멘털 분석을 확보하고 "이 하락은 노이즈인가, 악재인가"를 물어
-`trade_audit`(kind `entry_review`, `correlation_id = review-<ET 날짜>-<종목>`)에 남긴다. **주문에 영향을 주지
-않고 주문도 기다리지 않는다.** 신호 30건이 쌓이면 AI가 거부한 쪽(`fraction 0`)과 나머지의 규칙 수익률을
-비교해 거부권·비중으로 승격할지 정한다(원칙 13). 모델은 `analysis_model_config['entry_review']`.
+`api/cron/review.ts`가 그날 신호 종목마다 "이 하락은 노이즈인가, 악재인가"를 물어 `trade_audit`에 남긴다.
+**주문에 영향을 주지 않고 주문도 기다리지 않는다.** 흐름·승격 기준 → [`api/CLAUDE.md`](api/CLAUDE.md) §AI Entry Review.
 
 ## Cron Schedule (요약)
 

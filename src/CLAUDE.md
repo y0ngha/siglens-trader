@@ -2,46 +2,17 @@
 
 Mobile-first PWA dashboard for monitoring and controlling the auto-trading system.
 
-## Structure
-
-```
-src/
-├── main.tsx           # Entry point (QueryClient, ErrorBoundary)
-├── App.tsx            # Session gate (renders Login until /api/auth/me resolves) + router shell
-├── index.css          # Tailwind + body styles + PWA safe area
-├── pages/             # Route components
-│   ├── Login.tsx      # Login form — eagerly imported (it is the logged-out critical path)
-│   ├── Status.tsx     # System status + portfolio + position targets + alerts
-│   ├── Positions.tsx  # Open positions list (with manual close)
-│   ├── Trades.tsx     # Trade history with reasons (includes skipped trades)
-│   ├── Analysis.tsx   # Latest analysis results per symbol (with trigger)
-│   ├── Pending.tsx    # Order approval queue (approve/reject)
-│   └── Settings.tsx   # Configuration (mode, entry window, watchlist, models, risk, notifications)
-├── components/        # Shared UI primitives
-│   ├── Card.tsx
-│   ├── Badge.tsx
-│   ├── EmptyState.tsx
-│   ├── ErrorFallback.tsx
-│   ├── ErrorMessage.tsx
-│   ├── LoadingSkeleton.tsx
-│   ├── TickerSearch.tsx   # Combobox for adding watchlist symbols via FMP search
-│   └── VersionBadge.tsx   # 번들·서버 버전을 **따로** 표기 (푸터). 하나만 보여주면
-│                          # "새 서버 + 옛 번들"을 구분할 수 없어 목적이 죽는다
-├── mocks/             # MSW (Mock Service Worker) for dev:mock mode
-│   ├── browser.ts     # MSW browser setup
-│   └── handlers.ts    # All API endpoint mocks with in-memory state
-└── lib/
-    └── api.ts         # Typed fetch wrapper for all API routes
-```
-
 ## Rules
 
 - **NEVER import from `lib/` (server code).** All data flows through `/api/*` endpoints.
-- All pages are lazy-loaded (`React.lazy`) for code-splitting.
+- All pages are lazy-loaded (`React.lazy`) for code-splitting — except `Login.tsx`, eagerly imported
+  (it is the logged-out critical path).
+- `VersionBadge.tsx`는 번들·서버 버전을 **따로** 표기한다(푸터). 하나만 보여주면 "새 서버 + 옛 번들"을
+  구분할 수 없어 목적이 죽는다.
 - TanStack Query for all server state. 10s refetch interval, 5s staleTime.
 - Dark theme: bg #0a0a0a, surface #141414, border #262626, text #fafafa.
 - Mobile-first: `min-h-dvh`, safe area padding, 44px touch targets.
-- Watchlist max 5 items (enforced in Settings + server).
+- Watchlist max 50 items (`MAX_WATCHLIST_SIZE` in `api/config.ts`, mirrored in `src/mocks/handlers.ts`).
 - Trading mode and risk settings require explicit "저장" button (not auto-save).
 - Status page: portfolio overview, position targets table (buy/current/TP/SL), watchlist ON/OFF color badges, skipped trade alerts.
 

@@ -156,6 +156,10 @@ run them (`lib/analysis/run-*.ts`, saved to `analysis_results` with `timeframe =
 `runEntryReview` (`lib/analysis/entry-review.ts`, `callAnalysisAi`, pro tier, reasoning off) and write
 `trade_audit` kind `entry_review` — **also on error**, so a failing signal is not retried every tick.
 Output: `{ fraction, dropCause: noise|news|earnings|macro|unknown, confidence, reason }`.
+The model is `analysis_model_config['entry_review']`.
+
+**승격 기준**: 신호 30건이 쌓이면 AI가 거부한 쪽(`fraction 0`)과 나머지의 규칙 수익률을 비교해 거부권·비중으로
+승격할지 정한다(루트 원칙 13).
 
 ## 매수 가능 현금
 
