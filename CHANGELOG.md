@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.37.0](https://github.com/y0ngha/siglens-trader/compare/v0.36.0...v0.37.0) (2026-10-02)
+
+
+### Features
+
+* **trades:** 매도 거래에 수익률·실현 손익 표시 ([6cb6723](https://github.com/y0ngha/siglens-trader/commit/6cb67230d2997e526bd990682d849396eec20fea))
+
 # [0.36.0](https://github.com/y0ngha/siglens-trader/compare/v0.35.1...v0.36.0) (2026-10-01)
 
 
