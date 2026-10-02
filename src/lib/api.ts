@@ -75,6 +75,8 @@ export interface Trade {
     executedAt: string;
     reason: string | null;
     mode: string;
+    /** 매도 체결의 실현 손익(USD). 매수·skipped 행은 null. */
+    realizedPnl?: string | null;
     dismissedAt: string | null;
 }
 
