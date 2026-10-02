@@ -55,29 +55,31 @@ describe('getAnalysisReasoning', () => {
             expect(symbolSignal(Number.POSITIVE_INFINITY)).toBeUndefined();
         });
 
+        // AbortSignal.timeout은 Node 내부 타이머라 가짜 타이머로 앞당길 수 없다(Vitest 4부터 jsdom
+        // 환경에서도 Node의 AbortSignal을 쓴다). 그래서 넘기는 예산을 직접 본다 — Date.now는 가짜 타이머로 고정.
         it('마감이 있으면 그 시각까지가 예산이다', () => {
             vi.useFakeTimers();
+            const timeout = vi.spyOn(AbortSignal, 'timeout');
             try {
                 const signal = symbolSignal(Date.now() + 600_000)!;
                 expect(signal.aborted).toBe(false);
-                // 종전 상한(150초)에서는 이미 끊겼을 시점
-                vi.advanceTimersByTime(300_000);
-                expect(signal.aborted).toBe(false);
-                vi.advanceTimersByTime(300_001);
-                expect(signal.aborted).toBe(true);
+                // 종전 상한(150초)이 아니라 마감까지 전부
+                expect(timeout).toHaveBeenCalledWith(600_000);
             } finally {
+                timeout.mockRestore();
                 vi.useRealTimers();
             }
         });
 
         it('이미 마감을 넘겼어도 즉시 중단시키지 않는다 — 0은 무의미한 실패로 기록된다', () => {
             vi.useFakeTimers();
+            const timeout = vi.spyOn(AbortSignal, 'timeout');
             try {
                 const signal = symbolSignal(Date.now() - 60_000)!;
                 expect(signal.aborted).toBe(false);
-                vi.advanceTimersByTime(2);
-                expect(signal.aborted).toBe(true);
+                expect(timeout).toHaveBeenCalledWith(1);
             } finally {
+                timeout.mockRestore();
                 vi.useRealTimers();
             }
         });

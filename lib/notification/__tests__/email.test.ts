@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockSend = vi.fn().mockResolvedValue({ id: 'test-id' });
 
 vi.mock('resend', () => ({
-    Resend: vi.fn().mockImplementation(() => ({
-        emails: { send: mockSend },
-    })),
+    Resend: vi.fn().mockImplementation(function () {
+        return { emails: { send: mockSend } };
+    }),
 }));
 
 import {

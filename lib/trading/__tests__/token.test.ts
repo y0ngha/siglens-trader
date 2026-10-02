@@ -11,7 +11,9 @@ const mockSet = vi.fn(async (k: string, v: string) => {
     return 'OK';
 });
 vi.mock('@upstash/redis', () => ({
-    Redis: vi.fn(() => ({ get: mockGet, set: mockSet, eval: vi.fn(async () => 1) })),
+    Redis: vi.fn(function () {
+        return { get: mockGet, set: mockSet, eval: vi.fn(async () => 1) };
+    }),
 }));
 
 // lock 모킹 — 기본값: 락 획득 성공 (token string) → 기존 테스트 유지

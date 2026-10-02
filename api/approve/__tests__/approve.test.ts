@@ -187,6 +187,7 @@ describe('approve handler', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        vi.resetAllMocks();
         vi.restoreAllMocks();
     });
 

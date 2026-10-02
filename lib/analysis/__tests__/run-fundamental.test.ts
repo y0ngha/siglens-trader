@@ -6,7 +6,9 @@ vi.mock('@y0ngha/siglens-core', () => ({
 }));
 
 vi.mock('@lib/data/fmp-fundamental', () => ({
-    FmpFundamentalClient: vi.fn().mockImplementation(() => ({})),
+    FmpFundamentalClient: vi.fn().mockImplementation(function () {
+        return {};
+    }),
 }));
 
 const { mockGetQuote } = vi.hoisted(() => ({ mockGetQuote: vi.fn() }));
