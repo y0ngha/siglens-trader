@@ -125,6 +125,31 @@ describe('TradesPage', () => {
         expect(autoElements.length).toBeGreaterThanOrEqual(2);
     });
 
+    it('shows the return on a sell from its realized P&L', async () => {
+        const base = { ...mockTrades[0]!, side: 'sell', mode: 'dry_run' };
+        mockedApi.getTrades.mockResolvedValue([
+            // 원가 = 110 × 10 − 100 = 1000 → +10%
+            { ...base, id: 11, price: '110.00', realizedPnl: '100' },
+            // 원가 = 95 × 10 + 50 = 1000 → −5%
+            { ...base, id: 12, symbol: 'TSLA', price: '95.00', realizedPnl: '-50' },
+            // 매수·skipped·손익 없음은 수익률 없음
+            { ...base, id: 13, side: 'buy', realizedPnl: null },
+            { ...base, id: 14, mode: 'skipped', realizedPnl: '5' },
+            { ...base, id: 15, realizedPnl: null },
+        ]);
+
+        renderWithQuery(<TradesPage />);
+
+        await waitFor(() => {
+            expect(screen.getAllByTestId('sell-return')).toHaveLength(2);
+        });
+        const [up, down] = screen.getAllByTestId('sell-return');
+        expect(up).toHaveTextContent('수익률 +10.00% (+$100.00)');
+        expect(up).toHaveClass('text-green-400');
+        expect(down).toHaveTextContent('수익률 −5.00% (−$50.00)');
+        expect(down).toHaveClass('text-red-400');
+    });
+
     it('shows empty state when no trades', async () => {
         mockedApi.getTrades.mockResolvedValue([]);
 

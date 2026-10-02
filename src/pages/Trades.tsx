@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import type { Trade } from '@/lib/api';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
@@ -22,6 +23,24 @@ function modeBadgeLabel(mode: string): string {
         default:
             return mode;
     }
+}
+
+/**
+ * 매도의 수익률 — 원가 = 매도 금액 − 실현 손익(`realizedPnlForSell`이 (매도가 − 평단) × 수량이므로).
+ * 매수·skipped·손익 미기록 행은 null.
+ */
+function sellReturn(trade: Trade): { pct: number; pnl: number } | null {
+    if (trade.side !== 'sell' || trade.mode === 'skipped' || trade.realizedPnl == null) return null;
+    const pnl = Number(trade.realizedPnl);
+    const cost = Number(trade.price) * trade.quantity - pnl;
+    if (!Number.isFinite(pnl) || !(cost > 0)) return null;
+    return { pct: (pnl / cost) * 100, pnl };
+}
+
+function formatSigned(value: number, unit: '%' | '$'): string {
+    const sign = value > 0 ? '+' : value < 0 ? '−' : '';
+    const abs = Math.abs(value).toFixed(2);
+    return unit === '%' ? `${sign}${abs}%` : `${sign}$${abs}`;
 }
 
 function timeAgo(dateStr: string): string {
@@ -106,6 +125,7 @@ export function TradesPage() {
                                     : trade.side === 'buy'
                                       ? 'border-l-green-500'
                                       : 'border-l-red-500';
+                            const ret = sellReturn(trade);
 
                             return (
                                 <li
@@ -164,6 +184,15 @@ export function TradesPage() {
                                             </span>
                                         </span>
                                     </div>
+                                    {ret && (
+                                        <p
+                                            className={`mt-1.5 font-mono text-xs ${ret.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}
+                                            data-testid="sell-return"
+                                        >
+                                            수익률 {formatSigned(ret.pct, '%')} (
+                                            {formatSigned(ret.pnl, '$')})
+                                        </p>
+                                    )}
                                     {trade.reason && (
                                         <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500">
                                             {trade.reason}
