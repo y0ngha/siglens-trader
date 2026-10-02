@@ -9,15 +9,15 @@ vi.mock('@y0ngha/siglens-core', () => ({
 }));
 
 vi.mock('@lib/data/fmp-news', () => ({
-    FmpNewsClient: vi.fn().mockImplementation(() => ({
-        fetchNews: mockFetchNews,
-    })),
+    FmpNewsClient: vi.fn().mockImplementation(function () {
+        return { fetchNews: mockFetchNews };
+    }),
 }));
 
 vi.mock('@lib/data/fmp-fundamental', () => ({
-    FmpFundamentalClient: vi.fn().mockImplementation(() => ({
-        getEarningsReports: mockGetEarningsReports,
-    })),
+    FmpFundamentalClient: vi.fn().mockImplementation(function () {
+        return { getEarningsReports: mockGetEarningsReports };
+    }),
 }));
 
 vi.mock('../enrich-news-cards', () => ({

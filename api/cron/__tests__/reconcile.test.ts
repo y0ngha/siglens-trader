@@ -177,6 +177,7 @@ describe('reconcile cron handler', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        vi.resetAllMocks();
         vi.restoreAllMocks();
     });
 

@@ -9,11 +9,9 @@ const mockDel = vi.fn();
 const mockEval = vi.fn();
 
 vi.mock('@upstash/redis', () => ({
-    Redis: vi.fn().mockImplementation(() => ({
-        set: mockSet,
-        del: mockDel,
-        eval: mockEval,
-    })),
+    Redis: vi.fn().mockImplementation(function () {
+        return { set: mockSet, del: mockDel, eval: mockEval };
+    }),
 }));
 
 // Note: all tests use vi.resetModules() + fresh import('../lock') to avoid

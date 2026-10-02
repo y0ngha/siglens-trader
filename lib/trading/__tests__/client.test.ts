@@ -343,10 +343,9 @@ describe('tossFetch', () => {
 
         const mockRedisGet = vi.fn().mockResolvedValue(42);
         vi.doMock('@upstash/redis', () => ({
-            Redis: vi.fn().mockImplementation(() => ({
-                get: mockRedisGet,
-                set: vi.fn(),
-            })),
+            Redis: vi.fn().mockImplementation(function () {
+                return { get: mockRedisGet, set: vi.fn() };
+            }),
         }));
 
         const { resolveAccountSeq } = await import('../client');

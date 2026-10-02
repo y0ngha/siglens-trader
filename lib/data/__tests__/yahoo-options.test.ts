@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockOptions = vi.fn();
-const mockConstructor = vi.fn(() => ({ options: mockOptions }));
+const mockConstructor = vi.fn(function () {
+    return { options: mockOptions };
+});
 vi.mock('yahoo-finance2', () => ({
     default: mockConstructor,
 }));
