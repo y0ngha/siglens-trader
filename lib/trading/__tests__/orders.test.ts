@@ -139,6 +139,22 @@ describe('orders', () => {
         expect(outcome.status).toBe('canceled');
     });
 
+    it('worst: 부분 체결 후 CANCELED → partial(미확정)로 남겨 reconcile이 needs_review로 넘기게 한다', async () => {
+        mockTossFetch.mockResolvedValueOnce({ orderId: 'o1' }).mockResolvedValueOnce({
+            orderId: 'o1',
+            status: 'CANCELED',
+            execution: { filledQuantity: '4', averageFilledPrice: '101.5' },
+        });
+        const { executeSellOrder } = await import('../orders');
+        const outcome = await executeSellOrder('AAPL', 10, 'c1');
+        expect(outcome).toMatchObject({
+            orderId: 'o1',
+            status: 'partial',
+            filledQuantity: 4,
+            avgFilledPrice: 101.5,
+        });
+    });
+
     it('worst: 422 insufficient-buying-power → rejected(rejectReason=code)', async () => {
         mockTossFetch.mockRejectedValueOnce(
             new FakeTossApiError('insufficient-buying-power', '부족', 422),

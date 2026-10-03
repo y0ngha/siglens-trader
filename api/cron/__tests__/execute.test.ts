@@ -635,6 +635,14 @@ describe('modes and guards', () => {
         expect(await run(RISK_NOW)).toEqual({ skipped: true, reason: 'us-market-holiday' });
     });
 
+    it('asks the broker about the ET trading day, not the KST date of the decision tick', async () => {
+        // 15:47 ET 월요일 = 화요일 05:47 KST — 브로커에는 미국 날짜(월요일)를 넘긴다.
+        config.trading_mode = 'auto';
+        q.getOpenPositions.mockResolvedValue([position()]);
+        await run(DECISION_NOW);
+        expect(mockIsUsMarketOpen).toHaveBeenCalledWith('2026-01-05');
+    });
+
     it('records cash and exposure consumption across entries in one run', async () => {
         config.max_total_exposure = 1_000_000;
         watch('AAA', 'BBB');
