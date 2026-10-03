@@ -53,6 +53,7 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 |---|---|---|
 | `trading_mode` | `dry_run` / `semi_auto` / `auto` — crossing the `dry_run` ↔ live boundary is **409 while any position is open** (positions don't record their mode; a live mode would send real sells for paper positions, and `dry_run` would paper-sell real shares). `semi_auto` ↔ `auto` is unrestricted | `dry_run` |
 | `trading_enabled` | boolean (kill switch) | true |
+| `digest_hour_kst` | integer 1–23 — morning digest hour (KST); quiet hours are 00:00 up to it | 10 |
 | `max_position_size`, `max_total_exposure` | USD, cost basis | 5,000 / 25,000 |
 | `max_trades_per_day` | count | 20 |
 | `max_daily_loss_usd` | USD — realized + **today's** unrealized change | 500 |
@@ -300,8 +301,11 @@ Otherwise the run proceeds and `summary.entriesBlockedBy` / `exitsForcedFull` re
 
 ## Quiet hours
 
-No email is sent between **00:00–09:59 KST**; anything raised in that window is queued
-(`notification_queue`) and delivered as one summary at 10:00 KST by the `digest` cron. The
+No email is sent from **00:00 KST until the digest hour** (`config.digest_hour_kst`, integer
+1–23, default 10 → 00:00–09:59); anything raised in that window is queued
+(`notification_queue`) and delivered as one summary at that hour by the hourly `digest` cron.
+Every dispatcher (execute, reconcile, approve) and the digest read the hour through
+`readDigestHour` — if they disagreed, mail queued after the digest ran would wait a day. The
 window is expressed in the operator's local time on purpose — the point is that they are
 asleep, and the US session runs through the middle of it.
 

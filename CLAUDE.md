@@ -136,11 +136,11 @@ accepted. Details: [`api/CLAUDE.md`](api/CLAUDE.md) §Authentication, [`lib/auth
 ## Cron Schedule (요약)
 
 Cron은 node-cron으로 **인프로세스** 실행되고 스케줄은 UTC다 (`server/app.ts`의 `CRON_JOBS`):
-`execute`(5분 호출, 5·10분 게이트), `reconcile`(10분), `digest`(매일 01:00 UTC), `review`(10분, 16-21 UTC).
+`execute`(5분 호출, 5·10분 게이트), `reconcile`(10분), `digest`(매시, 설정 시각 `digest_hour_kst` 이후 하루 1회 발송), `review`(10분, 16-21 UTC).
 시간당 분석 크론은 없다 — AI 분석은 `review`가 신호 종목에만 부른다.
 
 - 스케줄 표 → [`server/CLAUDE.md`](server/CLAUDE.md)
-- execute의 위험 단계·판단 단계, 차단기, quiet hours(00:00–09:59 KST) → [`api/CLAUDE.md`](api/CLAUDE.md)
+- execute의 위험 단계·판단 단계, 차단기, quiet hours(00:00부터 `digest_hour_kst` 전까지, 기본 00:00–09:59 KST) → [`api/CLAUDE.md`](api/CLAUDE.md)
 
 **진입만 막고 청산은 절대 막지 않는다** — 일일 손실/거래 한도, 국면 필터, 예산 전부 진입만 막는다
 (원칙 7). 이 규칙은 어느 디렉터리에서 작업하든 유효하므로 여기 남긴다.

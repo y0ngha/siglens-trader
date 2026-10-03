@@ -379,8 +379,8 @@ export const tradeAudit = pgTable(
 );
 
 /**
- * Notifications deferred during quiet hours (00:00–09:59 Asia/Seoul).
- * The morning digest cron (01:00 UTC = 10:00 KST) drains this table and
+ * Notifications deferred during quiet hours (00:00 up to `config.digest_hour_kst`, Asia/Seoul;
+ * default 10). The hourly digest cron drains this table from that hour on and
  * sends one consolidated email. Rows whose sentAt is NULL are "pending".
  */
 export const notificationQueue = pgTable(

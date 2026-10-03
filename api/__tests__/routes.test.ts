@@ -42,6 +42,18 @@ vi.mock('../../lib/trading/account', async (importOriginal) => ({
     getBuyingPower: (...args: unknown[]) => mockGetBuyingPower(...args),
 }));
 
+const dispatcherDeps = vi.hoisted(() => [] as Array<{ digestHour?: number }>);
+vi.mock('../../lib/notification/dispatch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../lib/notification/dispatch')>();
+    return {
+        ...actual,
+        createEmailDispatcher: (deps: Parameters<typeof actual.createEmailDispatcher>[0]) => {
+            dispatcherDeps.push(deps);
+            return actual.createEmailDispatcher(deps);
+        },
+    };
+});
+
 vi.mock('../../lib/trading/orders', () => ({
     executeBuyOrder: (...args: unknown[]) => mockExecuteBuyOrder(...args),
     executeSellOrder: (...args: unknown[]) => mockExecuteSellOrder(...args),
@@ -678,6 +690,23 @@ describe('POST /api/config', () => {
         expect(mockGetOpenPositions).not.toHaveBeenCalled();
     });
 
+    it('digest_hour_kst accepts integers 1..23 and rejects 0, 24 and fractions', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        const post = (value: unknown) =>
+            handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'digest_hour_kst',
+                    value,
+                }),
+            );
+        expect((await post(7)).status).toBe(200);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'digest_hour_kst', 7);
+        for (const bad of [0, 24, 7.5, '7']) {
+            expect((await post(bad)).status).toBe(400);
+        }
+    });
+
     it('rejects invalid trading_mode value', async () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
@@ -1092,6 +1121,17 @@ describe('POST /api/approve/[id]', () => {
             makeRequest('https://example.com/api/approve/abc', 'POST', { action: 'approve' }),
         );
         expect(res.status).toBe(400);
+    });
+
+    it('passes the configured digest hour to the mail dispatcher', async () => {
+        dispatcherDeps.length = 0;
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'digest_hour_kst' ? 7 : null),
+        );
+        await handler(
+            makeRequest('https://example.com/api/approve/1', 'POST', { action: 'reject' }),
+        );
+        expect(dispatcherDeps.at(-1)?.digestHour).toBe(7);
     });
 
     it('rejects invalid JSON body', async () => {

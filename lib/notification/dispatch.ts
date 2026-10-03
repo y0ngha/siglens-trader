@@ -4,7 +4,7 @@
  * Single decision point for "send now vs queue for the morning digest":
  *   - Gate check: if the channel / event is disabled, do nothing at all
  *     (no queueing either — "email OFF" means the operator wants silence).
- *   - Quiet-hours check: 00:00–09:59 Asia/Seoul → enqueue via the injected
+ *   - Quiet-hours check: 00:00 up to the digest hour (Asia/Seoul) → enqueue via the injected
  *     `enqueue` callback, keeping lib/notification free of any direct DB import.
  *   - Otherwise: send immediately via the email module.
  *
@@ -43,6 +43,12 @@ export interface EmailDispatcherDeps {
     enqueue: (row: { kind: string; subject: string; html: string }) => Promise<unknown>;
     /** Overridable clock — defaults to `() => new Date()`. Useful in tests. */
     now?: () => Date;
+    /**
+     * Seoul hour the quiet window ends at (`config.digest_hour_kst`). Defaults to
+     * DEFAULT_DIGEST_HOUR. Must match what the digest cron reads, or mail queued after the
+     * digest already ran would wait a day.
+     */
+    digestHour?: number;
 }
 
 export interface EmailDispatcher {
@@ -76,7 +82,7 @@ export function createEmailDispatcher(deps: EmailDispatcherDeps): EmailDispatche
         send: () => Promise<void>,
     ): Promise<void> {
         if (!deps.gate(...eventKeys)) return;
-        if (isQuietHours(now())) {
+        if (isQuietHours(now(), deps.digestHour)) {
             const { subject, html } = build();
             await deps.enqueue({ kind, subject, html });
         } else {

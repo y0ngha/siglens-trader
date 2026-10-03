@@ -29,9 +29,9 @@ vi.mock('../email', () => ({
     buildErrorEmail: (...args: unknown[]) => mockBuildErrorEmail(...args),
 }));
 
-const mockIsQuietHours = vi.fn<(d: Date) => boolean>();
+const mockIsQuietHours = vi.fn<(d: Date, h?: number) => boolean>();
 vi.mock('../quiet-hours', () => ({
-    isQuietHours: (d: Date) => mockIsQuietHours(d),
+    isQuietHours: (d: Date, h?: number) => mockIsQuietHours(d, h),
 }));
 
 import { createEmailDispatcher } from '../dispatch';
@@ -308,7 +308,23 @@ describe('createEmailDispatcher', () => {
             mockIsQuietHours.mockReturnValue(true);
             await d.notifyTradeExecuted(tradePayload);
 
-            expect(mockIsQuietHours).toHaveBeenCalledWith(fixedNow);
+            expect(mockIsQuietHours).toHaveBeenCalledWith(fixedNow, undefined);
+        });
+
+        it('passes the configured digest hour to the quiet-hours decision', async () => {
+            const fixedNow = new Date('2026-08-11T21:30:00.000Z'); // 06:30 KST
+            const d = createEmailDispatcher({
+                gate: makeGate(true, ['trade_executed']),
+                to: 'a@b.com',
+                enqueue: mockEnqueue,
+                now: () => fixedNow,
+                digestHour: 7,
+            });
+
+            mockIsQuietHours.mockReturnValue(true);
+            await d.notifyTradeExecuted(tradePayload);
+
+            expect(mockIsQuietHours).toHaveBeenCalledWith(fixedNow, 7);
         });
     });
 });

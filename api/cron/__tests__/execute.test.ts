@@ -83,7 +83,22 @@ vi.mock('../../../lib/notification/email', () => ({
     sendApprovalRequestEmail: vi.fn(),
     sendErrorEmail: (...a: unknown[]) => mockSendError(...a),
 }));
-vi.mock('../../../lib/notification/quiet-hours', () => ({ isQuietHours: () => false }));
+// 메일 경로와 digest가 같은 시각을 읽는지(불변식) 보려고 dispatcher 생성 인자만 엿본다.
+const dispatcherDeps = vi.hoisted(() => [] as Array<{ digestHour?: number }>);
+vi.mock('../../../lib/notification/dispatch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../lib/notification/dispatch')>();
+    return {
+        ...actual,
+        createEmailDispatcher: (deps: Parameters<typeof actual.createEmailDispatcher>[0]) => {
+            dispatcherDeps.push(deps);
+            return actual.createEmailDispatcher(deps);
+        },
+    };
+});
+vi.mock('../../../lib/notification/quiet-hours', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../lib/notification/quiet-hours')>()),
+    isQuietHours: () => false,
+}));
 
 const mockSessionOpen = vi.fn();
 vi.mock('@y0ngha/siglens-core', async (importOriginal) => ({
@@ -626,6 +641,14 @@ describe('modes and guards', () => {
         await run(DECISION_NOW);
         expect(mockExecuteEntry.mock.calls[0]![0]).toMatchObject({ tradingMode: 'dry_run' });
         expect(mockIsUsMarketOpen).not.toHaveBeenCalled();
+    });
+
+    it('passes the configured digest hour to the mail dispatcher', async () => {
+        config.digest_hour_kst = 7;
+        dispatcherDeps.length = 0;
+        q.getOpenPositions.mockResolvedValue([position()]);
+        await run(RISK_NOW);
+        expect(dispatcherDeps.at(-1)?.digestHour).toBe(7);
     });
 
     it('live modes ask the broker for unscheduled closures', async () => {

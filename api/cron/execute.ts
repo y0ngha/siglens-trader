@@ -63,6 +63,7 @@ import type { LivePriceDetail } from '../../lib/data/live-price.js';
 import { isUsMarketOpen } from '../../lib/trading/account.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
+import { readDigestHour } from '../_lib/digest-hour.js';
 import { acquireLockDetailed, claimOnce, releaseLock } from '../../lib/lock.js';
 import { safeNumber } from '../../lib/validation.js';
 import { executeEntry, executeExit, type OrderOutcome, type TradingMode } from './_orders.js';
@@ -205,6 +206,7 @@ async function handler(req: Request): Promise<Response> {
                 gate: makeEmailGate(emailNotif),
                 to: emailNotif?.target,
                 enqueue: (row) => enqueueNotification(db, row),
+                digestHour: await readDigestHour(db),
             });
             const notifyError = (subject: string, body: string) =>
                 dispatcher.notifyError(subject, body).catch((e) => console.error('[email]', e));

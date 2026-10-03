@@ -183,7 +183,7 @@ export function buildDigestEmail(rows: DigestRow[]): { subject: string; html: st
         .join('');
     const html = `
         <h2>야간 알림 요약 — ${rows.length}건</h2>
-        <p>조용한 시간(00:00–09:59 KST) 동안 수신된 알림입니다.</p>
+        <p>수면 모드(00:00부터 아침 요약 발송 시각 전까지, KST) 동안 수신된 알림입니다.</p>
         ${sections}
     `;
     return { subject, html };

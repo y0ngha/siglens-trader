@@ -22,6 +22,13 @@ vi.mock('../../../lib/lock', () => ({
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
 }));
 
+// 실제 시계에 묶이지 않게 시각 판단만 갈아끼운다. parseDigestHour 등은 실제 모듈.
+const mockIsQuietHours = vi.fn();
+vi.mock('../../../lib/notification/quiet-hours', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../lib/notification/quiet-hours')>()),
+    isQuietHours: (...args: unknown[]) => mockIsQuietHours(...args),
+}));
+
 const mockGetCronRuns = vi.fn();
 const mockGetPendingNotifications = vi.fn();
 const mockMarkNotificationsSent = vi.fn();
@@ -51,6 +58,12 @@ vi.mock('../../../lib/notification/email', () => ({
 }));
 
 const makeRequest = () => new Request('https://example.com/api/cron/digest');
+let digestRunsToday: Array<{ cronType: string; status: string; outcome: string | null }> = [];
+/** cron-health가 보는 행만 바꾼다. 오늘의 digest 행 조회(cronType 'digest')는 `digestRunsToday`. */
+const setHealthRuns = (rows: unknown[]) =>
+    mockGetCronRuns.mockImplementation((_db: unknown, f: { cronType?: string }) =>
+        Promise.resolve(f?.cronType === 'digest' ? digestRunsToday : rows),
+    );
 
 const queued = [
     {
@@ -87,14 +100,88 @@ describe('digest cron', () => {
         ]);
         mockSendDigestEmail.mockResolvedValue(undefined);
         mockSendCronHealthEmail.mockResolvedValue(undefined);
-        mockGetCronRuns.mockResolvedValue([
-            { cronType: 'technical', status: 'completed', startedAt: new Date() },
-        ]);
+        // 오늘의 digest 행 조회(cronType 'digest')는 기본으로 비어 있다 — 아직 안 돈 날.
+        digestRunsToday = [];
+        mockGetCronRuns.mockImplementation((_db: unknown, f: { cronType?: string }) =>
+            Promise.resolve(
+                f?.cronType === 'digest'
+                    ? digestRunsToday
+                    : [{ cronType: 'technical', status: 'completed', startedAt: new Date() }],
+            ),
+        );
         mockStartCronRun.mockResolvedValue(undefined);
         mockFinishCronRun.mockResolvedValue(undefined);
         mockFinalizeStaleCronRuns.mockResolvedValue(undefined);
         mockHasDecisionPhaseSince.mockResolvedValue(true);
         mockGetConfigValue.mockResolvedValue(true); // trading_enabled default
+        mockIsQuietHours.mockReturnValue(false);
+    });
+
+    describe('digest hour gate', () => {
+        it('before the configured hour → returns without an audit row or any send', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'digest_hour_kst' ? 7 : true),
+            );
+            mockIsQuietHours.mockReturnValue(true);
+            mockGetPendingNotifications.mockResolvedValue(queued);
+
+            const res = await handler(makeRequest());
+
+            expect(await res.json()).toEqual({ skipped: true, reason: 'before_digest_hour' });
+            expect(mockIsQuietHours).toHaveBeenCalledWith(expect.any(Date), 7);
+            expect(mockStartCronRun).not.toHaveBeenCalled();
+            expect(mockSendDigestEmail).not.toHaveBeenCalled();
+        });
+
+        it('a non-integer digest_hour_kst row falls back to 10', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'digest_hour_kst' ? 'seven' : true),
+            );
+            await handler(makeRequest());
+            expect(mockIsQuietHours).toHaveBeenCalledWith(expect.any(Date), 10);
+        });
+
+        it("empty queue after today's health check → returns without an audit row or a second check", async () => {
+            digestRunsToday = [{ cronType: 'digest', status: 'skipped', outcome: 'queue_empty' }];
+
+            const res = await handler(makeRequest());
+
+            expect(await res.json()).toEqual({ skipped: true, reason: 'already_ran_today' });
+            expect(mockGetCronRuns).toHaveBeenCalledWith(
+                fakeDb,
+                expect.objectContaining({ cronType: 'digest', from: expect.any(Date) }),
+            );
+            expect(mockStartCronRun).not.toHaveBeenCalled();
+            expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
+        });
+
+        it('a flushed day (completed row) does not also run a health check on the next hour', async () => {
+            digestRunsToday = [{ cronType: 'digest', status: 'completed', outcome: 'completed' }];
+            const res = await handler(makeRequest());
+            expect(await res.json()).toEqual({ skipped: true, reason: 'already_ran_today' });
+        });
+
+        it('worst: a locked or errored run earlier today is not "done" — the next hour retries', async () => {
+            digestRunsToday = [
+                { cronType: 'digest', status: 'skipped', outcome: 'locked' },
+                { cronType: 'digest', status: 'error', outcome: null },
+            ];
+            mockGetPendingNotifications.mockResolvedValue(queued);
+
+            await handler(makeRequest());
+
+            expect(mockStartCronRun).toHaveBeenCalled();
+            expect(mockSendDigestEmail).toHaveBeenCalled();
+        });
+
+        it("a queued backlog is flushed even after today's health check (digest hour moved later)", async () => {
+            digestRunsToday = [{ cronType: 'digest', status: 'skipped', outcome: 'queue_empty' }];
+            mockGetPendingNotifications.mockResolvedValue(queued);
+
+            await handler(makeRequest());
+
+            expect(mockSendDigestEmail).toHaveBeenCalled();
+        });
     });
 
     it('rejects a request without the cron secret', async () => {
@@ -210,9 +297,7 @@ describe('digest cron', () => {
 
         it('alerts when recent runs failed', async () => {
             withHealthEvent(['cron_health']);
-            mockGetCronRuns.mockResolvedValue([
-                { cronType: 'execute', status: 'error', startedAt: new Date() },
-            ]);
+            setHealthRuns([{ cronType: 'execute', status: 'error', startedAt: new Date() }]);
 
             const res = await handler(makeRequest());
 
@@ -225,9 +310,7 @@ describe('digest cron', () => {
 
         it('alerts when no decision phase finished in 100 hours (reconcile rows mask a dead execute)', async () => {
             withHealthEvent(['cron_health']);
-            mockGetCronRuns.mockResolvedValue([
-                { cronType: 'reconcile', status: 'completed', startedAt: new Date() },
-            ]);
+            setHealthRuns([{ cronType: 'reconcile', status: 'completed', startedAt: new Date() }]);
             mockHasDecisionPhaseSince.mockResolvedValue(false);
 
             await handler(makeRequest());
@@ -240,9 +323,7 @@ describe('digest cron', () => {
 
         it('does not alert no_decision while trading_enabled is false (A11) — execute exits before deciding on purpose', async () => {
             withHealthEvent(['cron_health']);
-            mockGetCronRuns.mockResolvedValue([
-                { cronType: 'reconcile', status: 'completed', startedAt: new Date() },
-            ]);
+            setHealthRuns([{ cronType: 'reconcile', status: 'completed', startedAt: new Date() }]);
             mockHasDecisionPhaseSince.mockResolvedValue(false);
             mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
                 Promise.resolve(key === 'trading_enabled' ? false : null),
@@ -265,7 +346,7 @@ describe('digest cron', () => {
 
         it('alerts when the crons have gone silent', async () => {
             withHealthEvent(['cron_health']);
-            mockGetCronRuns.mockResolvedValue([]);
+            setHealthRuns([]);
 
             await handler(makeRequest());
 
@@ -274,12 +355,17 @@ describe('digest cron', () => {
 
         it('respects the cron_health checkbox being off', async () => {
             withHealthEvent(['trade_executed']);
-            mockGetCronRuns.mockResolvedValue([]);
+            setHealthRuns([]);
 
             await handler(makeRequest());
 
             expect(mockSendCronHealthEmail).not.toHaveBeenCalled();
-            expect(mockGetCronRuns).not.toHaveBeenCalled();
+            // 오늘의 digest 행 조회는 하지만, health 조회(cronType 없음)는 하지 않는다.
+            expect(
+                mockGetCronRuns.mock.calls.filter(
+                    (c) => (c[1] as { cronType?: string } | undefined)?.cronType !== 'digest',
+                ),
+            ).toHaveLength(0);
         });
 
         it('respects the master email switch being off', async () => {
@@ -291,7 +377,7 @@ describe('digest cron', () => {
                     events: ['cron_health'],
                 },
             ]);
-            mockGetCronRuns.mockResolvedValue([]);
+            setHealthRuns([]);
 
             await handler(makeRequest());
 

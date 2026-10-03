@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isQuietHours, QUIET_HOURS_START, QUIET_HOURS_END } from '../quiet-hours';
+import {
+    isQuietHours,
+    parseDigestHour,
+    DEFAULT_DIGEST_HOUR,
+    seoulDate,
+    seoulDayStart,
+} from '../quiet-hours';
 
 /**
  * UTC→Seoul (KST = UTC+9) reference table used for the test cases below.
@@ -12,9 +18,8 @@ import { isQuietHours, QUIET_HOURS_START, QUIET_HOURS_END } from '../quiet-hours
  */
 
 describe('isQuietHours', () => {
-    it('exports expected window bounds', () => {
-        expect(QUIET_HOURS_START).toBe(0);
-        expect(QUIET_HOURS_END).toBe(9);
+    it('defaults to a 10:00 KST digest', () => {
+        expect(DEFAULT_DIGEST_HOUR).toBe(10);
     });
 
     it('15:00 UTC → 00:00 KST (midnight) — quiet', () => {
@@ -52,5 +57,47 @@ describe('isQuietHours', () => {
 
     it('14:59 UTC → 23:59 KST — NOT quiet', () => {
         expect(isQuietHours(new Date('2026-08-11T14:59:00.000Z'))).toBe(false);
+    });
+});
+
+describe('isQuietHours with a configured digest hour', () => {
+    it('digest 07 → 06:59 KST is quiet, 07:00 KST is not', () => {
+        expect(isQuietHours(new Date('2026-08-11T21:59:00.000Z'), 7)).toBe(true);
+        expect(isQuietHours(new Date('2026-08-11T22:00:00.000Z'), 7)).toBe(false);
+    });
+
+    it('digest 12 → 11:30 KST is quiet', () => {
+        expect(isQuietHours(new Date('2026-08-11T02:30:00.000Z'), 12)).toBe(true);
+    });
+
+    it('the window always starts at 00:00 KST — 23:30 KST is never quiet', () => {
+        expect(isQuietHours(new Date('2026-08-11T14:30:00.000Z'), 23)).toBe(false);
+    });
+});
+
+describe('parseDigestHour', () => {
+    it('passes integers in 1..23 through', () => {
+        expect(parseDigestHour(1)).toBe(1);
+        expect(parseDigestHour(7)).toBe(7);
+        expect(parseDigestHour(23)).toBe(23);
+    });
+
+    it('worst: missing, out-of-range, fractional or non-number → default 10', () => {
+        for (const bad of [null, undefined, 0, 24, -1, 7.5, '7', NaN]) {
+            expect(parseDigestHour(bad)).toBe(10);
+        }
+    });
+});
+
+describe('seoulDate / seoulDayStart', () => {
+    it('rolls over at 00:00 KST (15:00 UTC), not at UTC midnight', () => {
+        expect(seoulDate(new Date('2026-08-11T14:59:59.000Z'))).toBe('2026-08-11');
+        expect(seoulDate(new Date('2026-08-11T15:00:00.000Z'))).toBe('2026-08-12');
+    });
+
+    it('day start is 00:00 KST of that Seoul day', () => {
+        expect(seoulDayStart(new Date('2026-08-11T22:00:00.000Z')).toISOString()).toBe(
+            '2026-08-11T15:00:00.000Z',
+        );
     });
 });
