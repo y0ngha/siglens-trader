@@ -797,13 +797,27 @@ describe('Positions queries', () => {
 
     describe('reducePositionQuantity', () => {
         it('executes atomic SQL update to reduce quantity (rowCount=1 → true)', async () => {
-            // neon-serverless db.execute returns QueryResult with rowCount, not an array
+            // node-postgres db.execute returns QueryResult with rowCount, not an array
             const db = createMockDb({ rowCount: 1 } as any);
 
             const result = await reducePositionQuantity(db as unknown as Db, 1, 3);
 
             expect(db.execute).toHaveBeenCalledTimes(1);
             expect(result).toBe(true);
+        });
+
+        it('casts every bound parameter (lib/db/CLAUDE.md raw-sql rule)', async () => {
+            const db = createMockDb({ rowCount: 1 } as any);
+
+            await reducePositionQuantity(db as unknown as Db, 4, 3);
+
+            const query = new PgDialect().sqlToQuery(db.execute.mock.calls[0]![0]);
+            expect(query.sql.match(/\$\d+(::\w+)?/g)).toEqual([
+                '$1::integer',
+                '$2::integer',
+                '$3::integer',
+            ]);
+            expect(query.params).toEqual([3, 4, 3]);
         });
 
         it('returns false when no rows matched (rowCount=0)', async () => {
@@ -855,6 +869,29 @@ describe('Positions queries', () => {
 
             // Should still call execute — the WHERE clause filters non-existent/closed positions
             expect(db.execute).toHaveBeenCalledTimes(1);
+        });
+
+        // 드라이버는 파라미터를 타입 없는(unknown) 값으로 보낸다. `$2 * $3`처럼 타입이 없는
+        // 파라미터가 맞붙으면 Postgres가 `42725 operator is not unique`로 거부한다(운영 Neon에서
+        // 재현). 목 DB로는 이 실패가 안 보이므로, 렌더된 SQL의 모든 파라미터에 캐스트가 있는지 본다.
+        it('casts every bound parameter so Postgres can resolve the operators', async () => {
+            const db = createMockDb();
+
+            await averageIntoPosition(db as unknown as Db, 7, 5, 150.25);
+
+            const query = new PgDialect().sqlToQuery(db.execute.mock.calls[0]![0]);
+            // 모든 자리표시자(캐스트 유무와 무관하게)를 모아 정확한 타입·순서를 단언한다 —
+            // 캐스트가 빠지거나 `::text`처럼 연산이 안 되는 타입으로 바뀌면 깨진다.
+            expect(query.sql.match(/\$\d+(::\w+)?/g)).toEqual([
+                '$1::integer',
+                '$2::numeric',
+                '$3::numeric',
+                '$4::integer',
+                '$5::integer',
+            ]);
+            expect(query.params).toEqual([5, 5, 150.25, 5, 7]);
+            // avg_price는 numeric 컬럼이라 결과를 text로 바꿔 넣으면 대입이 실패한다.
+            expect(query.sql).not.toMatch(/::text/);
         });
     });
 });

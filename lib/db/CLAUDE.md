@@ -84,13 +84,14 @@ await db.transaction(async (tx) => {
 ## Rules
 
 - All numeric financial values stored as `numeric` (Drizzle returns strings). Convert with `String(value)` on insert, `Number(value)` on read.
+- Hand-written `sql` templates: cast every bound parameter (`${x}::integer`, `${x}::numeric`). node-postgres sends params as `unknown`, so two params meeting (`$a * $b`) fail with `42725 operator is not unique`, and a mismatched assignment (e.g. `::text` into a `numeric` column) fails too. Mocked-db tests cannot see this — assert the rendered casts (`PgDialect().sqlToQuery`) instead. Assign numeric results directly to `numeric` columns.
 - `queries.ts` functions are stateless — they receive `db` as a parameter, not a global.
 - Use `onConflictDoUpdate()` for config upserts.
 - Never import from `lib/strategy/` or `lib/analysis/` — this layer is pure I/O.
 - `closePosition()` uses atomic WHERE clause (`status = 'open'`) to prevent double-close race conditions.
 - `approvePendingOrder()` and `rejectPendingOrder()` similarly use atomic WHERE (`status = 'pending'`).
 - `averageIntoPosition()` computes new avg price atomically in SQL — no read-then-write race.
-- `reducePositionQuantity()` uses `WHERE quantity >= soldQuantity` to prevent negative quantities.
+- `reducePositionQuantity()` uses `WHERE quantity > soldQuantity` (strictly more — equal quantity goes to `closePosition()`) to prevent zero/negative quantities.
 - `getTodayRealizedPnl()` sums each sell trade's recorded `realized_pnl` (single query) — avoids false alarms on buy-heavy days and the prior positions-join double-counting / same-symbol-reopen misattribution. Sell trades booked before the `realized_pnl` column existed carry null and are excluded (negligible deploy-day edge).
 - `checkConsistency()` / `autoRecoverFilledOrders()` match a booked trade by `client_order_id` when the order has one (precise), else fall back to the loose symbol+side+executed-after condition.
 
