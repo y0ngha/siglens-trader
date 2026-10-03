@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.1](https://github.com/y0ngha/siglens-trader/compare/v0.37.0...v0.37.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **deps:** Dependabot 보안 알림 일괄 해소 (취약점 95건 → 0) ([45c8b0e](https://github.com/y0ngha/siglens-trader/commit/45c8b0e249f578c87cae60b632899f68aa06b0cb))
+* **trading:** 시장 캘린더에 ET 날짜 지정, 부분 체결 후 취소를 미확정으로 ([524ab9a](https://github.com/y0ngha/siglens-trader/commit/524ab9a8b325750d4bccd41cd167411cf031e0c3))
+
 # [0.37.0](https://github.com/y0ngha/siglens-trader/compare/v0.36.0...v0.37.0) (2026-10-02)
 
 
