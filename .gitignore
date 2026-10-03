@@ -38,3 +38,5 @@ AGENTS.md
 infra/aws/.ami
 
 .env.deployment
+
+docs/toss-openapi-spec.json
