@@ -51,7 +51,7 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 
 | Key | Range / type | Default |
 |---|---|---|
-| `trading_mode` | `dry_run` / `semi_auto` / `auto` | `dry_run` |
+| `trading_mode` | `dry_run` / `semi_auto` / `auto` — crossing the `dry_run` ↔ live boundary is **409 while any position is open** (positions don't record their mode; a live mode would send real sells for paper positions, and `dry_run` would paper-sell real shares). `semi_auto` ↔ `auto` is unrestricted | `dry_run` |
 | `trading_enabled` | boolean (kill switch) | true |
 | `max_position_size`, `max_total_exposure` | USD, cost basis | 5,000 / 25,000 |
 | `max_trades_per_day` | count | 20 |
@@ -102,6 +102,17 @@ answer 39 times; each one is a broker API call. The previous session's runs alre
 the next session's will again, so the skip delays nothing that could have changed. The audit row
 records `summary.holdingsCheckSkipped: 'market_closed'` so a quiet day is distinguishable from a
 broken check.
+
+The comparison only covers symbols the bot can own (`getBotManagedSymbols`: the whole watchlist,
+including disabled rows, plus every symbol in `order_tracking`). The same Toss account may hold
+shares the operator bought by hand; those are not a ledger mismatch, and before this scope every
+reconcile run (every 10 minutes) mailed them. Bot buys only go through watchlist symbols and
+always leave an `order_tracking` row, so an orphaned bot fill is still caught. The filter is by
+symbol, not by origin: a hand-held position in a symbol that is also on the watchlist (or ever
+traded by the bot) is still reported — **expected**, not a bug; keep hand trades off bot symbols.
+The mismatch mail is deduped per ET day by a hash of its sorted content (`claimOnce`) — a changed
+mismatch mails at once, an unchanged one at most daily; a failed send releases the key so the next
+run retries. `summary.holdingsMismatches` still counts every run.
 
 ## Execute Cron Flow
 

@@ -58,6 +58,7 @@ import {
     hasTradeAuditCorrelation,
     MR_SIGNAL_ACTIONS,
     getSymbolsSoldSince,
+    getBotManagedSymbols,
 } from '../queries';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Db } from '../index';
@@ -2245,5 +2246,27 @@ describe('mean-reversion decision/review queries', () => {
             const db = createMockDb([]);
             expect(await getSymbolsSoldSince(db as unknown as Db, new Date())).toEqual(new Set());
         });
+    });
+});
+
+describe('getBotManagedSymbols', () => {
+    it('unions every watchlist row (no enabled filter) with every order_tracking symbol', async () => {
+        const db = createMockDb();
+        // 1st await: watchlist rows (incl. a disabled one), 2nd: distinct order_tracking symbols.
+        let call = 0;
+        (db._chain as unknown as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
+            Promise.resolve(
+                call++ === 0
+                    ? [{ symbol: 'NVDA' }, { symbol: 'SPY' }]
+                    : [{ symbol: 'NVDA' }, { symbol: 'OLDX' }],
+            ).then(resolve);
+
+        const result = await getBotManagedSymbols(db);
+
+        expect(result).toEqual(new Set(['NVDA', 'SPY', 'OLDX']));
+        expect(db.select).toHaveBeenCalledTimes(1);
+        expect(db.selectDistinct).toHaveBeenCalledTimes(1);
+        // watchlist는 전체 행 — enabled 조건을 걸면 비활성 종목의 고아 체결을 놓친다.
+        expect(db._chain.where).not.toHaveBeenCalled();
     });
 });

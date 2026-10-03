@@ -11,6 +11,8 @@ import {
     updateAnalysisConfig,
     getNotificationConfig,
     updateNotificationConfig,
+    getConfigValue,
+    getOpenPositions,
 } from '../lib/db/queries.js';
 import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
 
@@ -121,6 +123,23 @@ async function handler(req: Request): Promise<Response> {
                             { error: 'trading_mode must be one of: dry_run, semi_auto, auto' },
                             { status: 400 },
                         );
+                    }
+                    // positions에는 어느 모드에서 연 포지션인지 남지 않는다. dry_run ↔ 실거래 경계를
+                    // 열린 포지션째 넘으면, 실거래 모드는 브로커에 없는 모의 포지션에 실제 매도를 내고
+                    // (반대로 dry_run은 실제 주식을 모의로 팔아 장부에서 지운다) 장부와 계좌가 갈라진다.
+                    // 경계를 넘을 때는 포지션을 먼저 비우게 한다. semi_auto ↔ auto는 둘 다 실계좌라 무관.
+                    const current = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
+                    const crossesDryRun = (current === 'dry_run') !== (value === 'dry_run');
+                    if (crossesDryRun) {
+                        const open = await getOpenPositions(db);
+                        if (open.length > 0) {
+                            return Response.json(
+                                {
+                                    error: `열린 포지션이 있어 ${current} → ${String(value)} 전환을 막았습니다 (${open.map((p) => p.symbol).join(', ')}). 포지션을 모두 청산한 뒤 전환하세요.`,
+                                },
+                                { status: 409 },
+                            );
+                        }
                     }
                 }
                 if (BOOLEAN_CONFIG_KEYS.has(key) && typeof value !== 'boolean') {

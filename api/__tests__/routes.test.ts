@@ -613,6 +613,7 @@ describe('POST /api/config', () => {
 
     it('accepts valid trading_mode values', async () => {
         mockSetConfigValue.mockResolvedValue(undefined);
+        mockGetOpenPositions.mockResolvedValue([]);
 
         for (const mode of ['dry_run', 'semi_auto', 'auto']) {
             const res = await handler(
@@ -625,6 +626,56 @@ describe('POST /api/config', () => {
             expect(res.status).toBe(200);
         }
         expect(mockSetConfigValue).toHaveBeenCalledTimes(3);
+    });
+
+    it('worst: blocks dry_run → auto while positions are open (simulated positions would get real sells)', async () => {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'dry_run' : null),
+        );
+        mockGetOpenPositions.mockResolvedValue([{ symbol: 'HOOD' }, { symbol: 'COIN' }]);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: 'auto',
+            }),
+        );
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toContain('HOOD, COIN');
+        expect(mockSetConfigValue).not.toHaveBeenCalled();
+    });
+
+    it('worst: blocks semi_auto → dry_run while positions are open (real shares would be sold on paper)', async () => {
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'semi_auto' : null),
+        );
+        mockGetOpenPositions.mockResolvedValue([{ symbol: 'NVDA' }]);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: 'dry_run',
+            }),
+        );
+        expect(res.status).toBe(409);
+        expect(mockSetConfigValue).not.toHaveBeenCalled();
+    });
+
+    it('allows semi_auto → auto with open positions (both trade the real account)', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+            Promise.resolve(key === 'trading_mode' ? 'semi_auto' : null),
+        );
+        mockGetOpenPositions.mockResolvedValue([{ symbol: 'NVDA' }]);
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'trading_mode',
+                value: 'auto',
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockGetOpenPositions).not.toHaveBeenCalled();
     });
 
     it('rejects invalid trading_mode value', async () => {

@@ -21,7 +21,8 @@ if [ ! -f /swapfile ]; then
 fi
 
 # cloudflared is the only ingress: it dials out to Cloudflare, so the instance needs no
-# inbound ports, no Elastic IP and no origin certificate.
+# inbound ports and no origin certificate. (provision.sh still attaches an Elastic IP — for
+# a fixed *egress* address the Toss Open API allowlist requires, not for ingress.)
 rpm --import https://pkg.cloudflare.com/cloudflare-main.gpg || true
 cat >/etc/yum.repos.d/cloudflared.repo <<'REPO'
 [cloudflared]

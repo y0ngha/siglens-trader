@@ -21,17 +21,20 @@ const mockAcquireLockDetailed = vi.fn(async (...args: unknown[]) => {
 });
 const mockAcquireLock = vi.fn<() => Promise<string | null>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
+const mockClaimOnce = vi.fn();
 vi.mock('../../../lib/lock', () => ({
     acquireLock: (...args: unknown[]) => mockAcquireLock(...(args as [])),
     // 경합/장애 구분 버전. 기본 구현은 기존 mock을 재사용하고 null이면 경합으로 본다.
     // 장애(Redis down) 경로는 이 mock을 직접 덮는 테스트가 검증한다.
     acquireLockDetailed: (...args: unknown[]) => mockAcquireLockDetailed(...(args as [])),
     releaseLock: (...args: unknown[]) => mockReleaseLock(...(args as [])),
+    claimOnce: (...args: unknown[]) => mockClaimOnce(...args),
 }));
 
 const mockGetPendingSubmittedOrders = vi.fn();
 const mockUpdateOrderTracking = vi.fn();
 const mockGetOpenPositions = vi.fn();
+const mockGetBotManagedSymbols = vi.fn();
 const mockGetConfigValue = vi.fn();
 const mockGetNotificationConfig = vi.fn();
 const mockEnqueueNotification = vi.fn();
@@ -43,6 +46,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getPendingSubmittedOrders: (...args: unknown[]) => mockGetPendingSubmittedOrders(...args),
     updateOrderTracking: (...args: unknown[]) => mockUpdateOrderTracking(...args),
     getOpenPositions: (...args: unknown[]) => mockGetOpenPositions(...args),
+    getBotManagedSymbols: (...args: unknown[]) => mockGetBotManagedSymbols(...args),
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
     getNotificationConfig: (...args: unknown[]) => mockGetNotificationConfig(...args),
     enqueueNotification: (...args: unknown[]) => mockEnqueueNotification(...args),
@@ -119,6 +123,8 @@ function setupDefaults() {
         alerts: [],
     });
     mockGetOpenPositions.mockResolvedValue([]);
+    mockGetBotManagedSymbols.mockResolvedValue(new Set(['AAPL', 'NVDA', 'TSLA']));
+    mockClaimOnce.mockResolvedValue(true);
     mockGetOrder.mockResolvedValue(null);
     mockCancelOrder.mockResolvedValue(undefined);
     mockGetHoldings.mockResolvedValue([]);
@@ -981,6 +987,113 @@ describe('reconcile cron handler', () => {
                 'test@example.com',
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('ignores broker holdings the bot never traded (operator bought them by hand)', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'RGTI',
+                    quantity: 110,
+                    avgPrice: 10,
+                    currentPrice: 12,
+                    pnl: 220,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                expect.stringContaining('보유 정합성'),
+                expect.anything(),
+                expect.anything(),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 0 });
+        });
+
+        it('sends the same mismatch mail once per day (claim lost → no mail, count still reported)', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'TSLA',
+                    quantity: 5,
+                    avgPrice: 200,
+                    currentPrice: 210,
+                    pnl: 50,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+            mockClaimOnce.mockResolvedValue(false);
+
+            const res = await handler(makeRequest(true));
+            const body = await res.json();
+
+            expect(mockClaimOnce).toHaveBeenCalledWith(
+                expect.stringMatching(/^mail:holdings-mismatch:\d{4}-\d{2}-\d{2}:[0-9a-f]{16}$/),
+                86_400,
+            );
+            expect(mockSendErrorEmail).not.toHaveBeenCalledWith(
+                expect.stringContaining('보유 정합성'),
+                expect.anything(),
+                expect.anything(),
+            );
+            expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('mismatch mail key is content-addressed: order-independent, quantity-sensitive', async () => {
+            const holding = (symbol: string, quantity: number) => ({
+                symbol,
+                quantity,
+                avgPrice: 1,
+                currentPrice: 1,
+                pnl: 0,
+                marketCountry: 'US',
+                currency: 'USD',
+            });
+            mockGetOpenPositions.mockResolvedValue([]);
+            const keyFor = async (holdings: ReturnType<typeof holding>[]) => {
+                mockClaimOnce.mockClear();
+                mockGetHoldings.mockResolvedValue(holdings);
+                await handler(makeRequest(true));
+                const call = mockClaimOnce.mock.calls.find((c) =>
+                    String(c[0]).startsWith('mail:holdings-mismatch:'),
+                );
+                return call?.[0];
+            };
+            const ab = await keyFor([holding('TSLA', 5), holding('NVDA', 3)]);
+            const ba = await keyFor([holding('NVDA', 3), holding('TSLA', 5)]);
+            const changed = await keyFor([holding('TSLA', 6), holding('NVDA', 3)]);
+            expect(ab).toBeDefined();
+            expect(ba).toBe(ab);
+            expect(changed).not.toBe(ab);
+        });
+
+        it('worst: a failed mismatch mail releases the claim so the next run retries', async () => {
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'TSLA',
+                    quantity: 5,
+                    avgPrice: 200,
+                    currentPrice: 210,
+                    pnl: 50,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+            mockSendErrorEmail.mockRejectedValue(new Error('resend down'));
+
+            await handler(makeRequest(true));
+
+            const key = mockClaimOnce.mock.calls.find((c) =>
+                String(c[0]).startsWith('mail:holdings-mismatch:'),
+            )?.[0];
+            expect(key).toBeDefined();
+            expect(mockReleaseLock).toHaveBeenCalledWith(key, '1');
         });
 
         it('does not alert when holdings match within epsilon (fractional)', async () => {
