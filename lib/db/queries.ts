@@ -337,8 +337,8 @@ export async function reducePositionQuantity(
 ): Promise<boolean> {
     const result = await db.execute(sql`
         UPDATE positions
-        SET quantity = quantity - ${soldQuantity}
-        WHERE id = ${id} AND status = 'open' AND quantity > ${soldQuantity}
+        SET quantity = quantity - ${soldQuantity}::integer
+        WHERE id = ${id}::integer AND status = 'open' AND quantity > ${soldQuantity}::integer
         RETURNING id
     `);
     return ((result as { rowCount?: number } | null)?.rowCount ?? 0) > 0;
@@ -348,6 +348,12 @@ export async function reducePositionQuantity(
  * Average into an existing open position by adding quantity at a new price.
  * Uses a single atomic SQL UPDATE with full NUMERIC precision to avoid
  * read-then-write race conditions.
+ *
+ * 파라미터마다 타입을 명시한다. 드라이버는 값을 타입 없는(unknown) 문자열로 보내므로
+ * `$2 * $3`처럼 파라미터끼리 맞붙으면 Postgres가 연산자를 고르지 못해
+ * `42725 operator is not unique: unknown * unknown`으로 실패한다. 컬럼과 맞붙은
+ * 파라미터는 컬럼 타입으로 추론되지만, 같은 이유로 모두 캐스트해 둔다.
+ * `avg_price`는 numeric 컬럼이라 결과를 그대로 넣는다(`::text`는 numeric에 대입되지 않는다).
  */
 export async function averageIntoPosition(
     db: DbOrTx,
@@ -357,9 +363,10 @@ export async function averageIntoPosition(
 ): Promise<boolean> {
     const result = await db.execute(sql`
         UPDATE positions
-        SET quantity = quantity + ${additionalQuantity},
-            avg_price = ((quantity * avg_price::numeric + ${additionalQuantity} * ${additionalPrice}) / (quantity + ${additionalQuantity}))::text
-        WHERE id = ${positionId} AND status = 'open'
+        SET quantity = quantity + ${additionalQuantity}::integer,
+            avg_price = (quantity * avg_price + ${additionalQuantity}::numeric * ${additionalPrice}::numeric)
+                / (quantity + ${additionalQuantity}::integer)
+        WHERE id = ${positionId}::integer AND status = 'open'
         RETURNING id
     `);
     // 0행 매칭 = 조회와 UPDATE 사이에 포지션이 닫혔다(수동 청산·reconcile 복구·동시 실행).
