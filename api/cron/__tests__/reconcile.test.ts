@@ -76,9 +76,11 @@ vi.mock('../../../lib/notification/email', () => ({
 }));
 
 // Quiet-hours is always off in tests so dispatcher uses the immediate-send path.
-vi.mock('../../../lib/notification/quiet-hours', () => ({
-    isQuietHours: () => false,
+vi.mock('../../../lib/notification/quiet-hours', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../lib/notification/quiet-hours')>()),
+    isQuietHours: (...args: unknown[]) => mockIsQuietHours(...args),
 }));
+const mockIsQuietHours = vi.fn((..._args: unknown[]) => false);
 
 const mockCheckConsistency = vi.fn();
 const mockAutoRecoverFilledOrders = vi.fn();
@@ -1042,6 +1044,28 @@ describe('reconcile cron handler', () => {
                 expect.anything(),
             );
             expect(body.holdings).toEqual({ mismatchCount: 1 });
+        });
+
+        it('the dispatcher decides quiet hours with the configured digest hour', async () => {
+            mockGetConfigValue.mockImplementation((_db: unknown, key: string) =>
+                Promise.resolve(key === 'digest_hour_kst' ? 7 : 'auto'),
+            );
+            mockGetOpenPositions.mockResolvedValue([]);
+            mockGetHoldings.mockResolvedValue([
+                {
+                    symbol: 'TSLA',
+                    quantity: 5,
+                    avgPrice: 200,
+                    currentPrice: 210,
+                    pnl: 50,
+                    marketCountry: 'US',
+                    currency: 'USD',
+                },
+            ]);
+
+            await handler(makeRequest(true));
+
+            expect(mockIsQuietHours).toHaveBeenCalledWith(expect.any(Date), 7);
         });
 
         it('mismatch mail key is content-addressed: order-independent, quantity-sensitive', async () => {

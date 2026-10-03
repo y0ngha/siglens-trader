@@ -1,13 +1,26 @@
 /**
  * Morning digest cron — flushes the quiet-hours notification queue.
  *
- * Runs at 01:00 UTC (10:00 KST) every day (including weekends; US session
- * doesn't gate this — it's always safe to flush deferred notifications at
- * the start of the Korean business day).
+ * Invoked **every hour** every day (including weekends; US session doesn't gate this).
+ * The delivery hour is the operator's setting `config.digest_hour_kst` (default 10),
+ * so the schedule can't be a fixed cron line any more:
  *
- * Quiet-hours window: 00:00–09:59 KST (15:00–00:59 UTC the same day).
- * The digest fires at 10:00 KST so by definition no notifications are still
- * in quiet hours when this runs.
+ * - Before that hour (still quiet hours) the run returns without an audit row.
+ * - From that hour on, the first run flushes the queue. A box that was down at the
+ *   digest hour still delivers on the next hour instead of a day late, because the
+ *   condition is "past the hour", not "exactly the hour".
+ * - Once today's digest is done — a `digest` cron_runs row since 00:00 KST that
+ *   `completed` (flushed) or was `skipped/queue_empty` (health check ran) — later hourly
+ *   runs with an empty queue return without an audit row. So each Seoul day gets exactly
+ *   one of: a flush, or a health check — as before, just at the configured hour.
+ *   The marker is the audit table, not Redis: a run that was `locked` or `error`
+ *   (e.g. a Resend outage) is not "done", so the next hour retries — up to one error row
+ *   per hour until the send works, which is the point. Without Redis, `acquireLock`
+ *   fails closed and every run after the hour records `skipped/locked` (as every other
+ *   cron does when the lock backend is down).
+ *
+ * Quiet-hours window: 00:00 up to the digest hour KST. The dispatchers read the same
+ * setting (`readDigestHour`), so nothing new is queued after the digest has run.
  *
  * If email is disabled: rows are marked sent anyway so the queue stays clear
  * even when the operator has turned off email alerts.
@@ -24,6 +37,8 @@ import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { acquireLock, releaseLock } from '../../lib/lock.js';
+import { readDigestHour } from '../_lib/digest-hour.js';
+import { isQuietHours, seoulDayStart } from '../../lib/notification/quiet-hours.js';
 import {
     getConfigValue,
     getCronRuns,
@@ -60,6 +75,16 @@ export async function GET(req: Request): Promise<Response> {
     const db = getDb();
     const safe = (p: Promise<unknown>) => p.catch((e) => console.error('[cron-audit]', e));
     const elapsed = () => ({ durationMs: Date.now() - startedMs, finishedAt: new Date() });
+
+    // 시각 게이트. 감사 행보다 **앞** — 다이제스트 시각 전의 매시 호출까지 cron_runs에 남기면 잡음이다.
+    if (isQuietHours(startedAt, await readDigestHour(db))) {
+        return Response.json({ skipped: true, reason: 'before_digest_hour' });
+    }
+    // 오늘(서울) 다이제스트가 이미 끝났고 큐가 비었으면 감사 행 없이 끝낸다. 조회 실패는 "아직 안 끝남"
+    // 으로 보고 본 경로로 넘긴다 — 거기서 다시 실패하면 오류로 기록된다.
+    if ((await digestDoneToday(db, startedAt)) && (await queueIsEmpty(db))) {
+        return Response.json({ skipped: true, reason: 'already_ran_today' });
+    }
 
     await safe(finalizeStaleCronRuns(db, startedAt));
     await safe(startCronRun(db, { runId, cronType: 'digest', startedAt }));
@@ -132,6 +157,34 @@ export async function GET(req: Request): Promise<Response> {
         if (finishState) {
             await safe(finishCronRun(db, runId, finishState));
         }
+    }
+}
+
+/**
+ * Did a digest run already finish its job today (Seoul day)? `completed` = flushed the queue,
+ * `skipped/queue_empty` = ran the health check. `locked`/`error` runs did not, so they don't count.
+ */
+async function digestDoneToday(db: ReturnType<typeof getDb>, now: Date): Promise<boolean> {
+    try {
+        const runs = await getCronRuns(db, {
+            cronType: 'digest',
+            from: seoulDayStart(now),
+            limit: 50,
+        });
+        return runs.some(
+            (r) =>
+                r.status === 'completed' || (r.status === 'skipped' && r.outcome === 'queue_empty'),
+        );
+    } catch {
+        return false;
+    }
+}
+
+async function queueIsEmpty(db: ReturnType<typeof getDb>): Promise<boolean> {
+    try {
+        return (await getPendingNotifications(db)).length === 0;
+    } catch {
+        return false;
     }
 }
 

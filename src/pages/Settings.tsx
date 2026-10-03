@@ -252,6 +252,17 @@ export function SettingsPage() {
 
     const mrRegimeFilter = getConfigValue(configData.config, 'mr_regime_filter', true) === true;
 
+    // 서버의 parseDigestHour와 같은 규칙 — 1~23 정수가 아니면 기본 10시. src/는 lib/를 import하지 않는다.
+    const rawDigestHour = getConfigValue(configData.config, 'digest_hour_kst', 10);
+    const digestHour =
+        typeof rawDigestHour === 'number' &&
+        Number.isInteger(rawDigestHour) &&
+        rawDigestHour >= 1 &&
+        rawDigestHour <= 23
+            ? rawDigestHour
+            : 10;
+    const pad2 = (h: number) => String(h).padStart(2, '0');
+
     const executeIntervalMin = getConfigValue(
         configData.config,
         'execute_interval_min',
@@ -941,20 +952,46 @@ export function SettingsPage() {
                         ))}
                     </div>
 
-                    {/* Quiet hours has no toggle — it is always on. Surfacing it here
-                        because the behaviour is otherwise invisible: mail simply
-                        doesn't arrive overnight and there is nothing in the UI saying why. */}
-                    <p className="mt-4 border-t border-[#262626] pt-3 text-xs leading-5 text-neutral-500">
-                        수면 모드: <span className="text-neutral-400">00:00~09:59</span>에 발생한
-                        알림은 발송하지 않고 모아뒀다가{' '}
-                        <span className="text-neutral-400">매일 오전 10시</span>에 한 통으로
-                        보냅니다.
-                        <br />
-                        조용한 밤에는 메일이 오지 않습니다. 단
-                        <span className="text-neutral-400"> 시스템 이상 감지</span>가 켜져 있으면,
-                        보낼 이벤트가 없더라도 크론이 실패했거나 72시간 이상 멈춘 경우, 또는 매매
-                        판단 단계가 100시간 동안 돌지 않은 경우에는 알려줍니다.
-                    </p>
+                    {/* Quiet hours has no on/off toggle — it is always on; only the digest hour
+                        moves. Surfacing it here because the behaviour is otherwise invisible: mail
+                        simply doesn't arrive overnight and there is nothing in the UI saying why. */}
+                    <div className="mt-4 border-t border-[#262626] pt-3">
+                        <label className="flex items-center justify-between gap-3">
+                            <span className="text-sm">아침 요약 발송 시각</span>
+                            <select
+                                aria-label="아침 요약 발송 시각"
+                                className="rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                                value={String(digestHour)}
+                                onChange={(e) =>
+                                    mutate({
+                                        type: 'config',
+                                        key: 'digest_hour_kst',
+                                        value: Number(e.target.value),
+                                    })
+                                }
+                            >
+                                {Array.from({ length: 23 }, (_, i) => i + 1).map((h) => (
+                                    <option key={h} value={h}>
+                                        {pad2(h)}:00
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <p className="mt-2 text-xs leading-5 text-neutral-500">
+                            수면 모드:{' '}
+                            <span className="text-neutral-400">
+                                00:00~{pad2(digestHour - 1)}:59
+                            </span>
+                            에 발생한 알림은 발송하지 않고 모아뒀다가{' '}
+                            <span className="text-neutral-400">매일 {pad2(digestHour)}:00</span>에
+                            한 통으로 보냅니다.
+                            <br />
+                            조용한 밤에는 메일이 오지 않습니다. 단
+                            <span className="text-neutral-400"> 시스템 이상 감지</span>가 켜져
+                            있으면, 보낼 이벤트가 없더라도 크론이 실패했거나 72시간 이상 멈춘 경우,
+                            또는 매매 판단 단계가 100시간 동안 돌지 않은 경우에는 알려줍니다.
+                        </p>
+                    </div>
                 </div>
             </section>
         </div>

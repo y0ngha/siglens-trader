@@ -46,9 +46,10 @@ export const CRON_JOBS: ReadonlyArray<{ name: string; schedule: string; handler:
     // 20분 전 창의 첫 틱에서 하루 1회 돈다 — 13~21시 UTC가 EDT·EST 양쪽의 창을 모두 덮는다.
     { name: 'execute', schedule: '2-59/5 13-21 * * 1-5', handler: cronExecute },
     { name: 'reconcile', schedule: '*/10 13-21 * * 1-5', handler: cronReconcile },
-    // 01:00 UTC = 10:00 KST. Runs daily (including weekends) — there are no day-of-week
-    // restrictions because quiet-hours notifications can be queued any day US market trades.
-    { name: 'digest', schedule: '0 1 * * *', handler: cronDigest },
+    // 매시 정각, 매일(주말 포함 — 금요일 밤 이벤트가 토요일 아침에 와야 한다). 발송 시각은
+    // 운영자 설정 `digest_hour_kst`(기본 10시 KST)라 고정 cron 식으로 쓸 수 없다. 그 시각 전의
+    // 호출과 이미 끝난 날의 호출은 핸들러가 감사 행 없이 돌려보낸다.
+    { name: 'digest', schedule: '0 * * * *', handler: cronDigest },
     // AI 진입 리뷰(기록 전용). 판단은 ET 15:40~16:00(반일장 12:40~13:00)이라 16:00 UTC부터 덮는다.
     // 처리할 신호가 없는 틱은 감사 행 없이 끝난다.
     { name: 'review', schedule: '*/10 16-21 * * 1-5', handler: cronReview },

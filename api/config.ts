@@ -15,6 +15,7 @@ import {
     getOpenPositions,
 } from '../lib/db/queries.js';
 import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
+import { DIGEST_HOUR_MAX, DIGEST_HOUR_MIN } from '../lib/notification/quiet-hours.js';
 
 /**
  * 관심종목 상한. 종전 5는 종목마다 매시간 LLM 분석 5축이 돌던 시절의 비용 상한이었다. 지금은 규칙이
@@ -74,6 +75,7 @@ async function handler(req: Request): Promise<Response> {
             'mr_regime_filter',
             'mr_slots',
             'dry_run_cost_bps',
+            'digest_hour_kst',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
@@ -87,6 +89,7 @@ async function handler(req: Request): Promise<Response> {
             'mr_stop_atr',
             'mr_slots',
             'dry_run_cost_bps',
+            'digest_hour_kst',
         ]);
 
         const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'mr_regime_filter']);
@@ -102,6 +105,9 @@ async function handler(req: Request): Promise<Response> {
             mr_stop_atr: { min: 0, max: 20 },
             mr_slots: { min: 1, max: 20, integer: true },
             dry_run_cost_bps: { min: 0, max: 100 },
+            // 아침 다이제스트 시각(KST). 수면 모드는 00:00부터 이 시각 전까지 — 0은 "수면 모드 없음",
+            // 24는 시각이 아니다. 범위는 quiet-hours의 DIGEST_HOUR_MIN/MAX와 같다.
+            digest_hour_kst: { min: DIGEST_HOUR_MIN, max: DIGEST_HOUR_MAX, integer: true },
         };
 
         switch (payload.type) {

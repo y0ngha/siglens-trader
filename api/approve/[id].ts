@@ -26,6 +26,7 @@ import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { getSellableQuantity } from '../../lib/trading/account.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
+import { readDigestHour } from '../_lib/digest-hour.js';
 import { realizedPnlForSell } from '../../lib/strategy/pnl.js';
 
 async function handler(req: Request): Promise<Response> {
@@ -66,6 +67,7 @@ async function handler(req: Request): Promise<Response> {
         gate: makeEmailGate(emailNotif),
         to: emailNotif?.target,
         enqueue: (row) => enqueueNotification(db, row),
+        digestHour: await readDigestHour(db),
     });
 
     if (action === 'approve') {

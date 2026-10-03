@@ -19,6 +19,7 @@ import {
 import type { CronRunFinish } from '../../lib/db/queries.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
+import { readDigestHour } from '../_lib/digest-hour.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
 import { getOrder } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
@@ -99,6 +100,7 @@ async function handler(req: Request): Promise<Response> {
             gate: shouldEmail,
             to: emailNotif?.target,
             enqueue: (row) => enqueueNotification(db, row),
+            digestHour: await readDigestHour(db),
         });
         const notifyError = (subject: string, body: string) =>
             dispatcher.notifyError(subject, body).catch((e) => console.error('[email]', e));

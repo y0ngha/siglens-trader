@@ -1135,6 +1135,48 @@ describe('SettingsPage', () => {
         });
     });
 
+    // -----------------------------------------------------------------------
+    // 아침 요약 발송 시각 (digest_hour_kst)
+    // -----------------------------------------------------------------------
+
+    it('발송 시각 설정이 없으면 10:00과 00:00~09:59 수면 모드를 보여준다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        const select = await screen.findByLabelText('아침 요약 발송 시각');
+        expect(select).toHaveValue('10');
+        expect((select as HTMLSelectElement).options).toHaveLength(23);
+        expect(screen.getByText('00:00~09:59')).toBeInTheDocument();
+        expect(screen.getByText('매일 10:00')).toBeInTheDocument();
+    });
+
+    it('발송 시각은 저장된 값을 보여주고, 바꾸면 즉시 저장한다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: [
+                ...mockConfig.config,
+                { key: 'digest_hour_kst', value: 7, updatedAt: '2026-01-01T00:00:00Z' },
+            ],
+        });
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const select = await screen.findByLabelText('아침 요약 발송 시각');
+        expect(select).toHaveValue('7');
+        expect(screen.getByText('00:00~06:59')).toBeInTheDocument();
+
+        await user.selectOptions(select, '8');
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'digest_hour_kst',
+            value: 8,
+        });
+    });
+
     it('실행 주기 설정이 없으면 기본 10분을 보여준다', async () => {
         mockedApi.getConfig.mockResolvedValue({
             ...mockConfig,

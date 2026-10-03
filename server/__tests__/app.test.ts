@@ -9,9 +9,9 @@ describe('CRON_JOBS', () => {
             // 5분마다 호출하고 실제 실행 여부는 핸들러의 `execute_interval_min` 게이트가 정한다.
             ['execute', '2-59/5 13-21 * * 1-5'],
             ['reconcile', '*/10 13-21 * * 1-5'],
-            // Daily, not weekday-only: Friday-night events must reach the operator on
-            // Saturday morning. 01:00 UTC = 10:00 KST, just after quiet hours end.
-            ['digest', '0 1 * * *'],
+            // Hourly, every day (Friday-night events must reach the operator on Saturday morning).
+            // The delivery hour is `digest_hour_kst`, so the handler gates itself.
+            ['digest', '0 * * * *'],
             // 판단 창(ET 15:40, 반일장 12:40) 이후를 덮는다.
             ['review', '*/10 16-21 * * 1-5'],
         ]);
