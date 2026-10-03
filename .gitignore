@@ -39,4 +39,8 @@ infra/aws/.ami
 
 .env.deployment
 
-docs/toss-openapi-spec.json
+# docs/는 로컬 전용이다(설계 spec·플랜·운영 런북·전략 근거). 공개해도 되는 문서만
+# docs/product/에 두고 추적한다. 새 워크트리에는 post-checkout 훅이 .worktreeinclude를
+# 보고 복사하고, pre-commit 훅이 허용 경로 밖 docs가 커밋되는 것을 막는다.
+/docs/*
+!/docs/product/

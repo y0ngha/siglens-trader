@@ -1,7 +1,7 @@
 # infra/aws — siglens-trader
 
 단일 EC2 + Cloudflare Tunnel. ALB/ASG 없음 (단일 사용자·CF Access 뒤·대부분 유휴).
-설계 근거: [`docs/specs/2026-07-19-vercel-to-aws-migration-design.md`](../../docs/specs/2026-07-19-vercel-to-aws-migration-design.md).
+설계 근거: `docs/specs/2026-07-19-vercel-to-aws-migration-design.md`(로컬 전용 문서).
 
 ```
 Cloudflare (auto-trade.siglens.io, Access) → Tunnel → EC2 t4g.small → Docker :3000

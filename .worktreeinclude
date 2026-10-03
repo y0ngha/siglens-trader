@@ -5,3 +5,5 @@ node_modules
 .husky/_
 .yarn/install-state.gz
 .env.local
+# 로컬 전용 docs(.gitignore 참고). 이미 있는 폴더면 post-checkout 훅이 ignore된 파일만 채운다.
+docs
