@@ -842,6 +842,23 @@ export async function getNeedsReviewSymbols(db: Db, since: Date): Promise<string
     return rows.map((r) => r.symbol);
 }
 
+/**
+ * 봇이 다룰 수 있는 종목 — 관심종목 전체(비활성 포함)와 봇이 주문을 낸 적이 있는 종목.
+ *
+ * reconcile의 "브로커에만 있는 보유" 대조 범위다. 같은 계좌에 운영자가 직접 산 종목이 있으면
+ * 그것은 장부 불일치가 아니라 봇 밖의 자산이다 — 대조에 넣으면 거래일마다 10분 간격으로 같은
+ * 경보 메일이 나간다. 봇이 사는 경로(execute·승인)는 관심종목만 사고 모두 `order_tracking`을
+ * 남기므로, 이 둘을 합치면 "봇이 샀는데 장부에 없는" 고아 체결은 빠짐없이 잡힌다(관심종목에서
+ * 지운 뒤에도 `order_tracking`이 남는다).
+ */
+export async function getBotManagedSymbols(db: Db): Promise<Set<string>> {
+    const [watchRows, orderRows] = await Promise.all([
+        db.select({ symbol: watchlist.symbol }).from(watchlist),
+        db.selectDistinct({ symbol: orderTracking.symbol }).from(orderTracking),
+    ]);
+    return new Set([...watchRows.map((r) => r.symbol), ...orderRows.map((r) => r.symbol)]);
+}
+
 export async function getPendingSubmittedOrders(db: Db) {
     // 'pending'/'partial' are unfilled-in-flight states (not yet resolved) — treat as in-flight alongside 'submitted'.
     return db

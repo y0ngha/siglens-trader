@@ -145,7 +145,14 @@ UTC 13~21시 = KST 22:00~06:59. 실제 실행은 런타임 게이트 `isEtRegula
 ## 4. Cloudflare Tunnel + DNS
 
 인스턴스는 인바운드 포트를 열지 않는다. `cloudflared`가 아웃바운드로 터널을 맺고
-Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서·Elastic IP 불필요).
+Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서 불필요).
+
+**Elastic IP는 필요하다 — 인바운드가 아니라 출구 IP 때문이다.** 토스 Open API는 WTS
+**설정 > Open API > 허용 IP 관리**에 등록된 IP에서만 토큰을 발급한다. 그 밖의 IP는
+`POST /oauth2/token`이 `403 access_denied`라 실거래 모드의 모든 주문·조회가 실패한다.
+자동 할당 공인 IP는 stop/start·재프로비저닝마다 바뀌므로 `provision.sh`가 `Name=siglens-trader`
+태그의 EIP를 붙인다(현재 `3.34.121.104`). EIP를 붙이면 자동 할당 IP는 반납되어 공인 IPv4는
+1개 그대로다(요금 동일, $0.005/시간). 인스턴스를 없앨 때 EIP를 남겨 두면 같은 요금이 계속 나간다.
 
 1. Cloudflare Dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel**
    - 이름: `siglens-trader`
@@ -331,6 +338,12 @@ WHERE status = 'running'
 ```sql
 UPDATE config SET value = '"semi_auto"' WHERE key = 'trading_mode';
 ```
+
+**`dry_run` ↔ 실거래 전환은 열린 포지션이 0개일 때만 한다.** 포지션에는 어느 모드에서 열었는지가
+남지 않아, 모의 포지션을 안은 채 실거래로 넘어가면 브로커에 없는 주식에 실제 매도가 나간다.
+대시보드(`POST /api/config`)는 이 경우 409로 막지만 위 SQL은 가드를 거치지 않는다. 가드는 확인 후
+쓰기라 그 사이에 크론이 포지션을 열 수 있다 — 전환하는 동안은 킬 스위치(`trading_enabled = false`)를
+꺼 두고, 전환 뒤 다시 켠다.
 
 ---
 

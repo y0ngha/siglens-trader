@@ -27,7 +27,8 @@ aws ecr put-lifecycle-policy --repository-name "$APP" --lifecycle-policy-text \
 # ---- Security group: no inbound at all --------------------------------------
 # Ingress arrives through the Cloudflare Tunnel, which is an outbound connection from the
 # instance. Nothing needs to reach the box from the internet, so there is no ingress rule
-# (and therefore no origin certificate, Elastic IP, or CF IP allowlist to maintain).
+# (and therefore no origin certificate or CF IP allowlist to maintain). The Elastic IP below
+# is for *egress*, not ingress — see ensure_eip.
 VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
 SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$SG_NAME" \
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
@@ -66,9 +67,49 @@ aws cloudwatch put-metric-alarm --alarm-name "$APP-cron-failures" \
     --comparison-operator GreaterThanThreshold --treat-missing-data notBreaching \
     --alarm-actions "$TOPIC_ARN"
 
+# ---- Elastic IP (fixed egress for the Toss Open API allowlist) ----------------
+# The Toss Open API only issues tokens to IPs registered in WTS (설정 > Open API > 허용 IP 관리);
+# anything else gets `403 access_denied` on POST /oauth2/token, so every live order fails.
+# An auto-assigned public IP changes on every stop/start or re-provision, so the instance
+# egresses through a tagged EIP instead. Associating it releases the auto-assigned address,
+# so the public-IPv4 count (and the $0.005/h charge) stays at one. The EIP is found by tag,
+# so a re-provisioned instance gets the same address and the allowlist keeps working.
+ensure_eip() {
+    local iid="$1" alloc assoc_iid count
+    count=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=$APP" \
+        --query 'length(Addresses)' --output text)
+    if [ "$count" -gt 1 ]; then
+        # Picking one at random would silently move egress off the allowlisted address.
+        echo "found $count EIPs tagged Name=$APP — keep only the one registered in Toss WTS"
+        exit 1
+    fi
+    alloc=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=$APP" \
+        --query 'Addresses[0].AllocationId' --output text)
+    if [ "$alloc" = "None" ] || [ -z "$alloc" ]; then
+        alloc=$(aws ec2 allocate-address --domain vpc \
+            --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$APP},{Key=Purpose,Value=toss-openapi-allowlist}]" \
+            --query AllocationId --output text)
+        log "allocated eip $alloc — register its address in Toss WTS 허용 IP before going live"
+    fi
+    assoc_iid=$(aws ec2 describe-addresses --allocation-ids "$alloc" \
+        --query 'Addresses[0].InstanceId' --output text)
+    if [ "$assoc_iid" != "$iid" ]; then
+        # Still held by an older instance (e.g. a stopped one instance_id() no longer lists):
+        # move it. The allowlisted address must follow the instance that trades.
+        if [ "$assoc_iid" != "None" ] && [ -n "$assoc_iid" ]; then
+            log "moving eip $alloc from $assoc_iid to $iid"
+        fi
+        aws ec2 wait instance-running --instance-ids "$iid"
+        aws ec2 associate-address --instance-id "$iid" --allocation-id "$alloc" \
+            --allow-reassociation >/dev/null
+    fi
+    log "eip $(aws ec2 describe-addresses --allocation-ids "$alloc" --query 'Addresses[0].PublicIp' --output text) -> $iid"
+}
+
 # ---- Instance ----------------------------------------------------------------
 EXISTING=$(instance_id)
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
+    ensure_eip "$EXISTING"
     log "instance already running: $EXISTING (use deploy.sh to ship a new image)"
     exit 0
 fi
@@ -99,6 +140,7 @@ IID=$(aws ec2 run-instances \
     --user-data "file://$USER_DATA" \
     --query 'Instances[0].InstanceId' --output text)
 rm -f "$USER_DATA"
+ensure_eip "$IID"
 
 log "launched $IID — boot installs docker/cloudflared, fetches SSM env, pulls $IMAGE_TAG"
 log "next: create the Cloudflare Tunnel, put its token in $SSM_PREFIX/TUNNEL_TOKEN, then map auto-trade.siglens.io -> http://localhost:3000"

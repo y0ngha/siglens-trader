@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
-import { acquireLockDetailed, releaseLock } from '../../lib/lock.js';
+import { acquireLockDetailed, claimOnce, releaseLock } from '../../lib/lock.js';
+import { etDateOf } from '../../lib/analysis/daily-bars.js';
 import {
     getPendingSubmittedOrders,
     updateOrderTracking,
     getOpenPositions,
+    getBotManagedSymbols,
     getConfigValue,
     getNotificationConfig,
     enqueueNotification,
@@ -38,6 +40,7 @@ const CANCEL_RETRY_LIMIT_MS = 6 * 60 * 60 * 1000;
 
 /** Quantity comparison tolerance for holdings reconciliation (fractional US shares). */
 const HOLDINGS_QTY_EPSILON = 0.01;
+const HOLDINGS_MAIL_TTL_SEC = 86_400;
 
 async function handler(req: Request): Promise<Response> {
     if (!verifyCronSecret(req)) {
@@ -473,7 +476,10 @@ async function handler(req: Request): Promise<Response> {
                 const usHoldings = holdings.filter(
                     (h) => h.currency === 'USD' || h.marketCountry === 'US',
                 );
-                const openPositions = await getOpenPositions(db);
+                const [openPositions, managedSymbols] = await Promise.all([
+                    getOpenPositions(db),
+                    getBotManagedSymbols(db),
+                ]);
                 const mismatches: string[] = [];
                 const brokerBySymbol = new Map(usHoldings.map((h) => [h.symbol, h]));
 
@@ -488,10 +494,16 @@ async function handler(req: Request): Promise<Response> {
                     }
                 }
 
-                // Broker holdings with no matching open DB position.
+                // Broker holdings with no matching open DB position — only for symbols the bot
+                // could have bought. Holdings the operator bought by hand in the same account are
+                // not a ledger mismatch (see getBotManagedSymbols).
                 const dbSymbols = new Set(openPositions.map((p) => p.symbol));
                 for (const h of usHoldings) {
-                    if (h.quantity > HOLDINGS_QTY_EPSILON && !dbSymbols.has(h.symbol)) {
+                    if (
+                        h.quantity > HOLDINGS_QTY_EPSILON &&
+                        !dbSymbols.has(h.symbol) &&
+                        managedSymbols.has(h.symbol)
+                    ) {
                         mismatches.push(
                             `${h.symbol}: 브로커 ${h.quantity}주 보유 but DB 포지션 없음`,
                         );
@@ -499,11 +511,27 @@ async function handler(req: Request): Promise<Response> {
                 }
 
                 holdingsMismatchCount = mismatches.length;
+                // 같은 불일치는 하루 한 번만 메일로 보낸다. 사람이 고칠 때까지 10분마다 같은 경보가
+                // 쌓이면 새 경보가 묻힌다. 내용이 바뀌면(새 종목·다른 수량) 키가 달라져 바로 나간다.
+                // 발송이 실패하면 키를 풀어 다음 런이 다시 보낸다 — 그러지 않으면 메일 장애 한 번이
+                // 그날 하루의 불일치 경보를 전부 지운다. (`claimOnce`는 값 '1'로 잡으므로 같은 값으로 지운다.)
                 if (mismatches.length > 0) {
-                    await notifyError(
-                        `보유 정합성 불일치 (${mismatches.length}건)`,
-                        mismatches.join('\n'),
-                    );
+                    const mailKey = `mail:holdings-mismatch:${etDateOf(startedAt)}:${crypto
+                        .createHash('sha256')
+                        .update([...mismatches].sort().join('\n'))
+                        .digest('hex')
+                        .slice(0, 16)}`;
+                    if (await claimOnce(mailKey, HOLDINGS_MAIL_TTL_SEC)) {
+                        try {
+                            await dispatcher.notifyError(
+                                `보유 정합성 불일치 (${mismatches.length}건)`,
+                                mismatches.join('\n'),
+                            );
+                        } catch (e) {
+                            console.error('[email]', e);
+                            await releaseLock(mailKey, '1');
+                        }
+                    }
                 }
             }
         }
