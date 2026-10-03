@@ -1,5 +1,17 @@
 # Changelog
 
+# [0.38.0](https://github.com/y0ngha/siglens-trader/compare/v0.37.1...v0.38.0) (2026-10-03)
+
+
+### Bug Fixes
+
+* **live:** 실거래 전환 가드, 수동 보유 제외한 보유 대조, 토스 허용 IP용 EIP ([7516863](https://github.com/y0ngha/siglens-trader/commit/7516863c93a1c3207d3bbae6ddc8011fe5445911))
+
+
+### Features
+
+* **notification:** 아침 요약 발송 시각을 설정에서 변경 (digest_hour_kst) ([a18c2c6](https://github.com/y0ngha/siglens-trader/commit/a18c2c68945777b1e5ece4e8d67bb40221ef3b27))
+
 ## [0.37.1](https://github.com/y0ngha/siglens-trader/compare/v0.37.0...v0.37.1) (2026-10-03)
 
 
