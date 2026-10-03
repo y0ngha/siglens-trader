@@ -35,11 +35,8 @@ US 주식 자동매매 시스템. **일봉 RSI(2) 눌림매수** 규칙으로 �
 
 ## 문서
 
-- [배포 가이드](docs/DEPLOYMENT.md) / [EC2 운영 런북](infra/aws/README.md)
-- [보상 트랜잭션 설계](docs/COMPENSATING_TRANSACTIONS.md)
-- **현행 전략**: [일봉 RSI(2) 눌림매수로 전략 교체 (2026-09-24)](docs/specs/2026-09-24-daily-mean-reversion-design.md) — 백테스트 근거, 기각한 대안, 한계
-- 과거 설계(1시간봉 종합 점수 시절): [AI 매매 게이트](docs/specs/2026-08-12-ai-trade-gate-design.md) · [지표 컨플루언스 축](docs/specs/2026-08-14-indicator-confluence-signal-design.md) · [진입 시간 창](docs/specs/2026-08-15-entry-window-design.md) · [매매 실행 주기](docs/specs/2026-08-16-execution-cadence-design.md)
-- [AWS 이전](docs/specs/2026-07-19-vercel-to-aws-migration-design.md)
+- [EC2 운영 런북](infra/aws/README.md)
+- 설계 spec·플랜·배포 가이드는 로컬 전용 문서로 관리한다(`docs/`는 공개 문서만 추적).
 
 ## 동작 원리
 
@@ -61,7 +58,6 @@ US 주식 자동매매 시스템. **일봉 RSI(2) 눌림매수** 규칙으로 �
 종전 1시간봉 종합 점수(6축 가중평균) 전략은 8회전 1승이었고, 백테스트에서 비용 포함 거래당 −0.25~−0.30%의
 구조적 손실이었다. 점수는 다음 날 수익률과 오히려 역상관이었다. RSI(2) 눌림매수는 12년 · 성장주 16 / 부진주 22 /
 ETF 4 전부에서 같은 청산 규칙의 기준선보다 우위였고 승률 60~72%였다(부진주는 비용 차감 후 절대 수익 ≈ 0).
-전문은 [스펙](docs/specs/2026-09-24-daily-mean-reversion-design.md).
 
 ## 매매 모드
 

@@ -184,3 +184,4 @@ Pushing a `v*` tag triggers `.github/workflows/deploy.yml`: test-gate → arm64 
 - Secrets live only in SSM `/siglens-trader/*`; the container re-reads them on every start.
 - Runbook: [`infra/aws/README.md`](infra/aws/README.md). Setup + cutover: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - Design rationale: [`docs/specs/2026-07-19-vercel-to-aws-migration-design.md`](docs/specs/2026-07-19-vercel-to-aws-migration-design.md).
+- `docs/` is local-only except `docs/product/` (`.gitignore`). Links and comments that cite other `docs/` paths in tracked files point at these local-only docs — they resolve on the owner's machine and worktrees, not on a public clone. New worktrees get it via `.worktreeinclude`; the pre-commit hook rejects staged docs outside the allowed paths. Never put runbooks, infra IDs, or strategy evidence in `docs/product/`.
