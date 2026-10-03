@@ -1,5 +1,6 @@
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { Pool } from 'pg';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { buildPoolConfig } from './connection-config.js';
 import * as readline from 'node:readline';
 import {
     analysisResults,
@@ -42,9 +43,18 @@ export async function clear() {
         return;
     }
 
-    const client = neon(process.env.DATABASE_URL);
-    const db = drizzle(client);
+    const pool = new Pool(buildPoolConfig(process.env.DATABASE_URL));
+    try {
+        await deleteAll(drizzle(pool));
+    } finally {
+        // 풀이 열려 있으면 스크립트 프로세스가 끝나지 않는다.
+        await pool.end();
+    }
 
+    console.log('\n✅ All tables cleared.');
+}
+
+async function deleteAll(db: NodePgDatabase) {
     const tablesToClear = [
         { table: cronDecisions, name: 'cron_decisions' },
         { table: cronRuns, name: 'cron_runs' },
@@ -64,8 +74,6 @@ export async function clear() {
         await db.delete(table);
         console.log(`  Cleared: ${name}`);
     }
-
-    console.log('\n✅ All tables cleared.');
 }
 
 if (process.argv[1]?.endsWith('clear.ts')) {

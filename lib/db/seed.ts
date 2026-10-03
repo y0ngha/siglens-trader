@@ -1,5 +1,6 @@
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { Pool } from 'pg';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { buildPoolConfig } from './connection-config.js';
 import {
     config,
     analysisModelConfig,
@@ -15,9 +16,16 @@ export async function seed() {
     if (!process.env.DATABASE_URL) {
         throw new Error('DATABASE_URL is required');
     }
-    const sql = neon(process.env.DATABASE_URL);
-    const db = drizzle(sql);
+    const pool = new Pool(buildPoolConfig(process.env.DATABASE_URL));
+    try {
+        await seedInto(drizzle(pool));
+    } finally {
+        // 풀이 열려 있으면 스크립트 프로세스가 끝나지 않는다.
+        await pool.end();
+    }
+}
 
+async function seedInto(db: NodePgDatabase) {
     console.log('Seeding default config...');
     // 일봉 RSI(2) 눌림매수 기본값(docs/specs/2026-09-24-daily-mean-reversion-design.md §6).
     // 예치금 $25k · 종목당 $5k = 동시 5슬롯.

@@ -17,7 +17,7 @@ function createMockDb(limit: ReturnType<typeof vi.fn>) {
  * drizzle-orm이 실제로 던지는 모양을 재현한다.
  *
  * 드라이버 에러는 `DrizzleQueryError`로 감싸이고 원본이 `cause`에 들어간다
- * (`postgres-js`·`pg`·프로덕션의 `neon-serverless` 모두 동일). 즉 실제
+ * (`postgres-js`·`pg`(node-postgres, 현재 프로덕션)·옛 `neon-serverless` 모두 동일). 즉 실제
  * 던져지는 객체의 `.code`는 `undefined`이고 SQLSTATE는 `.cause.code`에 있다.
  *
  * 이전 버전의 이 테스트는 `Object.assign(new Error(), { code })`라는 **납작한**
@@ -84,7 +84,7 @@ describe('checkSchemaReadiness', () => {
     });
 
     it('does NOT report not-ready on an unrelated SQLSTATE — narrow allow-list only', async () => {
-        // 57P03 = cannot_connect_now (Neon cold-start / restart blip)
+        // 57P03 = cannot_connect_now (DB restart / failover blip)
         const err = drizzleWrapped('the database system is starting up', '57P03');
         const db = createMockDb(vi.fn().mockRejectedValue(err));
 

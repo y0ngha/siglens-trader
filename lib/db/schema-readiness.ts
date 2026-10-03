@@ -1,7 +1,7 @@
 import { positions } from './schema.js';
 import type { Db } from './index.js';
 
-/** Health-probe query must not itself wedge the health endpoint if Neon hangs. */
+/** Health-probe query must not itself wedge the health endpoint if the database hangs. */
 const SCHEMA_PROBE_TIMEOUT_MS = 2000;
 
 /**
@@ -40,8 +40,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * drizzle-orm은 드라이버 에러를 `DrizzleQueryError`로 감싸고 원본을
  * `cause`에 넣는다. 그래서 실제로 던져지는 모양은
  * `DrizzleQueryError { cause: PostgresError { code: '42703' } }`이고
- * `err.code`는 `undefined`다. 이 래핑은 `postgres-js`·`pg`·프로덕션이 쓰는
- * `neon-serverless` 드라이버에 공통이다.
+ * `err.code`는 `undefined`다. 이 래핑은 `postgres-js`·`pg`(node-postgres —
+ * 현재 프로덕션 드라이버)·옛 `neon-serverless` 드라이버에 공통이다.
  *
  * 이 함수가 존재하는 이유: 예전 구현이 `err.code`만 읽어서 컬럼이 없어도
  * 항상 `ready: true`를 돌려줬다 — 배포 게이트가 **어떤 환경에서도** 스키마

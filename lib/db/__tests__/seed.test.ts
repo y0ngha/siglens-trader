@@ -17,11 +17,15 @@ const mockDb = {
     insert: mockInsert,
 };
 
-vi.mock('@neondatabase/serverless', () => ({
-    neon: vi.fn(() => vi.fn()),
+const mockPoolEnd = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('pg', () => ({
+    Pool: class {
+        end = mockPoolEnd;
+    },
 }));
 
-vi.mock('drizzle-orm/neon-http', () => ({
+vi.mock('drizzle-orm/node-postgres', () => ({
     drizzle: vi.fn(() => mockDb),
 }));
 
@@ -43,6 +47,23 @@ describe('seed', () => {
 
         const { seed } = await import('../seed');
         await expect(seed()).rejects.toThrow('DATABASE_URL is required');
+    });
+
+    it('ends the pool when seeding is done', async () => {
+        const { seed } = await import('../seed');
+        await seed();
+
+        expect(mockPoolEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it('ends the pool even when seeding fails', async () => {
+        mockInsert.mockImplementationOnce(() => {
+            throw new Error('insert failed');
+        });
+
+        const { seed } = await import('../seed');
+        await expect(seed()).rejects.toThrow('insert failed');
+        expect(mockPoolEnd).toHaveBeenCalledTimes(1);
     });
 
     it('inserts default config values (12 entries)', async () => {

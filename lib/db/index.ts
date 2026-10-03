@@ -1,11 +1,11 @@
-import { Pool, neonConfig, type PoolClient } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-serverless';
-import ws from 'ws';
+import { Pool, type PoolClient } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { buildPoolConfig } from './connection-config.js';
 import * as schema from './schema.js';
 
-// neon-serverless uses WebSockets for the full wire protocol (enables interactive
-// transactions, unlike neon-http). Provide the ws constructor for Node runtimes.
-neonConfig.webSocketConstructor = ws;
+// node-postgres(`pg`) Pool이 일반 Postgres 와이어 프로토콜을 쓰므로 인터랙티브 트랜잭션
+// (`db.transaction()`)이 그대로 되고, Neon·RDS 어디에나 붙는다. 결과 객체는 `{ rows, rowCount }`
+// 형태라 `queries.ts`의 `rowCount` 판정도 그대로 유효하다. TLS 처리는 `connection-config.ts`.
 
 export function createDb() {
     const url = process.env.DATABASE_URL;
@@ -14,9 +14,9 @@ export function createDb() {
     // 심볼을 병렬로 돈다. `max: 1`은 "서버리스 인스턴스는 요청을 하나씩 처리한다"는 전제로
     // 붙어 있었는데 EC2 전환으로 그 전제가 깨졌고, 그 상태에서 `db.transaction()`이 단일
     // 커넥션을 잡으면 다른 모든 쿼리가 직렬로 밀려 실행 데드라인·락 TTL을 압박한다.
-    // 10은 Neon 커넥션 한도에 비해 여유롭다(인스턴스 1대).
-    const pool = new Pool({ connectionString: url, max: 10 });
-    // 서버가 연결을 끊으면(Neon compute 일시 정지·네트워크 순단) 클라이언트는 진행 중 쿼리를 모두 실패시킨 뒤
+    // 10은 DB 커넥션 한도(Neon·RDS 모두)에 비해 여유롭다(인스턴스 1대).
+    const pool = new Pool({ ...buildPoolConfig(url), max: 10 });
+    // 서버가 연결을 끊으면(DB 재시작·failover·네트워크 순단) 클라이언트는 진행 중 쿼리를 모두 실패시킨 뒤
     // 'error'를 낸다. 리스너가 없으면 Node가 그 이벤트를 다시 던져 프로세스가 통째로 죽는다 — 2026-09-24 18:57Z
     // 장중에 "Connection terminated unexpectedly"로 컨테이너가 재시작됐다. 리스너는 두 곳에 필요하다.
     // - 클라이언트: Pool은 클라이언트를 내줄 때(`db.transaction()` 등) 자기 리스너를 떼고 반납 때 다시 붙인다.
@@ -35,7 +35,7 @@ export function createDb() {
 export type Db = ReturnType<typeof createDb>;
 
 /**
- * Minimal interface shared by both `Db` (NeonDatabase, neon-serverless) and the
+ * Minimal interface shared by both `Db` (NodePgDatabase, node-postgres) and the
  * transaction context (`tx`) returned by `db.transaction()`.
  *
  * Both expose `.insert()`, `.update()`, `.delete()`, `.select()` with

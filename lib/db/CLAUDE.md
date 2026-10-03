@@ -1,20 +1,24 @@
 # lib/db/ — Infrastructure (Database)
 
-PostgreSQL database layer using Neon (serverless) + Drizzle ORM.
+PostgreSQL database layer using `pg` (node-postgres) + Drizzle ORM (`drizzle-orm/node-postgres`).
+Provider-neutral: runs against Neon today and AWS RDS PostgreSQL 17 after the cutover — same wire protocol,
+no provider SDK. Result objects keep `{ rows, rowCount }` (`partialClosePosition`/`averageIntoPosition`/
+`seed-operator` read `rowCount`), and `db.transaction()` is a real interactive transaction on a pooled client.
 
 ## Files
 
 | File | Responsibility |
 |------|---------------|
 | `schema.ts` | Drizzle table definitions (16 tables) |
-| `index.ts` | `createDb()` factory, `Db` and `DbOrTx` type exports |
+| `index.ts` | `createDb()` factory (`pg` Pool, `max: 10`, 'connect'/'error' listeners that keep a dropped connection from killing the process), `Db` and `DbOrTx` type exports |
+| `connection-config.ts` | `buildPoolConfig(url)` — TLS policy + pool hardening (`connectionTimeoutMillis: 10_000`, `keepAlive: true`, `keepAliveInitialDelayMillis: 30_000`. The 10s bounds both a hung private-RDS connect AND waiting for a free slot when the pool is full — pg-pool cannot split them; it does not bound query run time. Without the initial delay, keepAlive falls back to the OS default of 7200s and is inert). A URL is local only if every effective host (URL host AND `host`/`hostaddr` query values) is a local host or socket path; local URLs keep the URL as-is; every other host gets `ssl: { rejectUnauthorized: true }` and the URL's `sslmode`/`ssl`/`uselibpqcompat`/`sslnegotiation` are stripped (`sslmode=disable`/`no-verify` throw). Reason: `pg` with no `sslmode` connects in plaintext, and `require`/`prefer`/`verify-ca` are `verify-full` aliases that print a deprecation warning. `channel_binding` is ignored by `pg` and left alone. RDS needs its CA bundle via `NODE_EXTRA_CA_CERTS` (set in the Dockerfile) |
 | `queries.ts` | 30+ query helper functions (all take `db: Db` or `db: DbOrTx` as first param) |
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
 | `schema-readiness.ts` | `checkSchemaReadiness()` — probes that the most recently added column (currently `positions.stop_price`, migration 0019) exists, for `/api/health?ready=true`. Only 42703/42P01 report not-ready; anything else (timeout included) reports ready, since it can't prove a mismatch |
-| `migrate.ts` | Migration runner script (CLI) |
+| `migrate.ts` | Migration runner script (CLI). The node-postgres migrator runs all pending migrations (and their journal rows) in **one transaction**; the pool is ended in `finally` so the process exits, and a failure sets exit code 1 (`reportFailure`). Constraints for new migrations: no `CREATE INDEX CONCURRENTLY` (apply by hand), a new enum value cannot be used by a later migration in the same batch (split into separate runs), and `ALTER TABLE` locks are held until the whole batch commits (ship big-table migrations alone). Runs from a developer machine only — the runtime image has no `drizzle/` folder; RDS is reached through the SSM tunnel with `sslmode=no-verify` (docs/DEPLOYMENT.md §1) |
 | `seed.ts` | Mock data seeder for dashboard preview (strategy defaults: `mr_*`, `dry_run_cost_bps`, $25k / $5k slots) |
 | `seed-operator.ts` | Operator account provisioning + data-ownership backfill (CLI, `yarn db:seed-operator`) |
-| `clear.ts` | Deletes all data from all tables (with confirmation prompt) |
+| `clear.ts` | Deletes all data from all tables (with confirmation prompt). Ends its pool when done |
 
 ## Tables
 

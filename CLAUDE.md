@@ -26,7 +26,7 @@ lib/trading/ → External HTTP (Toss API)
 lib/data/ → External HTTP (FMP, Yahoo), @y0ngha/siglens-core (types only). live-price.ts → FMP quote API.
 lib/notification/ → External HTTP (Resend)
 lib/auth/ → lib/db (Db type + schema) only. cookie.ts and throttle.ts are pure.
-lib/db/ → @neondatabase/serverless, drizzle-orm. recovery.ts → DB consistency checks. seed-operator.ts (CLI only) → lib/auth.
+lib/db/ → pg (node-postgres), drizzle-orm. recovery.ts → DB consistency checks. seed-operator.ts (CLI only) → lib/auth.
 lib/lock.ts → @upstash/redis (SETNX distributed lock)
 lib/validation.ts → No external deps (pure guards)
 ```

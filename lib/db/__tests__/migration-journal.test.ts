@@ -17,7 +17,8 @@ const entries: JournalEntry[] = JSON.parse(
 ).entries;
 
 /**
- * `drizzle-orm@0.45` 의 neon-http migrator 가 실제로 쓰는 판정식.
+ * `drizzle-orm@0.45` 의 `PgDialect.migrate`(node-postgres 마이그레이터가 위임하는 구현)가 실제로 쓰는 판정식.
+ * 옛 neon-http 마이그레이터는 위임하지 않고 같은 판정식을 자체 복사본으로 갖고 있었다.
  *
  * ```js
  * select ... from drizzle.__drizzle_migrations order by created_at desc limit 1
@@ -39,9 +40,10 @@ const entries: JournalEntry[] = JSON.parse(
  *
  * 어긋남은 **거짓 양성 한 방향뿐이다** — 갱신하는 기준선은 어느 지점에서나
  * 실제 기준선 이상이므로, 여기를 통과한 항목은 반드시 실행된다. 놓치는 위반은
- * 없다. 그 엄격함을 그대로 둔다: neon-http 는 트랜잭션이 없어 배포가 중간에
- * 죽으면 SQL 만 적용되고 기록 행은 안 남을 수 있고, 그러면 다음 실행의 기준선이
- * 정확히 이 판정이 가정하는 위치에 선다.
+ * 없다. 그 엄격함을 그대로 둔다: 예전 neon-http 마이그레이터는 트랜잭션 없이 SQL 을
+ * 전부 실행한 뒤 기록 행을 마지막에 넣었다. 배포가 중간에 죽으면 SQL 만 적용되고 기록 행은 안 남을 수
+ * 있었고, 그러면 다음 실행의 기준선이 정확히 이 판정이 가정하는 위치에 섰다. 지금의 node-postgres
+ * 마이그레이터는 SQL 과 기록 행을 한 트랜잭션에 넣어 그 경우는 없지만, 판정식 자체는 같으므로 보수성을 유지한다.
  *
  * 이 테스트가 그 경우로 실패하면 제품 결함이 아니라 판정이 보수적인 것이다 —
  * 새 마이그레이션들의 `when` 을 오름차순으로 맞추면 풀린다.

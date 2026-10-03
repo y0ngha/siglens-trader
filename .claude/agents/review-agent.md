@@ -89,7 +89,7 @@ Evaluate each rule silently. Violations go into findings.
 | `lib/trading/` | 외부 HTTP (토스 API)만. `lib/strategy/` 변경 없이 인터페이스 변경 가능해야 함 |
 | `lib/data/` | 외부 HTTP (FMP, Yahoo)만. `@y0ngha/siglens-core` 타입만 import 가능 |
 | `lib/notification/` | 외부 HTTP (Resend)만 |
-| `lib/db/` | `@neondatabase/serverless`, `drizzle-orm`만 |
+| `lib/db/` | `pg`, `drizzle-orm`만 |
 | `api/` | `lib/*` 레이어 사용 가능 (진입점) |
 
 **Cross-layer 금지:**
