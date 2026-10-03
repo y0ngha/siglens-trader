@@ -6,15 +6,23 @@ import { dirname, resolve } from 'node:path';
 const mockMigrate = vi.fn().mockResolvedValue(undefined);
 const mockDb = {};
 
-vi.mock('@neondatabase/serverless', () => ({
-    neon: vi.fn(() => vi.fn()),
+const mockPoolEnd = vi.fn().mockResolvedValue(undefined);
+const poolConfigs = vi.hoisted(() => [] as unknown[]);
+
+vi.mock('pg', () => ({
+    Pool: class {
+        end = mockPoolEnd;
+        constructor(config: unknown) {
+            poolConfigs.push(config);
+        }
+    },
 }));
 
-vi.mock('drizzle-orm/neon-http', () => ({
+vi.mock('drizzle-orm/node-postgres', () => ({
     drizzle: vi.fn(() => mockDb),
 }));
 
-vi.mock('drizzle-orm/neon-http/migrator', () => ({
+vi.mock('drizzle-orm/node-postgres/migrator', () => ({
     migrate: mockMigrate,
 }));
 
@@ -42,6 +50,51 @@ describe('migrate', () => {
         await main();
 
         expect(mockMigrate).toHaveBeenCalledWith(mockDb, { migrationsFolder: './drizzle' });
+    });
+
+    it('ends the pool after a successful run (otherwise the script never exits)', async () => {
+        const { main } = await import('../migrate');
+        await main();
+
+        expect(mockPoolEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it('ends the pool and rethrows when the migration fails', async () => {
+        mockMigrate.mockRejectedValueOnce(new Error('boom'));
+
+        const { main } = await import('../migrate');
+        await expect(main()).rejects.toThrow('boom');
+        expect(mockPoolEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed run with exit code 1 (so `&&` chains and wrappers see the failure)', async () => {
+        const previousExitCode = process.exitCode;
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const { reportFailure } = await import('../migrate');
+            const error = new Error('boom');
+            reportFailure(error);
+            expect(process.exitCode).toBe(1);
+            expect(errorSpy).toHaveBeenCalledWith(error);
+        } finally {
+            process.exitCode = previousExitCode;
+            errorSpy.mockRestore();
+        }
+    });
+
+    it('builds the pool from DATABASE_URL via the shared TLS helper', async () => {
+        poolConfigs.length = 0;
+        const { main } = await import('../migrate');
+        await main();
+
+        expect(poolConfigs).toEqual([
+            {
+                connectionString: 'postgresql://test:test@localhost/test',
+                connectionTimeoutMillis: 10_000,
+                keepAlive: true,
+                keepAliveInitialDelayMillis: 30_000,
+            },
+        ]);
     });
 });
 

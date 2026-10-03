@@ -4,7 +4,7 @@
 
 ![AWS](https://img.shields.io/badge/AWS-232F3E?style=flat&logo=amazonaws&logoColor=white)
 ![Upstash](https://img.shields.io/badge/Upstash-00E9A3?style=flat&logo=upstash&logoColor=white)
-![Neon](https://img.shields.io/badge/Neon-00E599?style=flat&logo=neon&logoColor=black)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=white)
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?style=flat&logo=cloudflare&logoColor=white)
 ![Resend](https://img.shields.io/badge/Resend-000000?style=flat&logo=resend&logoColor=white)
 
@@ -123,7 +123,7 @@ Cloudflare Access JWT(`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`)도 병행 지�
 
 - **Frontend**: React 19 + Vite (PWA), TanStack Query, Tailwind CSS v4
 - **Backend**: Hono (Node) on AWS EC2 — 정적 SPA + `/api` 라우트 + 인프로세스 node-cron, Docker/ECR 배포
-- **DB**: Neon PostgreSQL + Drizzle ORM (16 테이블)
+- **DB**: PostgreSQL (Neon → AWS RDS 이전 중, 드라이버 `pg`) + Drizzle ORM (16 테이블)
 - **분석**: [@y0ngha/siglens-core](https://github.com/y0ngha/siglens-core) `0.47.0` (LLM 호출은 앱 프로세스 내부)
 - **데이터**: FMP API, Yahoo Finance (yahoo-finance2)
 - **인증**: 자체 로그인 (bcrypt + 세션 쿠키, 회원가입 없음) — Cloudflare Access JWT도 병행 지원
@@ -140,7 +140,7 @@ Cloudflare Access JWT(`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`)도 병행 지�
 | Yahoo Finance | 옵션 체인 데이터 | yahoo-finance2 npm 패키지 |
 | LLM 제공사 | 신호 종목의 분석 + AI 리뷰 (기록 전용) | DeepSeek / Anthropic / Google / OpenAI — 설정한 모델의 키만 있으면 된다 |
 | Upstash Redis | 분산 락 + 토스 OAuth 토큰·accountSeq 캐시 + core 내부 캐시 | |
-| Neon DB | 상태/이력 저장 | PostgreSQL |
+| PostgreSQL (Neon → RDS) | 상태/이력 저장 | `pg` 드라이버, 인증서 검증 TLS |
 | Toss Securities | 주문 실행 | Open API (OAuth2 client_credentials, 개인용) |
 | Resend | 이메일 알림 | |
 | Cloudflare | DNS + Access 인증 + Tunnel(유일한 인그레스) | |
@@ -193,7 +193,7 @@ OPERATOR_EMAIL=        # yarn db:seed-operator 전용 — 운영자 계정 생�
 OPERATOR_PASSWORD=
 CF_ACCESS_TEAM_DOMAIN= # Cloudflare Access JWT 검증 (선택)
 CF_ACCESS_AUD=
-DATABASE_URL=          # Neon PostgreSQL
+DATABASE_URL=          # PostgreSQL (Neon 또는 AWS RDS)
 UPSTASH_REDIS_REST_URL= # 토스 OAuth 토큰 캐시 + accountSeq 캐시 + 분산 락 (trading 필수)
 UPSTASH_REDIS_REST_TOKEN=
 FMP_API_KEY=           # 시장 데이터

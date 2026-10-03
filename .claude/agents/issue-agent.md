@@ -66,7 +66,7 @@ Rules:
 | `lib/trading/` | 인프라 (토스 API) |
 | `lib/data/` | 인프라 (FMP, Yahoo Finance) |
 | `lib/notification/` | 인프라 (이메일 알림) |
-| `lib/db/` | 인프라 (Neon PostgreSQL) |
+| `lib/db/` | 인프라 (PostgreSQL — Neon/RDS) |
 | `api/` | Web-standard HTTP handlers (mounted by `server/`) |
 | `src/` | React SPA (Dashboard UI) |
 

@@ -38,7 +38,6 @@
     },
     "dependencies": {
         "@hono/node-server": "^2.1.0",
-        "@neondatabase/serverless": "^1.1.0",
         "@tanstack/react-query": "^5.95.2",
         "@upstash/redis": "^1.37.0",
         "@y0ngha/siglens-core": "2.0.1",
@@ -48,6 +47,7 @@
         "hono": "^4.13.12",
         "jose": "^6.2.3",
         "node-cron": "^4.6.0",
+        "pg": "^8.23.1",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
         "react-error-boundary": "^6.1.1",
@@ -56,7 +56,6 @@
         "resend": "^6.12.2",
         "tailwind-merge": "^3.5.0",
         "tsx": "^4.23.11",
-        "ws": "^8.21.0",
         "yahoo-finance2": "3.14.1"
     },
     "devDependencies": {
@@ -68,9 +67,9 @@
         "@testing-library/react": "^16.3.2",
         "@testing-library/user-event": "^14.6.1",
         "@types/node": "^25.9.1",
+        "@types/pg": "^8.23.1",
         "@types/react": "^19",
         "@types/react-dom": "^19",
-        "@types/ws": "^8.18.1",
         "@vitejs/plugin-react": "^4.5.2",
         "@vitest/coverage-v8": "4.1.11",
         "dotenv-cli": "^11.0.0",

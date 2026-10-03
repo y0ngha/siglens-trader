@@ -4,7 +4,13 @@ siglens-trader를 프로덕션에 배포하기 위한 인프라 셋업 순서.
 
 ---
 
-## 1. Neon DB 생성
+## 1. PostgreSQL 준비 (Neon 또는 AWS RDS)
+
+DB 드라이버는 `pg`(node-postgres)다. 표준 Postgres 와이어 프로토콜이라 Neon과 RDS 어디에나 붙는다.
+현재 운영 DB는 Neon이고, 같은 VPC의 private RDS PostgreSQL 17로 옮기는 중이다
+(컷오버 런북은 siglens 레포 `docs/architecture/RDS_MIGRATION.md`).
+
+**Neon (현재)**
 
 1. [neon.tech](https://neon.tech) 로그인
 2. 새 프로젝트 생성 (또는 기존 프로젝트에 새 database)
@@ -12,11 +18,70 @@ siglens-trader를 프로덕션에 배포하기 위한 인프라 셋업 순서.
    - Region: `us-east-2` (앱은 ap-northeast-2에서 돌지만, DB는 기존 리전을 유지한다 — 이관 설계 §10 참고)
 3. Connection string 복사 → `DATABASE_URL`로 사용
 
+**AWS RDS (이전 대상)**
+
+- private subnet의 RDS PostgreSQL 17. 앱 EC2의 보안 그룹에서 5432만 열어 둔다(외부 노출 없음).
+- **앱(컨테이너)용** `DATABASE_URL=postgresql://<user>:<password>@<endpoint>:5432/<db>` — `sslmode`는 안 써도 된다.
+  운영 이미지에 RDS 루트 CA 번들이 들어 있고(`certs/rds-global-bundle.pem` → `Dockerfile`의
+  `NODE_EXTRA_CA_CERTS`), 서버 인증서를 검증한다.
+
+**TLS 규칙 (`lib/db/connection-config.ts`)**
+
+- 접속 대상(URL 호스트 + `host`/`hostaddr` 쿼리 값)이 **전부** `localhost`/`127.0.0.1`/`::1`/소켓 경로일 때만 로컬이며,
+  이때는 URL을 그대로 쓴다(개발용 docker Postgres는 TLS가 없다). `sslmode`도 pg 기본 해석을 따른다.
+- 그 외는 URL의 `sslmode` 값과 무관하게 **인증서·호스트명을 검증하는 TLS**를 강제한다.
+  `sslmode=disable`/`no-verify`는 에러로 거부한다. `channel_binding=require`(Neon 콘솔 URL에 붙음)는
+  `pg`가 무시하므로 접속에 영향이 없다.
+- 풀 공통: `connectionTimeoutMillis: 10_000`, `keepAlive: true`, `keepAliveInitialDelayMillis: 30_000`.
+  pg-pool은 이 10초를 연결 시도와 **풀이 가득 차 빈 슬롯을 기다리는 시간** 모두에 쓴다(분리 불가). 그래서 DB가
+  멈추면 크론은 무한 대기 대신 10초 뒤 실패한다. 주문 전이면 주문 없이 끝나고, 체결 후 기록 단계에서 나면
+  기존 DB 오류와 같은 경로(알림 → reconcile)를 탄다. 쿼리 실행 시간 자체는 묶지 않는다.
+- `yarn db:migrate`는 실패하면 exit code 1로 끝난다.
+
+### DB 스크립트 실행 경로 (`yarn db:migrate` · `db:seed-operator` · `db:seed` · `db:clear`)
+
+운영 이미지에는 `drizzle/` 폴더도 마이그레이션 진입점도 없다 — **스크립트는 항상 로컬(이 레포 체크아웃)에서 돌린다.**
+
+| 시점 | `DATABASE_URL` | 비고 |
+|---|---|---|
+| Neon(이관 전) | 기존 Neon URL (`postgresql://…neon.tech/…?sslmode=require&channel_binding=require`) | 공개 인터넷으로 직접 붙는다. 인증서가 공개 CA라 추가 설정 없음 |
+| RDS(이관 후) | SSM 터널 URL (아래) | RDS는 private이라 터널 없이는 닿지 않는다 |
+
+RDS 터널 절차:
+
+1. siglens 레포에서 `yarn db:tunnel` — SSM 포트 포워딩으로 `localhost:6543` → RDS를 연다(터미널을 열어 둔다).
+2. 이 레포에서 URL을 **셸 환경변수로** 주고 실행한다:
+
 ```bash
-# 로컬에서 마이그레이션 실행
-echo "DATABASE_URL=postgresql://..." > .env.local
-yarn db:migrate
+DATABASE_URL='postgres://trader_owner:<pw>@localhost:6543/trader?sslmode=no-verify' yarn db:migrate
 ```
+
+- **`sslmode=no-verify`가 필요한 이유.** 터널 URL의 호스트는 `localhost`라 로컬로 분류되어 URL이 그대로 pg에
+  넘어간다. pg 8.23은 `sslmode=require`를 `verify-full`로 처리하는데, RDS 인증서는 호스트명 `localhost`와
+  맞지 않아 실패한다. `no-verify`는 암호화는 하되 인증서를 검증하지 않는다 — SSM 채널 자체가 인증·암호화되므로
+  수용한다. `sslmode=disable`은 쓸 수 없다: RDS `rds.force_ssl`이 평문을 거부한다.
+- **셸 변수가 `.env.local`보다 우선한다.** `db:*` 스크립트는 `tsx --env-file=.env.local …`로 도는데, Node의
+  `--env-file`은 **이미 설정된 환경변수를 덮어쓰지 않는다**(Node 25.2 + tsx로 확인: `DATABASE_URL=sentinel
+  tsx --env-file=.env.local …`에서 셸 값이 유지됨). 그래서 `.env.local`에 Neon URL이 남아 있어도 위처럼 앞에 붙인
+  값이 이긴다. 반대로 변수를 안 붙이면 `.env.local`의 값(= 이관 전 Neon)으로 붙으니, 어느 DB를 치는지
+  실행 전에 확인할 것. 단 `.env.local` 파일 자체는 있어야 한다(없으면 `node: .env.local: not found`로
+  종료한다) — 비어 있어도 된다.
+- 터널 URL의 비밀번호에 `@ : / ? # %`가 있으면 퍼센트 인코딩한다.
+
+**RDS CA 번들 교체 절차** (AWS가 번들을 갱신할 때. 번들은 빌드 때 내려받지 않고 `certs/`에 커밋해 둔다)
+
+```bash
+curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o certs/rds-global-bundle.pem
+shasum -a 256 certs/rds-global-bundle.pem        # 새 해시를 PR 본문에 적는다
+grep -c 'BEGIN CERTIFICATE' certs/rds-global-bundle.pem   # 인증서 개수 확인(현재 111)
+```
+
+파일만 교체하면 되고(`Dockerfile`은 경로만 참조) 이미지를 다시 빌드·배포한다. 현재 번들 SHA-256은
+`fe45bbebf92ad3e27a583bbb2ddd1553c521ed4d49af5514dc0a40372ea5395c`. 교체 전 RDS의 CA(`rds-ca-rsa2048-g1` 등)가
+새 번들에 들어 있는지 확인한다.
+
+마이그레이터는 미적용 마이그레이션 전체를 **한 트랜잭션**으로 실행한다 — 중간에 실패하면 SQL과 적용 기록이
+함께 롤백된다. 제약은 §12 "마이그레이션 트랜잭션 제약" 참고.
 
 ---
 
@@ -76,7 +141,8 @@ yarn release:patch          # v0.11.1 태그 push → .github/workflows/deploy.y
 
 **방법 A — yarn db:migrate (권장, FRESH/기존 DB 모두 동작)**
 ```bash
-DATABASE_URL=postgresql://<prod-connection-string> yarn db:migrate
+# Neon(이관 전)은 기존 URL, RDS(이관 후)는 SSM 터널 URL — §1 "DB 스크립트 실행 경로"
+DATABASE_URL='<§1의 URL>' yarn db:migrate
 ```
 
 **방법 B — 수동 SQL (idempotent 보조 수단)**
@@ -206,11 +272,14 @@ Cloudflare가 그 터널로 트래픽을 보낸다(오리진 인증서 불필요
 회원가입 엔드포인트는 없다. 계정은 스크립트로 생성한다.
 
 ```bash
+# 두 명령 모두 §1 "DB 스크립트 실행 경로"의 DATABASE_URL로 실행한다
+# (Neon: 기존 URL / RDS: 터널 URL — 셸 변수가 .env.local보다 우선)
+
 # 마이그레이션 먼저 (users / sessions 테이블 + user_id 컬럼 생성)
-yarn db:migrate
+DATABASE_URL='<§1의 URL>' yarn db:migrate
 
 # 운영자 계정 생성 + 기존 데이터 소유권 이관
-OPERATOR_EMAIL=dev.y0ngha@gmail.com OPERATOR_PASSWORD='<password>' yarn db:seed-operator
+DATABASE_URL='<§1의 URL>' OPERATOR_EMAIL=dev.y0ngha@gmail.com OPERATOR_PASSWORD='<password>' yarn db:seed-operator
 ```
 
 `db:seed-operator`는 멱등하다. 이미 계정이 있으면 비밀번호를 재설정하고(= 로테이션)
@@ -268,7 +337,7 @@ CF_ACCESS_ALLOWED_EMAILS=dev.y0ngha@gmail.com
 
 **A. Mock 데이터로 시작 (테스트용)**
 ```bash
-yarn db:seed
+DATABASE_URL='<§1의 URL>' yarn db:seed   # §1 "DB 스크립트 실행 경로" 참고
 ```
 
 **B. 빈 상태로 시작 (프로덕션)**
@@ -417,7 +486,8 @@ per-symbol / per-position try/catch가 잡는다 — **보유 포지션의 손�
 않으므로, 수동으로 **배포 전에** 실행할 것:
 
 ```bash
-DATABASE_URL=postgresql://<prod-connection-string> yarn db:migrate
+# Neon(이관 전)은 기존 URL, RDS(이관 후)는 SSM 터널 URL — §1 "DB 스크립트 실행 경로"
+DATABASE_URL='<§1의 URL>' yarn db:migrate
 ```
 
 컬럼 자체는 `DEFAULT '1Hour' NOT NULL`이라 기존 행이 자동 백필되고, 최신 Postgres에서
@@ -428,19 +498,34 @@ non-volatile 기본값 추가는 메타데이터 변경이라 테이블 재작�
 확인하고, `infra/aws/deploy.sh`는 (bare `/api/health`가 아니라) 바로 이 엔드포인트를 배포
 성공 판정에 쓴다. Postgres가 `42703`(undefined_column) 또는 `42P01`(undefined_table)을
 내면 — 즉 이미지와 스키마가 실제로 어긋난 경우에만 — `503`으로 응답해 배포가 `unhealthy`로
-실패한다. 그 외 에러(타임아웃 2초 포함, 일시적 Neon 장애 등)는 판정하지 못한 것으로 보고
+실패한다. 그 외 에러(타임아웃 2초 포함, 일시적 DB 장애 등)는 판정하지 못한 것으로 보고
 `ready:true`를 낸다 — 배포 폴링 도중의 순간적인 DB 장애로 정상 롤아웃을 실패시키지
 않기 위해서다. 이 판정은 진단 도구이지 안전장치가 아니다 — 순서를 지키는 것이 여전히
 1차 방어선이고, 이건 그 순서를 놓쳤을 때 "포트는 열렸지만 리스크 감시는 죽어 있다"는
 상태로 배포가 조용히 성공 처리되는 것을 막는 2차 방어선이다.
 
 
+### 마이그레이션 트랜잭션 제약 (node-postgres 마이그레이터)
+
+`yarn db:migrate`는 **미적용 마이그레이션 전부를 한 트랜잭션**에 넣고, 적용 기록 행도 같은 트랜잭션에서 넣는다
+(옛 neon-http 마이그레이터는 트랜잭션이 없었다). 실패하면 SQL과 기록이 함께 롤백되어 반쯤 적용된 상태가 남지 않는
+대신, 새 마이그레이션을 쓸 때 다음을 지켜야 한다:
+
+- **`CREATE INDEX CONCURRENTLY` 불가.** 트랜잭션 안에서는 실행할 수 없다. 인덱스를 무중단으로 만들어야 하면 마이그레이션
+  파일에 넣지 말고 DB에 수동으로 적용한다(`schema.ts`의 인덱스 정의와는 맞춰 둔다).
+- **새 enum 값은 같은 배치의 뒤 마이그레이션에서 쓸 수 없다.** `ALTER TYPE … ADD VALUE`로 추가한 값은 그 트랜잭션이
+  커밋되기 전에는 사용할 수 없다. 값 추가와 사용은 서로 다른 배포(별도 `db:migrate` 실행)로 나눈다.
+- **`ALTER TABLE`의 락이 배치 전체가 커밋될 때까지 유지된다.** 마이그레이션이 여러 개 쌓여 있으면 앞쪽이 잡은
+  ACCESS EXCLUSIVE 락이 뒤쪽 SQL이 끝날 때까지 풀리지 않아 그 테이블의 읽기·쓰기가 그만큼 막힌다. 한 번에 많이 쌓지
+  말고, 큰 테이블을 건드리는 마이그레이션은 단독 배포로 실행한다.
+
 `order_tracking` 테이블이 추가되었으며, 이후 `client_order_id TEXT` 컬럼 및 `trades.realized_pnl` 컬럼이 추가되었다.
 
 `drizzle/` 디렉터리는 버전관리에 포함되어 있으며, `yarn db:migrate`는 FRESH DB에서 0000~0006 전체 마이그레이션을 순서대로 적용한다. 배포 전 반드시 마이그레이션을 실행할 것 (자세한 절차는 **배포 전 필수 섹션** 참고):
 
 ```bash
-DATABASE_URL=postgresql://<prod-connection-string> yarn db:migrate
+# Neon(이관 전)은 기존 URL, RDS(이관 후)는 SSM 터널 URL — §1 "DB 스크립트 실행 경로"
+DATABASE_URL='<§1의 URL>' yarn db:migrate
 ```
 
 기존 DB에서 컬럼이 누락된 경우의 idempotent 수동 보조 수단:
@@ -503,6 +588,6 @@ Vercel에서 AWS로 넘길 때의 순서. 실매매 도구라 **`trading_mode=dr
 | Config 400 | 허용되지 않은 key | ALLOWED_CONFIG_KEYS 확인 (api/config.ts) |
 | Execute skipped (locked) | 이전 execute cron이 아직 실행 중 | Redis 락 TTL (15분) 만료 대기, 또는 수동 키 삭제 |
 | Auto 주문 insert 오류 | `client_order_id` 컬럼 없음 | `ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS client_order_id text;` 실행 후 재배포 |
-| 배포가 `unhealthy`로 실패 (`journalctl`에 에러 없음) | `/api/health?ready=true`가 503 — 마이그레이션 전에 이미지가 배포됨(§12) | `DATABASE_URL=<prod> yarn db:migrate` 실행 후 `infra/aws/deploy.sh <같은 태그>` 재시도. `curl -s "localhost:3000/api/health?ready=true"`의 `error` 필드에 SQLSTATE가 찍힌다 |
+| 배포가 `unhealthy`로 실패 (`journalctl`에 에러 없음) | `/api/health?ready=true`가 503 — 마이그레이션 전에 이미지가 배포됨(§12) | §1 경로(Neon 기존 URL / RDS 터널 URL)로 `yarn db:migrate` 실행 후 `infra/aws/deploy.sh <같은 태그>` 재시도. `curl -s "localhost:3000/api/health?ready=true"`의 `error` 필드에 SQLSTATE가 찍힌다 |
 | Reconcile 이메일 폭발 | 다수 주문 30분 타임아웃 | broker 연결 상태 확인, 수동 주문 상태 업데이트 |
 | 일일 손실 한도 초과 | 당일 실현+미실현 손실 합산 초과 | `max_daily_loss_usd` 조정 또는 다음 거래일까지 대기 |
