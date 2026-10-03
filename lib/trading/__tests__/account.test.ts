@@ -123,24 +123,38 @@ describe('account', () => {
         await expect(cancelOrder('o1')).rejects.toThrow('cancel failed');
     });
 
-    it('isUsMarketOpen: 정규장 세션 있으면 true', async () => {
+    it('isUsMarketOpen: 미국 동부 날짜를 date로 넘기고, 정규장 세션 있으면 true', async () => {
         mockTossFetch.mockResolvedValueOnce({
             today: { date: '2026-06-11', regularMarket: { start: 'x' } },
         });
         const { isUsMarketOpen } = await import('../account');
-        expect(await isUsMarketOpen()).toBe(true);
-        expect(mockTossFetch).toHaveBeenCalledWith('GET', '/api/v1/market-calendar/US', {});
+        expect(await isUsMarketOpen('2026-06-11')).toBe(true);
+        expect(mockTossFetch).toHaveBeenCalledWith('GET', '/api/v1/market-calendar/US', {
+            query: { date: '2026-06-11' },
+        });
     });
 
     it('worst: 휴장(regularMarket null)이면 false', async () => {
         mockTossFetch.mockResolvedValueOnce({ today: { date: '2026-06-11', regularMarket: null } });
         const { isUsMarketOpen } = await import('../account');
-        expect(await isUsMarketOpen()).toBe(false);
+        expect(await isUsMarketOpen('2026-06-11')).toBe(false);
+    });
+
+    it('worst: today.date가 요청 날짜와 다르면 throw (금요일 판단 틱에 토요일을 받는 경우)', async () => {
+        mockTossFetch.mockResolvedValueOnce({ today: { date: '2026-10-03', regularMarket: null } });
+        const { isUsMarketOpen } = await import('../account');
+        await expect(isUsMarketOpen('2026-10-02')).rejects.toThrow(/date mismatch/);
+    });
+
+    it('worst: today는 있는데 today.date가 없으면 throw (어느 날의 세션인지 모름 → 조회 실패로 처리)', async () => {
+        mockTossFetch.mockResolvedValueOnce({ today: { regularMarket: { start: 'x' } } });
+        const { isUsMarketOpen } = await import('../account');
+        await expect(isUsMarketOpen('2026-10-02')).rejects.toThrow(/date mismatch/);
     });
 
     it('worst: today 누락 시 false (보수적)', async () => {
         mockTossFetch.mockResolvedValueOnce({});
         const { isUsMarketOpen } = await import('../account');
-        expect(await isUsMarketOpen()).toBe(false);
+        expect(await isUsMarketOpen('2026-06-11')).toBe(false);
     });
 });

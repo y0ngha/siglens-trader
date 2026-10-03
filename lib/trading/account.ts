@@ -62,14 +62,25 @@ export async function cancelOrder(orderId: string): Promise<void> {
 }
 
 /**
- * 미국 정규장 영업일 여부.
- * 휴장이면 모든 세션이 null. 조회 실패/today 누락 시 보수적으로 false.
+ * 미국 정규장 영업일 여부. `etDate`는 미국 동부 기준 `YYYY-MM-DD`.
+ * 휴장이면 모든 세션이 null. today 누락 시 보수적으로 false.
+ *
+ * **날짜를 반드시 넘긴다.** 스펙은 `date` 생략 시의 기준일을 정의하지 않고 응답 시각은 KST다.
+ * 판단 틱(15:40 ET)은 KST로 다음 날 새벽이라, 서버가 KST 오늘로 해석하면 금요일 판단 틱이
+ * 토요일(휴장)을 받아 그날 실주문을 통째로 건너뛴다. 응답의 `today.date`가 요청한 날짜와
+ * 다르면 다른 날의 세션으로 판단하는 것이므로 throw한다 — 호출부가 조회 실패로 처리한다.
  */
-export async function isUsMarketOpen(): Promise<boolean> {
-    const cal = await tossFetch<{ today?: { regularMarket?: unknown | null } }>(
+export async function isUsMarketOpen(etDate: string): Promise<boolean> {
+    const cal = await tossFetch<{ today?: { date?: string; regularMarket?: unknown | null } }>(
         'GET',
         '/api/v1/market-calendar/US',
-        {},
+        { query: { date: etDate } },
     );
-    return cal.today?.regularMarket != null;
+    if (!cal.today) return false;
+    if (cal.today.date !== etDate) {
+        throw new Error(
+            `market calendar date mismatch: requested ${etDate}, got ${String(cal.today.date)}`,
+        );
+    }
+    return cal.today.regularMarket != null;
 }

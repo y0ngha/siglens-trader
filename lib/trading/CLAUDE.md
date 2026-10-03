@@ -9,7 +9,7 @@ HTTP client and order execution layer for the real Toss Securities Open API (`ht
 | `types.ts` | Shared types: `IssueOrderRequest`, `OrderOutcome`, `OrderDetail`, `OrderSide`, `TossOrderStatus`, `TossHolding`, `OAuth2TokenResponse` |
 | `token.ts` | OAuth2 `client_credentials` token lifecycle: `getAccessToken` / `forceRefreshToken`. Redis cache (`toss:oauth:token`) + distributed refresh lock (`toss:oauth:refresh`) to enforce one-token-per-client. |
 | `client.ts` | Core HTTP client: `tossFetch<T>` — bearer auth, `X-Tossinvest-Account` header, response envelope unwrap (`result`), `TossApiError`, retry policy. `resolveAccountSeq` caches accountSeq from `GET /api/v1/accounts` in Redis (`toss:account:seq`). |
-| `account.ts` | Account helpers: `getHoldings`, `getBuyingPower`, `getSellableQuantity`, `cancelOrder`, `isUsMarketOpen`. |
+| `account.ts` | Account helpers: `getHoldings`, `getBuyingPower`, `getSellableQuantity`, `cancelOrder`, `isUsMarketOpen(etDate)` — always sends `date` (ET `YYYY-MM-DD`; the spec leaves the default undefined and the 15:40 ET decision tick is already the next day in KST) and throws if `today.date` differs. |
 | `orders.ts` | Order execution: `issueOrder` / `getOrder` (primitives) + `executeBuyOrder` / `executeSellOrder` facades (issue + inline-poll → `OrderOutcome`). |
 
 ## Authentication
@@ -35,7 +35,7 @@ Orders are submitted asynchronously:
 
 1. `POST /api/v1/orders` (body: `clientOrderId`, `symbol`, `side`, `orderType`, `quantity`) → `{orderId}`.
 2. Facade polls `GET /api/v1/orders/{orderId}` up to 3 × 1.5 s.
-3. Returns `OrderOutcome{status: filled | partial | pending | rejected | canceled}`.
+3. Returns `OrderOutcome{status: filled | partial | pending | rejected | canceled}`. A `CANCELED` order with `filledQuantity > 0` (partial fill, remainder canceled) maps to `partial`, not `canceled` — callers close `canceled` like a rejection, which would leave the filled shares off the books.
 4. `filled`: execute cron books the trade immediately.
 5. `pending` / `partial`: orderId preserved; reconcile cron resolves later via `getOrder`, books full fills via `autoRecover`, routes partials to `needs_review`, and cancels timed-out orders.
 

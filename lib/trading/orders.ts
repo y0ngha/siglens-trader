@@ -61,7 +61,7 @@ export async function getOrder(orderId: string): Promise<OrderDetail> {
     };
 }
 
-function mapStatus(s: TossOrderStatus): OrderOutcome['status'] | null {
+function mapStatus(s: TossOrderStatus, filledQuantity: number): OrderOutcome['status'] | null {
     switch (s) {
         case 'FILLED':
             return 'filled';
@@ -73,7 +73,10 @@ function mapStatus(s: TossOrderStatus): OrderOutcome['status'] | null {
         case 'REPLACE_REJECTED':
             return 'rejected';
         case 'CANCELED':
-            return 'canceled';
+            // 부분 체결 뒤 잔량이 취소된 주문은 산(판) 주식이 있다. 'canceled'(종료)로 돌려주면
+            // 호출부가 거부처럼 닫아 체결분이 장부에 안 남는다. 'partial'(미확정)로 남기면
+            // reconcile이 같은 주문을 다시 조회해 CANCELED + 체결분 → needs_review + 메일로 넘긴다.
+            return filledQuantity > 0 ? 'partial' : 'canceled';
         case 'REPLACED':
             return null; // 정정으로 원주문 대체됨 — 본 시스템은 주문 정정을 안 하므로 미발생; 발생 시 reconcile가 확정
         default:
@@ -132,7 +135,7 @@ async function executeOrder(
         } catch {
             break; // 폴링 실패는 best-effort — 아래 pending 반환으로 떨어져 reconcile이 확정
         }
-        const mapped = mapStatus(last.status);
+        const mapped = mapStatus(last.status, last.filledQuantity);
         if (mapped) {
             return {
                 orderId,

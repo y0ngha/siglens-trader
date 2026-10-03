@@ -352,7 +352,7 @@ async function handler(req: Request): Promise<Response> {
             if (tradingMode !== 'dry_run') {
                 let marketOpen: boolean;
                 try {
-                    marketOpen = await isUsMarketOpen();
+                    marketOpen = await isUsMarketOpen(todayEt);
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
                     await notifyError(
