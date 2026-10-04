@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.1](https://github.com/y0ngha/siglens-trader/compare/v0.38.0...v0.38.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **db:** averageIntoPosition SQL이 운영 Postgres에서 42725로 실패하던 문제 ([#90](https://github.com/y0ngha/siglens-trader/issues/90)) ([406399d](https://github.com/y0ngha/siglens-trader/commit/406399d5ac14632528d9172bf5cab91174aab867))
+
 # [0.38.0](https://github.com/y0ngha/siglens-trader/compare/v0.37.1...v0.38.0) (2026-10-03)
 
 
