@@ -15,6 +15,13 @@ log "deploying $IMAGE to $IID"
 # exit status decides the deploy result: a container that pulls but fails to serve is a
 # failed deploy, not a successful one. `?ready=true` also confirms the DB schema matches
 # this image's code (not just that the port is open) — see docs/DEPLOYMENT.md §12.
+#
+# Only after a healthy start do we drop images no container uses. Every deploy pulls a new
+# ~290MB tag and nothing removed the old ones: by 2026-10-04 48 stale images (5.9GB) filled
+# the 20GB root volume to 67%. A failed deploy keeps them (nothing is pruned on that path),
+# and rolling back pulls the older tag from ECR again (its lifecycle keeps the last 3), so
+# local copies are not needed. The prune is best-effort and never fails the deploy; its
+# "Total reclaimed space" line stays in the SSM output so a prune that stops working shows up.
 CMD_ID=$(aws ssm send-command --instance-ids "$IID" \
     --document-name AWS-RunShellScript \
     --comment "deploy $APP:$TAG" \
@@ -24,7 +31,7 @@ CMD_ID=$(aws ssm send-command --instance-ids "$IID" \
       'docker pull $IMAGE',
       'echo $IMAGE > /etc/$APP.image',
       'systemctl restart $APP.service',
-      'for i in \$(seq 1 30); do sleep 2; if curl -fsS \"localhost:3000/api/health?ready=true\" >/dev/null; then echo healthy; exit 0; fi; done; echo unhealthy; journalctl -u $APP.service -n 50 --no-pager; exit 1'
+      'for i in \$(seq 1 30); do sleep 2; if curl -fsS \"localhost:3000/api/health?ready=true\" >/dev/null; then echo healthy; docker image prune -af | tail -1 || true; exit 0; fi; done; echo unhealthy; journalctl -u $APP.service -n 50 --no-pager; exit 1'
     ]" \
     --query Command.CommandId --output text)
 
