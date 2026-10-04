@@ -45,8 +45,11 @@ aws ssm start-session --target $(aws ec2 describe-instances \
 
 **롤백**: 이전 태그로 `deploy.sh <이전-태그>` (ECR lifecycle이 최근 3개만 보관 — 배포되지 않고 push만 된 태그도 셈에 들어간다). 배포가 성공할 때마다 박스의 안 쓰는 이미지를 지우므로 롤백은 항상 ECR에서 다시 받는다(실패한 배포는 지우지 않아 옛 이미지가 남는다).
 
-**알람**(SNS `siglens-alerts` — siglens 운영 알림 토픽 공유. 예전 전용 토픽 `siglens-trader-alerts`는 구독자가 0명이라 2026-09-14 폐기): 인스턴스 상태 체크 실패, cron 실패 로그(`[cron:*] failed`).
-cron 실패는 박스가 정상이어도 매매가 멈추는 유일한 경로라 별도 알람을 둔다.
+**알람**(SNS `siglens-alerts` — siglens 운영 알림 토픽 공유. 예전 전용 토픽 `siglens-trader-alerts`는 구독자가 0명이라 2026-09-14 폐기): 인스턴스 상태 체크 실패(`siglens-trader-instance-down`), cron 실패 로그(`[cron:*] failed`).
+cron 실패는 박스가 정상이어도 매매가 멈추는 유일한 경로다. 2026-10 CloudWatch 무료 티어 통합으로 전용 알람
+(`siglens-trader-cron-failures`)은 없어졌다 — 로그 필터가 siglens의 공용 점수 메트릭
+`Siglens/Alerts P1Score`에 가중치 100으로 발행하고, siglens 레포의 `siglens-p1` 알람이 합산해 같은 토픽으로 알린다
+(원인 조회는 siglens DEPLOY_RUNBOOK §3의 P1 Logs Insights 쿼리, 로그 그룹 `/siglens-trader/app` 포함).
 
 ## 주의
 

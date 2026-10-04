@@ -58,14 +58,21 @@ fi
 
 # A cron failure is the failure mode that matters here: the box can be healthy while every
 # scheduled run errors out, and this is a trading tool, so that must page.
+#
+# 2026-10 CloudWatch free-tier consolidation: the dedicated `$APP-cron-failures` alarm and its
+# `siglens-trader/CronFailures` metric are gone. This filter now feeds the shared score metric
+# `Siglens/Alerts P1Score` with weight 100 (one failure = the siglens `siglens-p1` alarm, defined
+# in the siglens repo infra/aws/07-alarms.sh, fires at >= 100 per 5 min and pages siglens-alerts).
+# No `defaultValue`: it published a 0 every hour and was billed as a custom metric all month; the
+# siglens-p1 alarm evaluates FILL(m1, 0) instead, so a missing datapoint still resolves to OK.
+# Same filter name as before, so put-metric-filter updates it in place (metric target changes).
 aws logs put-metric-filter --log-group-name "$LOG_GROUP" \
     --filter-name "$APP-cron-failures" --filter-pattern '"[cron:" "failed"' \
-    --metric-transformations "metricName=CronFailures,metricNamespace=$APP,metricValue=1,defaultValue=0" >/dev/null
-aws cloudwatch put-metric-alarm --alarm-name "$APP-cron-failures" \
-    --metric-name CronFailures --namespace "$APP" --statistic Sum \
-    --period 900 --evaluation-periods 1 --threshold 0 \
-    --comparison-operator GreaterThanThreshold --treat-missing-data notBreaching \
-    --alarm-actions "$TOPIC_ARN"
+    --metric-transformations "metricName=P1Score,metricNamespace=Siglens/Alerts,metricValue=100" >/dev/null
+# Retire the old alarm (put-* never deletes). delete-alarms ignores unknown names, so this is
+# idempotent. Do not drop this line until it has been run once against the live account.
+aws cloudwatch delete-alarms --alarm-names "$APP-cron-failures" \
+    || log "WARN: could not delete obsolete alarm $APP-cron-failures (cloudwatch:DeleteAlarms?)"
 
 # ---- Elastic IP (fixed egress for the Toss Open API allowlist) ----------------
 # The Toss Open API only issues tokens to IPs registered in WTS (설정 > Open API > 허용 IP 관리);
