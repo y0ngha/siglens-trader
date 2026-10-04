@@ -43,7 +43,7 @@ aws ssm start-session --target $(aws ec2 describe-instances \
   --query 'Reservations[].Instances[].InstanceId' --output text)   # 접속(SSH 없음)
 ```
 
-**롤백**: 이전 태그로 `deploy.sh <이전-태그>` (ECR lifecycle이 최근 3개만 보관).
+**롤백**: 이전 태그로 `deploy.sh <이전-태그>` (ECR lifecycle이 최근 3개만 보관 — 배포되지 않고 push만 된 태그도 셈에 들어간다). 배포가 성공할 때마다 박스의 안 쓰는 이미지를 지우므로 롤백은 항상 ECR에서 다시 받는다(실패한 배포는 지우지 않아 옛 이미지가 남는다).
 
 **알람**(SNS `siglens-alerts` — siglens 운영 알림 토픽 공유. 예전 전용 토픽 `siglens-trader-alerts`는 구독자가 0명이라 2026-09-14 폐기): 인스턴스 상태 체크 실패, cron 실패 로그(`[cron:*] failed`).
 cron 실패는 박스가 정상이어도 매매가 멈추는 유일한 경로라 별도 알람을 둔다.
