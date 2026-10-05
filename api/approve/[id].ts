@@ -21,6 +21,7 @@ import {
     getTodayInflightOrderCount,
     getTodayRealizedPnl,
     getTodayTradeCount,
+    getLatestSizing,
 } from '../../lib/db/queries.js';
 import { executeBuyOrder, executeSellOrder } from '../../lib/trading/orders.js';
 import { getSellableQuantity } from '../../lib/trading/account.js';
@@ -127,22 +128,30 @@ async function handler(req: Request): Promise<Response> {
         // 매도 승인은 리스크를 줄이는 방향이므로 막지 않는다.
         if (order.side === 'buy') {
             const approveMode = (await getConfigValue<string>(db, 'trading_mode')) ?? 'dry_run';
-            const [maxDailyLoss, todayPnl, maxTradesPerDay, tradeCount, inflightCount] =
+            // 손실 한도는 총자산·칸 수에서 나온다 — 이 대기 주문을 만든 판단 틱이 남긴 기록을 다시 본다
+            // (docs/specs/2026-10-05-equity-scaled-sizing-design.md §7). 기록을 못 읽으면 한도를 모르므로
+            // 승인하지 않는다(fail-closed).
+            const [latestSizing, todayPnl, maxTradesPerDay, tradeCount, inflightCount] =
                 await Promise.all([
-                    getConfigValue<number>(db, 'max_daily_loss_usd'),
+                    getLatestSizing(db, { pricedOnly: true }).catch((err) => {
+                        console.error('[approve] 사이징 기록 조회 실패', err);
+                        return null;
+                    }),
                     getTodayRealizedPnl(db, approveMode),
                     getConfigValue<number>(db, 'max_trades_per_day'),
                     getTodayTradeCount(db),
                     getTodayInflightOrderCount(db),
                 ]);
-            const lossLimit = maxDailyLoss ?? 500;
+            const lossLimit = latestSizing?.sizing.dailyLossLimit ?? null;
             const tradeLimit = maxTradesPerDay ?? 20;
             const blocked =
-                todayPnl < -lossLimit
-                    ? `일일 손실 한도 초과 (실현 $${todayPnl.toFixed(2)} / 한도 $${lossLimit})`
-                    : tradeCount + inflightCount >= tradeLimit
-                      ? `일일 거래 한도 도달 (${tradeCount + inflightCount}/${tradeLimit})`
-                      : null;
+                lossLimit === null
+                    ? '사이징 기록 없음 — 일일 손실 한도를 알 수 없어 매수 승인을 거부합니다'
+                    : todayPnl < -lossLimit
+                      ? `일일 손실 한도 초과 (실현 $${todayPnl.toFixed(2)} / 한도 $${lossLimit.toFixed(2)})`
+                      : tradeCount + inflightCount >= tradeLimit
+                        ? `일일 거래 한도 도달 (${tradeCount + inflightCount}/${tradeLimit})`
+                        : null;
             if (blocked) {
                 await revertPendingOrder(db, id).catch((err) =>
                     console.error(`[approve] Failed to revert pending order ${id}:`, err),

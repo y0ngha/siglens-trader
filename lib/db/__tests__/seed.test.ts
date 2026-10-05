@@ -75,7 +75,7 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(13);
+        expect(configValueCalls.length).toBe(9);
         const keys = configValueCalls.map((call) => (call[0] as { key: string }).key);
         expect(keys).toEqual(
             expect.arrayContaining([
@@ -83,7 +83,6 @@ describe('seed', () => {
                 'mr_max_hold_days',
                 'mr_stop_atr',
                 'mr_regime_filter',
-                'mr_slots',
                 'dry_run_cost_bps',
             ]),
         );
@@ -93,6 +92,11 @@ describe('seed', () => {
             'score_weights',
             'entry_window',
             'analysis_timeframe',
+            // 총자산에서 도출하는 사이징(2026-10-05) — 설정이 아니다.
+            'mr_slots',
+            'max_position_size',
+            'max_total_exposure',
+            'max_daily_loss_usd',
         ]) {
             expect(keys).not.toContain(retired);
         }

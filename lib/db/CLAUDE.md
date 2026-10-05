@@ -16,7 +16,7 @@ no provider SDK. Result objects keep `{ rows, rowCount }` (`partialClosePosition
 | `recovery.ts` | DB consistency checker: `checkConsistency()` — finds filled orders without matching trades |
 | `schema-readiness.ts` | `checkSchemaReadiness()` — probes that the most recently added column (currently `positions.stop_price`, migration 0019) exists, for `/api/health?ready=true`. Only 42703/42P01 report not-ready; anything else (timeout included) reports ready, since it can't prove a mismatch |
 | `migrate.ts` | Migration runner script (CLI). The node-postgres migrator runs all pending migrations (and their journal rows) in **one transaction**; the pool is ended in `finally` so the process exits, and a failure sets exit code 1 (`reportFailure`). Constraints for new migrations: no `CREATE INDEX CONCURRENTLY` (apply by hand), a new enum value cannot be used by a later migration in the same batch (split into separate runs), and `ALTER TABLE` locks are held until the whole batch commits (ship big-table migrations alone). Runs from a developer machine only — the runtime image has no `drizzle/` folder; RDS is reached through the SSM tunnel with `sslmode=no-verify` (docs/DEPLOYMENT.md §1) |
-| `seed.ts` | Mock data seeder for dashboard preview (strategy defaults: `mr_*`, `dry_run_cost_bps`, $25k / $5k slots) |
+| `seed.ts` | Mock data seeder for dashboard preview (strategy defaults: `mr_*`, `dry_run_cost_bps`, $25k paper deposit — slots and caps are derived from equity, not seeded) |
 | `seed-operator.ts` | Operator account provisioning + data-ownership backfill (CLI, `yarn db:seed-operator`) |
 | `clear.ts` | Deletes all data from all tables (with confirmation prompt). Ends its pool when done |
 
@@ -64,6 +64,7 @@ DEFAULT, and indexing `user_id`. See the comment on `ownerUserId` in `schema.ts`
 | `setPositionStopPrice(db, id, price)` | 비어 있는 재난 손절가만 채운다(이미 있으면 덮지 않음) |
 | `hasDecisionPhaseSince(db, since)` | 이 시각 이후 판단 단계를 끝낸 execute 런(`summary.decisionPhase = 'done'`)이 있는가 — 하루 1회 멱등 |
 | `getMrSignalDecisionsSince(db, since)` / `hasTradeAuditCorrelation(db, id)` | 리뷰 대상 신호 조회와 리뷰 멱등 키 확인 |
+| `getLatestSizing(db, { pricedOnly })` | 최근 execute 런의 `summary.sizing`(총자산 연동 사이징). `pricedOnly` = 시세로 칸 수를 계산한 판단 틱만 — 위험 틱의 칸 수와 승인 경로의 손실 한도 출처. 손상된 jsonb는 null. `SizingRecord`는 lib/strategy를 import하지 않으려고 구조 타입으로 둔다 |
 | `getTodayRealizedPnl(db)` | Sums per-sell `realized_pnl` (recorded at execution as (sellPrice − cost basis) × qty) for today's non-dry/non-skipped sells |
 | `createOrderTracking(db, params)` | Insert order tracking record with idempotency key |
 | `updateOrderTracking(db, key, updates)` | Update order status/price by idempotency key |

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { CronRun, Position, Trade } from '@/lib/api';
+import type { CronRun, Position, SizingSnapshot, Trade } from '@/lib/api';
 import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
@@ -74,6 +74,20 @@ function formatUsd(value: number): string {
 }
 
 /** 매수가·현재가와 손익 방향 — 목표가(TP/SL)는 더 이상 % 기반이 아니라 §3의 재난 손절뿐이다. */
+/**
+ * 자동 사이징 한 줄 — 칸 수·칸 금액·일일 손실 한도는 execute가 총자산에서 도출한다(설정이 아니다).
+ * 시세로 칸 수를 계산한 런이 아니면(위험 틱·데이터 부족) 그 사실을 붙인다.
+ */
+function sizingLabel(sizing: SizingSnapshot | null | undefined): string {
+    if (!sizing) return '아직 판단 기록 없음';
+    const parts = [`${sizing.slots}칸`];
+    if (sizing.slotBudget != null) parts.push(`칸당 ${formatUsd(sizing.slotBudget)}`);
+    if (sizing.dailyLossLimit != null) parts.push(`손실 한도 ${formatUsd(sizing.dailyLossLimit)}`);
+    if (sizing.equity == null) parts.push('잔고 조회 실패');
+    else if (sizing.slotsSource !== 'prices') parts.push('이전 판단의 칸 수');
+    return parts.join(' · ');
+}
+
 function computePositionView(p: Position) {
     const avg = parseFloat(p.avgPrice);
     const current = p.currentPrice != null ? parseFloat(p.currentPrice) : null;
@@ -392,6 +406,17 @@ export function StatusPage() {
                                     data-testid="total-assets"
                                 >
                                     {formatUsd(totalAssets)}
+                                </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+                                <span className="shrink-0 text-xs text-neutral-400">
+                                    자동 사이징
+                                </span>
+                                <span
+                                    className="text-right font-mono text-xs text-neutral-300"
+                                    data-testid="auto-sizing"
+                                >
+                                    {sizingLabel(data.sizing)}
                                 </span>
                             </div>
                         </div>

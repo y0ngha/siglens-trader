@@ -166,6 +166,62 @@ describe('StatusPage', () => {
         expect(screen.getByText('7')).toBeInTheDocument();
     });
 
+    describe('자동 사이징 (2026-10-05) — 총자산에서 도출한 칸 수·한도', () => {
+        const sizing = {
+            equity: 2000,
+            slots: 4,
+            slotsSource: 'prices' as const,
+            coverage: 0.79,
+            priceCount: 39,
+            slotBudget: 500,
+            maxPositionSize: 500,
+            maxTotalExposure: 2000,
+            dailyLossLimit: 80,
+            at: '2026-10-05T19:45:00Z',
+        };
+        const row = async () => {
+            renderWithQuery(<StatusPage />);
+            return screen.findByTestId('auto-sizing');
+        };
+
+        it('칸 수·칸당 금액·손실 한도를 보여 준다', async () => {
+            mockedApi.getStatus.mockResolvedValue({ ...defaultStatus, sizing });
+            expect(await row()).toHaveTextContent('4칸 · 칸당 $500.00 · 손실 한도 $80.00');
+        });
+
+        it('시세로 계산한 런이 아니면 이전 판단의 칸 수임을 밝힌다', async () => {
+            mockedApi.getStatus.mockResolvedValue({
+                ...defaultStatus,
+                sizing: { ...sizing, slotsSource: 'carried' },
+            });
+            expect(await row()).toHaveTextContent('이전 판단의 칸 수');
+        });
+
+        it('잔고를 못 읽은 런은 금액 없이 그 사실만', async () => {
+            mockedApi.getStatus.mockResolvedValue({
+                ...defaultStatus,
+                sizing: {
+                    ...sizing,
+                    equity: null,
+                    slotBudget: null,
+                    maxPositionSize: null,
+                    maxTotalExposure: null,
+                    dailyLossLimit: null,
+                    slotsSource: 'default',
+                    slots: 8,
+                },
+            });
+            const el = await row();
+            expect(el).toHaveTextContent('8칸 · 잔고 조회 실패');
+            expect(el).not.toHaveTextContent('$');
+        });
+
+        it('기록이 없으면 그렇게 쓴다', async () => {
+            mockedApi.getStatus.mockResolvedValue({ ...defaultStatus, sizing: null });
+            expect(await row()).toHaveTextContent('아직 판단 기록 없음');
+        });
+    });
+
     it('displays stopped state correctly', async () => {
         mockedApi.getStatus.mockResolvedValue({
             running: false,

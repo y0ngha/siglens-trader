@@ -31,11 +31,8 @@ function renderWithQuery(component: React.ReactElement) {
 const mockConfig = {
     config: [
         { key: 'trading_mode', value: 'dry_run', updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'max_position_size', value: 5000, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'max_total_exposure', value: 25000, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'trading_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'max_trades_per_day', value: 20, updatedAt: '2026-01-01T00:00:00Z' },
-        { key: 'max_daily_loss_usd', value: 500, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'execute_interval_min', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'mr_rsi_entry', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
         { key: 'mr_max_hold_days', value: 10, updatedAt: '2026-01-01T00:00:00Z' },
@@ -721,7 +718,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '7000');
         await user.tab();
@@ -740,7 +737,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '7000');
 
@@ -759,25 +756,25 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '7000');
 
-        const exposureInput = strategyInput('전체 투자 한도 ($)');
-        await user.clear(exposureInput);
-        await user.type(exposureInput, '30000');
+        const tradesInput = strategyInput('일일 최대 거래 횟수');
+        await user.clear(tradesInput);
+        await user.type(tradesInput, '30');
 
         await user.click(screen.getByRole('button', { name: '저장' }));
 
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'max_position_size',
+            key: 'dry_run_cash_usd',
             value: 7000,
         });
         expect(mockedApi.updateConfig).toHaveBeenCalledWith({
             type: 'config',
-            key: 'max_total_exposure',
-            value: 30000,
+            key: 'max_trades_per_day',
+            value: 30,
         });
     });
 
@@ -907,7 +904,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '8000');
 
@@ -993,8 +990,17 @@ describe('SettingsPage', () => {
     // Circuit breaker config fields
     // -----------------------------------------------------------------------
 
-    it('displays max_trades_per_day and max_daily_loss_usd in investment section', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
+    it('shows max_trades_per_day; sizing limits are automatic, not inputs (2026-10-05)', async () => {
+        // 운영 DB에 옛 행이 남아 있어도 입력란으로 그리지 않는다 — 아무 코드도 읽지 않는 값이다.
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: [
+                ...mockConfig.config,
+                { key: 'max_position_size', value: 5000, updatedAt: '2026-01-01T00:00:00Z' },
+                { key: 'max_daily_loss_usd', value: 500, updatedAt: '2026-01-01T00:00:00Z' },
+                { key: 'mr_slots', value: 8, updatedAt: '2026-01-01T00:00:00Z' },
+            ],
+        });
 
         renderWithQuery(<SettingsPage />);
 
@@ -1003,7 +1009,16 @@ describe('SettingsPage', () => {
         });
 
         expect(screen.getByText('일일 최대 거래 횟수')).toBeInTheDocument();
-        expect(screen.getByText('일일 최대 손실 한도 ($)')).toBeInTheDocument();
+        expect(screen.getByTestId('auto-sizing-note')).toHaveTextContent('자동 계산');
+        for (const label of [
+            '일일 최대 손실 한도 ($)',
+            '종목당 최대 투자 금액 ($)',
+            '전체 투자 한도 ($)',
+            '동시 보유 칸 수',
+        ]) {
+            expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+        }
+        expect(screen.queryByDisplayValue('5000')).not.toBeInTheDocument();
     });
 
     // -----------------------------------------------------------------------
@@ -1014,7 +1029,7 @@ describe('SettingsPage', () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
         // Simulate a server 400: updateConfig rejects on any call
-        mockedApi.updateConfig.mockRejectedValue(new Error('max_position_size validation failed'));
+        mockedApi.updateConfig.mockRejectedValue(new Error('dry_run_cash_usd validation failed'));
 
         renderWithQuery(<SettingsPage />);
 
@@ -1022,7 +1037,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '8000');
 
@@ -1045,7 +1060,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         await user.clear(positionSizeInput);
         await user.type(positionSizeInput, '8000');
 
@@ -1060,7 +1075,7 @@ describe('SettingsPage', () => {
     // dollar-amount inputs have no 0-100 cap
     // -----------------------------------------------------------------------
 
-    it('dollar-amount inputs (max_position_size) do NOT have max=100 cap', async () => {
+    it('dollar-amount inputs (dry_run_cash_usd) do NOT have max=100 cap', async () => {
         mockedApi.getConfig.mockResolvedValue(mockConfig);
 
         renderWithQuery(<SettingsPage />);
@@ -1069,7 +1084,7 @@ describe('SettingsPage', () => {
             expect(screen.getByText('투자 관리')).toBeInTheDocument();
         });
 
-        const positionSizeInput = screen.getByDisplayValue('5000');
+        const positionSizeInput = screen.getByDisplayValue('25000');
         expect(positionSizeInput).not.toHaveAttribute('max', '100');
     });
 
@@ -1259,22 +1274,6 @@ describe('SettingsPage', () => {
         expect(stopAtrInput).toHaveAttribute('step', '0.5');
     });
 
-    it('mr_slots는 저장값이 없으면 기본 8, 정수 1~20 범위를 갖는다', async () => {
-        mockedApi.getConfig.mockResolvedValue(mockConfig);
-
-        renderWithQuery(<SettingsPage />);
-
-        await waitFor(() => {
-            expect(screen.getByText('동시 보유 칸 수')).toBeInTheDocument();
-        });
-
-        const slotsInput = strategyInput('동시 보유 칸 수');
-        expect(slotsInput).toHaveValue(8);
-        expect(slotsInput).toHaveAttribute('min', '1');
-        expect(slotsInput).toHaveAttribute('max', '20');
-        expect(slotsInput).toHaveAttribute('step', '1');
-    });
-
     it('시장 국면 필터 토글은 즉시 저장된다', async () => {
         const user = userEvent.setup();
         mockedApi.getConfig.mockResolvedValue(mockConfig);
@@ -1401,7 +1400,7 @@ describe('SettingsPage', () => {
         expect(screen.getByLabelText('최대 보유 거래일')).toHaveValue(10);
         expect(screen.getByLabelText('재난 손절 ATR 배수')).toHaveValue(5);
         expect(screen.getByLabelText('모의 체결 비용 (bp, 편도)')).toHaveValue(10);
-        expect(screen.getByLabelText('일일 최대 손실 한도 ($)')).toHaveValue(500);
+        expect(screen.getByLabelText('일일 최대 거래 횟수')).toHaveValue(20);
     });
 
     // -----------------------------------------------------------------------

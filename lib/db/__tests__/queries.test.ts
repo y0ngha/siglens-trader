@@ -54,6 +54,7 @@ import {
     upsertNewsCards,
     setPositionStopPrice,
     hasDecisionPhaseSince,
+    getLatestSizing,
     getMrSignalDecisionsSince,
     hasTradeAuditCorrelation,
     MR_SIGNAL_ACTIONS,
@@ -2236,6 +2237,96 @@ describe('mean-reversion decision/review queries', () => {
         expect(db._chain.limit).toHaveBeenCalledWith(1);
         const empty = createMockDb([]);
         expect(await hasDecisionPhaseSince(empty as unknown as Db, since)).toBe(false);
+    });
+
+    describe('getLatestSizing (equity-scaled sizing §4)', () => {
+        const sizing = {
+            equity: 2000,
+            slots: 4,
+            slotsSource: 'prices',
+            coverage: 0.79,
+            priceCount: 39,
+            slotBudget: 500,
+            maxPositionSize: 500,
+            maxTotalExposure: 2000,
+            dailyLossLimit: 80,
+        };
+        const at = new Date('2026-10-05T19:45:00Z');
+
+        it('latest execute run with summary.sizing, newest first', async () => {
+            const db = createMockDb([{ summary: { sizing }, startedAt: at }]);
+            expect(await getLatestSizing(db as unknown as Db)).toEqual({ sizing, at });
+            const query = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+            expect(query.sql).toContain(`"cron_runs"."cron_type" = $1`);
+            expect(query.sql).toContain(`"cron_runs"."summary"->'sizing' is not null`);
+            expect(query.sql).not.toContain('slotsSource');
+            expect(query.params[0]).toBe('execute');
+            expect(db._chain.limit).toHaveBeenCalledWith(1);
+        });
+
+        it('pricedOnly filters to slotsSource = prices', async () => {
+            const db = createMockDb([{ summary: { sizing }, startedAt: at }]);
+            expect(await getLatestSizing(db as unknown as Db, { pricedOnly: true })).toEqual({
+                sizing,
+                at,
+            });
+            const query = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+            expect(query.sql).toContain(
+                `"cron_runs"."summary"->'sizing'->>'slotsSource' = 'prices'`,
+            );
+        });
+
+        it('no row → null', async () => {
+            expect(await getLatestSizing(createMockDb([]) as unknown as Db)).toBeNull();
+        });
+
+        it.each([
+            ['missing sizing', { summary: {} }],
+            ['null summary', { summary: null }],
+            ['sizing not an object', { summary: { sizing: 'x' } }],
+            ['slots 0', { summary: { sizing: { ...sizing, slots: 0 } } }],
+            ['slots fractional', { summary: { sizing: { ...sizing, slots: 2.5 } } }],
+            ['slots string', { summary: { sizing: { ...sizing, slots: '4' } } }],
+            ['unknown source', { summary: { sizing: { ...sizing, slotsSource: 'db' } } }],
+        ])('corrupt record (%s) → null', async (_label, row) => {
+            const db = createMockDb([{ ...row, startedAt: at }]);
+            expect(await getLatestSizing(db as unknown as Db)).toBeNull();
+        });
+
+        it('non-finite numbers become null; unknown equity is kept for the dashboard', async () => {
+            const raw = {
+                ...sizing,
+                equity: null,
+                coverage: 'x',
+                priceCount: undefined,
+                slotBudget: null,
+                maxPositionSize: null,
+                maxTotalExposure: null,
+                dailyLossLimit: null,
+                slotsSource: 'carried',
+            };
+            const db = createMockDb([{ summary: { sizing: raw }, startedAt: at }]);
+            expect((await getLatestSizing(db as unknown as Db))?.sizing).toEqual({
+                equity: null,
+                slots: 4,
+                slotsSource: 'carried',
+                coverage: null,
+                priceCount: 0,
+                slotBudget: null,
+                maxPositionSize: null,
+                maxTotalExposure: null,
+                dailyLossLimit: null,
+            });
+        });
+
+        it('pricedOnly rejects a record without equity or loss limit', async () => {
+            for (const patch of [{ equity: null }, { dailyLossLimit: Number.NaN }]) {
+                const db = createMockDb([
+                    { summary: { sizing: { ...sizing, ...patch } }, startedAt: at },
+                ]);
+                expect(await getLatestSizing(db as unknown as Db, { pricedOnly: true })).toBeNull();
+            }
+        });
     });
 
     it('getMrSignalDecisionsSince: execute rows with a signal action OR the detail.mr.signal marker (A10), oldest first', async () => {

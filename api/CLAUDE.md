@@ -54,21 +54,22 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 | `trading_mode` | `dry_run` / `semi_auto` / `auto` — crossing the `dry_run` ↔ live boundary is **409 while any position is open** (positions don't record their mode; a live mode would send real sells for paper positions, and `dry_run` would paper-sell real shares). `semi_auto` ↔ `auto` is unrestricted | `dry_run` |
 | `trading_enabled` | boolean (kill switch) | true |
 | `digest_hour_kst` | integer 1–23 — morning digest hour (KST); quiet hours are 00:00 up to it | 10 |
-| `max_position_size`, `max_total_exposure` | USD, cost basis | 5,000 / 25,000 |
 | `max_trades_per_day` | count | 20 |
-| `max_daily_loss_usd` | USD — realized + **today's** unrealized change | 500 |
 | `execute_interval_min` | **5 or 10** only (the decision window needs ≥ 2 ticks) | 10 |
 | `dry_run_cash_usd` | USD | 5,000 (seed 25,000) |
 | `mr_rsi_entry` | 1–50 | 10 |
 | `mr_max_hold_days` | integer 1–60 | 10 |
 | `mr_stop_atr` | 0–20 (0 = no disaster stop) | 5 |
 | `mr_regime_filter` | boolean | true |
-| `mr_slots` | integer 1–20 — per-entry budget = equity ÷ slots | 8 |
 | `dry_run_cost_bps` | 0–100 (one-way) | 10 |
 
 Retired keys (`buy_threshold`, `sell_threshold`, `score_weights`, `confluence_*`, `min_rr`, `min_stop_room_pct`,
 `entry_window`, `entry_cooldown_min`, `fixed_exit_enabled`, `stop_loss_percent`, `take_profit_percent`,
 `analysis_timeframe`) are rejected as unknown and their stored rows were deleted by migration 0019.
+**`mr_slots`, `max_position_size`, `max_total_exposure`, `max_daily_loss_usd` are rejected too (2026-10-05)** — the
+slot count and the three USD caps are derived from account equity every run
+([`docs/specs/2026-10-05-equity-scaled-sizing-design.md`](../docs/specs/2026-10-05-equity-scaled-sizing-design.md)).
+Their stored rows are left in place (nothing reads them; a data-only migration was not worth its snapshot risk).
 The endpoint **rejects** bad values rather than coercing them — the runtime readers (`api/_lib/mr-config.ts`,
 `parseExecuteInterval`) fall back to defaults only as defense against a corrupt row, and using that fallback here
 would hide the operator's typo.
@@ -131,12 +132,16 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
    kill switch (stops everything, exits included), expire pending approvals.
 4. Quotes (`fetchLivePriceDetail`, with `previousClose`) for held symbols + in-flight orders (+ watchlist + SPY on a
    decision tick).
+4a. **Sizing** (`lib/strategy/sizing.ts`) — equity = cash (`getAvailableCashUsd`) + open positions at live price (avg
+   price fallback), fixed for the run. Slot count K: on a decision tick with known equity, from the watchlist quotes
+   (largest K ≤ 8 whose slot buys ≥ 1 share of 75% of them); otherwise carried from the latest `slotsSource = 'prices'`
+   record (`getLatestSizing`), else 8. Caps: per-symbol = slot ∧ $25k, total = equity ∧ $110k, daily loss = per-symbol
+   × 16%. Unknown cash → loss limit from the record's equity (none → no loss check). Written to `summary.sizing`.
 5. **Breakers** — daily trade limit, realized loss, then realized + **today's** unrealized change
    (`lib/strategy/daily-loss.ts`). A tripped loss breaker blocks entries and sets `forceFullExit`. Breach and
    quote-divergence mails go **once per ET day** (`claimOnce`).
 6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`).
-7. Exposure (cost basis + in-flight buys + pending approvals) and cash (`getAvailableCashUsd`). Slot budget =
-   (cash + open positions at live price, avg price fallback) ÷ `mr_slots`, fixed for the run; `null` cash → no slot cap.
+7. Exposure (cost basis + in-flight buys + pending approvals). Cash for in-run spending comes from step 4a.
 8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
    `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`; bars unavailable → `stop_backfill_failed`
    + one mail per symbol per ET day); no price → `skipped_no_price`
@@ -150,7 +155,8 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
    → `mr_data_error`, no entries); SPY < SMA200 → one
    `mr_regime_off` row; otherwise signals ranked by RSI(2) → `mr_skip_breaker` (entry block) /
    `pending_order_in_progress` (in-flight buy incl. `error`, or needs_review — **the idempotency guard for a retried
-   decision**) / `pending_exists` (semi_auto) / `mr_skip_budget` (`planEntry` quantity 0) / kill-switch re-check /
+   decision**) / `pending_exists` (semi_auto) / `mr_data_error` `equity_unavailable` (cash unknown — fail closed, the
+   window retries) / `mr_skip_budget` (`planEntry` quantity 0) / kill-switch re-check /
    `executeEntry` → `mr_buy` (or the order outcome's action); every entry-signal row carries `detail.mr.signal = true`.
    Before each order the phase re-reads `minutesUntilUsMarketClose`; ≤ 1 → stop submitting, `summary.closeCutoffHit`.
 10. `summary.decisionPhase = 'done'` only if: no run-deadline hit (quote prefetch included), no close cutoff, and no
@@ -184,7 +190,7 @@ The model is `analysis_model_config['entry_review']`.
 | 모드 | 출처 | 조회 실패 시 |
 |---|---|---|
 | `auto` | 브로커 실잔고 `getBuyingPower('USD')` | `null` → **fail closed** (그 런의 매수 전부 skip) |
-| `semi_auto` | 같음 — 승인 시점에 실주문이 나가므로 실계좌 현금으로 사이징해야 한다 | `null` → 클램프 없음 (승인이라는 사람 게이트가 뒤에 있다) |
+| `semi_auto` | 같음 — 승인 시점에 실주문이 나가므로 실계좌 현금으로 사이징해야 한다 | `null` → 총자산을 모르므로 판단 틱이 진입하지 않는다(`equity_unavailable`, 2026-10-05) |
 | `dry_run` | `dry_run_cash_usd`(예치금, 기본 $5,000) + **체결 원장 순현금흐름** | 원장 조회 실패 → 흐름 0, 예치금 그대로 |
 
 `dry_run` 잔고는 컬럼에 저장하지 않고 `trades`에서 도출한다(`getDryRunCashFlowUsd`) —
@@ -236,6 +242,8 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
 - **미국 정규장이 아니면 거부한다**(409, 대기 주문은 건드리지 않음). 판단이 마감 20분 전이라 승인 요청은 전부
   마감 직전에 생기고, 만료도 `min(15분, 마감)`으로 잘린다 — 마감 뒤 시장가 주문을 막는다.
 
+- 매수 승인의 일일 손실 한도는 **최근 판단 틱의 사이징 기록**(`getLatestSizing({ pricedOnly: true })`)이다. 기록이
+  없거나 못 읽으면 한도를 모르므로 409로 거부하고 대기 주문을 되돌린다(fail-closed). 매도 승인은 보지 않는다.
 - 기록되는 `mode`는 **실제 `trading_mode`**다. dry_run 승인을 `semi_auto`로 남기면 시뮬레이션
   손익이 `getTodayRealizedPnl`에 섞여 실계좌 손실 차단기를 오염시킨다.
 - 매도 승인도 `getSellableQuantity`로 클램프한다 — 대기 주문은 큐잉 후 승인까지 최대 15분이
@@ -270,9 +278,9 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 |---|---|---|---|
 | Kill switch | `trading_enabled` | `true` | **Halts everything, exits included.** Re-read before each order |
 | Daily trade limit | `max_trades_per_day` | 20 | Blocks entries only (`mr_skip_breaker`). Exits still run |
-| Daily loss limit | `max_daily_loss_usd` | 500 | Realized today + **today's** unrealized change. Blocks entries and sets `forceFullExit` |
+| Daily loss limit | — (derived) | slot × 16% | Realized today + **today's** unrealized change. Blocks entries and sets `forceFullExit`. $25k / 8 slots → $500 |
 | Regime filter | `mr_regime_filter` | on | SPY < SMA200 → no entries that day (`mr_regime_off`). Not a risk breaker, no mail |
-| Budget | `max_position_size` / `max_total_exposure` / cash | 5k / 25k | `planEntry` quantity 0 → `mr_skip_budget` |
+| Budget | — (derived) / cash | slot / equity | `planEntry` quantity 0 → `mr_skip_budget`. Absolute caps $25k / $110k |
 
 **A risk breaker stops new risk, never risk reduction.** The loss breaker used to sum the unrealized P&L **since
 entry**. With multi-day holds one −10% position filled the $500 limit and blocked every entry for days — exactly the

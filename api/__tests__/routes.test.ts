@@ -27,6 +27,8 @@ vi.mock('../_lib/auth', () => ({
 }));
 
 const mockCheckSchemaReadiness = vi.fn().mockResolvedValue({ ready: true });
+// 승인 경로의 손실 한도·상태 화면의 사이징 표시가 읽는 execute 사이징 기록.
+const mockGetLatestSizing = vi.fn();
 vi.mock('../../lib/db/schema-readiness', () => ({
     checkSchemaReadiness: (...args: unknown[]) => mockCheckSchemaReadiness(...args),
 }));
@@ -133,6 +135,7 @@ vi.mock('../../lib/db/queries', () => ({
     // 승인 경로가 리스크 차단기를 재확인한다. 기본값은 "여유 있음".
     getTodayRealizedPnl: () => Promise.resolve(0),
     getTodayInflightOrderCount: () => Promise.resolve(0),
+    getLatestSizing: (...args: unknown[]) => mockGetLatestSizing(...args),
     approvePendingOrder: (...args: unknown[]) => mockApprovePendingOrder(...args),
     revertPendingOrder: (...args: unknown[]) => mockRevertPendingOrder(...args),
     rejectPendingOrder: (...args: unknown[]) => mockRejectPendingOrder(...args),
@@ -174,6 +177,10 @@ function makeRequest(url: string, method = 'GET', body?: unknown): Request {
 
 beforeEach(() => {
     vi.resetAllMocks();
+    mockGetLatestSizing.mockResolvedValue({
+        sizing: { slots: 8, equity: 25000, dailyLossLimit: 500 },
+        at: new Date('2026-01-01T00:00:00Z'),
+    });
     mockIsAuthenticated.mockResolvedValue(true);
     mockGetDb.mockReturnValue(fakeDb);
     mockSendErrorEmail.mockResolvedValue(undefined);
@@ -224,7 +231,28 @@ describe('GET /api/status', () => {
             maxTradesPerDay: 'live',
             // dry_run이 아니면 브로커 실잔고 경로. 조회 실패는 null이고 UI가 `—`로 그린다.
             cashBalance: null,
+            // 마지막 execute 런이 총자산에서 도출한 사이징(출처 무관 최신).
+            sizing: {
+                slots: 8,
+                equity: 25000,
+                dailyLossLimit: 500,
+                at: '2026-01-01T00:00:00.000Z',
+            },
         });
+        expect(mockGetLatestSizing).toHaveBeenCalledWith(fakeDb);
+    });
+
+    it('sizing is null when there is no record or the lookup fails', async () => {
+        mockGetOpenPositions.mockResolvedValue([]);
+        mockGetConfigValue.mockResolvedValue(null);
+        mockGetTodayTradeCount.mockResolvedValue(0);
+        mockGetLatestSizing.mockResolvedValue(null);
+        let res = await handler(makeRequest('https://example.com/api/status'));
+        expect((await res.json()).sizing).toBeNull();
+        mockGetLatestSizing.mockRejectedValue(new Error('db down'));
+        res = await handler(makeRequest('https://example.com/api/status'));
+        expect(res.status).toBe(200);
+        expect((await res.json()).sizing).toBeNull();
     });
 
     describe('보유 현금', () => {
@@ -576,7 +604,7 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'max_position_size',
+                key: 'dry_run_cash_usd',
                 value: 'not_a_number',
             }),
         );
@@ -589,7 +617,7 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'max_daily_loss_usd',
+                key: 'dry_run_cash_usd',
                 value: -5,
             }),
         );
@@ -602,7 +630,7 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'max_position_size',
+                key: 'dry_run_cash_usd',
                 value: Infinity,
             }),
         );
@@ -615,12 +643,12 @@ describe('POST /api/config', () => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
                 type: 'config',
-                key: 'max_position_size',
+                key: 'dry_run_cash_usd',
                 value: 2000,
             }),
         );
         expect(res.status).toBe(200);
-        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'max_position_size', 2000);
+        expect(mockSetConfigValue).toHaveBeenCalledWith(fakeDb, 'dry_run_cash_usd', 2000);
     });
 
     it('accepts valid trading_mode values', async () => {
@@ -1000,6 +1028,11 @@ describe('POST /api/config', () => {
         'stop_loss_percent',
         'take_profit_percent',
         'analysis_timeframe',
+        // 총자산에서 도출하는 사이징(2026-10-05) — 설정으로 저장할 수 없다.
+        'mr_slots',
+        'max_position_size',
+        'max_total_exposure',
+        'max_daily_loss_usd',
     ])('rejects the retired key %s as unknown', async (key) => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', {
@@ -1021,8 +1054,6 @@ describe('POST /api/config', () => {
         ['mr_stop_atr', 20],
         ['dry_run_cost_bps', 0],
         ['dry_run_cost_bps', 100],
-        ['mr_slots', 1],
-        ['mr_slots', 20],
     ] as const)('accepts strategy key %s = %s (range edge)', async (key, value) => {
         mockSetConfigValue.mockResolvedValue(undefined);
         const res = await handler(
@@ -1039,9 +1070,6 @@ describe('POST /api/config', () => {
         ['mr_max_hold_days', 5.5, 'mr_max_hold_days must be an integer between 1 and 60'],
         ['mr_stop_atr', 21, 'mr_stop_atr must be between 0 and 20'],
         ['dry_run_cost_bps', 101, 'dry_run_cost_bps must be between 0 and 100'],
-        ['mr_slots', 0, 'mr_slots must be an integer between 1 and 20'],
-        ['mr_slots', 21, 'mr_slots must be an integer between 1 and 20'],
-        ['mr_slots', 2.5, 'mr_slots must be an integer between 1 and 20'],
     ] as const)('rejects strategy key %s = %s', async (key, value, error) => {
         const res = await handler(
             makeRequest('https://example.com/api/config', 'POST', { type: 'config', key, value }),

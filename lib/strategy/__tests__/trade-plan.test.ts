@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-    clampFraction,
-    fallbackEntryFraction,
-    planEntry,
-    planExit,
-    slotBudgetFor,
-} from '../trade-plan';
+import { clampFraction, fallbackEntryFraction, planEntry, planExit } from '../trade-plan';
 import type { ExitTrigger } from '../trade-plan';
 
 describe('clampFraction', () => {
@@ -623,23 +617,5 @@ describe('planExit', () => {
             const quantity = planExit({ positionQuantity: 37, fraction: 0.4, trigger });
             expect(quantity).toBe(14); // floor(37 * 0.4) = 14, identical for every trigger
         });
-    });
-});
-
-describe('slotBudgetFor', () => {
-    it('is equity divided by the slot count', () => {
-        expect(slotBudgetFor(25_000, 8)).toBe(3125);
-        expect(slotBudgetFor(25_000, 5)).toBe(5000);
-    });
-
-    it('is null when equity is unknown or the slot count is unusable', () => {
-        expect(slotBudgetFor(null, 8)).toBeNull();
-        expect(slotBudgetFor(Number.NaN, 8)).toBeNull();
-        expect(slotBudgetFor(25_000, 0)).toBeNull();
-        expect(slotBudgetFor(25_000, Number.NaN)).toBeNull();
-    });
-
-    it('floors negative equity to a zero budget', () => {
-        expect(slotBudgetFor(-100, 8)).toBe(0);
     });
 });

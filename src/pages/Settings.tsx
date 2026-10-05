@@ -123,16 +123,8 @@ function riskFieldLabel(key: string): string {
             return '최대 보유 거래일';
         case 'mr_stop_atr':
             return '재난 손절 ATR 배수';
-        case 'mr_slots':
-            return '동시 보유 칸 수';
-        case 'max_position_size':
-            return '종목당 최대 투자 금액';
-        case 'max_total_exposure':
-            return '전체 투자 한도';
         case 'max_trades_per_day':
             return '일일 최대 거래 횟수';
-        case 'max_daily_loss_usd':
-            return '일일 최대 손실 한도';
         case 'dry_run_cash_usd':
             return '모의 계좌 예치금';
         case 'dry_run_cost_bps':
@@ -270,14 +262,10 @@ export function SettingsPage() {
     ) as number;
 
     const riskDefaults: Record<string, number> = {
-        max_position_size: 5000,
-        max_total_exposure: 25000,
         max_trades_per_day: 20,
-        max_daily_loss_usd: 500,
         mr_rsi_entry: 10,
         mr_max_hold_days: 10,
         mr_stop_atr: 5,
-        mr_slots: 8,
         dry_run_cash_usd: 25000,
         dry_run_cost_bps: 10,
     };
@@ -562,14 +550,6 @@ export function SettingsPage() {
                                 20,
                                 0.5,
                             ],
-                            [
-                                'mr_slots',
-                                '동시 보유 칸 수',
-                                '종목당 매수 금액 = 계좌 총자산 ÷ 칸 수. 신호일에 전액 한 번에 매수 (기본 8)',
-                                1,
-                                20,
-                                1,
-                            ],
                         ] as const
                     ).map(([key, label, helper, min, max, step]) => {
                         const fieldId = `risk-${key}`;
@@ -821,33 +801,23 @@ export function SettingsPage() {
             {/* Investment Limits */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">
                 <h2 className="text-sm font-semibold">투자 관리</h2>
+                <p className="mt-1 text-[11px] text-neutral-500" data-testid="auto-sizing-note">
+                    칸 수·종목당 금액·전체 투자 한도·일일 손실 한도는 설정하지 않습니다. 매 실행마다
+                    계좌 총자산(현금 + 보유 평가액)에서 자동 계산되고, 현재 값은 상태 화면의
+                    &lsquo;자동 사이징&rsquo;에 표시됩니다.
+                </p>
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {(
                         [
-                            [
-                                'max_position_size',
-                                '종목당 최대 투자 금액 ($)',
-                                '한 종목 매수 금액의 안전 상한 — 실제 금액은 총자산 ÷ 칸 수가 정한다',
-                            ],
-                            [
-                                'max_total_exposure',
-                                '전체 투자 한도 ($)',
-                                '모든 종목 합산 최대 투자 금액',
-                            ],
                             [
                                 'max_trades_per_day',
                                 '일일 최대 거래 횟수',
                                 '하루 최대 거래 횟수 (초과 시 신규 진입만 중단)',
                             ],
                             [
-                                'max_daily_loss_usd',
-                                '일일 최대 손실 한도 ($)',
-                                '오늘 실현 손실 + 보유 포지션의 오늘 변동분이 이 금액을 넘으면 신규 진입 중지 (청산은 계속)',
-                            ],
-                            [
                                 'dry_run_cash_usd',
                                 '모의 계좌 예치금 ($)',
-                                'dry_run 모드의 가상 현금. 종목당 한도로 나누면 동시 보유 가능 종목 수',
+                                'dry_run 모드의 가상 입금액. 칸 수와 한도는 이 금액 + 모의 손익에서 자동 계산된다',
                             ],
                             [
                                 'dry_run_cost_bps',

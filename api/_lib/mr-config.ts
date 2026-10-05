@@ -37,14 +37,3 @@ export async function readDryRunCostBps(db: Db): Promise<number> {
     const stored = await getConfigValue<unknown>(db, 'dry_run_cost_bps').catch(() => null);
     return inRange(stored, 0, 100, DEFAULT_DRY_RUN_COST_BPS);
 }
-
-/**
- * 칸 수 — 종목당 매수 금액 = 계좌 총자산 ÷ 칸 수(스펙 §3.1). 기본 8: 17–26 백테스트에서 5칸보다
- * 수익은 낮지만(연 9.8% vs 13.0%) 최대낙폭이 23.7% vs 30.4%라 수익/낙폭 비가 같은 수준이다(§2.4.2).
- */
-export const DEFAULT_MR_SLOTS = 8;
-
-export async function readMrSlots(db: Db): Promise<number> {
-    const stored = await getConfigValue<unknown>(db, 'mr_slots').catch(() => null);
-    return Math.round(inRange(stored, 1, 20, DEFAULT_MR_SLOTS));
-}
