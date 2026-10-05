@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.39.0](https://github.com/y0ngha/siglens-trader/compare/v0.38.2...v0.39.0) (2026-10-05)
+
+
+### Features
+
+* **strategy:** 칸 수·금액 한도를 계좌 총자산에서 도출 — DB 설정 제거 ([#95](https://github.com/y0ngha/siglens-trader/issues/95)) ([43f22de](https://github.com/y0ngha/siglens-trader/commit/43f22de6bb4a7fc734cbeb5ffda25f1900da578a))
+
 ## [0.38.2](https://github.com/y0ngha/siglens-trader/compare/v0.38.1...v0.38.2) (2026-10-04)
 
 ## [0.38.1](https://github.com/y0ngha/siglens-trader/compare/v0.38.0...v0.38.1) (2026-10-04)
