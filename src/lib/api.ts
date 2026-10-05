@@ -40,6 +40,24 @@ export interface SessionUser {
     name: string | null;
 }
 
+/**
+ * 마지막 execute 런이 계좌 총자산에서 도출한 사이징(설정이 아니다 —
+ * docs/specs/2026-10-05-equity-scaled-sizing-design.md). 총자산을 몰랐던 런은 금액이 null.
+ */
+export interface SizingSnapshot {
+    equity: number | null;
+    slots: number;
+    /** `prices` = 그 런의 시세로 계산, `carried` = 이전 판단의 칸 수, `default` = 기록 없음(8칸). */
+    slotsSource: 'prices' | 'carried' | 'default';
+    coverage: number | null;
+    priceCount: number;
+    slotBudget: number | null;
+    maxPositionSize: number | null;
+    maxTotalExposure: number | null;
+    dailyLossLimit: number | null;
+    at: string;
+}
+
 export interface StatusResponse {
     running: boolean;
     tradingMode: string;
@@ -48,6 +66,7 @@ export interface StatusResponse {
     cashBalance?: number;
     tradingEnabled?: boolean;
     maxTradesPerDay?: number;
+    sizing?: SizingSnapshot | null;
 }
 
 export interface Position {

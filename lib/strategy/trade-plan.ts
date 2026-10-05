@@ -63,7 +63,7 @@ export interface EntryPlanParams {
     /** null/undefined = unknown (dry_run/semi_auto don't know real cash) → unconstrained. */
     availableCash?: number | null;
     /**
-     * 칸 예산 = 계좌 총자산 ÷ 칸 수 ({@link slotBudgetFor}). 종목당 매수 금액을 정하는 **주 규칙**이고,
+     * 칸 예산 = 계좌 총자산 ÷ 칸 수 (`lib/strategy/sizing.ts` `deriveSizing`). 종목당 매수 금액을 정하는 **주 규칙**이고,
      * 위의 세 한도는 그 위의 안전 상한이다. null/undefined = 총자산을 모름 → 이 제약 없음.
      */
     slotBudget?: number | null;
@@ -76,16 +76,6 @@ export interface EntryPlan {
     /** Budget after `fraction` is applied. */
     trancheBudget: number;
     limitedBy: 'slot' | 'symbol' | 'total' | 'cash' | 'none';
-}
-
-/**
- * 칸 예산 = 총자산 ÷ 칸 수. 총자산을 모르면(브로커 잔고 조회 실패) null — 호출자는 칸 제약 없이
- * 기존 한도만으로 사이징한다. 백테스트(스펙 §2.4.2)의 "칸 = 자산 ÷ K, 복리"와 같은 식이다.
- */
-export function slotBudgetFor(equity: number | null, slots: number): number | null {
-    if (equity === null || !Number.isFinite(equity)) return null;
-    if (!Number.isFinite(slots) || slots < 1) return null;
-    return Math.max(0, equity) / Math.floor(slots);
 }
 
 export function planEntry(params: EntryPlanParams): EntryPlan {

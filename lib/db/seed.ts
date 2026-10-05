@@ -28,20 +28,16 @@ export async function seed() {
 async function seedInto(db: NodePgDatabase) {
     console.log('Seeding default config...');
     // 일봉 RSI(2) 눌림매수 기본값(docs/specs/2026-09-24-daily-mean-reversion-design.md §6).
-    // 예치금 $25k · 종목당 $5k = 동시 5슬롯.
+    // 칸 수·금액 한도는 설정이 아니라 총자산에서 도출한다(2026-10-05 사이징 스펙) — 모의 예치금 $25k면 8칸.
     const defaults = [
         { key: 'trading_mode', value: 'dry_run' },
         { key: 'trading_enabled', value: true },
-        { key: 'max_position_size', value: 5000 },
-        { key: 'max_total_exposure', value: 25000 },
         { key: 'max_trades_per_day', value: 20 },
-        { key: 'max_daily_loss_usd', value: 500 },
         { key: 'dry_run_cash_usd', value: 25000 },
         { key: 'mr_rsi_entry', value: 10 },
         { key: 'mr_max_hold_days', value: 10 },
         { key: 'mr_stop_atr', value: 5 },
         { key: 'mr_regime_filter', value: true },
-        { key: 'mr_slots', value: 8 },
         { key: 'dry_run_cost_bps', value: 10 },
     ];
     for (const d of defaults) {

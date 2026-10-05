@@ -60,34 +60,28 @@ async function handler(req: Request): Promise<Response> {
 
         const payload = body as Record<string, unknown>;
 
+        // 칸 수·종목/총 노출·일일 손실 한도는 설정이 아니다 — 계좌 총자산에서 도출한다
+        // (docs/specs/2026-10-05-equity-scaled-sizing-design.md). 그 키를 저장하려 하면 400.
         const ALLOWED_CONFIG_KEYS = new Set([
             'trading_mode',
             'trading_enabled',
-            'max_position_size',
-            'max_total_exposure',
             'max_trades_per_day',
-            'max_daily_loss_usd',
             'execute_interval_min',
             'dry_run_cash_usd',
             'mr_rsi_entry',
             'mr_max_hold_days',
             'mr_stop_atr',
             'mr_regime_filter',
-            'mr_slots',
             'dry_run_cost_bps',
             'digest_hour_kst',
         ]);
 
         const NUMERIC_CONFIG_KEYS = new Set([
-            'max_position_size',
-            'max_total_exposure',
             'max_trades_per_day',
-            'max_daily_loss_usd',
             'dry_run_cash_usd',
             'mr_rsi_entry',
             'mr_max_hold_days',
             'mr_stop_atr',
-            'mr_slots',
             'dry_run_cost_bps',
             'digest_hour_kst',
         ]);
@@ -103,7 +97,6 @@ async function handler(req: Request): Promise<Response> {
             mr_rsi_entry: { min: 1, max: 50 },
             mr_max_hold_days: { min: 1, max: 60, integer: true },
             mr_stop_atr: { min: 0, max: 20 },
-            mr_slots: { min: 1, max: 20, integer: true },
             dry_run_cost_bps: { min: 0, max: 100 },
             // 아침 다이제스트 시각(KST). 수면 모드는 00:00부터 이 시각 전까지 — 0은 "수면 모드 없음",
             // 24는 시각이 아니다. 범위는 quiet-hours의 DIGEST_HOUR_MIN/MAX와 같다.

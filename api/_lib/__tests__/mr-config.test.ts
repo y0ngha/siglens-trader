@@ -5,13 +5,7 @@ vi.mock('../../../lib/db/queries', () => ({
     getConfigValue: (...args: unknown[]) => mockGetConfigValue(...args),
 }));
 
-import {
-    readMrParams,
-    readDryRunCostBps,
-    readMrSlots,
-    DEFAULT_DRY_RUN_COST_BPS,
-    DEFAULT_MR_SLOTS,
-} from '../mr-config';
+import { readMrParams, readDryRunCostBps, DEFAULT_DRY_RUN_COST_BPS } from '../mr-config';
 import { DEFAULT_MR_PARAMS } from '../../../lib/strategy/mean-reversion';
 import type { Db } from '../../../lib/db/index';
 
@@ -67,27 +61,5 @@ describe('readDryRunCostBps', () => {
     it('defaults on a failing read', async () => {
         mockGetConfigValue.mockRejectedValue(new Error('x'));
         expect(await readDryRunCostBps(db)).toBe(10);
-    });
-});
-
-describe('readMrSlots', () => {
-    it('reads a stored value, rounds fractions and rejects out-of-range rows', async () => {
-        stored({ mr_slots: 5 });
-        expect(await readMrSlots(db)).toBe(5);
-        stored({ mr_slots: 5.4 });
-        expect(await readMrSlots(db)).toBe(5);
-        stored({ mr_slots: 0 });
-        expect(await readMrSlots(db)).toBe(DEFAULT_MR_SLOTS);
-        stored({ mr_slots: 21 });
-        expect(await readMrSlots(db)).toBe(DEFAULT_MR_SLOTS);
-        stored({ mr_slots: '5' });
-        expect(await readMrSlots(db)).toBe(DEFAULT_MR_SLOTS);
-        stored({});
-        expect(await readMrSlots(db)).toBe(8);
-    });
-
-    it('survives a failing read', async () => {
-        mockGetConfigValue.mockRejectedValue(new Error('db down'));
-        expect(await readMrSlots(db)).toBe(DEFAULT_MR_SLOTS);
     });
 });

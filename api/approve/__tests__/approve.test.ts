@@ -47,12 +47,16 @@ vi.mock('../../../lib/db/queries', () => ({
     getTodayRealizedPnl: (...args: unknown[]) => mockGetTodayRealizedPnl(...args),
     getTodayTradeCount: (...args: unknown[]) => mockGetTodayTradeCount(...args),
     getTodayInflightOrderCount: (...args: unknown[]) => mockGetTodayInflightOrderCount(...args),
+    getLatestSizing: (...args: unknown[]) => mockGetLatestSizing(...args),
 }));
 
 // 승인 시점 리스크 차단기 재확인용. 기본값은 "여유 있음".
 const mockGetTodayRealizedPnl = vi.fn().mockResolvedValue(0);
 const mockGetTodayTradeCount = vi.fn().mockResolvedValue(0);
 const mockGetTodayInflightOrderCount = vi.fn().mockResolvedValue(0);
+// 손실 한도의 출처 — 대기 주문을 만든 판단 틱의 사이징 기록(총자산 $2,000 · 4칸 → $80).
+const SIZING_RECORD = { sizing: { slots: 4, equity: 2000, dailyLossLimit: 80 }, at: new Date() };
+const mockGetLatestSizing = vi.fn();
 
 const mockExecuteBuyOrder = vi.fn();
 const mockExecuteSellOrder = vi.fn();
@@ -158,6 +162,8 @@ function setupDefaults() {
     mockGetSellableQuantity.mockResolvedValue(null);
     // 정규장 열림이 기본값 — 대부분의 테스트는 A5c 게이트와 무관하다.
     mockSessionOpen.mockReturnValue(true);
+    mockGetLatestSizing.mockResolvedValue(SIZING_RECORD);
+    mockGetTodayRealizedPnl.mockResolvedValue(0);
     mockExecuteBuyOrder.mockResolvedValue({
         orderId: 'ord-1',
         clientOrderId: 'approve-1',
@@ -189,6 +195,52 @@ describe('approve handler', () => {
         vi.useRealTimers();
         vi.resetAllMocks();
         vi.restoreAllMocks();
+    });
+
+    describe('buy approval re-checks the daily loss limit from the sizing record', () => {
+        it('reads the latest priced sizing record and approves under the limit', async () => {
+            mockGetTodayRealizedPnl.mockResolvedValue(-79.99);
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            expect(res.status).toBe(200);
+            expect(mockGetLatestSizing).toHaveBeenCalledWith(fakeDb, { pricedOnly: true });
+            expect(mockGetConfigValue).not.toHaveBeenCalledWith(fakeDb, 'max_daily_loss_usd');
+        });
+
+        it('a realized loss beyond the record’s limit → 409 and the order is reverted', async () => {
+            mockGetTodayRealizedPnl.mockResolvedValue(-80.01);
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            expect(res.status).toBe(409);
+            expect(((await res.json()) as { error: string }).error).toContain('$80.00');
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+            expect(mockInsertTrade).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['no record', () => mockGetLatestSizing.mockResolvedValue(null)],
+            ['lookup failure', () => mockGetLatestSizing.mockRejectedValue(new Error('db'))],
+        ])('%s → fail closed: 409 and reverted', async (_label, arrange) => {
+            vi.spyOn(console, 'error').mockImplementation(() => {});
+            arrange();
+            const res = await handler(makeApproveRequest(1, 'approve'));
+            expect(res.status).toBe(409);
+            expect(((await res.json()) as { error: string }).error).toContain('사이징 기록 없음');
+            expect(mockRevertPendingOrder).toHaveBeenCalledWith(fakeDb, 1);
+            expect(mockExecuteBuyOrder).not.toHaveBeenCalled();
+        });
+
+        it('a sell approval does not need the record (risk reduction is never blocked)', async () => {
+            mockGetPendingOrderById.mockResolvedValue(fakeSellOrder);
+            mockGetOpenPositionBySymbol.mockResolvedValue({
+                id: 9,
+                symbol: 'AAPL',
+                quantity: 10,
+                avgPrice: '150',
+            });
+            mockGetLatestSizing.mockResolvedValue(null);
+            const res = await handler(makeApproveRequest(2, 'approve'));
+            expect(res.status).toBe(200);
+            expect(mockGetLatestSizing).not.toHaveBeenCalled();
+        });
     });
 
     // -----------------------------------------------------------------------

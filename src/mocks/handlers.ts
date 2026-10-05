@@ -17,7 +17,6 @@ const NUMERIC_BOUNDS: Record<string, { min: number; max: number; integer?: boole
     mr_rsi_entry: { min: 1, max: 50 },
     mr_max_hold_days: { min: 1, max: 60, integer: true },
     mr_stop_atr: { min: 0, max: 20 },
-    mr_slots: { min: 1, max: 20, integer: true },
     dry_run_cost_bps: { min: 0, max: 100 },
 };
 
@@ -30,18 +29,14 @@ interface ConfigEntry {
 
 const configEntries: ConfigEntry[] = [
     { key: 'trading_mode', value: 'dry_run', updatedAt: new Date().toISOString() },
-    { key: 'max_position_size', value: 1000, updatedAt: new Date().toISOString() },
-    { key: 'max_total_exposure', value: 5000, updatedAt: new Date().toISOString() },
     { key: 'trading_enabled', value: true, updatedAt: new Date().toISOString() },
     { key: 'max_trades_per_day', value: 20, updatedAt: new Date().toISOString() },
-    { key: 'max_daily_loss_usd', value: 500, updatedAt: new Date().toISOString() },
     { key: 'execute_interval_min', value: 10, updatedAt: new Date().toISOString() },
     { key: 'dry_run_cash_usd', value: 25000, updatedAt: new Date().toISOString() },
     { key: 'mr_rsi_entry', value: 10, updatedAt: new Date().toISOString() },
     { key: 'mr_max_hold_days', value: 10, updatedAt: new Date().toISOString() },
     { key: 'mr_stop_atr', value: 5, updatedAt: new Date().toISOString() },
     { key: 'mr_regime_filter', value: true, updatedAt: new Date().toISOString() },
-    { key: 'mr_slots', value: 8, updatedAt: new Date().toISOString() },
     { key: 'dry_run_cost_bps', value: 10, updatedAt: new Date().toISOString() },
 ];
 
@@ -879,6 +874,19 @@ export const handlers = [
             activePositions: openCount,
             todayTrades: todayCount,
             cashBalance: 2000,
+            // execute가 총자산에서 도출한 사이징 — 총자산 $2,000이면 4칸(2026-10-05 실측 시세 기준).
+            sizing: {
+                equity: 2000,
+                slots: 4,
+                slotsSource: 'prices',
+                coverage: 0.79,
+                priceCount: 39,
+                slotBudget: 500,
+                maxPositionSize: 500,
+                maxTotalExposure: 2000,
+                dailyLossLimit: 80,
+                at: new Date().toISOString(),
+            },
             tradingEnabled: (tradingEnabled?.value as boolean) ?? true,
             maxTradesPerDay: (maxTradesPerDay?.value as number) ?? 20,
         });

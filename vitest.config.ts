@@ -28,6 +28,8 @@ export default defineConfig({
                 // 일봉 눌림매수의 판정 모듈(docs/specs/2026-09-24-daily-mean-reversion-design.md §9).
                 'lib/strategy/mean-reversion.ts',
                 'lib/strategy/daily-loss.ts',
+                // 총자산 연동 사이징(docs/specs/2026-10-05-equity-scaled-sizing-design.md §9).
+                'lib/strategy/sizing.ts',
             ],
             exclude: [
                 'lib/trading/**/*.test.ts',

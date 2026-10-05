@@ -7,7 +7,7 @@ import {
 import { verifyCronSecret } from '../_lib/cron-auth.js';
 import { getDb } from '../_lib/db.js';
 import { getAvailableCashUsd } from '../_lib/cash.js';
-import { readDryRunCostBps, readMrParams, readMrSlots } from '../_lib/mr-config.js';
+import { readDryRunCostBps, readMrParams } from '../_lib/mr-config.js';
 import {
     getEnabledWatchlist,
     getConfigValue,
@@ -28,6 +28,7 @@ import {
     hasDecisionPhaseSince,
     setPositionStopPrice,
     getSymbolsSoldSince,
+    getLatestSizing,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import {
@@ -51,7 +52,15 @@ import {
     type SymbolReading,
 } from '../../lib/strategy/mean-reversion.js';
 import { todayUnrealizedChange } from '../../lib/strategy/daily-loss.js';
-import { planEntry, slotBudgetFor } from '../../lib/strategy/trade-plan.js';
+import { planEntry } from '../../lib/strategy/trade-plan.js';
+import {
+    accountEquity,
+    carriedSlots,
+    deriveSizing,
+    slotsFromPrices,
+    type Sizing,
+    type SlotsReading,
+} from '../../lib/strategy/sizing.js';
 import {
     etDateOf,
     etDayStart,
@@ -240,7 +249,6 @@ async function handler(req: Request): Promise<Response> {
 
             const params = await readMrParams(db);
             const dryRunCostBps = await readDryRunCostBps(db);
-            const mrSlots = await readMrSlots(db);
 
             // in-flight 주문을 열린 포지션보다 먼저 읽는다(A7) — 둘 사이에 reconcile 지연 체결
             // 복구가 끼어들면(주문을 지우고 포지션을 만듦) 순서가 반대였을 때 그 심볼이 이번
@@ -288,6 +296,46 @@ async function handler(req: Request): Promise<Response> {
             }
             const priceOf = (sym: string) => quotes.get(sym)?.price ?? 0;
 
+            // --- 사이징 — 칸 수와 금액 한도를 총자산에서 도출한다(docs/specs/2026-10-05-equity-scaled-sizing-design.md).
+            // 차단기 **앞**에서 한다: 일일 손실 한도가 총자산과 칸 수에서 나온다.
+            // 세 모드 모두 "지금 쓸 수 있는 돈"(auto·semi_auto = 브로커 잔고, dry_run = 예치금 + 원장).
+            let remainingBuyingPower: number | null = await getAvailableCashUsd(db, tradingMode);
+            // 총자산 = 현금 + 보유 평가액(실시간 가격, 없으면 평단). 런 시작 시점에 한 번 고정한다 — 이번
+            // 런의 청산 대금·매수 지출로 칸 크기가 흔들리지 않게.
+            const equity = accountEquity(
+                remainingBuyingPower,
+                openPositions.map((p) => ({
+                    quantity: p.quantity,
+                    avgPrice: safeNumber(Number(p.avgPrice), 0),
+                    price: priceOf(p.symbol),
+                })),
+            );
+            // 칸 수의 출처: 판단 틱이고 총자산을 알면 감시 종목 시세로 새로 계산한다. 아니면 마지막 판단
+            // 기록을 이어 쓴다(§4) — 위험 틱은 감시 종목 시세를 받지 않는다. 총자산을 모르는 판단 틱도
+            // 이어 쓴다: 0으로 계산하면 K=1이 나와 손실 한도가 8배 느슨해진다.
+            const lastPriced = await getLatestSizing(db, { pricedOnly: true }).catch((err) => {
+                console.error('[execute] 지난 사이징 기록 조회 실패 — 칸 수 기본값', err);
+                return null;
+            });
+            const slotsReading: SlotsReading =
+                decisionTick && equity !== null
+                    ? slotsFromPrices(
+                          equity,
+                          watchlistItems.map((w) => quotes.get(w.symbol)?.price ?? null),
+                          watchlistItems.length,
+                          lastPriced?.sizing.slots ?? null,
+                      )
+                    : carriedSlots(lastPriced?.sizing.slots ?? null);
+            const sizing: Sizing | null =
+                equity !== null ? deriveSizing(equity, slotsReading) : null;
+            // 총자산을 모르면(브로커 잔고 조회 실패) 손실 한도는 마지막 판단 기록의 총자산으로 잰다.
+            // 그것도 없으면 손실 검사를 건너뛴다 — 그 상태의 판단 틱은 진입 자체를 하지 않는다(§5).
+            const maxDailyLoss: number | null =
+                sizing?.dailyLossLimit ??
+                (lastPriced?.sizing.equity != null
+                    ? deriveSizing(lastPriced.sizing.equity, slotsReading).dailyLossLimit
+                    : null);
+
             // --- 차단기. 새 리스크만 막고 리스크 축소(청산)는 막지 않는다(원칙 7) ---
             let entryBlock: { outcome: 'daily_trade_limit' | 'daily_loss_limit' } | null = null;
             let forceFullExit = false;
@@ -301,14 +349,14 @@ async function handler(req: Request): Promise<Response> {
                 entryBlock = { outcome: 'daily_trade_limit' };
             }
 
-            const maxDailyLoss = (await getConfigValue<number>(db, 'max_daily_loss_usd')) ?? 500;
             const todayPnl = await getTodayRealizedPnl(db, tradingMode);
             let unrealizedToday = 0;
-            if (todayPnl < -maxDailyLoss) {
+            const lossLimitText = maxDailyLoss === null ? '' : maxDailyLoss.toFixed(2);
+            if (maxDailyLoss !== null && todayPnl < -maxDailyLoss) {
                 await notifyOncePerDay(
                     'daily-loss',
                     '일일 손실 한도 초과',
-                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${lossLimitText})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                 );
                 entryBlock = { outcome: 'daily_loss_limit' };
                 forceFullExit = true;
@@ -333,11 +381,11 @@ async function handler(req: Request): Promise<Response> {
                     );
                 }
                 const total = todayPnl + unrealizedToday;
-                if (total < -maxDailyLoss) {
+                if (maxDailyLoss !== null && total < -maxDailyLoss) {
                     await notifyOncePerDay(
                         'daily-loss',
                         '일일 손실 한도 초과 (미실현 포함)',
-                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 오늘 미실현 변동($${Math.abs(unrealizedToday).toFixed(2)}) = 총 $${Math.abs(total).toFixed(2)}이 한도($${maxDailyLoss})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
+                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 오늘 미실현 변동($${Math.abs(unrealizedToday).toFixed(2)}) = 총 $${Math.abs(total).toFixed(2)}이 한도($${lossLimitText})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
                     );
                     entryBlock = { outcome: 'daily_loss_limit' };
                     forceFullExit = true;
@@ -378,9 +426,6 @@ async function handler(req: Request): Promise<Response> {
                 }
             }
 
-            const maxPositionSize = (await getConfigValue<number>(db, 'max_position_size')) ?? 1000;
-            const maxTotalExposure =
-                (await getConfigValue<number>(db, 'max_total_exposure')) ?? 5000;
             // 장부와 브로커가 어긋난 채 사람 손을 기다리는 심볼 — 신규 진입만 막는다. 조회 실패는 삼킨다.
             const needsReviewSymbols = new Set(
                 await getNeedsReviewSymbols(db, new Date(startedMs - 86_400_000)).catch((err) => {
@@ -411,23 +456,6 @@ async function handler(req: Request): Promise<Response> {
                 else pendingBuyExposureMissingPrice.push(pending.symbol);
             }
             currentExposure += pendingBuyExposure;
-
-            // 세 모드 모두 "지금 쓸 수 있는 돈"(auto·semi_auto = 브로커 잔고, dry_run = 예치금 + 원장).
-            let remainingBuyingPower: number | null = await getAvailableCashUsd(db, tradingMode);
-            // 칸 예산(§3.1) = 총자산 ÷ 칸 수. 총자산 = 현금 + 보유 평가액(실시간 가격, 없으면 평단).
-            // 런 시작 시점에 한 번 고정한다 — 이번 런의 청산 대금·매수 지출로 칸 크기가 흔들리지 않게.
-            // 미체결 매수는 넣지 않는다: 브로커가 이미 현금에서 뺐는지 모드마다 달라, 넣으면 이중
-            // 계산이 될 수 있다(빼면 칸이 약간 작아지는 보수적 오차).
-            const equity =
-                remainingBuyingPower === null
-                    ? null
-                    : remainingBuyingPower +
-                      openPositions.reduce((sum, p) => {
-                          const px = priceOf(p.symbol);
-                          const mark = px > 0 ? px : safeNumber(Number(p.avgPrice), 0);
-                          return sum + mark * p.quantity;
-                      }, 0);
-            const slotBudget = slotBudgetFor(equity, mrSlots);
 
             const orderCtx = { db, tradingMode, cronRunId, dispatcher, notifyError, dryRunCostBps };
             const killSwitchOff = async () =>
@@ -938,31 +966,42 @@ async function handler(req: Request): Promise<Response> {
                                 });
                                 continue;
                             }
+                            // 총자산을 모르면 칸 크기도 한도도 모른다 — 사지 않는다(fail-closed, 사이징 스펙 §5).
+                            // `mr_data_error`라 멱등 행이 남지 않고 창의 다음 틱이 재시도한다.
+                            if (sizing === null) {
+                                decisions.push({
+                                    symbol,
+                                    action: 'mr_data_error',
+                                    score: reading.rsi2,
+                                    detail: { ...detail, reason: 'equity_unavailable' },
+                                });
+                                continue;
+                            }
                             const plan = planEntry({
                                 price: reading.price,
                                 fraction: 1,
-                                maxPositionSize,
-                                maxTotalExposure,
+                                maxPositionSize: sizing.maxPositionSize,
+                                maxTotalExposure: sizing.maxTotalExposure,
                                 currentExposure,
                                 existingSymbolExposure: 0,
                                 availableCash: remainingBuyingPower,
-                                slotBudget,
+                                slotBudget: sizing.slotBudget,
                             });
+                            const budgetDetail = {
+                                fullBudget: plan.fullBudget,
+                                limitedBy: plan.limitedBy,
+                                equity: sizing.equity,
+                                slots: sizing.slots,
+                                slotsSource: sizing.slotsSource,
+                                coverage: sizing.coverage,
+                                slotBudget: sizing.slotBudget,
+                            };
                             if (plan.quantity === 0) {
                                 decisions.push({
                                     symbol,
                                     action: 'mr_skip_budget',
                                     score: reading.rsi2,
-                                    detail: {
-                                        ...detail,
-                                        budget: {
-                                            fullBudget: plan.fullBudget,
-                                            limitedBy: plan.limitedBy,
-                                            equity,
-                                            slots: mrSlots,
-                                            slotBudget,
-                                        },
-                                    },
+                                    detail: { ...detail, budget: budgetDetail },
                                 });
                                 continue;
                             }
@@ -1000,14 +1039,7 @@ async function handler(req: Request): Promise<Response> {
                                 reason,
                                 detail: {
                                     ...detail,
-                                    budget: {
-                                        fullBudget: plan.fullBudget,
-                                        limitedBy: plan.limitedBy,
-                                        quantity: plan.quantity,
-                                        equity,
-                                        slots: mrSlots,
-                                        slotBudget,
-                                    },
+                                    budget: { ...budgetDetail, quantity: plan.quantity },
                                     ...(outcome.order ? { order: outcome.order } : {}),
                                 },
                             });
@@ -1056,6 +1088,18 @@ async function handler(req: Request): Promise<Response> {
                     pendingBuyExposureMissingPrice,
                     todayRealizedPnl: todayPnl,
                     todayUnrealizedChange: unrealizedToday,
+                    // 이번 런이 쓴 사이징 — 위험 틱·승인이 이어 쓰고 대시보드가 보여 준다(§4).
+                    sizing: sizing ?? {
+                        equity: null,
+                        slots: slotsReading.slots,
+                        slotsSource: slotsReading.source,
+                        coverage: slotsReading.coverage,
+                        priceCount: slotsReading.priceCount,
+                        slotBudget: null,
+                        maxPositionSize: null,
+                        maxTotalExposure: null,
+                        dailyLossLimit: maxDailyLoss,
+                    },
                     ...(stopBackfilled > 0 ? { stopBackfilled } : {}),
                     ...(deadlineHit ? { runDeadlineHit: true } : {}),
                     ...(closeCutoffHit ? { closeCutoffHit: true } : {}),

@@ -1110,6 +1110,79 @@ export async function hasDecisionPhaseSince(db: Db, since: Date): Promise<boolea
 }
 
 /**
+ * execute 런이 `cron_runs.summary.sizing`에 남긴 사이징(docs/specs/2026-10-05-equity-scaled-sizing-design.md §4).
+ * `lib/strategy/sizing.ts`의 `Sizing`과 같은 모양이지만 lib/db는 lib/strategy에 의존하지 않으므로 구조로 둔다.
+ * 총자산을 몰랐던 런은 `equity`·한도가 null이다.
+ */
+export interface SizingRecord {
+    equity: number | null;
+    slots: number;
+    slotsSource: 'prices' | 'carried' | 'default';
+    coverage: number | null;
+    priceCount: number;
+    slotBudget: number | null;
+    maxPositionSize: number | null;
+    maxTotalExposure: number | null;
+    dailyLossLimit: number | null;
+}
+
+const SIZING_SOURCES = new Set(['prices', 'carried', 'default']);
+const numOrNull = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+
+/** 손상된 jsonb는 null — 호출자가 "기록 없음"으로 처리한다. */
+function parseSizingRecord(raw: unknown): SizingRecord | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    const slots = r.slots;
+    if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > 20) {
+        return null;
+    }
+    if (typeof r.slotsSource !== 'string' || !SIZING_SOURCES.has(r.slotsSource)) return null;
+    return {
+        equity: numOrNull(r.equity),
+        slots,
+        slotsSource: r.slotsSource as SizingRecord['slotsSource'],
+        coverage: numOrNull(r.coverage),
+        priceCount: numOrNull(r.priceCount) ?? 0,
+        slotBudget: numOrNull(r.slotBudget),
+        maxPositionSize: numOrNull(r.maxPositionSize),
+        maxTotalExposure: numOrNull(r.maxTotalExposure),
+        dailyLossLimit: numOrNull(r.dailyLossLimit),
+    };
+}
+
+/**
+ * 가장 최근 execute 런의 사이징 기록. `pricedOnly`면 시세로 칸 수를 계산한 런(판단 틱)만 본다 —
+ * 위험 틱이 이어 쓸 K와 semi_auto 승인이 다시 볼 손실 한도의 출처다. 이 경우 총자산을 몰랐던 기록은
+ * 쓸 수 없으므로 null로 거른다(시세 계산 런은 정의상 총자산을 안다).
+ */
+export async function getLatestSizing(
+    db: Db,
+    opts: { pricedOnly?: boolean } = {},
+): Promise<{ sizing: SizingRecord; at: Date } | null> {
+    const conds: SQL[] = [
+        eq(cronRuns.cronType, 'execute'),
+        sql`${cronRuns.summary}->'sizing' is not null`,
+    ];
+    if (opts.pricedOnly) {
+        conds.push(sql`${cronRuns.summary}->'sizing'->>'slotsSource' = 'prices'`);
+    }
+    const rows = await db
+        .select({ summary: cronRuns.summary, startedAt: cronRuns.startedAt })
+        .from(cronRuns)
+        .where(and(...conds))
+        .orderBy(desc(cronRuns.startedAt))
+        .limit(1);
+    const row = rows[0];
+    if (!row) return null;
+    const sizing = parseSizingRecord((row.summary as Record<string, unknown> | null)?.sizing);
+    if (!sizing) return null;
+    if (opts.pricedOnly && (sizing.equity === null || sizing.dailyLossLimit === null)) return null;
+    return { sizing, at: row.startedAt };
+}
+
+/**
  * AI 리뷰 대상 — 판단 단계가 남긴 **신호 결정 전부**. 체결된 것만이 아니라 예산·한도로 못 산
  * 신호도 포함한다: 못 산 신호도 전진 수익률로 평가할 수 있고, 리뷰가 가치를 내는지 재려면 표본이
  * 많아야 한다(스펙 §5).

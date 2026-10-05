@@ -1,7 +1,12 @@
 import { getDb } from './_lib/db.js';
 import { isAuthenticated } from './_lib/auth.js';
 import { getAvailableCashUsd } from './_lib/cash.js';
-import { getOpenPositions, getConfigValue, getTodayTradeCount } from '../lib/db/queries.js';
+import {
+    getOpenPositions,
+    getConfigValue,
+    getTodayTradeCount,
+    getLatestSizing,
+} from '../lib/db/queries.js';
 
 async function handler(req: Request): Promise<Response> {
     if (!(await isAuthenticated(req))) return new Response('Forbidden', { status: 403 });
@@ -25,6 +30,9 @@ async function handler(req: Request): Promise<Response> {
     // "브로커를 못 읽었다"와 "현금이 없다"는 다른 상태이고, 후자로 표시하면 운영자가
     // 있지도 않은 잔고 소진을 믿게 된다.
     const cashBalance = await getAvailableCashUsd(db, mode).catch(() => null);
+    // 칸 수·한도는 설정이 아니라 execute가 총자산에서 도출한 값이다 — 마지막 런이 쓴 값을 그대로 보여 준다.
+    // 대시보드가 따로 계산하면 감시 종목 시세가 없어 칸 수가 실제와 갈라진다.
+    const latestSizing = await getLatestSizing(db).catch(() => null);
 
     return Response.json({
         running: true,
@@ -34,6 +42,7 @@ async function handler(req: Request): Promise<Response> {
         tradingEnabled: tradingEnabled ?? true,
         maxTradesPerDay: maxTradesPerDay ?? 20,
         cashBalance,
+        sizing: latestSizing ? { ...latestSizing.sizing, at: latestSizing.at.toISOString() } : null,
     });
 }
 

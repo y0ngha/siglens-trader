@@ -35,6 +35,7 @@ const q = vi.hoisted(() => ({
     hasDecisionPhaseSince: vi.fn(),
     setPositionStopPrice: vi.fn(),
     getSymbolsSoldSince: vi.fn(),
+    getLatestSizing: vi.fn(),
 }));
 vi.mock('../../../lib/db/queries', () =>
     Object.fromEntries(
@@ -189,10 +190,7 @@ beforeEach(() => {
     config = {
         trading_enabled: true,
         trading_mode: 'dry_run',
-        max_position_size: 5000,
-        max_total_exposure: 25000,
         max_trades_per_day: 20,
-        max_daily_loss_usd: 500,
     };
     q.getConfigValue.mockImplementation(async (_db: unknown, key: string) => config[key] ?? null);
     for (const fn of [
@@ -218,6 +216,7 @@ beforeEach(() => {
     q.hasDecisionPhaseSince.mockResolvedValue(false);
     q.setPositionStopPrice.mockResolvedValue(true);
     q.getSymbolsSoldSince.mockResolvedValue(new Set());
+    q.getLatestSizing.mockResolvedValue(null);
     watch();
     mockCash.mockResolvedValue(25000);
     mockClaimOnce.mockResolvedValue(true);
@@ -334,10 +333,10 @@ describe('risk phase — every tick', () => {
     });
 });
 
-describe('§3.1 slot sizing — equity ÷ mr_slots, caps on top', () => {
-    const budgetOf = () =>
+describe('equity-scaled sizing — slots and caps from the account (2026-10-05 spec)', () => {
+    const budgetOf = (sym = 'AAA') =>
         (
-            decisionsOf().find((d) => d.symbol === 'AAA')!.detail as {
+            decisionsOf().find((d) => d.symbol === sym)!.detail as {
                 budget: Record<string, unknown>;
             }
         ).budget;
@@ -349,6 +348,22 @@ describe('§3.1 slot sizing — equity ÷ mr_slots, caps on top', () => {
         setQuotes({ SPY: lastOf(rising()), AAA: lastOf(aaa), HLD: 50 }, { HLD: 50 });
         return lastOf(aaa);
     };
+    const sizingOf = () => summary().sizing as Record<string, unknown>;
+    const record = (patch: Record<string, unknown> = {}) => ({
+        sizing: {
+            equity: 2000,
+            slots: 4,
+            slotsSource: 'prices',
+            coverage: 0.79,
+            priceCount: 39,
+            slotBudget: 500,
+            maxPositionSize: 500,
+            maxTotalExposure: 2000,
+            dailyLossLimit: 80,
+            ...patch,
+        },
+        at: new Date('2026-01-02T20:45:00Z'),
+    });
 
     it('equity counts held positions at the live price', async () => {
         const px = signalAAA();
@@ -366,39 +381,163 @@ describe('§3.1 slot sizing — equity ÷ mr_slots, caps on top', () => {
             limitedBy: 'slot',
             equity: 24000,
             slots: 8,
+            slotsSource: 'prices',
+            coverage: 1,
             slotBudget: 3000,
         });
+        expect(sizingOf()).toMatchObject({
+            equity: 24000,
+            slots: 8,
+            slotsSource: 'prices',
+            priceCount: 1,
+            maxPositionSize: 3000,
+            maxTotalExposure: 24000,
+            dailyLossLimit: 480,
+        });
     });
 
-    it('mr_slots changes the slot size', async () => {
+    it('a small account drops slots so a pricier signal still buys one share', async () => {
+        // 총자산 $2,000. 감시 종목 4개 중 $500 이하가 3개 → 8칸($250)이면 커버리지 25%, 4칸($500)이면 75%.
+        watch('PRI', 'C1', 'C2', 'C3');
+        const pri = dipAbove(3).map((c) => c + 280); // ≈ $420, 200일선 위 눌림
+        setBars({ SPY: rising(), PRI: pri, C1: falling(), C2: falling(), C3: falling() });
+        setQuotes({ SPY: lastOf(rising()), PRI: lastOf(pri), C1: 450, C2: 480, C3: 900 });
+        mockCash.mockResolvedValue(2000);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({ symbol: 'PRI', quantity: 1 });
+        expect(budgetOf('PRI')).toMatchObject({ slots: 4, slotBudget: 500, coverage: 0.75 });
+        expect(sizingOf()).toMatchObject({ slots: 4, dailyLossLimit: 80 });
+    });
+
+    it('stale DB keys (mr_slots, max_position_size, …) are ignored', async () => {
         const px = signalAAA();
-        config.mr_slots = 10;
+        Object.assign(config, {
+            mr_slots: 1,
+            max_position_size: 1,
+            max_total_exposure: 1,
+            max_daily_loss_usd: 1,
+        });
+        q.getTodayRealizedPnl.mockResolvedValue(-100); // 옛 한도 $1이면 차단됐을 손실
         await run(DECISION_NOW);
         expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
-            quantity: Math.floor(2500 / px),
+            quantity: Math.floor(3125 / px),
         });
-        expect(budgetOf()).toMatchObject({ slots: 10, slotBudget: 2500 });
+        expect(summary().entriesBlockedBy).toBeUndefined();
+        expect(q.getConfigValue).not.toHaveBeenCalledWith(fakeDb, 'mr_slots');
+        expect(q.getConfigValue).not.toHaveBeenCalledWith(fakeDb, 'max_daily_loss_usd');
     });
 
-    it('max_position_size still caps a slot bigger than it', async () => {
+    it('an absurd equity is held by the absolute caps', async () => {
         const px = signalAAA();
-        mockCash.mockResolvedValue(100_000); // 칸 12,500 > 종목 한도 5,000
-        config.max_total_exposure = 100_000;
+        mockCash.mockResolvedValue(1e9);
         await run(DECISION_NOW);
         expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
-            quantity: Math.floor(5000 / px),
+            quantity: Math.floor(25_000 / px),
         });
-        expect(budgetOf()).toMatchObject({ limitedBy: 'symbol', slotBudget: 12500 });
+        expect(budgetOf()).toMatchObject({ limitedBy: 'symbol' });
+        expect(sizingOf()).toMatchObject({
+            maxPositionSize: 25_000,
+            maxTotalExposure: 110_000,
+            dailyLossLimit: 4000,
+        });
     });
 
-    it('unknown cash (broker read failed) → no slot cap, old caps only', async () => {
-        const px = signalAAA();
+    it('unknown cash on a decision tick → no entry, mr_data_error, the window retries', async () => {
+        signalAAA();
         mockCash.mockResolvedValue(null);
+        q.getLatestSizing.mockResolvedValue(record());
         await run(DECISION_NOW);
-        expect(mockExecuteEntry.mock.calls[0]![1]).toMatchObject({
-            quantity: Math.floor(5000 / px),
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['AAA:mr_data_error']);
+        const d = decisionsOf()[0]!;
+        expect(d.detail).toMatchObject({ reason: 'equity_unavailable', mr: { signal: true } });
+        expect(summary().decisionPhase).toBeUndefined();
+        // 칸 수는 총자산 0으로 계산하지 않고 이어 쓴다 → 손실 한도는 기록의 총자산·칸 수 그대로.
+        expect(sizingOf()).toMatchObject({
+            equity: null,
+            slots: 4,
+            slotsSource: 'carried',
+            dailyLossLimit: 80,
         });
-        expect(budgetOf()).toMatchObject({ limitedBy: 'symbol', equity: null, slotBudget: null });
+    });
+
+    it('unknown cash and no record → loss check skipped, limit null', async () => {
+        signalAAA();
+        mockCash.mockResolvedValue(null);
+        q.getTodayRealizedPnl.mockResolvedValue(-1_000_000);
+        await run(DECISION_NOW);
+        expect(summary().entriesBlockedBy).toBeUndefined();
+        expect(sizingOf()).toMatchObject({
+            slots: 8,
+            slotsSource: 'default',
+            dailyLossLimit: null,
+        });
+        expect(actions()).toEqual(['AAA:mr_data_error']);
+    });
+
+    it('a decision tick with too few quotes carries the last K instead of guessing', async () => {
+        watch('AAA', 'X1', 'X2', 'X3');
+        const aaa = dipAbove();
+        setBars({ SPY: rising(), AAA: aaa });
+        setQuotes({ SPY: lastOf(rising()), AAA: lastOf(aaa) }); // 4개 중 1개만
+        q.getLatestSizing.mockResolvedValue(record({ slots: 5 }));
+        await run(DECISION_NOW);
+        expect(q.getLatestSizing).toHaveBeenCalledWith(fakeDb, { pricedOnly: true });
+        expect(sizingOf()).toMatchObject({ slots: 5, slotsSource: 'carried', equity: 25000 });
+        expect(budgetOf()).toMatchObject({ slots: 5, slotBudget: 5000 });
+    });
+
+    it('a record lookup failure falls back to MAX_SLOTS', async () => {
+        q.getOpenPositions.mockResolvedValue([position()]);
+        setQuotes({ NVDA: 95 });
+        q.getLatestSizing.mockRejectedValue(new Error('db down'));
+        await run(RISK_NOW);
+        expect(sizingOf()).toMatchObject({ slots: 8, slotsSource: 'default' });
+    });
+
+    describe('daily loss limit = 16% of a slot', () => {
+        // 총자산 = 현금 1,500 + NVDA 10주 × 50 = 2,000. 전일 종가 = 현재가 → 미실현 변동 0.
+        const riskTick = async (pnl: number) => {
+            q.getOpenPositions.mockResolvedValue([position({ avgPrice: '50', stopPrice: '1' })]);
+            setQuotes({ NVDA: 50 }, { NVDA: 50 });
+            mockCash.mockResolvedValue(1500);
+            q.getTodayRealizedPnl.mockResolvedValue(pnl);
+            await run(RISK_NOW);
+            return summary();
+        };
+
+        it('a risk tick carries the last decision’s K: 2,000 ÷ 4 × 16% = 80', async () => {
+            q.getLatestSizing.mockResolvedValue(record());
+            expect(await riskTick(-79.99)).not.toHaveProperty('entriesBlockedBy');
+            expect(sizingOf()).toMatchObject({
+                slots: 4,
+                slotsSource: 'carried',
+                dailyLossLimit: 80,
+            });
+            expect(await riskTick(-80.01)).toMatchObject({ entriesBlockedBy: 'daily_loss_limit' });
+        });
+
+        it('no record yet → K = 8, the strict limit: 2,000 ÷ 8 × 16% = 40', async () => {
+            expect(await riskTick(-39.99)).not.toHaveProperty('entriesBlockedBy');
+            expect(sizingOf()).toMatchObject({
+                slots: 8,
+                slotsSource: 'default',
+                dailyLossLimit: 40,
+            });
+            expect(await riskTick(-40.01)).toMatchObject({ entriesBlockedBy: 'daily_loss_limit' });
+        });
+
+        it('unknown cash on a risk tick uses the record’s equity', async () => {
+            q.getLatestSizing.mockResolvedValue(record({ equity: 4000 }));
+            q.getOpenPositions.mockResolvedValue([position({ avgPrice: '50', stopPrice: '1' })]);
+            setQuotes({ NVDA: 50 }, { NVDA: 50 });
+            mockCash.mockResolvedValue(null);
+            q.getTodayRealizedPnl.mockResolvedValue(-161);
+            await run(RISK_NOW);
+            // 4,000 ÷ 4 × 16% = 160
+            expect(summary()).toMatchObject({ entriesBlockedBy: 'daily_loss_limit' });
+            expect(sizingOf()).toMatchObject({ equity: null, dailyLossLimit: 160 });
+        });
     });
 });
 
@@ -429,7 +568,12 @@ describe('decision phase — entries', () => {
     });
 
     it('ranks signals by RSI(2) and skips what the budget cannot fund', async () => {
-        config.max_total_exposure = 5000; // one slot
+        // 첫 매수가 현금을 다 쓴다 → 둘째는 현금 부족.
+        mockExecuteEntry.mockResolvedValue({
+            executed: true,
+            exposureDelta: 3125,
+            cashDebit: 25000,
+        });
         watch('AAA', 'BBB');
         const deep = dipAbove(4); // deeper dip → lower RSI2
         const shallow = dipAbove(2);
@@ -667,7 +811,6 @@ describe('modes and guards', () => {
     });
 
     it('records cash and exposure consumption across entries in one run', async () => {
-        config.max_total_exposure = 1_000_000;
         watch('AAA', 'BBB');
         setBars({ SPY: rising(), AAA: dipAbove(3), BBB: dipAbove(4) });
         setQuotes({ SPY: lastOf(rising()), AAA: lastOf(dipAbove(3)), BBB: lastOf(dipAbove(4)) });
@@ -888,7 +1031,6 @@ describe('A7 — in-flight orders are read before open positions', () => {
 
 describe('A5 — no new orders inside the last minute before the close', () => {
     it('stops submitting once inside 1 minute of the close, marks closeCutoffHit, decisionPhase not done', async () => {
-        config.max_total_exposure = 1_000_000;
         watch('AAA', 'BBB');
         const aaa = dipAbove(3);
         const bbb = dipAbove(4); // deeper dip → lower RSI2 → ranked first
@@ -1027,7 +1169,7 @@ describe('T7 — wiring', () => {
     });
 
     it('an in-flight pending buy consumes budget for a later candidate', async () => {
-        config.max_total_exposure = 5000;
+        mockCash.mockResolvedValue(5000); // 총 노출 한도 = 총자산 5,000 = 미체결 매수 10 × 500
         watch('AAA');
         const aaa = dipAbove();
         setBars({ SPY: rising(), AAA: aaa });
@@ -1066,7 +1208,7 @@ describe('T8 — a held position with no live price is a data error, not an exit
 
 describe('A10 — every entry-signal decision carries detail.mr.signal', () => {
     it('is set on mr_skip_budget, not only on mr_buy', async () => {
-        config.max_total_exposure = 1; // forces budget skip
+        mockCash.mockResolvedValue(1); // forces budget skip
         watch('NVDA');
         setBars({ SPY: rising(), NVDA: dipAbove() });
         setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
