@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/y0ngha/siglens-trader/compare/v0.39.0...v0.39.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* 포지션별 목표에 보유 종목 전부 표시 ([#96](https://github.com/y0ngha/siglens-trader/issues/96)) ([85dded9](https://github.com/y0ngha/siglens-trader/commit/85dded931a77f82839df22a6fe0dae9e892ae198))
+
 # [0.39.0](https://github.com/y0ngha/siglens-trader/compare/v0.38.2...v0.39.0) (2026-10-05)
 
 
