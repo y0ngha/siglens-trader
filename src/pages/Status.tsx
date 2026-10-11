@@ -432,7 +432,7 @@ export function StatusPage() {
                                     className="space-y-2 sm:hidden"
                                     data-testid="position-targets-mobile"
                                 >
-                                    {openPositions.slice(0, 5).map((p) => {
+                                    {openPositions.map((p) => {
                                         const { avg, cur, profitable } = computePositionView(p);
                                         const curColor =
                                             profitable === null
@@ -474,11 +474,6 @@ export function StatusPage() {
                                             </div>
                                         );
                                     })}
-                                    {openPositions.length > 5 && (
-                                        <p className="text-center text-[10px] text-neutral-500">
-                                            +{openPositions.length - 5}개 포지션
-                                        </p>
-                                    )}
                                 </div>
                                 {/* Desktop: table */}
                                 <div
@@ -509,7 +504,7 @@ export function StatusPage() {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-[#262626]">
-                                            {openPositions.slice(0, 5).map((p) => {
+                                            {openPositions.map((p) => {
                                                 const { avg, cur, profitable } =
                                                     computePositionView(p);
                                                 const curColor =
@@ -545,11 +540,6 @@ export function StatusPage() {
                                             })}
                                         </tbody>
                                     </table>
-                                    {openPositions.length > 5 && (
-                                        <div className="border-t border-[#262626] px-3 py-1.5 text-center text-[10px] text-neutral-500">
-                                            +{openPositions.length - 5}개 포지션
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         )}

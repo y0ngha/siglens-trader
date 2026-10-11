@@ -944,6 +944,32 @@ describe('StatusPage', () => {
         expect(mobileSection).toHaveTextContent('청산조건');
     });
 
+    it('lists every open position in the targets section, not just the first five', async () => {
+        const symbols = ['QCOM', 'ARM', 'LRCX', 'AMAT', 'HOOD', 'MSTR', 'TSM', 'NVDA'];
+        const manyPositions = symbols.map((symbol, i) => ({
+            ...mockPositions[0],
+            id: 100 + i,
+            symbol,
+        }));
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getPositions.mockResolvedValue(manyPositions);
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('position-targets-table')).toBeInTheDocument();
+        });
+
+        const table = screen.getByTestId('position-targets-table');
+        const mobile = screen.getByTestId('position-targets-mobile');
+        expect(table.querySelectorAll('tbody tr')).toHaveLength(symbols.length);
+        for (const symbol of symbols) {
+            expect(table).toHaveTextContent(symbol);
+            expect(mobile).toHaveTextContent(symbol);
+        }
+        expect(table).not.toHaveTextContent('개 포지션');
+    });
+
     // --- Disaster stop display (from positions.stopPrice, §3/§6) ---
 
     it('shows the disaster stop price for a position with a stopPrice', async () => {
