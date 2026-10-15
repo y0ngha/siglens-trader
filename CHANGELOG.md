@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.40.0](https://github.com/y0ngha/siglens-trader/compare/v0.39.1...v0.40.0) (2026-10-15)
+
+
+### Features
+
+* **strategy:** 재난 손절 기본값 5×ATR → 10×ATR ([#98](https://github.com/y0ngha/siglens-trader/issues/98)) ([8edeb73](https://github.com/y0ngha/siglens-trader/commit/8edeb736a91355e4c90178eb8df4b465af47f648))
+
 ## [0.39.1](https://github.com/y0ngha/siglens-trader/compare/v0.39.0...v0.39.1) (2026-10-11)
 
 
