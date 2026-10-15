@@ -35,7 +35,7 @@ const configEntries: ConfigEntry[] = [
     { key: 'dry_run_cash_usd', value: 25000, updatedAt: new Date().toISOString() },
     { key: 'mr_rsi_entry', value: 10, updatedAt: new Date().toISOString() },
     { key: 'mr_max_hold_days', value: 10, updatedAt: new Date().toISOString() },
-    { key: 'mr_stop_atr', value: 5, updatedAt: new Date().toISOString() },
+    { key: 'mr_stop_atr', value: 10, updatedAt: new Date().toISOString() },
     { key: 'mr_regime_filter', value: true, updatedAt: new Date().toISOString() },
     { key: 'dry_run_cost_bps', value: 10, updatedAt: new Date().toISOString() },
 ];

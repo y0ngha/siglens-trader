@@ -59,7 +59,7 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 | `dry_run_cash_usd` | USD | 5,000 (seed 25,000) |
 | `mr_rsi_entry` | 1–50 | 10 |
 | `mr_max_hold_days` | integer 1–60 | 10 |
-| `mr_stop_atr` | 0–20 (0 = no disaster stop) | 5 |
+| `mr_stop_atr` | 0–20 (0 = no disaster stop) | 10 (5 until 2026-10-15) |
 | `mr_regime_filter` | boolean | true |
 | `dry_run_cost_bps` | 0–100 (one-way) | 10 |
 

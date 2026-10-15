@@ -113,7 +113,7 @@ accepted. Details: [`api/CLAUDE.md`](api/CLAUDE.md) §Authentication, [`lib/auth
 - **진입**: 가격 > SMA200 **그리고** RSI(2) < `mr_rsi_entry`(10) **그리고** (`mr_regime_filter`면) SPY > SMA200.
   신호가 예산보다 많으면 RSI(2)가 낮은 순. 한 종목 한 포지션 — 물타기 없음. 오늘(ET) 판 종목은 다시 사지 않는다.
 - **청산**(전량): 가격 > SMA5 · 보유 `mr_max_hold_days`(10)거래일 · 재난 손절 `positions.stop_price`
-  (= 진입가 − `mr_stop_atr`(5) × 전일까지 ATR(14), 진입 시점에 고정). 재난 손절만 매 틱, 나머지는 판단 틱에서.
+  (= 진입가 − `mr_stop_atr`(10) × 전일까지 ATR(14), 진입 시점에 고정). 재난 손절만 매 틱, 나머지는 판단 틱에서.
 - **판단은 하루 1회** — 장 마감 20분 전 창의 첫 execute 틱(반일장은 12:40 ET). 오늘 봉의 종가 자리에
   실시간 가격을 넣는다. 멱등 기록은 `cron_runs.summary.decisionPhase = 'done'` — 데이터 오류·시한 초과·마감 임박
   중단이 있으면 남기지 않아 창의 다음 틱이 재시도한다. 주문 직전 마감까지 1분 이하면 더 내지 않는다.
