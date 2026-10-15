@@ -37,7 +37,7 @@ export interface MeanReversionParams {
 export const DEFAULT_MR_PARAMS: MeanReversionParams = {
     rsiEntry: 10,
     maxHoldDays: 10,
-    stopAtr: 5,
+    stopAtr: 10,
     regimeFilter: true,
 };
 

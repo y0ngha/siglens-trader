@@ -36,7 +36,7 @@ async function seedInto(db: NodePgDatabase) {
         { key: 'dry_run_cash_usd', value: 25000 },
         { key: 'mr_rsi_entry', value: 10 },
         { key: 'mr_max_hold_days', value: 10 },
-        { key: 'mr_stop_atr', value: 5 },
+        { key: 'mr_stop_atr', value: 10 },
         { key: 'mr_regime_filter', value: true },
         { key: 'dry_run_cost_bps', value: 10 },
     ];

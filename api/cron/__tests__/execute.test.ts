@@ -301,7 +301,7 @@ describe('risk phase — every tick', () => {
         setBars({ NVDA: Array(260).fill(100) }); // constant range ±1 → ATR 2
         setQuotes({ NVDA: 95 });
         await run(RISK_NOW);
-        expect(q.setPositionStopPrice).toHaveBeenCalledWith(fakeDb, 1, 90); // 100 − 5 × 2
+        expect(q.setPositionStopPrice).toHaveBeenCalledWith(fakeDb, 1, 80); // 100 − 10 × 2
         expect(summary()).toMatchObject({ stopBackfilled: 1 });
     });
 
@@ -555,10 +555,10 @@ describe('decision phase — entries', () => {
             quantity: Math.floor(25000 / 8 / lastOf(nvda)),
             price: lastOf(nvda),
         });
-        // 손절 = 진입가 − 5 × ATR(14, 오늘 봉 제외)
+        // 손절 = 진입가 − 기본 10 × ATR(14, 오늘 봉 제외)
         const atrPrev = wilderAtr(series(nvda).slice(0, -1), 14)!;
         expect((args as { stopPrice: number }).stopPrice).toBeCloseTo(
-            lastOf(nvda) - 5 * atrPrev,
+            lastOf(nvda) - 10 * atrPrev,
             6,
         );
         expect(actions()).toEqual(['NVDA:mr_buy']);
@@ -1112,7 +1112,7 @@ describe('T4 — stop backfill ATR excludes the entry-day bar', () => {
         ]);
         setQuotes({ NVDA: 95 });
         await run(RISK_NOW);
-        expect(q.setPositionStopPrice).toHaveBeenCalledWith(fakeDb, 1, 90); // 100 − 5 × 2, spike excluded
+        expect(q.setPositionStopPrice).toHaveBeenCalledWith(fakeDb, 1, 80); // 100 − 10 × 2, spike excluded
     });
 });
 
