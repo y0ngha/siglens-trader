@@ -352,11 +352,14 @@ async function handler(req: Request): Promise<Response> {
             const todayPnl = await getTodayRealizedPnl(db, tradingMode);
             let unrealizedToday = 0;
             const lossLimitText = maxDailyLoss === null ? '' : maxDailyLoss.toFixed(2);
+            // 차단은 틱마다 다시 재는 그 틱의 판정이고 메일은 하루 1통이다 — "오늘 내내 금지"로 읽히지 않게.
+            const lossRecheckNote =
+                '한도는 execute 틱마다 다시 계산합니다. 마감 20분 전 판단 틱에서 한도 안으로 돌아와 있으면 그날 진입은 정상적으로 이뤄집니다(이 메일은 하루 한 번만 보냅니다).';
             if (maxDailyLoss !== null && todayPnl < -maxDailyLoss) {
                 await notifyOncePerDay(
                     'daily-loss',
                     '일일 손실 한도 초과',
-                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${lossLimitText})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
+                    `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)})이 한도($${lossLimitText})를 넘어 지금은 신규 진입을 막고 있습니다.\n${lossRecheckNote}\n${exitPolicyNote}`,
                 );
                 entryBlock = { outcome: 'daily_loss_limit' };
                 forceFullExit = true;
@@ -385,7 +388,7 @@ async function handler(req: Request): Promise<Response> {
                     await notifyOncePerDay(
                         'daily-loss',
                         '일일 손실 한도 초과 (미실현 포함)',
-                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 오늘 미실현 변동($${Math.abs(unrealizedToday).toFixed(2)}) = 총 $${Math.abs(total).toFixed(2)}이 한도($${lossLimitText})를 초과하여 신규 진입이 중지되었습니다.\n${exitPolicyNote}`,
+                        `오늘 실현 손실($${Math.abs(todayPnl).toFixed(2)}) + 오늘 미실현 변동($${Math.abs(unrealizedToday).toFixed(2)}) = 총 $${Math.abs(total).toFixed(2)}이 한도($${lossLimitText})를 넘어 지금은 신규 진입을 막고 있습니다.\n${lossRecheckNote}\n${exitPolicyNote}`,
                     );
                     entryBlock = { outcome: 'daily_loss_limit' };
                     forceFullExit = true;
