@@ -29,12 +29,23 @@ export async function getHoldings(): Promise<TossHolding[]> {
     }));
 }
 
+/**
+ * 매수 가능 현금. **읽을 수 없으면 throw한다 — 0이 아니다.** 0은 "현금이 없다"는 정상 값이라
+ * 총자산을 줄여 칸 크기·일일 손실 한도를 함께 줄인다. 응답이 깨졌으면 호출부가 실패로 처리해
+ * 마지막 사이징 기록으로 잰다(`api/_lib/cash.ts`).
+ */
 export async function getBuyingPower(currency: 'USD' | 'KRW'): Promise<number> {
-    const res = await tossFetch<{ cashBuyingPower: string }>('GET', '/api/v1/buying-power', {
+    const res = await tossFetch<{ cashBuyingPower?: string }>('GET', '/api/v1/buying-power', {
         account: true,
         query: { currency },
     });
-    return parseDecimal(res.cashBuyingPower, 0);
+    const parsed = parseDecimal(res.cashBuyingPower, NaN);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(
+            `Toss buying-power: unreadable cashBuyingPower (${String(res.cashBuyingPower)})`,
+        );
+    }
+    return parsed;
 }
 
 /**

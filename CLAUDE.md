@@ -29,6 +29,7 @@ lib/auth/ → lib/db (Db type + schema) only. cookie.ts and throttle.ts are pure
 lib/db/ → pg (node-postgres), drizzle-orm. recovery.ts → DB consistency checks. seed-operator.ts (CLI only) → lib/auth.
 lib/lock.ts → @upstash/redis (SETNX distributed lock)
 lib/validation.ts → No external deps (pure guards)
+lib/sleep.ts → No external deps (one place so tests can skip waits)
 ```
 
 ### Prohibited
