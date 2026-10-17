@@ -616,6 +616,32 @@ describe('decision phase — entries', () => {
         expect(actions()).toEqual(['NVDA:mr_data_error']);
     });
 
+    it('a quote far from the previous close is used only when a re-fetch agrees', async () => {
+        watch('NVDA');
+        const px = lastOf(dipAbove());
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        // Real 40% gap down: both fetches agree → the signal stands.
+        setQuotes({ SPY: lastOf(rising()), NVDA: px }, { NVDA: px / 0.6 });
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalled();
+
+        // Corrupt tick: the re-fetch disagrees → no price for this tick, no buy.
+        mockExecuteEntry.mockClear();
+        let nvdaCalls = 0;
+        mockQuote.mockImplementation(async (sym: string) =>
+            sym === 'NVDA'
+                ? {
+                      source: 'fmp_quote',
+                      price: nvdaCalls++ === 0 ? px : px / 0.6,
+                      previousClose: px / 0.6,
+                  }
+                : { source: 'fmp_quote', price: lastOf(rising()), previousClose: null },
+        );
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:mr_data_error']);
+    });
+
     it('in-flight buy or needs_review blocks a repeat buy (decision retry idempotency)', async () => {
         watch('NVDA', 'TSLA');
         setBars({ SPY: rising(), NVDA: dipAbove(), TSLA: dipAbove(4) });
@@ -856,15 +882,36 @@ describe('run-level outcomes', () => {
         });
     });
 
-    it('broker calendar failure in a live mode skips with a mail', async () => {
-        config.trading_mode = 'semi_auto';
-        q.getOpenPositions.mockResolvedValue([position()]);
+    it('broker calendar failure blocks entries but still runs exits (stops), with a mail', async () => {
+        config.trading_mode = 'auto';
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '80' })]);
+        setQuotes({ NVDA: 70 }, { NVDA: 96 });
         mockIsUsMarketOpen.mockRejectedValue(new Error('toss down'));
-        expect(await run(RISK_NOW)).toMatchObject({
-            skipped: true,
-            reason: 'market_status_unavailable',
-        });
+        await run(RISK_NOW);
+        expect(actions()).toEqual(['NVDA:mr_stop_atr']);
+        expect(summary().entriesBlockedBy).toBe('market_status_unavailable');
         expect(mockSendError).toHaveBeenCalled();
+    });
+
+    it('broker calendar failure on the decision tick: no entries, decision not marked done', async () => {
+        config.trading_mode = 'auto';
+        watch('NVDA');
+        setBars({ SPY: rising(), NVDA: dipAbove() });
+        setQuotes({ SPY: lastOf(rising()), NVDA: lastOf(dipAbove()) });
+        mockIsUsMarketOpen.mockRejectedValue(new Error('toss down'));
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:mr_skip_breaker']);
+        expect(summary().decisionPhase).toBeUndefined();
+    });
+
+    it('a held position without a live price makes this tick’s equity unknown — no inflated limit', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ quantity: 10, avgPrice: '100' })]);
+        setQuotes({});
+        await run(RISK_NOW);
+        expect(
+            (summary().sizing as Record<string, unknown> | undefined)?.equity ?? null,
+        ).toBeNull();
     });
 
     it('trade limit with nothing held outside the window is a plain skip', async () => {
@@ -888,6 +935,11 @@ describe('run-level outcomes', () => {
 
     it('auto under the loss breaker liquidates a priceless position only after consecutive misses', async () => {
         config.trading_mode = 'auto';
+        // No live price → this tick's equity is unknown; the loss limit comes from the last record.
+        q.getLatestSizing.mockResolvedValue({
+            sizing: { equity: 2000, slots: 4, dailyLossLimit: 80 },
+            at: new Date('2026-01-02T20:45:00Z'),
+        });
         q.getTodayRealizedPnl.mockResolvedValue(-600);
         q.getOpenPositions.mockResolvedValue([position()]);
         setQuotes({});
@@ -1156,6 +1208,10 @@ describe('T2 — kill switch re-check on exit paths never calls executeExit', ()
 
     it('(d) auto + no price under the breaker', async () => {
         config.trading_mode = 'auto';
+        q.getLatestSizing.mockResolvedValue({
+            sizing: { equity: 2000, slots: 4, dailyLossLimit: 80 },
+            at: new Date('2026-01-02T20:45:00Z'),
+        });
         q.getTodayRealizedPnl.mockResolvedValue(-600);
         q.getOpenPositions.mockResolvedValue([position()]);
         q.getNoPriceStreak.mockResolvedValue(2);

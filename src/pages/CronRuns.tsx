@@ -367,6 +367,7 @@ function actionChipClass(action: string): string {
         case 'needs_review':
         case 'stop_backfill_failed':
         case 'stop_unconfirmed':
+        case 'broker_lookup_failed':
         case 'trading_disabled_mid_loop':
             return 'bg-red-500/10 text-red-400';
         case 'gate_skipped_deadline':
@@ -390,6 +391,7 @@ function actionChipClass(action: string): string {
         case 'mr_exit_time':
         case 'order_submitted':
         case 'order_partial':
+        case 'adopted_broker_order':
             return 'bg-blue-500/10 text-blue-400';
         case 'already_open':
         case 'already_closed':
@@ -428,6 +430,10 @@ function decisionActionLabel(action: string): string {
             return '한도 강제청산';
         case 'stop_unconfirmed':
             return '손절 시세 불일치';
+        case 'adopted_broker_order':
+            return '브로커 주문 연결';
+        case 'broker_lookup_failed':
+            return '브로커 주문 조회 실패';
         case 'reviewed':
             return 'AI 리뷰';
         case 'review_error':

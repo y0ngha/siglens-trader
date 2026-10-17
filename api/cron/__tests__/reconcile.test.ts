@@ -54,11 +54,15 @@ vi.mock('../../../lib/db/queries', () => ({
     finishCronRun: (...args: unknown[]) => mockFinishCronRun(...args),
     finalizeStaleCronRuns: (...args: unknown[]) => mockFinalizeStaleCronRuns(...args),
     insertCronDecisions: (...args: unknown[]) => mockInsertCronDecisions(...args),
+    getTrackedTossOrderIds: (...args: unknown[]) => mockGetTrackedTossOrderIds(...args),
 }));
+const mockGetTrackedTossOrderIds = vi.fn();
 
 const mockGetOrder = vi.fn();
+const mockListBrokerOrders = vi.fn();
 vi.mock('../../../lib/trading/orders', () => ({
     getOrder: (...args: unknown[]) => mockGetOrder(...args),
+    listBrokerOrders: (...args: unknown[]) => mockListBrokerOrders(...args),
 }));
 
 const mockCancelOrder = vi.fn();
@@ -104,6 +108,8 @@ function makeRequest(authorized: boolean): Request {
 }
 
 function setupDefaults() {
+    mockListBrokerOrders.mockResolvedValue([]);
+    mockGetTrackedTossOrderIds.mockResolvedValue(new Set());
     mockGetDb.mockReturnValue(fakeDb);
     mockVerifyCronSecret.mockReturnValue(true);
     mockAcquireLock.mockResolvedValue('test-lock-token');
@@ -414,6 +420,90 @@ describe('reconcile cron handler', () => {
 
             // Should still succeed with results
             expect(body.results).toEqual([{ id: 1, symbol: 'AAPL', action: 'timeout' }]);
+            expect(mockListBrokerOrders).toHaveBeenCalledWith('AAPL', '2026-05-26', '2026-05-26');
+        });
+    });
+
+    describe('no broker id: find the order in the broker list before closing it out', () => {
+        const brokerOrder = (o: Record<string, unknown> = {}) => ({
+            orderId: 'toss-found',
+            symbol: 'AAPL',
+            side: 'SELL',
+            quantity: 10,
+            status: 'FILLED',
+            orderedAt: new Date('2026-05-26T13:00:20.000Z'),
+            ...o,
+        });
+        const sellNoId = () => oldOrderWith({ tossOrderId: null, side: 'sell' });
+
+        it('one matching broker order → adopt its id (status submitted), no timeout', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([sellNoId()]);
+            mockListBrokerOrders.mockResolvedValue([
+                brokerOrder(),
+                brokerOrder({ orderId: 'other-side', side: 'BUY' }),
+                brokerOrder({ orderId: 'other-qty', quantity: 3 }),
+                brokerOrder({ orderId: 'too-late', orderedAt: new Date('2026-05-26T13:20:00Z') }),
+                brokerOrder({ orderId: 'too-early', orderedAt: new Date('2026-05-26T12:50:00Z') }),
+            ]);
+            const body = await (await handler(makeRequest(true))).json();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(fakeDb, 'exec-abc-AAPL-buy', {
+                status: 'submitted',
+                tossOrderId: 'toss-found',
+            });
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalledWith(
+                fakeDb,
+                expect.anything(),
+                expect.objectContaining({ status: 'timeout' }),
+            );
+            expect(body.results[0]).toMatchObject({ action: 'adopted_broker_order' });
+        });
+
+        it('a broker order already tracked by another row is not adopted → timeout', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([sellNoId()]);
+            mockListBrokerOrders.mockResolvedValue([brokerOrder()]);
+            mockGetTrackedTossOrderIds.mockResolvedValue(new Set(['toss-found']));
+            const body = await (await handler(makeRequest(true))).json();
+            expect(body.results[0]).toMatchObject({ action: 'timeout' });
+        });
+
+        it('several matches → needs_review with a mail, nothing adopted', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([sellNoId()]);
+            mockListBrokerOrders.mockResolvedValue([brokerOrder(), brokerOrder({ orderId: 'b2' })]);
+            const body = await (await handler(makeRequest(true))).json();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(body.results[0]).toMatchObject({ action: 'needs_review' });
+            expect(mockSendErrorEmail).toHaveBeenCalled();
+        });
+
+        it('broker list failure keeps the row in flight (no timeout) and mails', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([sellNoId()]);
+            mockListBrokerOrders.mockRejectedValue(new Error('toss 503'));
+            const body = await (await handler(makeRequest(true))).json();
+            expect(mockUpdateOrderTracking).not.toHaveBeenCalled();
+            expect(body.results[0]).toMatchObject({ action: 'broker_lookup_failed' });
+            expect(mockSendErrorEmail).toHaveBeenCalled();
+        });
+
+        it('broker list failure past the 6h limit → needs_review', async () => {
+            mockGetPendingSubmittedOrders.mockResolvedValue([
+                oldOrderWith({
+                    tossOrderId: null,
+                    side: 'sell',
+                    submittedAt: new Date('2026-05-26T07:00:00.000Z'),
+                }),
+            ]);
+            mockListBrokerOrders.mockRejectedValue(new Error('toss 503'));
+            const body = await (await handler(makeRequest(true))).json();
+            expect(mockUpdateOrderTracking).toHaveBeenCalledWith(
+                fakeDb,
+                'exec-abc-AAPL-buy',
+                expect.objectContaining({ status: 'needs_review' }),
+            );
+            expect(body.results[0]).toMatchObject({ action: 'needs_review' });
         });
     });
 

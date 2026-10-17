@@ -828,6 +828,16 @@ export async function updateOrderTracking(
  * (2) 다음 틱이 in-flight 주문이 없다고 보고 **같은 심볼에 두 번째 주문**을 낸다.
  * 확정될 때까지는 in-flight로 취급하는 쪽이 양쪽 모두를 막는다.
  */
+/** 이 브로커 주문 id 중 이미 어느 주문 행에든 붙어 있는 것 — reconcile이 같은 브로커 주문을 두 행에 붙이지 않게. */
+export async function getTrackedTossOrderIds(db: Db, orderIds: string[]): Promise<Set<string>> {
+    if (orderIds.length === 0) return new Set();
+    const rows = await db
+        .select({ tossOrderId: orderTracking.tossOrderId })
+        .from(orderTracking)
+        .where(inArray(orderTracking.tossOrderId, orderIds));
+    return new Set(rows.map((r) => r.tossOrderId).filter((x): x is string => x != null));
+}
+
 export const INFLIGHT_ORDER_STATUSES = ['submitted', 'pending', 'partial', 'error'] as const;
 
 /**

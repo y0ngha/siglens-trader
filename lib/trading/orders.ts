@@ -165,3 +165,81 @@ export function executeBuyOrder(symbol: string, quantity: number, clientOrderId?
 export function executeSellOrder(symbol: string, quantity: number, clientOrderId?: string) {
     return executeOrder('SELL', symbol, quantity, clientOrderId);
 }
+
+export interface BrokerOrderSummary {
+    orderId: string;
+    symbol: string;
+    side: OrderSide;
+    quantity: number;
+    status: TossOrderStatus;
+    orderedAt: Date;
+}
+
+interface OrderListRaw {
+    orders?: Array<{
+        orderId: string;
+        symbol: string;
+        side: OrderSide;
+        quantity: string;
+        status: TossOrderStatus;
+        orderedAt: string;
+    }>;
+    nextCursor?: string | null;
+    hasNext?: boolean;
+}
+
+/** 종료 주문 목록을 넘겨 볼 최대 페이지 수 — 하루 주문은 수십 건이라 넉넉하다. */
+const ORDER_LIST_MAX_PAGES = 5;
+
+/**
+ * 한 종목의 브로커 주문(진행 중 + 종료)을 KST 날짜 구간으로 조회한다. 목록 응답에는
+ * `clientOrderId`가 없어서, 주문 요청이 타임아웃돼 `orderId`를 받지 못한 행을 브로커 쪽 주문과
+ * 맞춰 보려면 종목·방향·수량·시각으로 찾아야 한다(reconcile). 조회 실패는 throw한다.
+ */
+export async function listBrokerOrders(
+    symbol: string,
+    fromKst: string,
+    toKst: string,
+): Promise<BrokerOrderSummary[]> {
+    const out: BrokerOrderSummary[] = [];
+    const push = (res: OrderListRaw) => {
+        for (const o of res.orders ?? []) {
+            const orderedAt = new Date(o.orderedAt);
+            if (Number.isNaN(orderedAt.getTime())) continue;
+            out.push({
+                orderId: o.orderId,
+                symbol: o.symbol,
+                side: o.side,
+                quantity: parseDecimal(o.quantity, NaN),
+                status: o.status,
+                orderedAt,
+            });
+        }
+    };
+    push(
+        await tossFetch<OrderListRaw>('GET', '/api/v1/orders', {
+            account: true,
+            query: { status: 'OPEN', symbol },
+        }),
+    );
+    let cursor: string | null | undefined;
+    for (let page = 0; ; page++) {
+        // 다 못 본 채로 "없다"고 답하면 호출부가 주문을 종료 처리한다 — 잘린 목록은 실패다.
+        if (page >= ORDER_LIST_MAX_PAGES) throw new Error('Toss order list: too many pages');
+        const res = await tossFetch<OrderListRaw>('GET', '/api/v1/orders', {
+            account: true,
+            query: {
+                status: 'CLOSED',
+                symbol,
+                from: fromKst,
+                to: toKst,
+                limit: '100',
+                ...(cursor ? { cursor } : {}),
+            },
+        });
+        push(res);
+        if (!res.hasNext || !res.nextCursor) break;
+        cursor = res.nextCursor;
+    }
+    return out;
+}

@@ -15,13 +15,14 @@ import {
     finishCronRun,
     finalizeStaleCronRuns,
     insertCronDecisions,
+    getTrackedTossOrderIds,
 } from '../../lib/db/queries.js';
 import type { CronRunFinish } from '../../lib/db/queries.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { readDigestHour } from '../_lib/digest-hour.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
-import { getOrder } from '../../lib/trading/orders.js';
+import { getOrder, listBrokerOrders } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
 import { isFinitePositive } from '../../lib/validation.js';
 import { isUsTradingDay } from '@y0ngha/siglens-core';
@@ -41,6 +42,16 @@ const CANCEL_RETRY_LIMIT_MS = 6 * 60 * 60 * 1000;
 
 /** Quantity comparison tolerance for holdings reconciliation (fractional US shares). */
 const HOLDINGS_QTY_EPSILON = 0.01;
+
+/**
+ * 브로커 id 없는 주문을 브로커 주문 목록과 맞출 때의 시각 창 — 우리 기록(`submitted_at`) 기준
+ * 앞 2분·뒤 10분. 주문 요청이 타임아웃돼도 브로커는 요청 직후에 주문을 만든다.
+ */
+const ADOPT_WINDOW_BEFORE_MS = 2 * 60 * 1000;
+const ADOPT_WINDOW_AFTER_MS = 10 * 60 * 1000;
+
+/** KST 달력 날짜 `YYYY-MM-DD` — Toss 주문 목록의 from/to 기준. */
+const kstDate = (d: Date) => new Date(d.getTime() + 9 * 3_600_000).toISOString().slice(0, 10);
 const HOLDINGS_MAIL_TTL_SEC = 86_400;
 
 async function handler(req: Request): Promise<Response> {
@@ -365,6 +376,88 @@ async function handler(req: Request): Promise<Response> {
                     continue;
                 }
                 // detail null (getOrder failed) → fall through to the timeout fallback below.
+            }
+
+            // 주문 요청이 타임아웃·오류로 끝나 브로커 id가 없다 — 그래도 브로커가 주문을 받았을 수 있다.
+            // 종료(timeout)로 확정하기 전에 브로커 주문 목록에서 찾는다: 찾으면 id를 채워 다음
+            // 실행부터 정상 조회 경로로 확정하고, 못 찾으면 그때 종료한다. 목록 조회가 실패하면
+            // 종료하지 않는다 — 체결된 매도가 장부에서 빠지고 다음 틱이 같은 종목을 또 판다.
+            if (!order.tossOrderId && tradingMode !== 'dry_run' && isTimedOut) {
+                const submittedMs = new Date(order.submittedAt).getTime();
+                let matches: Awaited<ReturnType<typeof listBrokerOrders>> | null = null;
+                let lookupError: string | undefined;
+                try {
+                    const candidates = (
+                        await listBrokerOrders(
+                            order.symbol,
+                            kstDate(new Date(submittedMs - ADOPT_WINDOW_BEFORE_MS)),
+                            kstDate(new Date()),
+                        )
+                    ).filter(
+                        (b) =>
+                            b.symbol.toUpperCase() === order.symbol.toUpperCase() &&
+                            b.side === (order.side === 'sell' ? 'SELL' : 'BUY') &&
+                            Math.abs(b.quantity - order.quantity) < 1e-6 &&
+                            b.orderedAt.getTime() >= submittedMs - ADOPT_WINDOW_BEFORE_MS &&
+                            b.orderedAt.getTime() <= submittedMs + ADOPT_WINDOW_AFTER_MS,
+                    );
+                    // 다른 행(예: 이 주문이 실패한 뒤 다음 틱이 다시 낸 매도)에 이미 붙은 브로커 주문은
+                    // 이 행의 것이 아니다 — 붙이면 같은 체결이 두 번 장부에 오른다.
+                    const tracked = await getTrackedTossOrderIds(
+                        db,
+                        candidates.map((b) => b.orderId),
+                    );
+                    matches = candidates.filter((b) => !tracked.has(b.orderId));
+                } catch (err) {
+                    lookupError = err instanceof Error ? err.message : String(err);
+                }
+                if (matches === null) {
+                    const giveUp = age > CANCEL_RETRY_LIMIT_MS;
+                    if (giveUp) {
+                        await updateOrderTracking(db, order.idempotencyKey, {
+                            status: 'needs_review',
+                            resolvedAt: new Date(),
+                        });
+                    }
+                    await notifyError(
+                        `${order.side === 'sell' ? '[긴급] ' : ''}주문 확인 불가: ${order.symbol}`,
+                        `${order.symbol} ${order.side} ${order.quantity}주 주문이 브로커 id 없이 ${Math.round(age / 60000)}분째 미확정이고, 브로커 주문 목록 조회도 실패했습니다(${lookupError}). ${giveUp ? '수동 확인(needs_review)으로 넘깁니다.' : '상태를 유지하고 다음 실행에서 다시 찾습니다.'} 브로커 계좌를 확인하세요.\nIdempotency Key: ${order.idempotencyKey}`,
+                    );
+                    results.push({
+                        id: order.id,
+                        symbol: order.symbol,
+                        action: giveUp ? 'needs_review' : 'broker_lookup_failed',
+                        detail: { error: lookupError },
+                    });
+                    continue;
+                }
+                if (matches.length === 1) {
+                    const [m] = matches;
+                    await updateOrderTracking(db, order.idempotencyKey, {
+                        status: 'submitted',
+                        tossOrderId: m!.orderId,
+                    });
+                    results.push({
+                        id: order.id,
+                        symbol: order.symbol,
+                        action: 'adopted_broker_order',
+                        detail: { orderId: m!.orderId, brokerStatus: m!.status },
+                    });
+                    continue;
+                }
+                if (matches.length > 1) {
+                    await updateOrderTracking(db, order.idempotencyKey, {
+                        status: 'needs_review',
+                        resolvedAt: new Date(),
+                    });
+                    await notifyError(
+                        `주문 수동 확인 필요: ${order.symbol}`,
+                        `${order.symbol} ${order.side} ${order.quantity}주 주문(브로커 id 없음)과 맞는 브로커 주문이 ${matches.length}건이라 자동으로 고를 수 없습니다: ${matches.map((m) => `${m.orderId}(${m.status})`).join(', ')}. 장부를 직접 맞춰 주세요.`,
+                    );
+                    results.push({ id: order.id, symbol: order.symbol, action: 'needs_review' });
+                    continue;
+                }
+                // 0건 — 브로커가 주문을 받지 않았다. 아래 timeout으로 종료한다.
             }
 
             // No tossOrderId OR getOrder failed OR dry_run: age-based timeout fallback.

@@ -52,7 +52,7 @@ import {
     type RegimeReading,
     type SymbolReading,
 } from '../../lib/strategy/mean-reversion.js';
-import { todayUnrealizedChange } from '../../lib/strategy/daily-loss.js';
+import { MAX_QUOTE_DIVERGENCE, todayUnrealizedChange } from '../../lib/strategy/daily-loss.js';
 import { planEntry } from '../../lib/strategy/trade-plan.js';
 import {
     accountEquity,
@@ -97,6 +97,8 @@ const RUN_DEADLINE_MS = 900_000;
 const NO_PRICE_FORCED_EXIT_RUNS = 3;
 /** 시세 프리페치에서 실패한 심볼을 한 번 더 받기 전 기다리는 시간 — FMP 429는 순간 버스트라 몇 초면 풀린다. */
 const QUOTE_RETRY_DELAY_MS = 5_000;
+/** 크게 벗어난 시세를 다시 받았을 때 "같은 값"으로 볼 허용 폭. */
+const QUOTE_CONFIRM_TOLERANCE = 0.02;
 const LOCK_TTL_SEC = 1800;
 const LOCK_KEY = 'cron:execute:lock';
 
@@ -328,22 +330,64 @@ async function handler(req: Request): Promise<Response> {
                     }
                 }
             }
+            // 판단 틱의 시세는 오늘 종가 자리에 들어가 매수·SMA5 청산을 정한다. 전일 종가에서 25% 넘게
+            // 벗어난 값은 한 번 더 받아, 두 값이 서로 맞을 때만 쓴다(진짜 급등락은 두 번 다 같다).
+            // 안 맞으면 그 심볼은 시세 없음으로 둔다 — 보유면 `mr_data_error`로 다음 틱이 다시 보고,
+            // 감시 종목이면 이번 틱에 사지 않는다. 위험 틱의 손절은 따로 재조회로 확인한다.
+            if (decisionTick) {
+                for (const [sym, qv] of quotes) {
+                    if (
+                        qv.price === null ||
+                        qv.previousClose === null ||
+                        Math.abs(qv.price / qv.previousClose - 1) <= MAX_QUOTE_DIVERGENCE
+                    ) {
+                        continue;
+                    }
+                    if (Date.now() > runDeadlineMs) {
+                        deadlineHit = true;
+                        break;
+                    }
+                    const again = await fetchLivePriceDetail(sym).catch(
+                        (): LivePriceDetail => ({ source: 'fmp_quote', price: null }),
+                    );
+                    if (
+                        again.price != null &&
+                        again.price > 0 &&
+                        Math.abs(again.price / qv.price - 1) <= QUOTE_CONFIRM_TOLERANCE
+                    ) {
+                        continue;
+                    }
+                    quotes.set(sym, { price: null, previousClose: qv.previousClose });
+                    priceFailures.set(sym, {
+                        source: 'fmp_quote',
+                        price: null,
+                        reason: 'unconfirmed_divergence',
+                        error: `quote ${qv.price} vs prev close ${qv.previousClose}, re-fetch ${again.price ?? 'failed'}`,
+                    });
+                }
+            }
             const priceOf = (sym: string) => quotes.get(sym)?.price ?? 0;
 
             // --- 사이징 — 칸 수와 금액 한도를 총자산에서 도출한다(docs/specs/2026-10-05-equity-scaled-sizing-design.md).
             // 차단기 **앞**에서 한다: 일일 손실 한도가 총자산과 칸 수에서 나온다.
             // 세 모드 모두 "지금 쓸 수 있는 돈"(auto·semi_auto = 브로커 잔고, dry_run = 예치금 + 원장).
             let remainingBuyingPower: number | null = await getAvailableCashUsd(db, tradingMode);
-            // 총자산 = 현금 + 보유 평가액(실시간 가격, 없으면 평단). 런 시작 시점에 한 번 고정한다 — 이번
-            // 런의 청산 대금·매수 지출로 칸 크기가 흔들리지 않게.
-            const equity = accountEquity(
-                remainingBuyingPower,
-                openPositions.map((p) => ({
-                    quantity: p.quantity,
-                    avgPrice: safeNumber(Number(p.avgPrice), 0),
-                    price: priceOf(p.symbol),
-                })),
-            );
+            // 총자산 = 현금 + 보유 평가액(실시간 가격). 런 시작 시점에 한 번 고정한다 — 이번
+            // 런의 청산 대금·매수 지출로 칸 크기가 흔들리지 않게. 보유 종목 시세가 하나라도 비면 이번
+            // 틱의 총자산은 **모르는 것**으로 둔다: 평단으로 채우면 눌린 포지션만큼 부풀어 손실 한도·칸이
+            // 커진다(2026-10-16 $4,079 → $4,300). 손실 한도는 마지막 기록으로 재고, 진입은 하지 않는다 —
+            // 판단 틱이면 그 포지션의 `mr_data_error`로 'done'이 남지 않아 창의 다음 틱이 다시 본다.
+            const heldPriceMissing = openPositions.some((p) => priceOf(p.symbol) <= 0);
+            const equity = heldPriceMissing
+                ? null
+                : accountEquity(
+                      remainingBuyingPower,
+                      openPositions.map((p) => ({
+                          quantity: p.quantity,
+                          avgPrice: safeNumber(Number(p.avgPrice), 0),
+                          price: priceOf(p.symbol),
+                      })),
+                  );
             // 칸 수의 출처: 판단 틱이고 총자산을 알면 감시 종목 시세로 새로 계산한다. 아니면 마지막 판단
             // 기록을 이어 쓴다(§4) — 위험 틱은 감시 종목 시세를 받지 않는다. 총자산을 모르는 판단 틱도
             // 이어 쓴다: 0으로 계산하면 K=1이 나와 손실 한도가 8배 느슨해진다.
@@ -371,7 +415,9 @@ async function handler(req: Request): Promise<Response> {
                     : null);
 
             // --- 차단기. 새 리스크만 막고 리스크 축소(청산)는 막지 않는다(원칙 7) ---
-            let entryBlock: { outcome: 'daily_trade_limit' | 'daily_loss_limit' } | null = null;
+            let entryBlock: {
+                outcome: 'daily_trade_limit' | 'daily_loss_limit' | 'market_status_unavailable';
+            } | null = null;
             let forceFullExit = false;
 
             const maxTradesPerDay = (await getConfigValue<number>(db, 'max_trades_per_day')) ?? 20;
@@ -436,26 +482,24 @@ async function handler(req: Request): Promise<Response> {
             }
 
             // 예정 외 휴장(국가 애도의 날 등)은 규칙으로 알 수 없으니 실주문 경로만 브로커에게 직접 묻는다.
+            // 조회가 실패하면 **진입만** 막고 청산(재난 손절·규칙 청산)은 돈다(원칙 7) — 종전엔 틱 전체를
+            // 건너뛰어 손절까지 멈췄다. 정말 휴장이면 매도 주문은 브로커가 거부할 뿐이다. 판단 단계는
+            // 'done'을 남기지 않아 창의 다음 틱이 진입을 다시 본다.
+            let marketStatusUnknown = false;
             if (tradingMode !== 'dry_run') {
                 let marketOpen: boolean;
                 try {
                     marketOpen = await isUsMarketOpen(todayEt);
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
-                    await notifyError(
+                    await notifyOncePerDay(
+                        'market-status',
                         '미국장 상태 조회 실패',
-                        `브로커 시장 캘린더 조회에 실패하여 ${tradingMode} 주문 실행을 건너뜁니다.\n오류: ${message}`,
+                        `브로커 시장 캘린더 조회에 실패했습니다. 이 틱은 신규 진입을 막고 청산(손절 포함)만 처리합니다.\n오류: ${message}`,
                     );
-                    finishState = {
-                        status: 'skipped',
-                        outcome: 'market_status_unavailable',
-                        ...elapsed(),
-                    };
-                    return Response.json({
-                        skipped: true,
-                        reason: 'market_status_unavailable',
-                        error: message,
-                    });
+                    marketStatusUnknown = true;
+                    marketOpen = true;
+                    entryBlock ??= { outcome: 'market_status_unavailable' };
                 }
                 if (!marketOpen) {
                     finishState = { status: 'skipped', outcome: 'us_market_holiday', ...elapsed() };
@@ -1130,7 +1174,8 @@ async function handler(req: Request): Promise<Response> {
                 // 어떤 형태로든 `mr_data_error`가 하나라도 났는가 — 데이터 실패가 있었다는 뜻이므로
                 // 다음 틱이 다시 시도해야 한다.
                 const hadDataError = decisions.some((d) => d.action === 'mr_data_error');
-                decisionPhaseDone = !deadlineHit && !closeCutoffHit && !hadDataError;
+                decisionPhaseDone =
+                    !deadlineHit && !closeCutoffHit && !hadDataError && !marketStatusUnknown;
             }
 
             if (deadlineHit) {

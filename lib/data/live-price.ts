@@ -15,7 +15,13 @@ export interface LivePriceDetail {
      * 가격 조회 자체가 실패한 응답에는 없다.
      */
     previousClose?: number | null;
-    reason?: 'empty_response' | 'malformed_response' | 'invalid_price' | 'request_failed';
+    reason?:
+        | 'empty_response'
+        | 'malformed_response'
+        | 'invalid_price'
+        | 'request_failed'
+        /** execute 판단 틱: 전일 종가에서 크게 벗어났고 재조회 값과도 맞지 않았다. */
+        | 'unconfirmed_divergence';
     error?: string;
 }
 

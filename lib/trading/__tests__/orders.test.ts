@@ -272,4 +272,58 @@ describe('orders', () => {
         const { executeBuyOrder } = await import('../orders');
         await expect(executeBuyOrder('AAPL', 1, 'x'.repeat(37))).rejects.toThrow(/clientOrderId/);
     });
+
+    describe('listBrokerOrders', () => {
+        const raw = (o: Record<string, unknown> = {}) => ({
+            orderId: 'b1',
+            symbol: 'ARM',
+            side: 'SELL',
+            quantity: '2',
+            status: 'FILLED',
+            orderedAt: '2026-10-17T03:27:13.000+09:00',
+            ...o,
+        });
+
+        it('OPEN + CLOSED pages, KST date range, normalized', async () => {
+            mockTossFetch
+                .mockResolvedValueOnce({ orders: [raw({ orderId: 'open1', status: 'PENDING' })] })
+                .mockResolvedValueOnce({ orders: [raw()], hasNext: true, nextCursor: 'c1' })
+                .mockResolvedValueOnce({
+                    orders: [raw({ orderId: 'b2', orderedAt: 'garbage' })],
+                    hasNext: false,
+                });
+            const { listBrokerOrders } = await import('../orders');
+            const out = await listBrokerOrders('ARM', '2026-10-17', '2026-10-17');
+            expect(out.map((o) => o.orderId)).toEqual(['open1', 'b1']); // unparseable time dropped
+            expect(out[1]).toMatchObject({ quantity: 2, side: 'SELL' });
+            expect(out[1]!.orderedAt.toISOString()).toBe('2026-10-16T18:27:13.000Z');
+            expect(mockTossFetch.mock.calls[0]![2].query).toEqual({
+                status: 'OPEN',
+                symbol: 'ARM',
+            });
+            expect(mockTossFetch.mock.calls[1]![2].query).toMatchObject({
+                status: 'CLOSED',
+                from: '2026-10-17',
+                to: '2026-10-17',
+                limit: '100',
+            });
+            expect(mockTossFetch.mock.calls[2]![2].query).toMatchObject({ cursor: 'c1' });
+        });
+
+        it('worst: a list that never ends is a failure, not "no order"', async () => {
+            mockTossFetch.mockResolvedValue({ orders: [], hasNext: true, nextCursor: 'again' });
+            const { listBrokerOrders } = await import('../orders');
+            await expect(listBrokerOrders('ARM', '2026-10-17', '2026-10-17')).rejects.toThrow(
+                'too many pages',
+            );
+        });
+
+        it('worst: broker error propagates', async () => {
+            mockTossFetch.mockRejectedValueOnce(new Error('503'));
+            const { listBrokerOrders } = await import('../orders');
+            await expect(listBrokerOrders('ARM', '2026-10-17', '2026-10-17')).rejects.toThrow(
+                '503',
+            );
+        });
+    });
 });
