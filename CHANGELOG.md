@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.40.1](https://github.com/y0ngha/siglens-trader/compare/v0.40.0...v0.40.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **execute:** 일시적 시세 공백으로 강제 청산하지 않는다 ([#100](https://github.com/y0ngha/siglens-trader/issues/100)) ([a1eb75c](https://github.com/y0ngha/siglens-trader/commit/a1eb75cd27c49ca7878c2deca9f13c295fb045d6))
+* **execute:** 일일 손실 한도 메일 — 틱마다 재계산됨을 명시 ([#99](https://github.com/y0ngha/siglens-trader/issues/99)) ([9e61910](https://github.com/y0ngha/siglens-trader/commit/9e61910554234b3e2d058d9631d147e363163011))
+
 # [0.40.0](https://github.com/y0ngha/siglens-trader/compare/v0.39.1...v0.40.0) (2026-10-15)
 
 
