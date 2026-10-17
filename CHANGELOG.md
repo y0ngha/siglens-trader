@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.2](https://github.com/y0ngha/siglens-trader/compare/v0.40.1...v0.40.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* 일시적 데이터 오류가 실주문·장부로 번지는 경로 차단 ([#101](https://github.com/y0ngha/siglens-trader/issues/101)) ([804cf68](https://github.com/y0ngha/siglens-trader/commit/804cf683f694ab23ea7a184074cdb07cc8a769e3)), closes [#100](https://github.com/y0ngha/siglens-trader/issues/100)
+
 ## [0.40.1](https://github.com/y0ngha/siglens-trader/compare/v0.40.0...v0.40.1) (2026-10-17)
 
 
