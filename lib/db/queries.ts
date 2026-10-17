@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, or, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, ne, desc, asc, and, or, gte, lte, sql, inArray, isNull } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { Db, DbOrTx } from './index.js';
 import type { NewsCardAnalysis } from '@y0ngha/siglens-core';
@@ -1196,6 +1196,55 @@ export const MR_SIGNAL_ACTIONS = ['mr_buy', 'mr_skip_budget', 'mr_skip_breaker']
  * 보면 그 행들이 리뷰 대상에서 빠진다. execute는 진입 신호로 평가된 모든 결정 행에
  * `detail.mr.signal = true`를 남기므로(최종 action과 무관하게), 그 마커도 함께 본다.
  */
+/**
+ * 이 심볼의 시세가 **직전 execute 런들에서 연속으로** 비어 있었던 횟수(최근 런부터 센다, 최대 `maxRuns`).
+ * 한도 초과 중 가격 없는 포지션의 강제 청산은 이 연속이 쌓였을 때만 한다 — 한 틱의 429로 판
+ * 사고(2026-10-16 ARM·LRCX·AMAT) 뒤에 넣었다. 그 런에서 이 심볼을 평가하지 않았으면 연속이 끊긴다.
+ */
+export async function getNoPriceStreak(
+    db: Db,
+    symbol: string,
+    currentRunId: string,
+    before: Date,
+    maxRuns: number,
+): Promise<number> {
+    const runs = await db
+        .select({ runId: cronRuns.runId })
+        .from(cronRuns)
+        .where(
+            and(
+                eq(cronRuns.cronType, 'execute'),
+                ne(cronRuns.runId, currentRunId),
+                lte(cronRuns.startedAt, before),
+                gte(cronRuns.startedAt, new Date(before.getTime() - 2 * 3_600_000)),
+            ),
+        )
+        .orderBy(desc(cronRuns.startedAt))
+        .limit(maxRuns);
+    const prior = runs.map((r) => r.runId);
+    if (prior.length === 0) return 0;
+    const hits = new Set(
+        (
+            await db
+                .select({ runId: cronDecisions.runId })
+                .from(cronDecisions)
+                .where(
+                    and(
+                        inArray(cronDecisions.runId, prior),
+                        eq(cronDecisions.symbol, symbol),
+                        eq(cronDecisions.action, 'skipped_no_price'),
+                    ),
+                )
+        ).map((r) => r.runId),
+    );
+    let streak = 0;
+    for (const id of prior) {
+        if (!hits.has(id)) break;
+        streak++;
+    }
+    return streak;
+}
+
 export async function getMrSignalDecisionsSince(db: Db, since: Date) {
     return db
         .select()

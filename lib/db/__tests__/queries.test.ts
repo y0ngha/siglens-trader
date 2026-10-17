@@ -54,6 +54,7 @@ import {
     upsertNewsCards,
     setPositionStopPrice,
     hasDecisionPhaseSince,
+    getNoPriceStreak,
     getLatestSizing,
     getMrSignalDecisionsSince,
     hasTradeAuditCorrelation,
@@ -2237,6 +2238,42 @@ describe('mean-reversion decision/review queries', () => {
         expect(db._chain.limit).toHaveBeenCalledWith(1);
         const empty = createMockDb([]);
         expect(await hasDecisionPhaseSince(empty as unknown as Db, since)).toBe(false);
+    });
+
+    describe('getNoPriceStreak (forced exit needs consecutive price gaps)', () => {
+        const before = new Date('2026-10-16T18:27:00Z');
+        const streak = async (runs: string[], hits: string[]) => {
+            const db = createMockDb(hits.map((runId) => ({ runId })));
+            db._chain.limit.mockResolvedValueOnce(runs.map((runId) => ({ runId })));
+            return {
+                n: await getNoPriceStreak(db as unknown as Db, 'ARM', 'exec-now', before, 2),
+                db,
+            };
+        };
+
+        it('counts the most recent prior runs that recorded skipped_no_price, excluding this run', async () => {
+            const { n, db } = await streak(['r2', 'r1'], ['r2', 'r1']);
+            expect(n).toBe(2);
+            const runsQ = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+            expect(runsQ.sql).toContain(`"cron_runs"."cron_type" = $1`);
+            expect(runsQ.sql).toContain(`"cron_runs"."run_id" <> $2`);
+            expect(runsQ.params.slice(0, 2)).toEqual(['execute', 'exec-now']);
+            expect(db._chain.limit).toHaveBeenCalledWith(2);
+            const hitsQ = new PgDialect().sqlToQuery(db._chain.where.mock.calls[1]![0]);
+            expect(hitsQ.sql).toContain(`"cron_decisions"."run_id" in`);
+            expect(hitsQ.params).toEqual(expect.arrayContaining(['ARM', 'skipped_no_price']));
+        });
+
+        it('a priced run in between breaks the streak', async () => {
+            expect((await streak(['r2', 'r1'], ['r1'])).n).toBe(0);
+            expect((await streak(['r2', 'r1'], ['r2'])).n).toBe(1);
+        });
+
+        it('edge: no prior runs → 0 without a second query', async () => {
+            const { n, db } = await streak([], []);
+            expect(n).toBe(0);
+            expect(db.select).toHaveBeenCalledTimes(1);
+        });
     });
 
     describe('getLatestSizing (equity-scaled sizing §4)', () => {

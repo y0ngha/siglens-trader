@@ -366,6 +366,7 @@ function actionChipClass(action: string): string {
         case 'order_rejected':
         case 'needs_review':
         case 'stop_backfill_failed':
+        case 'stop_unconfirmed':
         case 'trading_disabled_mid_loop':
             return 'bg-red-500/10 text-red-400';
         case 'gate_skipped_deadline':
@@ -425,6 +426,8 @@ function decisionActionLabel(action: string): string {
             return '데이터 오류';
         case 'mr_forced_exit':
             return '한도 강제청산';
+        case 'stop_unconfirmed':
+            return '손절 시세 불일치';
         case 'reviewed':
             return 'AI 리뷰';
         case 'review_error':

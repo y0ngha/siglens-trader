@@ -34,6 +34,7 @@ const q = vi.hoisted(() => ({
     insertCronDecisions: vi.fn(),
     hasDecisionPhaseSince: vi.fn(),
     setPositionStopPrice: vi.fn(),
+    getNoPriceStreak: vi.fn(),
     getSymbolsSoldSince: vi.fn(),
     getLatestSizing: vi.fn(),
 }));
@@ -59,6 +60,8 @@ vi.mock('../../../lib/analysis/daily-bars', async (importOriginal) => ({
     ...(await importOriginal<typeof import('../../../lib/analysis/daily-bars')>()),
     fetchDailyBars: (...a: [string, number | null, Date]) => mockFetchDailyBars(...a),
 }));
+
+vi.mock('../../../lib/sleep', () => ({ sleep: async () => {} }));
 
 const mockQuote = vi.fn();
 vi.mock('../../../lib/data/live-price', () => ({
@@ -215,6 +218,7 @@ beforeEach(() => {
     ]);
     q.hasDecisionPhaseSince.mockResolvedValue(false);
     q.setPositionStopPrice.mockResolvedValue(true);
+    q.getNoPriceStreak.mockResolvedValue(0);
     q.getSymbolsSoldSince.mockResolvedValue(new Set());
     q.getLatestSizing.mockResolvedValue(null);
     watch();
@@ -683,16 +687,19 @@ describe('decision phase — rule exits', () => {
         expect(mockExecuteEntry).not.toHaveBeenCalled();
     });
 
-    it('bars missing: data error normally, forced exit while the loss breaker is up', async () => {
+    it('bars missing: data error, even while the loss breaker is up — never a forced sell', async () => {
         q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
         setBars({ SPY: rising(), NVDA: null });
         setQuotes({ SPY: lastOf(rising()), NVDA: 95 });
         await run(DECISION_NOW);
         expect(actions()).toEqual(['NVDA:mr_data_error']);
 
+        config.trading_mode = 'auto';
         q.getTodayRealizedPnl.mockResolvedValue(-600);
         await run(DECISION_NOW);
-        expect(actions()).toEqual(['NVDA:mr_forced_exit']);
+        expect(actions()).toEqual(['NVDA:mr_data_error']);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(summary().decisionPhase).toBeUndefined(); // the next tick in the window retries
     });
 });
 
@@ -879,13 +886,83 @@ describe('run-level outcomes', () => {
         expect(actions()).toEqual(['NVDA:pending_exists']);
     });
 
-    it('auto under the loss breaker liquidates a priceless position at market', async () => {
+    it('auto under the loss breaker liquidates a priceless position only after consecutive misses', async () => {
         config.trading_mode = 'auto';
         q.getTodayRealizedPnl.mockResolvedValue(-600);
         q.getOpenPositions.mockResolvedValue([position()]);
         setQuotes({});
+
+        // 2026-10-16: one tick of FMP 429 sold three positions. A first miss only records the gap.
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:skipped_no_price']);
+        expect(decisionsOf()[0]!.detail).toMatchObject({ noPriceStreak: 1 });
+        expect(q.getNoPriceStreak).toHaveBeenCalledWith(
+            fakeDb,
+            'NVDA',
+            expect.stringMatching(/^exec-/),
+            expect.any(Date),
+            2,
+        );
+
+        q.getNoPriceStreak.mockResolvedValue(1);
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(decisionsOf()[0]!.detail).toMatchObject({ noPriceStreak: 2 });
+
+        q.getNoPriceStreak.mockResolvedValue(2);
         await run(RISK_NOW);
         expect(actions()).toEqual(['NVDA:mr_forced_exit']);
+    });
+
+    it('a streak lookup failure holds the forced exit (fail toward not selling on missing data)', async () => {
+        config.trading_mode = 'auto';
+        q.getTodayRealizedPnl.mockResolvedValue(-600);
+        q.getOpenPositions.mockResolvedValue([position()]);
+        setQuotes({});
+        q.getNoPriceStreak.mockRejectedValue(new Error('db down'));
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:skipped_no_price']);
+    });
+
+    it('a failed quote is fetched once more after a pause — a transient 429 does not leave a gap', async () => {
+        config.trading_mode = 'auto';
+        q.getTodayRealizedPnl.mockResolvedValue(-600);
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
+        mockQuote
+            .mockResolvedValueOnce({ source: 'fmp_quote', price: null, reason: 'request_failed' })
+            .mockResolvedValue({ source: 'fmp_quote', price: 95, previousClose: 96 });
+        await run(RISK_NOW);
+        expect(mockQuote).toHaveBeenCalledTimes(2);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual([]);
+    });
+
+    it('a stop hit on one quote is re-checked; a recovered re-fetch holds the position', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '80' })]);
+        mockQuote
+            .mockResolvedValueOnce({ source: 'fmp_quote', price: 8, previousClose: 96 }) // bogus tick
+            .mockResolvedValue({ source: 'fmp_quote', price: 95, previousClose: 96 });
+        await run(RISK_NOW);
+        expect(mockExecuteExit).not.toHaveBeenCalled();
+        expect(actions()).toEqual(['NVDA:stop_unconfirmed']);
+        expect(mockSendError).toHaveBeenCalled();
+    });
+
+    it('a stop hit confirmed by the re-fetch (or a failed re-fetch) sells', async () => {
+        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '80' })]);
+        setQuotes({ NVDA: 70 }, { NVDA: 96 });
+        await run(RISK_NOW);
+        expect(actions()).toEqual(['NVDA:mr_stop_atr']);
+
+        mockExecuteExit.mockClear();
+        mockQuote
+            .mockReset()
+            .mockResolvedValueOnce({ source: 'fmp_quote', price: 70, previousClose: 96 })
+            .mockRejectedValue(new Error('fmp down'));
+        await run(RISK_NOW);
+        expect(actions()).toEqual(['NVDA:mr_stop_atr']);
     });
 
     it('a per-symbol exception is recorded and mailed without stopping the run', async () => {
@@ -1077,21 +1154,11 @@ describe('T2 — kill switch re-check on exit paths never calls executeExit', ()
         expect(actions()).toContain('NVDA:trading_disabled_mid_loop');
     });
 
-    it('(c) forced exit when daily bars fail under the loss breaker', async () => {
-        q.getTodayRealizedPnl.mockResolvedValue(-600);
-        q.getOpenPositions.mockResolvedValue([position({ stopPrice: '1' })]);
-        setBars({ SPY: rising(), NVDA: null });
-        setQuotes({ SPY: lastOf(rising()), NVDA: 95 });
-        killSwitchFlipsAfterFirstRead();
-        await run(DECISION_NOW);
-        expect(mockExecuteExit).not.toHaveBeenCalled();
-        expect(actions()).toContain('NVDA:trading_disabled_mid_loop');
-    });
-
     it('(d) auto + no price under the breaker', async () => {
         config.trading_mode = 'auto';
         q.getTodayRealizedPnl.mockResolvedValue(-600);
         q.getOpenPositions.mockResolvedValue([position()]);
+        q.getNoPriceStreak.mockResolvedValue(2);
         setQuotes({});
         killSwitchFlipsAfterFirstRead();
         await run(RISK_NOW);

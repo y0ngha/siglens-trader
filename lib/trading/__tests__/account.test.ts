@@ -84,8 +84,18 @@ describe('account', () => {
         });
     });
 
-    it('worst: getBuyingPower 값이 비정상이면 0', async () => {
+    it('worst: getBuyingPower 값이 비정상이거나 없으면 throw — 0으로 읽으면 한도가 줄어든다', async () => {
+        const { getBuyingPower } = await import('../account');
         mockTossFetch.mockResolvedValueOnce({ currency: 'USD', cashBuyingPower: 'abc' });
+        await expect(getBuyingPower('USD')).rejects.toThrow('unreadable');
+        mockTossFetch.mockResolvedValueOnce({ currency: 'USD' });
+        await expect(getBuyingPower('USD')).rejects.toThrow('unreadable');
+        mockTossFetch.mockResolvedValueOnce({ currency: 'USD', cashBuyingPower: '-5' });
+        await expect(getBuyingPower('USD')).rejects.toThrow('unreadable');
+    });
+
+    it('edge: getBuyingPower 명시적 "0"은 정상 값', async () => {
+        mockTossFetch.mockResolvedValueOnce({ currency: 'USD', cashBuyingPower: '0' });
         const { getBuyingPower } = await import('../account');
         expect(await getBuyingPower('USD')).toBe(0);
     });

@@ -144,12 +144,14 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
 7. Exposure (cost basis + in-flight buys + pending approvals). Cash for in-run spending comes from step 4a.
 8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
    `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`; bars unavailable → `stop_backfill_failed`
-   + one mail per symbol per ET day); no price → `skipped_no_price`
-   (auto under the loss breaker exits at market instead: `mr_forced_exit`); price ≤ `stop_price` → full exit
-   `mr_stop_atr`.
+   + one mail per symbol per ET day); no price → `skipped_no_price` (auto under the loss breaker exits at market
+   `mr_forced_exit` only when the price was also missing on the **2 previous execute runs** — `getNoPriceStreak`,
+   `detail.noPriceStreak`; streak lookup failure holds); price ≤ `stop_price` → **re-fetch the quote**: still ≤ stop
+   (or the re-fetch fails) → full exit `mr_stop_atr`, recovered → `stop_unconfirmed` + one mail per symbol per ET day.
+   Quotes that fail in the prefetch are fetched once more after 5s (`fmpGet` alone retries 429 for only ~2s).
 9. **Decision phase (once a day)** — daily bars for SPY + held + watchlist (`lib/analysis/daily-bars.ts`, today's
-   close = live price). Held positions: no live price → `mr_data_error`; bars unreadable → `mr_forced_exit` under the
-   loss breaker else `mr_data_error`; otherwise `evaluateRuleExit` → `mr_exit_ma5` / `mr_exit_time` / `mr_hold`.
+   close = live price). Held positions: no live price or bars unreadable → `mr_data_error` (the window's next tick retries;
+   never a forced sell); otherwise `evaluateRuleExit` → `mr_exit_ma5` / `mr_exit_time` / `mr_hold`.
    Entries: SPY bars **or SPY live price** unreadable with the regime filter on → one `mr_data_error` row, no entries;
    symbols sold today (ET, trades or live sell orders — `getSymbolsSoldSince`) → `mr_hold` `sold_today` (query failure
    → `mr_data_error`, no entries); SPY < SMA200 → one
@@ -291,9 +293,10 @@ is treated as a possibly corrupt tick (one mail per day): a **loss** still count
 must not mask losses, and a real crash must reach the breaker when the stop can't act (`mr_stop_atr = 0`, semi_auto).
 
 `forceFullExit` (loss breaker tripped): every exit is already full-size under this strategy, so what it adds is
-**leaving positions that cannot be evaluated** — no live price in `auto` (market order) or no daily bars in the
-decision phase (`mr_forced_exit`). A position with data is judged by the rule as usual: 평가 가능하면 평가를
-따르고, 불가능하면 나간다.
+**leaving positions whose price stays unknown** — no live price in `auto` for 3 consecutive execute runs
+(`mr_forced_exit`). It used to fire on the first miss and on missing daily bars: on 2026-10-16 one tick of FMP 429
+sold ARM·LRCX·AMAT at market (−$227) with the breaker up from a sector-wide dip, the next tick's quotes were fine.
+A transient data gap is not evidence the position is failing; a persistent one is.
 
 The response and audit row when a breaker trips with nothing held and no decision to make:
 `{ skipped: true, reason: 'daily_loss_limit_reached' | 'daily_trade_limit_reached' }`, `cron_runs.status='skipped'`.

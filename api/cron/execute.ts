@@ -29,6 +29,7 @@ import {
     setPositionStopPrice,
     getSymbolsSoldSince,
     getLatestSizing,
+    getNoPriceStreak,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
 import {
@@ -68,6 +69,7 @@ import {
     fetchDailyBars,
 } from '../../lib/analysis/daily-bars.js';
 import { fetchLivePriceDetail } from '../../lib/data/live-price.js';
+import { sleep } from '../../lib/sleep.js';
 import type { LivePriceDetail } from '../../lib/data/live-price.js';
 import { isUsMarketOpen } from '../../lib/trading/account.js';
 import { makeEmailGate } from '../../lib/notification/gate.js';
@@ -91,6 +93,10 @@ type ExecuteDecision = CronDecisionInput & { symbol?: string; score: number };
 
 /** 한 실행이 새 작업을 시작할 수 있는 마지막 시점(시작 + 900초). 락 TTL 1800초 안에 끝나게 한다. */
 const RUN_DEADLINE_MS = 900_000;
+/** 한도 초과 중 가격 없는 포지션을 강제 청산하려면 시세가 이만큼의 execute 런에서 **연속으로** 비어야 한다(이번 런 포함). */
+const NO_PRICE_FORCED_EXIT_RUNS = 3;
+/** 시세 프리페치에서 실패한 심볼을 한 번 더 받기 전 기다리는 시간 — FMP 429는 순간 버스트라 몇 초면 풀린다. */
+const QUOTE_RETRY_DELAY_MS = 5_000;
 const LOCK_TTL_SEC = 1800;
 const LOCK_KEY = 'cron:execute:lock';
 
@@ -293,6 +299,34 @@ async function handler(req: Request): Promise<Response> {
                     previousClose: detail.previousClose ?? null,
                 });
                 if (!(detail.price && detail.price > 0)) priceFailures.set(sym, detail);
+            }
+            // 실패한 심볼은 잠시 뒤 한 번 더 받는다. fmpGet의 429 재시도(~2초)로는 분 단위 한도가
+            // 안 풀린 적이 있다(2026-10-16) — 가격 공백은 손절 판정 누락·강제 청산으로 이어진다.
+            if (priceFailures.size > 0 && !deadlineHit) {
+                await sleep(QUOTE_RETRY_DELAY_MS);
+                for (const sym of [...priceFailures.keys()]) {
+                    if (Date.now() > runDeadlineMs) {
+                        deadlineHit = true;
+                        break;
+                    }
+                    const detail = await fetchLivePriceDetail(sym).catch(
+                        (err): LivePriceDetail => ({
+                            source: 'fmp_quote',
+                            price: null,
+                            reason: 'request_failed',
+                            error: err instanceof Error ? err.message : String(err),
+                        }),
+                    );
+                    if (detail.price && detail.price > 0) {
+                        quotes.set(sym, {
+                            price: detail.price,
+                            previousClose: detail.previousClose ?? null,
+                        });
+                        priceFailures.delete(sym);
+                    } else {
+                        priceFailures.set(sym, detail);
+                    }
+                }
             }
             const priceOf = (sym: string) => quotes.get(sym)?.price ?? 0;
 
@@ -577,7 +611,29 @@ async function handler(req: Request): Promise<Response> {
                     if (price <= 0) {
                         // auto는 시장가라 가격 없이도 청산할 수 있다 — 한도 초과 중이면 평가할 수 없는
                         // 포지션은 나간다. dry_run(현재가로 기록)·semi_auto(지정가 대기)는 가격 없이는 못 한다.
-                        if (forceFullExit && tradingMode === 'auto') {
+                        // 한 틱의 조회 실패(429 등)로는 팔지 않는다 — 직전 런들에서도 연속으로 비어 있었을 때만.
+                        // 2026-10-16 FMP 429 한 번에 ARM·LRCX·AMAT를 시장가로 판 사고 뒤에 넣었다.
+                        const noPriceStreak =
+                            forceFullExit && tradingMode === 'auto'
+                                ? await getNoPriceStreak(
+                                      db,
+                                      position.symbol,
+                                      cronRunId,
+                                      startedAt,
+                                      NO_PRICE_FORCED_EXIT_RUNS - 1,
+                                  ).catch((err) => {
+                                      console.error(
+                                          '[execute] 시세 공백 연속 조회 실패 — 강제 청산 보류',
+                                          err,
+                                      );
+                                      return 0;
+                                  })
+                                : 0;
+                        if (
+                            forceFullExit &&
+                            tradingMode === 'auto' &&
+                            noPriceStreak >= NO_PRICE_FORCED_EXIT_RUNS - 1
+                        ) {
                             if (await killSwitchOff()) {
                                 decisions.push({
                                     symbol: position.symbol,
@@ -590,7 +646,7 @@ async function handler(req: Request): Promise<Response> {
                             await exitPosition(
                                 position,
                                 'mr_forced_exit',
-                                '일일 손실 한도 초과 — 가격 없이 시장가 전량 청산',
+                                `일일 손실 한도 초과 — 가격 없이 시장가 전량 청산 (시세 공백 ${NO_PRICE_FORCED_EXIT_RUNS}틱 연속)`,
                                 true,
                                 {},
                             );
@@ -600,7 +656,10 @@ async function handler(req: Request): Promise<Response> {
                             symbol: position.symbol,
                             action: 'skipped_no_price',
                             score: 0,
-                            detail: { priceSource: priceFailures.get(position.symbol) ?? null },
+                            detail: {
+                                priceSource: priceFailures.get(position.symbol) ?? null,
+                                ...(forceFullExit ? { noPriceStreak: noPriceStreak + 1 } : {}),
+                            },
                         });
                         await notifyOncePerDay(
                             `no-price-${position.symbol}`,
@@ -615,6 +674,29 @@ async function handler(req: Request): Promise<Response> {
                     // 그대로 매 틱 비교할 뿐이라, 운영 중 `mr_stop_atr`를 0으로 바꿔도 이미 걸린
                     // 손절은 사라지지 않는다 — 없애려면 포지션을 직접 청산해야 한다.
                     if (isStopHit(price, stopPrice)) {
+                        // 시세 한 점으로 전량을 팔지 않는다 — 다시 받아 그 값도 손절 아래일 때만 판다.
+                        // 재조회가 실패하면 그대로 판다(청산은 막지 않는다, 원칙 7).
+                        const confirm = await fetchLivePriceDetail(position.symbol).catch(
+                            (): LivePriceDetail => ({ source: 'fmp_quote', price: null }),
+                        );
+                        if (
+                            confirm.price != null &&
+                            confirm.price > 0 &&
+                            !isStopHit(confirm.price, stopPrice)
+                        ) {
+                            decisions.push({
+                                symbol: position.symbol,
+                                action: 'stop_unconfirmed',
+                                score: 0,
+                                detail: { mr: { price, confirmPrice: confirm.price, stopPrice } },
+                            });
+                            await notifyOncePerDay(
+                                `stop-unconfirmed-${position.symbol}`,
+                                `손절 시세 불일치: ${position.symbol}`,
+                                `${position.symbol} 시세가 손절가($${stopPrice!.toFixed(2)}) 아래($${price.toFixed(2)})로 왔지만 재조회 값($${confirm.price.toFixed(2)})은 위라서 이번 틱에는 팔지 않았습니다. 시세 피드 확인이 필요합니다.`,
+                            );
+                            continue;
+                        }
                         if (await killSwitchOff()) {
                             decisions.push({
                                 symbol: position.symbol,
@@ -731,33 +813,17 @@ async function handler(req: Request): Promise<Response> {
                         const reading = bars ? readSymbol(bars) : null;
                         const openedDate = etDateOf(position.openedAt);
                         if (!bars || !reading) {
-                            if (forceFullExit) {
-                                if (await killSwitchOff()) {
-                                    decisions.push({
-                                        symbol: position.symbol,
-                                        action: 'trading_disabled_mid_loop',
-                                        score: 0,
-                                    });
-                                } else {
-                                    exitedSymbols.add(position.symbol);
-                                    await exitPosition(
-                                        position,
-                                        'mr_forced_exit',
-                                        '일일 손실 한도 초과 — 일봉 없이 강제 전량 청산',
-                                        true,
-                                        mrDetail(null, regime),
-                                    );
-                                }
-                            } else {
-                                decisions.push({
-                                    symbol: position.symbol,
-                                    action: 'mr_data_error',
-                                    score: 0,
-                                    detail: {
-                                        reason: bars ? 'insufficient_history' : 'bars_unavailable',
-                                    },
-                                });
-                            }
+                            // 일봉 공백은 대개 일시적이다 — 판단을 'done'으로 남기지 않아 창의 다음 틱이
+                            // 재시도하고, 재난 손절은 위험 단계가 실시간 가격으로 매 틱 계속 본다.
+                            // 한도 초과 중이어도 일봉 없다고 팔지 않는다(종전엔 강제 청산했다).
+                            decisions.push({
+                                symbol: position.symbol,
+                                action: 'mr_data_error',
+                                score: 0,
+                                detail: {
+                                    reason: bars ? 'insufficient_history' : 'bars_unavailable',
+                                },
+                            });
                             continue;
                         }
                         const held = holdDays(bars, openedDate);
