@@ -131,16 +131,21 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
 3. Audit row, session gate (`market_closed`), lock `cron:execute:lock` (30 min TTL, 900s run deadline),
    kill switch (stops everything, exits included), expire pending approvals.
 4. Quotes (`fetchLivePriceDetail`, with `previousClose`) for held symbols + in-flight orders (+ watchlist + SPY on a
-   decision tick).
-4a. **Sizing** (`lib/strategy/sizing.ts`) — equity = cash (`getAvailableCashUsd`) + open positions at live price (avg
-   price fallback), fixed for the run. Slot count K: on a decision tick with known equity, from the watchlist quotes
+   decision tick). Failures are fetched once more after 5s. On a decision tick a quote more than 25% from its
+   previous close is re-fetched and kept only if the two agree within 2% — otherwise it is treated as missing
+   (`reason: 'unconfirmed_divergence'`): a corrupt tick must not become today's close for an entry or an MA5 exit.
+4a. **Sizing** (`lib/strategy/sizing.ts`) — equity = cash (`getAvailableCashUsd`) + open positions at live price, fixed
+   for the run. **Any held position without a live price → equity unknown** for the tick (an avg-price mark inflated
+   it by the dip, 2026-10-16 $4,079 → $4,300): the loss limit comes from the last record and nothing is bought. Slot count K: on a decision tick with known equity, from the watchlist quotes
    (largest K ≤ 8 whose slot buys ≥ 1 share of 75% of them); otherwise carried from the latest `slotsSource = 'prices'`
    record (`getLatestSizing`), else 8. Caps: per-symbol = slot ∧ $25k, total = equity ∧ $110k, daily loss = per-symbol
    × 16%. Unknown cash → loss limit from the record's equity (none → no loss check). Written to `summary.sizing`.
 5. **Breakers** — daily trade limit, realized loss, then realized + **today's** unrealized change
    (`lib/strategy/daily-loss.ts`). A tripped loss breaker blocks entries and sets `forceFullExit`. Breach and
    quote-divergence mails go **once per ET day** (`claimOnce`).
-6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`).
+6. Live modes ask the broker for unscheduled closures (`isUsMarketOpen`). A failed lookup blocks **entries only**
+   (`entriesBlockedBy: 'market_status_unavailable'`, one mail per ET day, decision not marked done) — it used to
+   skip the whole tick, disaster stops included. If the market really is closed the broker just rejects the sell.
 7. Exposure (cost basis + in-flight buys + pending approvals). Cash for in-run spending comes from step 4a.
 8. **Risk phase (every tick)** per held position: skip if a sell is in flight or queued for approval; fill an empty
    `stop_price` from daily bars (ATR14 before the entry date × `mr_stop_atr`; bars unavailable → `stop_backfill_failed`
@@ -266,6 +271,12 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
    retried, but only for 6 hours: past that the row moves to `needs_review`, because a cancel
    that has failed for a whole session will not start working, and an eternal in-flight row
    blocks that symbol's entries forever while mailing every 10 minutes
+3a. A timed-out row **without a broker id** (the order POST timed out / errored — the broker may still have taken
+   it) is first looked up in the broker's order list (`listBrokerOrders`: same symbol, side, quantity, ordered
+   2 min before … 10 min after our `submitted_at`, not already on another row). One match → adopt its id
+   (`adopted_broker_order`, status `submitted`; the next run resolves it through `getOrder`). Several → `needs_review`.
+   None → `timeout` as before. Lookup failure → stay in flight (`broker_lookup_failed`, mail), `needs_review` after 6h.
+   Without this a filled sell was closed as `timeout` and never booked.
 4. Run DB consistency check (`checkConsistency`) — find filled orders without matching trades
 5. If inconsistencies found, send alert email
 

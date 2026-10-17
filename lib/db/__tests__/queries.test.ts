@@ -55,6 +55,7 @@ import {
     setPositionStopPrice,
     hasDecisionPhaseSince,
     getNoPriceStreak,
+    getTrackedTossOrderIds,
     getLatestSizing,
     getMrSignalDecisionsSince,
     hasTradeAuditCorrelation,
@@ -2238,6 +2239,18 @@ describe('mean-reversion decision/review queries', () => {
         expect(db._chain.limit).toHaveBeenCalledWith(1);
         const empty = createMockDb([]);
         expect(await hasDecisionPhaseSince(empty as unknown as Db, since)).toBe(false);
+    });
+
+    it('getTrackedTossOrderIds: ids already on any order row; empty input skips the query', async () => {
+        const db = createMockDb([{ tossOrderId: 'a' }, { tossOrderId: null }]);
+        expect(await getTrackedTossOrderIds(db as unknown as Db, ['a', 'b'])).toEqual(
+            new Set(['a']),
+        );
+        const q = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+        expect(q.sql).toContain(`"order_tracking"."toss_order_id" in`);
+        const empty = createMockDb([]);
+        expect(await getTrackedTossOrderIds(empty as unknown as Db, [])).toEqual(new Set());
+        expect(empty.select).not.toHaveBeenCalled();
     });
 
     describe('getNoPriceStreak (forced exit needs consecutive price gaps)', () => {
