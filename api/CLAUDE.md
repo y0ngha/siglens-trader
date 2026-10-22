@@ -61,7 +61,14 @@ bounds-checked (0 to 1,000,000), and strategy keys carry their own ranges (`NUME
 | `mr_max_hold_days` | integer 1–60 | 10 |
 | `mr_stop_atr` | 0–20 (0 = no disaster stop) | 10 (5 until 2026-10-15) |
 | `mr_regime_filter` | boolean | true |
+| `mr_soft_regime_enabled` | boolean — SPY ≤ SMA50이면 동시 보유를 아래 값으로 묶는다(신규 진입만, 옵션) | false |
+| `mr_soft_regime_max_positions` | integer 1–8 (SMA 기간 50은 상수 `SOFT_REGIME_MA_PERIOD`, 설정 아님) | 4 |
 | `dry_run_cost_bps` | 0–100 (one-way) | 10 |
+
+The two `mr_soft_regime_*` keys have **no data migration**: like every `mr_*` key, the runtime reader
+(`readMrParams`) falls back to the defaults (OFF / 4) when the row is missing, and the dashboard shows the same
+defaults, so an existing production DB needs nothing. `db:seed` inserts them with `ON CONFLICT DO NOTHING`;
+the first dashboard save creates the row.
 
 Retired keys (`buy_threshold`, `sell_threshold`, `score_weights`, `confluence_*`, `min_rr`, `min_stop_room_pct`,
 `entry_window`, `entry_cooldown_min`, `fixed_exit_enabled`, `stop_loss_percent`, `take_profit_percent`,
@@ -160,9 +167,11 @@ The handler decides; `api/cron/_orders.ts` executes (dry_run ledger tx / semi_au
    Entries: SPY bars **or SPY live price** unreadable with the regime filter on → one `mr_data_error` row, no entries;
    symbols sold today (ET, trades or live sell orders — `getSymbolsSoldSince`) → `mr_hold` `sold_today` (query failure
    → `mr_data_error`, no entries); SPY < SMA200 → one
-   `mr_regime_off` row; otherwise signals ranked by RSI(2) → `mr_skip_breaker` (entry block) /
+   `mr_regime_off` row; with `mr_soft_regime_enabled` the same SPY read also feeds the soft cap (SPY unreadable + hard filter on → the same
+   `mr_data_error`; cap only → cap assumed active, see §Soft regime cap); otherwise signals ranked by RSI(2) → `mr_skip_breaker` (entry block) /
    `pending_order_in_progress` (in-flight buy incl. `error`, or needs_review — **the idempotency guard for a retried
-   decision**) / `pending_exists` (semi_auto) / `mr_data_error` `equity_unavailable` (cash unknown — fail closed, the
+   decision**) / `pending_exists` (semi_auto) / `mr_skip_soft_regime` (soft cap, see below; checked before the equity check so a cut signal never causes an
+   `equity_unavailable` retry) / `mr_data_error` `equity_unavailable` (cash unknown — fail closed, the
    window retries) / `mr_skip_budget` (`planEntry` quantity 0) / kill-switch re-check /
    `executeEntry` → `mr_buy` (or the order outcome's action); every entry-signal row carries `detail.mr.signal = true`.
    Before each order the phase re-reads `minutesUntilUsMarketClose`; ≤ 1 → stop submitting, `summary.closeCutoffHit`.
@@ -185,6 +194,38 @@ The model is `analysis_model_config['entry_review']`.
 
 **승격 기준**: 신호 30건이 쌓이면 AI가 거부한 쪽(`fraction 0`)과 나머지의 규칙 수익률을 비교해 거부권·비중으로
 승격할지 정한다(루트 원칙 13).
+
+## Soft regime cap (옵션)
+
+SPY 종가(판단 틱 실시간 가격으로 오늘 봉을 대체 — SMA200 필터와 같은 계열)가 SPY SMA50 **이하**(같으면 포함)이면
+열린 포지션이 `mr_soft_regime_max_positions`에 닿을 때까지만 새로 산다. 계산은 `lib/strategy/mean-reversion.ts`의
+`readRegime`(SMA50, 같은 SPY 일봉 — SMA200이 이미 ≥ 200봉을 요구하므로 추가 조회 없음)과 `softRegimeCap`(순수)이고,
+execute는 진입 루프에서 여유(`room`)를 소진한 뒤의 신호를 `mr_skip_soft_regime`으로 자른다. 순위(RSI(2) 낮은 순)는
+그대로라 캡은 뒤쪽 신호만 자른다.
+
+- **fail 동작**: 하드 필터(`mr_regime_filter`)가 켜져 있으면 SPY 일봉 또는 실시간 가격이 없을 때 종전 그대로 그날 진입 전체를
+  막고 `mr_data_error`(`detail.regime: 'unavailable'`)를 남겨 창의 다음 틱이 재시도한다. **캡만 켜져 있고 하드 필터가 꺼진 경우**
+  (비례성): 진입 전체를 막지 않고 캡을 **활성으로 가정**해 여유 `max(0, cap − 열린 포지션)` 안에서 진행한다
+  (`softRegime.assumed = true`, `reason: 'spy_unavailable_assume_active'`, `regime: 'unavailable'`). 이때도 `mr_data_error`
+  행(`assumedCap: true`)을 남기되, **진입이 하나라도 나갔으면 판단을 'done'으로 남기고**(재시도하면 같은 날 두 번째 판단이 이미 낸
+  진입 위에 또 산다), **하나도 없었으면 'done'을 남기지 않아** 다음 틱이 실제 SPY로 다시 본다. 청산은 SPY와 무관하게 계속 돈다.
+  받아들인 트레이드오프: 'done'으로 남긴 날 가정 캡이 자른 신호(`mr_skip_soft_regime`, `summary.softRegime.signalsCut`)는 실제 SPY가
+  50일선 위였더라도 그날 다시 보지 않는다 — 이중 매수보다 덜 사는 쪽을 택했다.
+- **같은 날 재사용**: 판단이 재시도되는 날 SPY가 50일선 경계를 오가면 캡이 켜졌다 꺼질 수 있으므로, 같은 ET 날짜의 앞선 execute 런이
+  `summary.softRegime`에 남긴 **첫 실제 판독**(`assumed`가 아닌 것)의 `active`를 그대로 쓴다(`getFirstSoftRegimeActiveSince`,
+  `softRegime.locked = true`). 앞선 판독이 없거나 조회가 실패하면 지금 판독을 쓴다. 재사용하는 것은 `active`뿐이다 — 상한·열린 포지션 수는
+  매번 새로 센다.
+- **열린 포지션 수**: 오늘 청산이 **실제로 나간** 종목만 뺀 보유(체결, 또는 auto 주문 접수 `order_submitted`/`order_partial`; 거절·`needs_review`·
+  semi_auto 승인 대기 매도와 앞선 틱의 미체결 매도는 계속 보유) + 아직 포지션이 아닌 in-flight 매수(auto 미체결, semi_auto 승인 대기) +
+  `needs_review` 심볼(브로커에 살아 있을 수 있음). 세 집합은 심볼로 중복 제거한다.
+- **칸 사용**: 주문이 나간 진입(체결·접수·승인 대기)이 칸을 쓴다. `executeEntry`가 호출된 뒤 **던지면** 주문이 나갔는지 모르므로 칸을
+  쓴 것으로 센다(안 세면 다음 신호가 캡을 넘긴다). 호출 전에 던진 경우(승인 대기 조회 실패 등)는 세지 않는다.
+- **기록(원칙 3)**: 켜져 있으면 모든 신호 행의 `detail.mr.softRegime = { active, spyPrice, spySma50, cap, openPositions, room,
+  assumed, locked }`(가정 캡이면 `regime: 'unavailable'`, `reason: 'spy_unavailable_assume_active'`도 붙는다), 모든 행의
+  `detail.mr.spySma50`, 잘린 행의 `detail.mr.reason = 'soft_regime_cap'`, 런 요약 `summary.softRegime`(위 필드 + `signalsCut`).
+  가정 캡 틱의 `mr_data_error` 행은 같은 객체를 `detail.softRegime`(최상위)에 싣는다. `summary.softRegime.assumed = true`인 런은
+  같은 날 재사용(`getFirstSoftRegimeActiveSince`) 대상이 아니다. 꺼져 있으면 `summary.softRegime`이 없다.
+- 잘린 신호도 `detail.mr.signal = true`라 AI 리뷰(기록 전용)는 그대로 돈다.
 
 ## 매수 가능 현금
 
@@ -293,6 +334,7 @@ was submitted** — a re-entry, not the shares that order sold) is moved to `nee
 | Daily trade limit | `max_trades_per_day` | 20 | Blocks entries only (`mr_skip_breaker`). Exits still run |
 | Daily loss limit | — (derived) | slot × 16% | Realized today + **today's** unrealized change. Blocks entries and sets `forceFullExit`. $25k / 8 slots → $500 |
 | Regime filter | `mr_regime_filter` | on | SPY < SMA200 → no entries that day (`mr_regime_off`). Not a risk breaker, no mail |
+| Soft regime cap (option) | `mr_soft_regime_enabled` / `mr_soft_regime_max_positions` | off / 4 | SPY ≤ SMA50 → new entries only while `open positions < cap` (`mr_skip_soft_regime`). Open = held minus sells that actually went out today + in-flight buys (auto unfilled, semi_auto approvals) + needs_review symbols. A slot is used by an order that went out (filled, accepted, approval queued) or whose call threw after starting; rejected / unaffordable ones do not use one. SPY missing with only the cap on → cap assumed active, entries continue inside the room; the day's first real reading is reused on retried ticks. Existing positions and exits are never touched. Not a risk breaker, no mail |
 | Budget | — (derived) / cash | slot / equity | `planEntry` quantity 0 → `mr_skip_budget`. Absolute caps $25k / $110k |
 
 **A risk breaker stops new risk, never risk reduction.** The loss breaker used to sum the unrealized P&L **since

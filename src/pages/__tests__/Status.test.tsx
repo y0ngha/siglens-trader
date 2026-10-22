@@ -738,6 +738,33 @@ describe('StatusPage', () => {
         });
     });
 
+    it('shows the SPY 50일선 보유 제한 tag with the cut count when mr_skip_soft_regime occurred', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [decisionRun({ decisionsByAction: { mr_buy: 1, mr_skip_soft_regime: 2 } })],
+        });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('SPY 50일선 보유 제한 2')).toBeInTheDocument();
+        });
+    });
+
+    it('does not show the 보유 제한 tag when the cap cut nothing', async () => {
+        mockedApi.getStatus.mockResolvedValue(defaultStatus);
+        mockedApi.getCronRuns.mockResolvedValue({
+            runs: [decisionRun({ decisionsByAction: { mr_buy: 1 } })],
+        });
+
+        renderWithQuery(<StatusPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('매수 1')).toBeInTheDocument();
+        });
+        expect(screen.queryByText(/SPY 50일선 보유 제한/)).not.toBeInTheDocument();
+    });
+
     it('shows a neutral "오늘 판단 전" state when there is no execute run yet', async () => {
         mockedApi.getStatus.mockResolvedValue(defaultStatus);
         mockedApi.getCronRuns.mockResolvedValue({ runs: [] });

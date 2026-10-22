@@ -15,6 +15,10 @@ import {
     getOpenPositions,
 } from '../lib/db/queries.js';
 import { EXECUTE_INTERVALS, isExecuteInterval } from '../lib/strategy/execute-interval.js';
+import {
+    SOFT_REGIME_MAX_POSITIONS,
+    SOFT_REGIME_MIN_POSITIONS,
+} from '../lib/strategy/mean-reversion.js';
 import { DIGEST_HOUR_MAX, DIGEST_HOUR_MIN } from '../lib/notification/quiet-hours.js';
 
 /**
@@ -72,6 +76,8 @@ async function handler(req: Request): Promise<Response> {
             'mr_max_hold_days',
             'mr_stop_atr',
             'mr_regime_filter',
+            'mr_soft_regime_enabled',
+            'mr_soft_regime_max_positions',
             'dry_run_cost_bps',
             'digest_hour_kst',
         ]);
@@ -82,11 +88,16 @@ async function handler(req: Request): Promise<Response> {
             'mr_rsi_entry',
             'mr_max_hold_days',
             'mr_stop_atr',
+            'mr_soft_regime_max_positions',
             'dry_run_cost_bps',
             'digest_hour_kst',
         ]);
 
-        const BOOLEAN_CONFIG_KEYS = new Set(['trading_enabled', 'mr_regime_filter']);
+        const BOOLEAN_CONFIG_KEYS = new Set([
+            'trading_enabled',
+            'mr_regime_filter',
+            'mr_soft_regime_enabled',
+        ]);
 
         /**
          * 전략 파라미터의 키별 범위(스펙 §6). 양 끝은 "그 값을 넘으면 규칙이 다른 전략이 되는" 지점이다 —
@@ -97,6 +108,13 @@ async function handler(req: Request): Promise<Response> {
             mr_rsi_entry: { min: 1, max: 50 },
             mr_max_hold_days: { min: 1, max: 60, integer: true },
             mr_stop_atr: { min: 0, max: 20 },
+            // 소프트 국면 캡의 동시 보유 상한 — 8은 칸 수 K의 최댓값(`MAX_SLOTS`)이라 그 위는 캡이 아니다.
+            // 범위는 mean-reversion.ts의 SOFT_REGIME_MIN/MAX_POSITIONS와 같다.
+            mr_soft_regime_max_positions: {
+                min: SOFT_REGIME_MIN_POSITIONS,
+                max: SOFT_REGIME_MAX_POSITIONS,
+                integer: true,
+            },
             dry_run_cost_bps: { min: 0, max: 100 },
             // 아침 다이제스트 시각(KST). 수면 모드는 00:00부터 이 시각 전까지 — 0은 "수면 모드 없음",
             // 24는 시각이 아니다. 범위는 quiet-hours의 DIGEST_HOUR_MIN/MAX와 같다.

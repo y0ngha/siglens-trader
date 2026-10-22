@@ -37,6 +37,7 @@ const q = vi.hoisted(() => ({
     getNoPriceStreak: vi.fn(),
     getSymbolsSoldSince: vi.fn(),
     getLatestSizing: vi.fn(),
+    getFirstSoftRegimeActiveSince: vi.fn(),
 }));
 vi.mock('../../../lib/db/queries', () =>
     Object.fromEntries(
@@ -221,6 +222,7 @@ beforeEach(() => {
     q.getNoPriceStreak.mockResolvedValue(0);
     q.getSymbolsSoldSince.mockResolvedValue(new Set());
     q.getLatestSizing.mockResolvedValue(null);
+    q.getFirstSoftRegimeActiveSince.mockResolvedValue(null);
     watch();
     mockCash.mockResolvedValue(25000);
     mockClaimOnce.mockResolvedValue(true);
@@ -1338,5 +1340,563 @@ describe('A10 — every entry-signal decision carries detail.mr.signal', () => {
         await run(DECISION_NOW);
         expect(actions()).toEqual(['NVDA:mr_skip_budget']);
         expect((decisionsOf()[0]!.detail as { mr: { signal: boolean } }).mr.signal).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 소프트 국면 캡 — SPY ≤ SMA50이면 동시 보유를 N개로 묶는다(신규 진입만, 옵션·기본 OFF)
+// ---------------------------------------------------------------------------
+
+describe('soft regime cap — SPY at/below SMA50 limits open positions (entries only)', () => {
+    /** SPY: 200일선 위지만 최근 급락으로 종가 < SMA50. */
+    const spyBelow50 = () => dipAbove(3);
+    const NAMES = ['AAA', 'BBB', 'CCC', 'DDD', 'EEE', 'FFF'] as const;
+
+    /** 깊이가 서로 다른 눌림 N종목 — 이름 순서대로 얕다(AAA) → 깊다(마지막), 즉 RSI(2)는 뒤쪽이 낮다. */
+    function setupSignals(spy: number[] | null, n: number) {
+        const names = NAMES.slice(0, n);
+        watch(...names);
+        const map: BarsMap = { SPY: spy };
+        const quotes: Record<string, number | null> = { SPY: spy ? lastOf(spy) : null };
+        names.forEach((name, i) => {
+            const c = dipAbove(1.5 + i * 0.5);
+            map[name] = c;
+            quotes[name] = lastOf(c);
+        });
+        setBars(map);
+        setQuotes(quotes);
+        return names;
+    }
+    const enable = (max?: number) => {
+        config.mr_soft_regime_enabled = true;
+        if (max !== undefined) config.mr_soft_regime_max_positions = max;
+    };
+    const boughtSymbols = () =>
+        mockExecuteEntry.mock.calls.map((c) => (c[1] as { symbol: string }).symbol);
+    const softOf = (d: Record<string, unknown>) =>
+        (d.detail as { mr: { softRegime?: Record<string, unknown>; reason?: string } }).mr;
+
+    beforeEach(() => {
+        mockExecuteEntry.mockResolvedValue({
+            executed: true,
+            exposureDelta: 1000,
+            cashDebit: 1000,
+        });
+    });
+
+    it('is OFF by default: six signals under SPY < SMA50 all go through, no softRegime record', async () => {
+        setupSignals(spyBelow50(), 6);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalledTimes(6);
+        expect(actions().filter((a) => a.endsWith('mr_skip_soft_regime'))).toEqual([]);
+        expect(summary()).not.toHaveProperty('softRegime');
+        expect(softOf(decisionsOf()[0]!).softRegime).toBeUndefined();
+    });
+
+    it('enabled but SPY above SMA50: no cap', async () => {
+        enable(2);
+        setupSignals(rising(), 6);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalledTimes(6);
+        expect(summary().softRegime).toMatchObject({ active: false, signalsCut: 0, room: null });
+    });
+
+    it('enabled, SPY below SMA50, cap 4, flat book: buys the 4 lowest-RSI signals, cuts the rest with a distinct reason', async () => {
+        enable(4);
+        setupSignals(spyBelow50(), 6);
+        await run(DECISION_NOW);
+        // 깊은 눌림(RSI 낮음)부터: FFF, EEE, DDD, CCC
+        expect(boughtSymbols()).toEqual(['FFF', 'EEE', 'DDD', 'CCC']);
+        const cut = decisionsOf().filter((d) => d.action === 'mr_skip_soft_regime');
+        expect(cut.map((d) => d.symbol)).toEqual(['BBB', 'AAA']);
+        const mr = softOf(cut[0]!);
+        expect(mr.reason).toBe('soft_regime_cap');
+        expect(mr.softRegime).toMatchObject({
+            active: true,
+            cap: 4,
+            openPositions: 0,
+            room: 4,
+        });
+        expect(mr.softRegime!.spyPrice as number).toBeLessThanOrEqual(
+            mr.softRegime!.spySma50 as number,
+        );
+        // 컷 행도 신호 행이다 — 리뷰 크론이 그대로 찾는다.
+        expect((cut[0]!.detail as { mr: { signal: boolean } }).mr.signal).toBe(true);
+        expect(summary().softRegime).toMatchObject({
+            active: true,
+            cap: 4,
+            openPositions: 0,
+            signalsCut: 2,
+        });
+        // 판단 자체는 정상 종료 — 컷은 데이터 오류가 아니다(재시도 안 함).
+        expect(summary()).toMatchObject({ decisionPhase: 'done' });
+    });
+
+    it('records the SPY SMA50 on bought rows too (detail.mr)', async () => {
+        enable(4);
+        setupSignals(spyBelow50(), 1);
+        await run(DECISION_NOW);
+        const mr = softOf(decisionsOf()[0]!) as unknown as Record<string, unknown>;
+        expect(typeof mr.spySma50).toBe('number');
+        expect((mr.softRegime as Record<string, unknown>).room).toBe(4);
+    });
+
+    describe('with positions already open', () => {
+        const heldDip = (symbol: string) => {
+            const c = dipAbove(3);
+            return { symbol, bars: c, price: lastOf(c) };
+        };
+        function hold(symbols: string[], opts: { exit?: boolean } = {}) {
+            const map: BarsMap = {};
+            const quotes: Record<string, number | null> = {};
+            for (const sym of symbols) {
+                // exit: 상승 계열이라 MA5 회복 → 오늘 규칙 청산. 아니면 눌림이라 보유 유지.
+                const c = opts.exit ? rising() : heldDip(sym).bars;
+                map[sym] = c;
+                quotes[sym] = lastOf(c);
+            }
+            q.getOpenPositions.mockResolvedValue(
+                symbols.map((s, i) => position({ id: 10 + i, symbol: s })),
+            );
+            return { map, quotes };
+        }
+        function withHeld(held: string[], newcomers: number, opts: { exit?: boolean } = {}) {
+            const spy = spyBelow50();
+            const { map, quotes } = hold(held, opts);
+            const names = NAMES.slice(0, newcomers);
+            watch(...held, ...names);
+            map.SPY = spy;
+            quotes.SPY = lastOf(spy);
+            names.forEach((name, i) => {
+                const c = dipAbove(1.5 + i * 0.5);
+                map[name] = c;
+                quotes[name] = lastOf(c);
+            });
+            setBars(map);
+            setQuotes(quotes);
+        }
+
+        it('partial room: 3 held + cap 4 → exactly 1 new entry (lowest RSI), the rest cut', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3'], 3);
+            await run(DECISION_NOW);
+            expect(boughtSymbols()).toEqual(['CCC']);
+            expect(decisionsOf().filter((d) => d.action === 'mr_skip_soft_regime')).toHaveLength(2);
+            expect(summary().softRegime).toMatchObject({
+                openPositions: 3,
+                room: 1,
+                signalsCut: 2,
+            });
+            expect(mockExecuteExit).not.toHaveBeenCalled();
+        });
+
+        it('at the cap (4 held) → no new entry; existing positions are never touched', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3', 'H4'], 2);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).not.toHaveBeenCalled();
+            expect(mockExecuteExit).not.toHaveBeenCalled();
+            expect(
+                decisionsOf()
+                    .filter((d) => d.action === 'mr_skip_soft_regime')
+                    .map((d) => d.symbol),
+            ).toEqual(['BBB', 'AAA']);
+            expect(summary().softRegime).toMatchObject({ room: 0, signalsCut: 2 });
+        });
+
+        it('over the cap (6 held, cap 4) → still no new entry and never a forced exit', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3', 'H4', 'H5', 'H6'], 1);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).not.toHaveBeenCalled();
+            expect(mockExecuteExit).not.toHaveBeenCalled();
+            expect(summary().softRegime).toMatchObject({ openPositions: 6, room: 0 });
+        });
+
+        it('counts the book after today’s rule exits: exits still run and free their slots', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3', 'H4'], 2, { exit: true });
+            await run(DECISION_NOW);
+            expect(mockExecuteExit).toHaveBeenCalledTimes(4);
+            expect(summary().softRegime).toMatchObject({ openPositions: 0, room: 4 });
+            expect(boughtSymbols()).toEqual(['BBB', 'AAA']);
+        });
+
+        it('a rejected sell does not free its slot (the position is still held)', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3', 'H4'], 2, { exit: true });
+            mockExecuteExit
+                .mockResolvedValueOnce({
+                    executed: false,
+                    action: 'order_rejected',
+                    exposureDelta: 0,
+                    cashDebit: 0,
+                })
+                .mockResolvedValue({ executed: true, exposureDelta: -1000, cashDebit: 0 });
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 1, room: 3 });
+        });
+
+        it('a needs_review sell and a semi_auto queued sell (no action, not executed) keep their slots', async () => {
+            enable(4);
+            withHeld(['H1', 'H2', 'H3', 'H4'], 2, { exit: true });
+            mockExecuteExit
+                .mockResolvedValueOnce({
+                    executed: false,
+                    action: 'needs_review',
+                    exposureDelta: 0,
+                    cashDebit: 0,
+                })
+                .mockResolvedValueOnce({ executed: false, exposureDelta: 0, cashDebit: 0 })
+                .mockResolvedValue({ executed: true, exposureDelta: -1000, cashDebit: 0 });
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 2, room: 2 });
+        });
+
+        it('an accepted (submitted / partial) sell frees its slot', async () => {
+            enable(4);
+            withHeld(['H1', 'H2'], 2, { exit: true });
+            mockExecuteExit
+                .mockResolvedValueOnce({
+                    executed: false,
+                    action: 'order_submitted',
+                    exposureDelta: -1000,
+                    cashDebit: 0,
+                })
+                .mockResolvedValueOnce({
+                    executed: false,
+                    action: 'order_partial',
+                    exposureDelta: -1000,
+                    cashDebit: 0,
+                });
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 0, room: 4 });
+        });
+
+        it('a disaster-stop sell from the risk phase frees its slot only when it went out', async () => {
+            enable(4);
+            // H1: stop hit (price below stop) in the risk phase, sell executes → freed.
+            // H2: stop hit, sell rejected → still occupies.
+            const spy = spyBelow50();
+            const held = (id: number, symbol: string) =>
+                position({
+                    id,
+                    symbol,
+                    stopPrice: '1000',
+                    openedAt: new Date('2026-01-02T20:47:00Z'),
+                });
+            q.getOpenPositions.mockResolvedValue([held(1, 'H1'), held(2, 'H2')]);
+            watch('H1', 'H2');
+            const c = dipAbove(3);
+            setBars({ SPY: spy, H1: c, H2: c });
+            setQuotes({ SPY: lastOf(spy), H1: lastOf(c), H2: lastOf(c) });
+            mockExecuteExit
+                .mockResolvedValueOnce({ executed: true, exposureDelta: -1000, cashDebit: 0 })
+                .mockResolvedValueOnce({
+                    executed: false,
+                    action: 'order_rejected',
+                    exposureDelta: 0,
+                    cashDebit: 0,
+                });
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 1 });
+        });
+
+        it('needs_review symbols (possibly live at the broker) occupy a slot, deduplicated against held and in-flight', async () => {
+            enable(4);
+            withHeld(['H1'], 2);
+            // ZZZ: only needs_review; H1: held AND needs_review (counted once); YYY: in-flight AND needs_review.
+            q.getNeedsReviewSymbols.mockResolvedValue(['ZZZ', 'H1', 'YYY']);
+            q.getPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'YYY', side: 'buy', status: 'submitted', quantity: 1 },
+            ]);
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 3, room: 1 });
+        });
+
+        it('in-flight buys (auto unfilled / semi_auto approvals) occupy a slot', async () => {
+            enable(4);
+            withHeld(['H1', 'H2'], 3);
+            q.getPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'ZZZ', side: 'buy', status: 'submitted', quantity: 1 },
+            ]);
+            q.getPendingOrders.mockResolvedValue([
+                { symbol: 'YYY', side: 'buy', status: 'pending', quantity: 1, priceLimit: '10' },
+                // 매도 대기·이미 처리된 승인은 칸이 아니다.
+                { symbol: 'XXX', side: 'sell', status: 'pending', quantity: 1, priceLimit: '10' },
+                { symbol: 'WWW', side: 'buy', status: 'approved', quantity: 1, priceLimit: '10' },
+            ]);
+            setQuotes({ SPY: lastOf(spyBelow50()), ZZZ: 10, YYY: 10 });
+            // 위에서 덮어쓴 시세를 다시 채운다.
+            const prices: Record<string, number | null> = {
+                SPY: lastOf(spyBelow50()),
+                ZZZ: 10,
+                YYY: 10,
+            };
+            for (const n of ['H1', 'H2']) prices[n] = lastOf(dipAbove(3));
+            for (const [i, n] of (['AAA', 'BBB', 'CCC'] as const).entries()) {
+                prices[n] = lastOf(dipAbove(1.5 + i * 0.5));
+            }
+            setQuotes(prices);
+            await run(DECISION_NOW);
+            // 보유 2 + 접수 1 + 승인 대기 1 = 4 → 여유 0
+            expect(summary().softRegime).toMatchObject({ openPositions: 4, room: 0 });
+            expect(mockExecuteEntry).not.toHaveBeenCalled();
+        });
+
+        it('an in-flight buy on a symbol that is already held is not double counted', async () => {
+            enable(4);
+            withHeld(['H1'], 2);
+            q.getPendingSubmittedOrders.mockResolvedValue([
+                { symbol: 'H1', side: 'buy', status: 'submitted', quantity: 1 },
+            ]);
+            await run(DECISION_NOW);
+            expect(summary().softRegime).toMatchObject({ openPositions: 1, room: 3 });
+        });
+    });
+
+    it('a rejected / unaffordable order does not use a slot: the next signal still gets it', async () => {
+        enable(1);
+        setupSignals(spyBelow50(), 2);
+        mockExecuteEntry
+            .mockResolvedValueOnce({
+                executed: false,
+                action: 'skipped_insufficient_cash',
+                exposureDelta: 0,
+                cashDebit: 0,
+            })
+            .mockResolvedValueOnce({ executed: true, exposureDelta: 1000, cashDebit: 1000 });
+        await run(DECISION_NOW);
+        expect(boughtSymbols()).toEqual(['BBB', 'AAA']);
+        expect(actions().filter((a) => a.endsWith('mr_skip_soft_regime'))).toEqual([]);
+    });
+
+    it('a pending semi_auto approval (executed=false, exposure reserved) uses the slot', async () => {
+        enable(1);
+        setupSignals(spyBelow50(), 2);
+        mockExecuteEntry.mockResolvedValue({
+            executed: false,
+            exposureDelta: 1000,
+            cashDebit: 1000,
+        });
+        await run(DECISION_NOW);
+        expect(boughtSymbols()).toEqual(['BBB']);
+        expect(actions()).toContain('AAA:mr_skip_soft_regime');
+    });
+
+    it('the cap takes precedence over an unknown equity: no equity_unavailable retry for a cut signal', async () => {
+        enable(1);
+        q.getOpenPositions.mockResolvedValue([position({ symbol: 'H1' })]);
+        const spy = spyBelow50();
+        watch('H1', 'AAA');
+        setBars({ SPY: spy, H1: dipAbove(3), AAA: dipAbove(2) });
+        setQuotes({ SPY: lastOf(spy), H1: lastOf(dipAbove(3)), AAA: lastOf(dipAbove(2)) });
+        mockCash.mockResolvedValue(null);
+        await run(DECISION_NOW);
+        expect(actions()).toContain('AAA:mr_skip_soft_regime');
+        expect(actions()).not.toContain('AAA:mr_data_error');
+    });
+
+    it('SPY SMA50 tie counts as active (at-or-below): flat SPY, hard filter off', async () => {
+        enable(1);
+        config.mr_regime_filter = false;
+        const flat = Array.from({ length: 260 }, () => 100);
+        setupSignals(flat, 2);
+        await run(DECISION_NOW);
+        expect(boughtSymbols()).toEqual(['BBB']);
+        expect(summary().softRegime).toMatchObject({ active: true, signalsCut: 1 });
+    });
+
+    it('works without the hard filter: cap applies even when SPY is under its SMA200', async () => {
+        enable(2);
+        config.mr_regime_filter = false;
+        // 하락 추세 SPY + 종목은 자체 200일선 위 눌림.
+        setupSignals(falling(), 3);
+        await run(DECISION_NOW);
+        expect(boughtSymbols()).toEqual(['CCC', 'BBB']);
+        expect(actions()).toContain('AAA:mr_skip_soft_regime');
+    });
+
+    it('with the hard filter on, SPY < SMA200 still wins: one mr_regime_off row, no soft cut rows', async () => {
+        enable(2);
+        setupSignals(falling(), 3);
+        await run(DECISION_NOW);
+        expect(actions()).toEqual(['-:mr_regime_off']);
+    });
+
+    describe('SPY data missing', () => {
+        it('hard filter on (+ cap on) → fail closed exactly as before: one mr_data_error, no entries, not done', async () => {
+            enable(4);
+            watch('AAA');
+            setBars({ SPY: null, AAA: dipAbove(2) });
+            setQuotes({ AAA: lastOf(dipAbove(2)) });
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).not.toHaveBeenCalled();
+            expect(actions()).toEqual(['SPY:mr_data_error']);
+            expect(summary()).not.toHaveProperty('decisionPhase');
+        });
+
+        it('cap only, SPY bars unreadable → cap assumed active, entries proceed inside the room, day marked done', async () => {
+            enable(4);
+            config.mr_regime_filter = false;
+            watch('AAA');
+            setBars({ SPY: null, AAA: dipAbove(2) });
+            setQuotes({ AAA: lastOf(dipAbove(2)) });
+            await run(DECISION_NOW);
+            expect(boughtSymbols()).toEqual(['AAA']);
+            const err = decisionsOf().find((d) => d.action === 'mr_data_error')!;
+            expect(err.detail).toMatchObject({ regime: 'unavailable', assumedCap: true });
+            const buy = decisionsOf().find((d) => d.symbol === 'AAA')!;
+            expect(softOf(buy).softRegime).toMatchObject({
+                active: true,
+                assumed: true,
+                regime: 'unavailable',
+                reason: 'spy_unavailable_assume_active',
+                room: 4,
+            });
+            expect(summary().softRegime).toMatchObject({ active: true, assumed: true });
+            // 진입이 나갔으므로 재시도하지 않는다(재시도하면 같은 날 두 번째 판단이 또 산다).
+            expect(summary()).toMatchObject({ decisionPhase: 'done' });
+        });
+
+        it('cap only, SPY has bars but no live price → same assumed-active path, not yesterday’s close', async () => {
+            enable(4);
+            config.mr_regime_filter = false;
+            watch('AAA');
+            setBars({ SPY: rising(), AAA: dipAbove(2) });
+            setQuotes({ AAA: lastOf(dipAbove(2)) });
+            await run(DECISION_NOW);
+            expect(boughtSymbols()).toEqual(['AAA']);
+            expect(summary().softRegime).toMatchObject({ assumed: true, active: true });
+        });
+
+        it('cap only, SPY missing: the assumed cap still limits to cap − open', async () => {
+            enable(4);
+            config.mr_regime_filter = false;
+            setupSignals(null, 6);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).toHaveBeenCalledTimes(4);
+            expect(summary().softRegime).toMatchObject({ assumed: true, signalsCut: 2 });
+        });
+
+        it('cap only, SPY missing, no entry made → data error kept, day NOT marked done (next tick retries with real SPY)', async () => {
+            enable(4);
+            config.mr_regime_filter = false;
+            watch('MSFT');
+            setBars({ SPY: null, MSFT: rising() });
+            setQuotes({ MSFT: lastOf(rising()) });
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).not.toHaveBeenCalled();
+            expect(actions()).toContain('SPY:mr_data_error');
+            expect(summary()).not.toHaveProperty('decisionPhase');
+        });
+
+        it('both off → SPY is not needed: entries proceed without SPY data', async () => {
+            config.mr_regime_filter = false;
+            watch('AAA');
+            setBars({ SPY: null, AAA: dipAbove(2) });
+            setQuotes({ AAA: lastOf(dipAbove(2)) });
+            await run(DECISION_NOW);
+            expect(boughtSymbols()).toEqual(['AAA']);
+        });
+    });
+
+    describe('the day’s first real cap reading is reused on retried decision ticks', () => {
+        it('asks for the first real reading since the ET day start', async () => {
+            enable(4);
+            setupSignals(spyBelow50(), 1);
+            await run(DECISION_NOW);
+            expect(q.getFirstSoftRegimeActiveSince).toHaveBeenCalledWith(
+                fakeDb,
+                etDayStart(DECISION_NOW),
+            );
+        });
+
+        it('does not ask when the cap is off', async () => {
+            setupSignals(spyBelow50(), 1);
+            await run(DECISION_NOW);
+            expect(q.getFirstSoftRegimeActiveSince).not.toHaveBeenCalled();
+        });
+
+        it('earlier reading active=true keeps the cap on even if SPY is now above SMA50', async () => {
+            enable(2);
+            q.getFirstSoftRegimeActiveSince.mockResolvedValue(true);
+            setupSignals(rising(), 4);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).toHaveBeenCalledTimes(2);
+            expect(summary().softRegime).toMatchObject({ active: true, locked: true });
+        });
+
+        it('earlier reading active=false keeps the cap off even if SPY is now below SMA50', async () => {
+            enable(2);
+            q.getFirstSoftRegimeActiveSince.mockResolvedValue(false);
+            setupSignals(spyBelow50(), 4);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).toHaveBeenCalledTimes(4);
+            expect(summary().softRegime).toMatchObject({ active: false, locked: true });
+        });
+
+        it('SPY unavailable but an earlier real reading exists → uses it, no data-error row', async () => {
+            enable(2);
+            config.mr_regime_filter = false;
+            q.getFirstSoftRegimeActiveSince.mockResolvedValue(true);
+            setupSignals(null, 4);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).toHaveBeenCalledTimes(2);
+            expect(actions().filter((a) => a.endsWith('mr_data_error'))).toEqual([]);
+            expect(summary().softRegime).toMatchObject({ locked: true, assumed: false });
+        });
+
+        it('a failing lookup falls back to the live reading', async () => {
+            enable(2);
+            q.getFirstSoftRegimeActiveSince.mockRejectedValue(new Error('db'));
+            setupSignals(spyBelow50(), 4);
+            await run(DECISION_NOW);
+            expect(mockExecuteEntry).toHaveBeenCalledTimes(2);
+            expect(summary().softRegime).toMatchObject({ active: true, locked: false });
+        });
+    });
+
+    describe('slot accounting under failures', () => {
+        it('executeEntry throwing after the call started still uses the slot (the order may be live)', async () => {
+            enable(1);
+            setupSignals(spyBelow50(), 2);
+            mockExecuteEntry.mockRejectedValueOnce(new Error('timeout after send'));
+            await run(DECISION_NOW);
+            // BBB (lowest RSI) throws; AAA must be cut, not bought.
+            expect(boughtSymbols()).toEqual(['BBB']);
+            expect(actions()).toEqual(['BBB:error', 'AAA:mr_skip_soft_regime']);
+        });
+
+        it('a throw before executeEntry was reached (no order possible) does not use the slot', async () => {
+            enable(1);
+            config.trading_mode = 'semi_auto';
+            setupSignals(spyBelow50(), 2);
+            q.getPendingOrders
+                .mockResolvedValueOnce([]) // 시작 시 승인 대기 조회
+                .mockRejectedValueOnce(new Error('db blip')) // BBB의 pending_exists 확인
+                .mockResolvedValue([]);
+            await run(DECISION_NOW);
+            expect(actions()).toContain('BBB:error');
+            expect(boughtSymbols()).toEqual(['AAA']);
+        });
+    });
+
+    it('a corrupt cap row falls back to 4 (runtime defense), never to "no entries"', async () => {
+        config.mr_soft_regime_enabled = true;
+        config.mr_soft_regime_max_positions = 99;
+        setupSignals(spyBelow50(), 6);
+        await run(DECISION_NOW);
+        expect(mockExecuteEntry).toHaveBeenCalledTimes(4);
+    });
+
+    it('risk-only ticks (no decision phase) are unaffected: disaster stop still sells with the cap on', async () => {
+        enable(1);
+        const c = dipAbove(3);
+        q.getOpenPositions.mockResolvedValue([position({ symbol: 'H1', stopPrice: '1000' })]);
+        setQuotes({ H1: lastOf(c) });
+        await run(RISK_NOW);
+        expect(mockExecuteExit).toHaveBeenCalledTimes(1);
+        expect(mockExecuteEntry).not.toHaveBeenCalled();
     });
 });

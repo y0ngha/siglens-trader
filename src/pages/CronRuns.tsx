@@ -83,6 +83,11 @@ type MrDetail = {
     atr14: number | null;
     spyPrice: number | null;
     spySma200: number | null;
+    /** 소프트 국면 캡이 쓰는 SPY 50일선(옵션). 캡이 꺼진 런의 옛 행에는 없다. */
+    spySma50: number | null;
+    /** `detail.mr.softRegime`의 상한·판단 시점 열린 포지션 수 — 캡이 켜진 런의 신호 행에만 있다. */
+    softCap: number | null;
+    softOpen: number | null;
     stopPrice: number | null;
     rank: number | null;
     holdDays: number | null;
@@ -113,6 +118,9 @@ function readMrDetail(detail: unknown): MrDetail | null {
         atr14: numOrNull(mr.atr14),
         spyPrice: numOrNull(mr.spyPrice),
         spySma200: numOrNull(mr.spySma200),
+        spySma50: numOrNull(mr.spySma50),
+        softCap: isRecord(mr.softRegime) ? numOrNull(mr.softRegime.cap) : null,
+        softOpen: isRecord(mr.softRegime) ? numOrNull(mr.softRegime.openPositions) : null,
         stopPrice: numOrNull(mr.stopPrice),
         rank: numOrNull(mr.rank),
         holdDays: numOrNull(mr.holdDays),
@@ -134,6 +142,10 @@ function formatMrDetail(mr: MrDetail): string {
     if (mr.atr14 !== null) parts.push(`ATR14 ${mr.atr14.toFixed(2)}`);
     if (mr.spyPrice !== null) parts.push(`SPY $${mr.spyPrice.toFixed(2)}`);
     if (mr.spySma200 !== null) parts.push(`SPY SMA200 $${mr.spySma200.toFixed(2)}`);
+    if (mr.spySma50 !== null) parts.push(`SPY SMA50 $${mr.spySma50.toFixed(2)}`);
+    if (mr.softCap !== null) {
+        parts.push(`보유 제한 ${mr.softOpen ?? '?'}/${mr.softCap}`);
+    }
     if (mr.holdDays !== null) parts.push(`보유 ${mr.holdDays}일`);
     if (mr.signal === true) parts.push('신호');
     // 'sold_today' 등 — mr_hold가 "신호 없음"인지 "오늘 이미 매도돼 재진입 안 함"인지 구분한다.
@@ -378,6 +390,7 @@ function actionChipClass(action: string): string {
         case 'exit_deferred':
         case 'mr_regime_off':
         case 'mr_skip_budget':
+        case 'mr_skip_soft_regime':
         case 'skipped_insufficient_cash':
         case 'skipped_no_buying_power':
         case 'skipped_no_price':
@@ -414,6 +427,8 @@ function decisionActionLabel(action: string): string {
             return '예산 부족';
         case 'mr_skip_breaker':
             return '한도 차단';
+        case 'mr_skip_soft_regime':
+            return '보유 수 제한';
         case 'mr_regime_off':
             return '국면 필터';
         case 'mr_hold':

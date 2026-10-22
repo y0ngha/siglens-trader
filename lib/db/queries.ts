@@ -1193,6 +1193,31 @@ export async function getLatestSizing(
 }
 
 /**
+ * 오늘(`since` 이후) 첫 execute 런이 **실제 SPY 판독으로** 남긴 소프트 국면 캡의 `active`.
+ * 판단 재시도 틱이 같은 날 SPY가 50일선 경계를 넘나든다고 캡을 켰다 껐다 하지 않게 하려는 것이다.
+ * SPY를 못 읽어 "활성으로 가정"한 런(`assumed: true`)은 판독이 아니므로 건너뛴다. 없으면 null.
+ */
+export async function getFirstSoftRegimeActiveSince(db: Db, since: Date): Promise<boolean | null> {
+    const rows = await db
+        .select({ summary: cronRuns.summary })
+        .from(cronRuns)
+        .where(
+            and(
+                eq(cronRuns.cronType, 'execute'),
+                gte(cronRuns.startedAt, since),
+                sql`${cronRuns.summary}->'softRegime' is not null`,
+                sql`coalesce(${cronRuns.summary}->'softRegime'->>'assumed', 'false') <> 'true'`,
+            ),
+        )
+        .orderBy(asc(cronRuns.startedAt))
+        .limit(1);
+    const soft = (rows[0]?.summary as Record<string, unknown> | null | undefined)?.softRegime;
+    if (typeof soft !== 'object' || soft === null) return null;
+    const active = (soft as Record<string, unknown>).active;
+    return typeof active === 'boolean' ? active : null;
+}
+
+/**
  * AI 리뷰 대상 — 판단 단계가 남긴 **신호 결정 전부**. 체결된 것만이 아니라 예산·한도로 못 산
  * 신호도 포함한다: 못 산 신호도 전진 수익률로 평가할 수 있고, 리뷰가 가치를 내는지 재려면 표본이
  * 많아야 한다(스펙 §5).

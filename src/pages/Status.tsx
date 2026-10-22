@@ -203,6 +203,7 @@ export function StatusPage() {
         actionCount('skipped_no_buying_power');
     const mrSkipBreakerCount = actionCount('mr_skip_breaker');
     const mrRegimeOff = actionCount('mr_regime_off') > 0;
+    const mrSoftRegimeCut = actionCount('mr_skip_soft_regime');
     const mrDataError = actionCount('mr_data_error') > 0;
 
     const configEntries = configData as
@@ -604,6 +605,11 @@ export function StatusPage() {
                                 {mrRegimeOff && (
                                     <span className="rounded bg-yellow-500/10 px-2 py-1 text-yellow-400">
                                         국면 필터로 진입 없음
+                                    </span>
+                                )}
+                                {mrSoftRegimeCut > 0 && (
+                                    <span className="rounded bg-yellow-500/10 px-2 py-1 text-yellow-400">
+                                        SPY 50일선 보유 제한 {mrSoftRegimeCut}
                                     </span>
                                 )}
                                 {mrDataError && (
