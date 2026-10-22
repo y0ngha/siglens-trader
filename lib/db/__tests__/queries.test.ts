@@ -57,6 +57,7 @@ import {
     getNoPriceStreak,
     getTrackedTossOrderIds,
     getLatestSizing,
+    getFirstSoftRegimeActiveSince,
     getMrSignalDecisionsSince,
     hasTradeAuditCorrelation,
     MR_SIGNAL_ACTIONS,
@@ -2286,6 +2287,42 @@ describe('mean-reversion decision/review queries', () => {
             const { n, db } = await streak([], []);
             expect(n).toBe(0);
             expect(db.select).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('getFirstSoftRegimeActiveSince', () => {
+        const since = new Date('2026-10-22T04:00:00Z');
+
+        it('earliest real reading of the day: execute runs since the day start, assumed readings skipped', async () => {
+            const db = createMockDb([{ summary: { softRegime: { active: true } } }]);
+            expect(await getFirstSoftRegimeActiveSince(db as unknown as Db, since)).toBe(true);
+            const query = new PgDialect().sqlToQuery(db._chain.where.mock.calls[0]![0]);
+            expect(query.sql).toContain(`"cron_runs"."cron_type" = $1`);
+            expect(query.sql).toContain(`"cron_runs"."started_at" >= $2`);
+            expect(query.sql).toContain(`"cron_runs"."summary"->'softRegime' is not null`);
+            expect(query.sql).toContain(
+                `coalesce("cron_runs"."summary"->'softRegime'->>'assumed', 'false') <> 'true'`,
+            );
+            expect(query.params[0]).toBe('execute');
+            expect(db._chain.orderBy).toHaveBeenCalledTimes(1);
+            expect(db._chain.limit).toHaveBeenCalledWith(1);
+        });
+
+        it('returns false for an inactive reading', async () => {
+            const db = createMockDb([{ summary: { softRegime: { active: false } } }]);
+            expect(await getFirstSoftRegimeActiveSince(db as unknown as Db, since)).toBe(false);
+        });
+
+        it.each([
+            ['no row', []],
+            ['null summary', [{ summary: null }]],
+            ['no softRegime', [{ summary: {} }]],
+            ['softRegime not an object', [{ summary: { softRegime: 'x' } }]],
+            ['softRegime null', [{ summary: { softRegime: null } }]],
+            ['active not a boolean', [{ summary: { softRegime: { active: 'yes' } } }]],
+        ])('%s → null', async (_label, rows) => {
+            const db = createMockDb(rows);
+            expect(await getFirstSoftRegimeActiveSince(db as unknown as Db, since)).toBeNull();
         });
     });
 

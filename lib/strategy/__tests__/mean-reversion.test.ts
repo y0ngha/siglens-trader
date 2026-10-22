@@ -13,8 +13,12 @@ import {
     holdDays,
     evaluateRuleExit,
     isStopHit,
+    needsRegime,
+    softRegimeCap,
     DEFAULT_MR_PARAMS,
+    SOFT_REGIME_MA_PERIOD,
     type DailyBar,
+    type RegimeReading,
     type SymbolReading,
 } from '../mean-reversion';
 
@@ -28,7 +32,7 @@ const bars = (closes: number[], start = '2025-01-01'): DailyBar[] =>
         close: c,
     }));
 
-const UP = { up: true, price: 2, sma200: 1 };
+const UP = { up: true, price: 2, sma200: 1, sma50: 1 };
 
 describe('indicators', () => {
     it('sma is the mean of the last n values, null when too short or n <= 0', () => {
@@ -86,6 +90,43 @@ describe('parity with the backtest (spec §9)', () => {
     });
 });
 
+describe('soft regime SMA50 parity (same SPY series as the SMA200 filter)', () => {
+    // 소프트 캡의 SMA50은 SMA200 필터와 같은 계열·같은 "마지막 봉 = 오늘" 전제에서 나온다. 독립 구현
+    // (명시적 슬라이스 평균)과 날짜마다 일치해야 한다 — 백테스트의 `sma(close, 50)`과 같은 식이다.
+    it('readRegime().sma50 equals the mean of the last 50 closes on every fixture day', () => {
+        const spy = fixture.spy as DailyBar[];
+        let checked = 0;
+        for (let i = 199; i < spy.length; i++) {
+            const upto = spy.slice(0, i + 1);
+            const reading = readRegime(upto)!;
+            const last50 = upto.slice(-SOFT_REGIME_MA_PERIOD).map((b) => b.close);
+            const expected = last50.reduce((a, b) => a + b, 0) / SOFT_REGIME_MA_PERIOD;
+            expect(reading.sma50).toBeCloseTo(expected, 8);
+            checked += 1;
+        }
+        expect(checked).toBeGreaterThan(100);
+    });
+
+    it('the cap flips on exactly the fixture days where SPY <= SMA50 (ties included)', () => {
+        const spy = fixture.spy as DailyBar[];
+        const params = { softRegimeEnabled: true, softRegimeMaxPositions: 4 };
+        let below = 0;
+        let above = 0;
+        for (let i = 199; i < spy.length; i++) {
+            const upto = spy.slice(0, i + 1);
+            const close = upto[i]!.close;
+            const sma50 = upto.slice(-50).reduce((a, b) => a + b.close, 0) / 50;
+            const cap = softRegimeCap(readRegime(upto), params, 2);
+            expect(cap.active).toBe(close <= sma50);
+            if (cap.active) below += 1;
+            else above += 1;
+        }
+        // 픽스처가 양쪽 국면을 모두 지나야 이 테스트가 의미가 있다.
+        expect(below).toBeGreaterThan(0);
+        expect(above).toBeGreaterThan(0);
+    });
+});
+
 describe('readSymbol / readRegime', () => {
     it('is null below 200 bars (recent listing = no signal)', () => {
         expect(readSymbol(bars(Array(199).fill(10)))).toBeNull();
@@ -112,6 +153,11 @@ describe('readSymbol / readRegime', () => {
         const b = bars(Array(210).fill(10));
         b[b.length - 1] = { ...b[b.length - 1]!, high: 100, low: 1 };
         expect(readSymbol(b)!.atrPrev).toBeCloseTo(2, 10);
+    });
+
+    it('reads the SMA50 over the last 50 closes including today', () => {
+        const r = readRegime(bars([...Array(210).fill(100), 150]))!;
+        expect(r.sma50).toBeCloseTo((100 * 49 + 150) / 50, 10);
     });
 
     it('regime is up only when SPY is above its SMA200', () => {
@@ -246,4 +292,142 @@ describe('ma5ExitPrice', () => {
     it('봉이 모자라면 null', () => {
         expect(ma5ExitPrice([1, 2, 3, 4].map(bar))).toBeNull();
     });
+});
+
+describe('needsRegime', () => {
+    it('is true when either the hard filter or the soft cap is on', () => {
+        const off = { ...DEFAULT_MR_PARAMS, regimeFilter: false, softRegimeEnabled: false };
+        expect(needsRegime(off)).toBe(false);
+        expect(needsRegime({ ...off, regimeFilter: true })).toBe(true);
+        expect(needsRegime({ ...off, softRegimeEnabled: true })).toBe(true);
+    });
+});
+
+describe('softRegimeCap', () => {
+    const reg = (price: number, sma50 = 100): RegimeReading => ({
+        up: true,
+        price,
+        sma200: 90,
+        sma50,
+    });
+    const on = (max = 4) => ({ softRegimeEnabled: true, softRegimeMaxPositions: max });
+
+    it('defaults to OFF with a cap of 4', () => {
+        expect(DEFAULT_MR_PARAMS.softRegimeEnabled).toBe(false);
+        expect(DEFAULT_MR_PARAMS.softRegimeMaxPositions).toBe(4);
+    });
+
+    it('disabled: never limits, even with SPY far below SMA50', () => {
+        const r = softRegimeCap(reg(50), { ...on(), softRegimeEnabled: false }, 7);
+        expect(r).toMatchObject({ enabled: false, active: false, room: null });
+    });
+
+    it('enabled, SPY above SMA50: not active, no limit', () => {
+        const r = softRegimeCap(reg(100.01), on(), 7);
+        expect(r).toMatchObject({ enabled: true, active: false, room: null });
+    });
+
+    it('enabled, SPY exactly at SMA50: active (at-or-below)', () => {
+        expect(softRegimeCap(reg(100), on(), 1)).toMatchObject({ active: true, room: 3 });
+    });
+
+    it('enabled, SPY below SMA50: room = cap - open', () => {
+        const r = softRegimeCap(reg(99), on(), 1);
+        expect(r).toMatchObject({
+            active: true,
+            cap: 4,
+            openPositions: 1,
+            room: 3,
+            spyPrice: 99,
+            spySma50: 100,
+        });
+    });
+
+    it('open positions at the cap -> 0 new entries', () => {
+        expect(softRegimeCap(reg(99), on(), 4).room).toBe(0);
+    });
+
+    it('open positions above the cap (held before the cap kicked in) -> 0, never negative', () => {
+        expect(softRegimeCap(reg(99), on(), 7).room).toBe(0);
+    });
+
+    it('partial room with a custom cap', () => {
+        expect(softRegimeCap(reg(99), on(6), 5).room).toBe(1);
+        expect(softRegimeCap(reg(99), on(1), 0).room).toBe(1);
+        expect(softRegimeCap(reg(99), on(8), 0).room).toBe(8);
+    });
+
+    it.each([0, 9, -3, 2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+        'an invalid cap (%s) falls back to 4',
+        (bad) => {
+            expect(softRegimeCap(reg(99), on(bad), 1)).toMatchObject({ cap: 4, room: 3 });
+        },
+    );
+
+    it('missing SPY data assumes the enabled cap active: room = cap - open (entries are not blocked wholesale)', () => {
+        const r = softRegimeCap(null, on(), 1);
+        expect(r).toMatchObject({
+            active: true,
+            assumed: true,
+            locked: false,
+            room: 3,
+            spyPrice: null,
+            spySma50: null,
+        });
+        expect(softRegimeCap(null, on(), 4).room).toBe(0);
+        expect(softRegimeCap(null, on(), 9).room).toBe(0);
+    });
+
+    it('a real reading is never marked assumed', () => {
+        expect(softRegimeCap(reg(99), on(), 0).assumed).toBe(false);
+        expect(softRegimeCap(reg(101), on(), 0).assumed).toBe(false);
+    });
+
+    it('lockedActive overrides the live reading in both directions', () => {
+        expect(softRegimeCap(reg(150), on(), 1, true)).toMatchObject({
+            active: true,
+            locked: true,
+            assumed: false,
+            room: 3,
+        });
+        expect(softRegimeCap(reg(50), on(), 1, false)).toMatchObject({
+            active: false,
+            locked: true,
+            room: null,
+        });
+    });
+
+    it('lockedActive replaces the SPY-missing assumption', () => {
+        expect(softRegimeCap(null, on(), 1, false)).toMatchObject({
+            active: false,
+            assumed: false,
+            locked: true,
+        });
+        expect(softRegimeCap(null, on(), 1, true)).toMatchObject({
+            active: true,
+            assumed: false,
+            locked: true,
+            room: 3,
+        });
+    });
+
+    it('lockedActive is ignored when the cap is disabled', () => {
+        expect(
+            softRegimeCap(reg(50), { ...on(), softRegimeEnabled: false }, 0, true),
+        ).toMatchObject({ active: false, locked: false, room: null });
+    });
+
+    it('missing SPY data with the cap disabled does not limit', () => {
+        expect(softRegimeCap(null, { ...on(), softRegimeEnabled: false }, 0)).toMatchObject({
+            active: false,
+            room: null,
+        });
+    });
+
+    it.each([Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY])(
+        'an unknown open-position count (%s) leaves no room when active',
+        (bad) => {
+            expect(softRegimeCap(reg(99), on(), bad).room).toBe(0);
+        },
+    );
 });

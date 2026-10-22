@@ -75,7 +75,7 @@ describe('seed', () => {
             (call) =>
                 call[0] && typeof call[0] === 'object' && 'key' in call[0] && 'value' in call[0],
         );
-        expect(configValueCalls.length).toBe(9);
+        expect(configValueCalls.length).toBe(11);
         const keys = configValueCalls.map((call) => (call[0] as { key: string }).key);
         expect(keys).toEqual(
             expect.arrayContaining([
@@ -83,9 +83,20 @@ describe('seed', () => {
                 'mr_max_hold_days',
                 'mr_stop_atr',
                 'mr_regime_filter',
+                'mr_soft_regime_enabled',
+                'mr_soft_regime_max_positions',
                 'dry_run_cost_bps',
             ]),
         );
+        // 소프트 국면 캡은 옵션 — 기본 OFF, 상한 4.
+        const byKey = new Map(
+            configValueCalls.map((call) => {
+                const v = call[0] as { key: string; value: unknown };
+                return [v.key, v.value] as const;
+            }),
+        );
+        expect(byKey.get('mr_soft_regime_enabled')).toBe(false);
+        expect(byKey.get('mr_soft_regime_max_positions')).toBe(4);
         // 폐기된 전략 키는 심지 않는다(스펙 §6).
         for (const retired of [
             'buy_threshold',

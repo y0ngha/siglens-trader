@@ -15,14 +15,51 @@ const stored = (values: Record<string, unknown>) =>
 
 describe('readMrParams', () => {
     it('reads stored values', async () => {
-        stored({ mr_rsi_entry: 5, mr_max_hold_days: 7, mr_stop_atr: 0, mr_regime_filter: false });
+        stored({
+            mr_rsi_entry: 5,
+            mr_max_hold_days: 7,
+            mr_stop_atr: 0,
+            mr_regime_filter: false,
+            mr_soft_regime_enabled: true,
+            mr_soft_regime_max_positions: 3,
+        });
         expect(await readMrParams(db)).toEqual({
             rsiEntry: 5,
             maxHoldDays: 7,
             stopAtr: 0,
             regimeFilter: false,
+            softRegimeEnabled: true,
+            softRegimeMaxPositions: 3,
         });
     });
+
+    it('soft regime cap defaults to OFF / 4 when the rows are missing (existing prod DB, no migration)', async () => {
+        stored({ mr_rsi_entry: 5 });
+        const p = await readMrParams(db);
+        expect(p.softRegimeEnabled).toBe(false);
+        expect(p.softRegimeMaxPositions).toBe(4);
+    });
+
+    it.each([0, 9, -1, Number.NaN, '4', null, true])(
+        'soft regime cap falls back to 4 for a corrupt max row (%s)',
+        async (bad) => {
+            stored({ mr_soft_regime_max_positions: bad });
+            expect((await readMrParams(db)).softRegimeMaxPositions).toBe(4);
+        },
+    );
+
+    it.each([1, 8])('accepts the soft regime cap range edges (%s)', async (edge) => {
+        stored({ mr_soft_regime_max_positions: edge });
+        expect((await readMrParams(db)).softRegimeMaxPositions).toBe(edge);
+    });
+
+    it.each(['yes', 1, 0, null])(
+        'soft regime enabled falls back to OFF for a non-boolean (%s)',
+        async (bad) => {
+            stored({ mr_soft_regime_enabled: bad });
+            expect((await readMrParams(db)).softRegimeEnabled).toBe(false);
+        },
+    );
 
     it('falls back to defaults for missing, out-of-range or mistyped rows', async () => {
         stored({

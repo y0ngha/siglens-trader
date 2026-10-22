@@ -1052,6 +1052,9 @@ describe('POST /api/config', () => {
         ['mr_max_hold_days', 60],
         ['mr_stop_atr', 0],
         ['mr_stop_atr', 20],
+        ['mr_soft_regime_max_positions', 1],
+        ['mr_soft_regime_max_positions', 4],
+        ['mr_soft_regime_max_positions', 8],
         ['dry_run_cost_bps', 0],
         ['dry_run_cost_bps', 100],
     ] as const)('accepts strategy key %s = %s (range edge)', async (key, value) => {
@@ -1069,6 +1072,26 @@ describe('POST /api/config', () => {
         ['mr_max_hold_days', 0, 'mr_max_hold_days must be an integer between 1 and 60'],
         ['mr_max_hold_days', 5.5, 'mr_max_hold_days must be an integer between 1 and 60'],
         ['mr_stop_atr', 21, 'mr_stop_atr must be between 0 and 20'],
+        [
+            'mr_soft_regime_max_positions',
+            0,
+            'mr_soft_regime_max_positions must be an integer between 1 and 8',
+        ],
+        [
+            'mr_soft_regime_max_positions',
+            9,
+            'mr_soft_regime_max_positions must be an integer between 1 and 8',
+        ],
+        [
+            'mr_soft_regime_max_positions',
+            -1,
+            '"mr_soft_regime_max_positions" must be a number between 0 and 1,000,000',
+        ],
+        [
+            'mr_soft_regime_max_positions',
+            4.5,
+            'mr_soft_regime_max_positions must be an integer between 1 and 8',
+        ],
         ['dry_run_cost_bps', 101, 'dry_run_cost_bps must be between 0 and 100'],
     ] as const)('rejects strategy key %s = %s', async (key, value, error) => {
         const res = await handler(
@@ -1096,6 +1119,56 @@ describe('POST /api/config', () => {
             }),
         );
         expect(ok.status).toBe(200);
+    });
+
+    it.each([
+        ['"4"', '4'],
+        ['null', null],
+        ['NaN-like string', 'NaN'],
+        ['Infinity-like string', 'Infinity'],
+    ])('mr_soft_regime_max_positions rejects a non-number (%s)', async (_label, value) => {
+        const res = await handler(
+            makeRequest('https://example.com/api/config', 'POST', {
+                type: 'config',
+                key: 'mr_soft_regime_max_positions',
+                value,
+            }),
+        );
+        expect(res.status).toBe(400);
+        expect(mockSetConfigValue).not.toHaveBeenCalled();
+    });
+
+    it('mr_soft_regime_enabled must be a boolean', async () => {
+        mockSetConfigValue.mockResolvedValue(undefined);
+        for (const bad of ['true', 1, 0, null]) {
+            const res = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'mr_soft_regime_enabled',
+                    value: bad,
+                }),
+            );
+            expect(res.status).toBe(400);
+            expect(await res.json()).toEqual({
+                error: 'mr_soft_regime_enabled must be a boolean',
+            });
+        }
+        expect(mockSetConfigValue).not.toHaveBeenCalled();
+        for (const good of [true, false]) {
+            const ok = await handler(
+                makeRequest('https://example.com/api/config', 'POST', {
+                    type: 'config',
+                    key: 'mr_soft_regime_enabled',
+                    value: good,
+                }),
+            );
+            expect(ok.status).toBe(200);
+            expect(mockSetConfigValue).toHaveBeenLastCalledWith(
+                fakeDb,
+                'mr_soft_regime_enabled',
+                good,
+            );
+        }
     });
 
     // -----------------------------------------------------------------------

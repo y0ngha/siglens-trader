@@ -1305,6 +1305,130 @@ describe('SettingsPage', () => {
     });
 
     // -----------------------------------------------------------------------
+    // 소프트 국면 캡 — SPY 50일선 아래면 동시 보유 제한 (옵션, 기본 OFF)
+    // -----------------------------------------------------------------------
+
+    it('소프트 국면 캡은 행이 없으면 OFF · 최대 보유 수 4로 보인다', async () => {
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        expect(await screen.findByText('SPY 50일선 아래면 동시 보유 제한')).toBeInTheDocument();
+        expect(screen.getByLabelText('SPY 50일선 동시 보유 제한 활성화')).toHaveTextContent('OFF');
+        expect(screen.getByLabelText('최대 보유 수')).toHaveValue(4);
+    });
+
+    it('소프트 국면 캡 토글은 즉시 저장된다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        await user.click(await screen.findByLabelText('SPY 50일선 동시 보유 제한 활성화'));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'mr_soft_regime_enabled',
+            value: true,
+        });
+    });
+
+    it('소프트 국면 캡이 켜져 있으면 ON으로 표시되고 끌 수 있다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue({
+            ...mockConfig,
+            config: [
+                ...mockConfig.config,
+                { key: 'mr_soft_regime_enabled', value: true, updatedAt: '2026-01-01T00:00:00Z' },
+                {
+                    key: 'mr_soft_regime_max_positions',
+                    value: 6,
+                    updatedAt: '2026-01-01T00:00:00Z',
+                },
+            ],
+        });
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const toggle = await screen.findByLabelText('SPY 50일선 동시 보유 제한 비활성화');
+        expect(toggle).toHaveTextContent('ON');
+        expect(screen.getByLabelText('최대 보유 수')).toHaveValue(6);
+        await user.click(toggle);
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'mr_soft_regime_enabled',
+            value: false,
+        });
+    });
+
+    it('최대 보유 수 입력은 1~8 정수 범위를 갖고 저장 버튼으로 저장된다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockResolvedValue(undefined);
+
+        renderWithQuery(<SettingsPage />);
+
+        const input = await screen.findByLabelText('최대 보유 수');
+        expect(input).toHaveAttribute('min', '1');
+        expect(input).toHaveAttribute('max', '8');
+        expect(input).toHaveAttribute('step', '1');
+
+        await user.clear(input);
+        await user.type(input, '3');
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        expect(mockedApi.updateConfig).toHaveBeenCalledWith({
+            type: 'config',
+            key: 'mr_soft_regime_max_positions',
+            value: 3,
+        });
+    });
+
+    it('최대 보유 수를 비우고 저장하면 요청 없이 인라인 오류를 보인다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+
+        renderWithQuery(<SettingsPage />);
+
+        const input = await screen.findByLabelText('최대 보유 수');
+        await user.clear(input);
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        expect(mockedApi.updateConfig).not.toHaveBeenCalled();
+        expect(input).toHaveAttribute('aria-invalid', 'true');
+        expect(screen.getByText(/최대 보유 수에 숫자를 입력하세요/)).toBeInTheDocument();
+    });
+
+    it('범위를 벗어난 최대 보유 수는 서버 거부 문구를 보이고 입력값을 유지한다', async () => {
+        const user = userEvent.setup();
+        mockedApi.getConfig.mockResolvedValue(mockConfig);
+        mockedApi.updateConfig.mockRejectedValue(
+            new ApiError(
+                400,
+                JSON.stringify({
+                    error: 'mr_soft_regime_max_positions must be an integer between 1 and 8',
+                }),
+            ),
+        );
+
+        renderWithQuery(<SettingsPage />);
+
+        const input = await screen.findByLabelText('최대 보유 수');
+        await user.clear(input);
+        await user.type(input, '9');
+        await user.click(screen.getByRole('button', { name: '저장' }));
+
+        await waitFor(() => {
+            expect(
+                screen.getByText(/mr_soft_regime_max_positions must be an integer between 1 and 8/),
+            ).toBeInTheDocument();
+        });
+        expect(input).toHaveValue(9);
+    });
+
+    // -----------------------------------------------------------------------
     // 분석 설정 섹션 helper copy
     // -----------------------------------------------------------------------
 

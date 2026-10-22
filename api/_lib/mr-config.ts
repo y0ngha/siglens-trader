@@ -1,6 +1,11 @@
 import { getConfigValue } from '../../lib/db/queries.js';
 import type { Db } from '../../lib/db/index.js';
-import { DEFAULT_MR_PARAMS, type MeanReversionParams } from '../../lib/strategy/mean-reversion.js';
+import {
+    DEFAULT_MR_PARAMS,
+    SOFT_REGIME_MAX_POSITIONS,
+    SOFT_REGIME_MIN_POSITIONS,
+    type MeanReversionParams,
+} from '../../lib/strategy/mean-reversion.js';
 
 /**
  * 전략 설정 읽기 — execute가 런당 한 번 부른다.
@@ -13,10 +18,15 @@ const inRange = (v: unknown, lo: number, hi: number, fallback: number): number =
     typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : fallback;
 
 export async function readMrParams(db: Db): Promise<MeanReversionParams> {
-    const [rsiEntry, maxHoldDays, stopAtr, regimeFilter] = await Promise.all(
-        ['mr_rsi_entry', 'mr_max_hold_days', 'mr_stop_atr', 'mr_regime_filter'].map((key) =>
-            getConfigValue<unknown>(db, key).catch(() => null),
-        ),
+    const [rsiEntry, maxHoldDays, stopAtr, regimeFilter, softEnabled, softMax] = await Promise.all(
+        [
+            'mr_rsi_entry',
+            'mr_max_hold_days',
+            'mr_stop_atr',
+            'mr_regime_filter',
+            'mr_soft_regime_enabled',
+            'mr_soft_regime_max_positions',
+        ].map((key) => getConfigValue<unknown>(db, key).catch(() => null)),
     );
     return {
         rsiEntry: inRange(rsiEntry, 1, 50, DEFAULT_MR_PARAMS.rsiEntry),
@@ -24,6 +34,17 @@ export async function readMrParams(db: Db): Promise<MeanReversionParams> {
         stopAtr: inRange(stopAtr, 0, 20, DEFAULT_MR_PARAMS.stopAtr),
         regimeFilter:
             typeof regimeFilter === 'boolean' ? regimeFilter : DEFAULT_MR_PARAMS.regimeFilter,
+        // 행이 없으면(기존 운영 DB — 마이그레이션이 없다) 기본값 OFF로 떨어진다.
+        softRegimeEnabled:
+            typeof softEnabled === 'boolean' ? softEnabled : DEFAULT_MR_PARAMS.softRegimeEnabled,
+        softRegimeMaxPositions: Math.round(
+            inRange(
+                softMax,
+                SOFT_REGIME_MIN_POSITIONS,
+                SOFT_REGIME_MAX_POSITIONS,
+                DEFAULT_MR_PARAMS.softRegimeMaxPositions,
+            ),
+        ),
     };
 }
 

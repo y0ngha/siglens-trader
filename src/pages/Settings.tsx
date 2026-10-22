@@ -123,6 +123,8 @@ function riskFieldLabel(key: string): string {
             return '최대 보유 거래일';
         case 'mr_stop_atr':
             return '재난 손절 ATR 배수';
+        case 'mr_soft_regime_max_positions':
+            return '최대 보유 수';
         case 'max_trades_per_day':
             return '일일 최대 거래 횟수';
         case 'dry_run_cash_usd':
@@ -243,6 +245,9 @@ export function SettingsPage() {
     const tradingEnabled = getConfigValue(configData.config, 'trading_enabled', true) === true;
 
     const mrRegimeFilter = getConfigValue(configData.config, 'mr_regime_filter', true) === true;
+    // 소프트 국면 캡은 옵션 — 행이 없으면(기존 운영 DB) OFF, 서버 기본값과 같다.
+    const mrSoftRegime =
+        getConfigValue(configData.config, 'mr_soft_regime_enabled', false) === true;
 
     // 서버의 parseDigestHour와 같은 규칙 — 1~23 정수가 아니면 기본 10시. src/는 lib/를 import하지 않는다.
     const rawDigestHour = getConfigValue(configData.config, 'digest_hour_kst', 10);
@@ -266,6 +271,7 @@ export function SettingsPage() {
         mr_rsi_entry: 10,
         mr_max_hold_days: 10,
         mr_stop_atr: 5,
+        mr_soft_regime_max_positions: 4,
         dry_run_cash_usd: 25000,
         dry_run_cost_bps: 10,
     };
@@ -617,6 +623,82 @@ export function SettingsPage() {
                     >
                         {mrRegimeFilter ? 'ON' : 'OFF'}
                     </button>
+                </div>
+                {/* 소프트 국면 캡 — SPY 종가가 50일선 이하면 동시 보유를 N개로 묶는다. 신규 진입만 줄이고
+                    보유 중인 포지션·청산은 건드리지 않는다(원칙 7). 백테스트 근거가 중간 수준이라
+                    옵션·기본 OFF(원칙 13). 상한은 아래 입력 + 위 '저장' 버튼으로 저장한다. */}
+                <div className="mt-3 rounded border border-[#262626] bg-[#0a0a0a] p-3">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <span className="text-xs text-neutral-400">
+                                SPY 50일선 아래면 동시 보유 제한
+                            </span>
+                            <p className="text-[10px] text-neutral-600">
+                                ON이면 SPY가 50일선 이하인 동안 열린 포지션이 최대 보유 수에 닿으면
+                                신규 매수를 하지 않습니다. 이미 보유한 포지션과 청산에는 영향이
+                                없습니다
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() =>
+                                mutate({
+                                    type: 'config',
+                                    key: 'mr_soft_regime_enabled',
+                                    value: !mrSoftRegime,
+                                })
+                            }
+                            className={`min-h-[44px] min-w-[44px] rounded border px-2 py-1 text-xs ${
+                                mrSoftRegime
+                                    ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                    : 'border-[#262626] bg-[#0a0a0a] text-neutral-500'
+                            }`}
+                            aria-label={`SPY 50일선 동시 보유 제한 ${mrSoftRegime ? '비활성화' : '활성화'}`}
+                        >
+                            {mrSoftRegime ? 'ON' : 'OFF'}
+                        </button>
+                    </div>
+                    {(() => {
+                        const key = 'mr_soft_regime_max_positions';
+                        const invalid =
+                            riskOverrides[key] !== undefined &&
+                            isInvalidRiskValue(riskOverrides[key]);
+                        return (
+                            <div className="mt-3">
+                                <label htmlFor={`risk-${key}`} className="text-xs text-neutral-400">
+                                    최대 보유 수
+                                </label>
+                                <p className="text-[10px] text-neutral-600">
+                                    50일선 아래일 때 동시에 보유할 수 있는 최대 포지션 수, 1~8 (기본
+                                    4)
+                                </p>
+                                <input
+                                    id={`risk-${key}`}
+                                    type="number"
+                                    inputMode="numeric"
+                                    min={1}
+                                    max={8}
+                                    step={1}
+                                    aria-invalid={invalid}
+                                    className={`mt-1 w-full rounded-lg border bg-[#141414] px-3 py-2 text-sm outline-none focus:border-neutral-500 ${
+                                        invalid ? 'border-red-500/50' : 'border-[#262626]'
+                                    }`}
+                                    value={getRiskValue(key)}
+                                    onChange={(e) =>
+                                        setRiskOverrides((prev) => ({
+                                            ...prev,
+                                            [key]: e.target.value,
+                                        }))
+                                    }
+                                />
+                                {invalid && (
+                                    <p className="mt-1 text-[10px] text-red-400">
+                                        숫자를 입력하세요
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })()}
                 </div>
             </section>
 

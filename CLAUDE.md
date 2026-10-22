@@ -118,6 +118,10 @@ accepted. Details: [`api/CLAUDE.md`](api/CLAUDE.md) §Authentication, [`lib/auth
 - **판단은 하루 1회** — 장 마감 20분 전 창의 첫 execute 틱(반일장은 12:40 ET). 오늘 봉의 종가 자리에
   실시간 가격을 넣는다. 멱등 기록은 `cron_runs.summary.decisionPhase = 'done'` — 데이터 오류·시한 초과·마감 임박
   중단이 있으면 남기지 않아 창의 다음 틱이 재시도한다. 주문 직전 마감까지 1분 이하면 더 내지 않는다.
+- **소프트 국면 캡(옵션, 기본 OFF)** — `mr_soft_regime_enabled`가 켜져 있고 SPY 종가(판단 틱 실시간 가격) ≤ SPY SMA50이면
+  열린 포지션(오늘 청산 반영 + in-flight 매수)이 `mr_soft_regime_max_positions`(기본 4, 1~8)에 닿은 뒤의 **신규 진입만**
+  막는다(`mr_skip_soft_regime`). 기존 포지션·청산은 그대로(원칙 7). SPY를 못 읽으면 하드 필터가 켜진 경우 fail-closed, 캡만 켠 경우 캡을 활성으로 가정해 여유 안에서 진행. 같은 날 재시도 틱은 첫 실제 판독을 재사용.
+  근거는 중간 수준이라 옵션이다(원칙 13, 스펙 §2.4.7).
 - 비중은 규칙이 정한다: 칸 예산(총자산 ÷ K) ∩ 종목 한도 ∩ 총 노출 한도 ∩ 현금(`planEntry`, fraction 1). 분할매수·1시간봉은 백테스트로 기각(스펙 §2.4.2).
 - **칸 수 K와 금액 한도는 설정이 아니다** — 런마다 계좌 총자산에서 도출한다(`lib/strategy/sizing.ts`,
   [`docs/specs/2026-10-05-equity-scaled-sizing-design.md`](docs/specs/2026-10-05-equity-scaled-sizing-design.md)).

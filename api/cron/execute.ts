@@ -29,6 +29,7 @@ import {
     setPositionStopPrice,
     getSymbolsSoldSince,
     getLatestSizing,
+    getFirstSoftRegimeActiveSince,
     getNoPriceStreak,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
@@ -43,9 +44,11 @@ import {
     holdDays,
     isEntrySignal,
     isStopHit,
+    needsRegime,
     rankSignals,
     readRegime,
     readSymbol,
+    softRegimeCap,
     stopPriceFor,
     wilderAtr,
     type DailyBar,
@@ -141,6 +144,7 @@ function mrDetail(
             atr14: reading?.atrPrev ?? null,
             spyPrice: regime?.price ?? null,
             spySma200: regime?.sma200 ?? null,
+            spySma50: regime?.sma50 ?? null,
             ...extra,
         },
     };
@@ -557,6 +561,15 @@ async function handler(req: Request): Promise<Response> {
                     isStopLoss,
                 });
                 currentExposure = Math.max(0, currentExposure + outcome.exposureDelta);
+                // 소프트 국면 캡의 칸은 매도가 실제로 나갔을 때만 비운다 — 거절·수동확인·승인 대기 매도는
+                // 포지션이 그대로 남는다.
+                if (
+                    outcome.executed ||
+                    outcome.action === 'order_submitted' ||
+                    outcome.action === 'order_partial'
+                ) {
+                    slotFreedSymbols.add(position.symbol);
+                }
                 decisions.push({
                     symbol: position.symbol,
                     action: outcome.action ?? action,
@@ -570,6 +583,8 @@ async function handler(req: Request): Promise<Response> {
 
             // 이 실행에서 청산(또는 청산 주문)한 종목 — 같은 틱에 다시 사지 않는다(백테스트도 청산 다음 날부터).
             const exitedSymbols = new Set<string>();
+            /** 청산이 실제로 나가 소프트 국면 캡의 칸을 비운 종목(`exitedSymbols`의 부분집합). */
+            const slotFreedSymbols = new Set<string>();
             let stopBackfilled = 0;
 
             // =====================================================================
@@ -768,6 +783,8 @@ async function handler(req: Request): Promise<Response> {
             // 판단 단계 — 하루 1회
             // =====================================================================
             let decisionPhaseDone = false;
+            // 소프트 국면 캡의 그날 판독 + 컷 수 — 켜져 있을 때만 런 요약에 남긴다(원칙 3).
+            let softRegimeSummary: Record<string, unknown> | null = null;
             if (decisionTick) {
                 // A1: 이 시각 이후 매도된(또는 매도 진행 중인) 심볼 — 오늘 재매수 금지. 위험
                 // 단계의 exitedSymbols는 "이번 런"만 보므로, 앞선 틱의 재난 손절이나 판단 도중
@@ -816,7 +833,11 @@ async function handler(req: Request): Promise<Response> {
                 // (오늘 봉을 합성하지 못했으므로) — 국면 필터가 켜진 채로 그 계열을 읽으면 어제
                 // 종가로 오늘 국면을 판단하게 된다. 필터가 켜져 있을 때는 국면 자체를 불가로
                 // 본다(fail-closed) — 이미 있는 SPY `mr_data_error` 분기를 그대로 태운다.
-                const regimeUnavailable = params.regimeFilter && priceOf(REGIME_SYMBOL) <= 0;
+                //
+                // 소프트 캡도 같은 SPY를 쓰므로 캡이 켜져 있으면 SPY 계열이 어제 종가로 읽히지 않게 국면을
+                // 불가(null)로 본다. 하드 필터가 켜져 있으면 fail-closed(진입 없음, `mr_data_error`)이고,
+                // 캡만 켜져 있으면 캡을 활성으로 가정해 여유 안에서 진행한다(`softRegimeCap`).
+                const regimeUnavailable = needsRegime(params) && priceOf(REGIME_SYMBOL) <= 0;
                 const regime = spyBars && !regimeUnavailable ? readRegime(spyBars) : null;
 
                 // --- 규칙 청산: 평가할 수 있으면 평가를 따르고, 못 하면(한도 초과 중) 나간다 ---
@@ -914,6 +935,62 @@ async function handler(req: Request): Promise<Response> {
                 }
 
                 // --- 진입 ---
+                // 소프트 국면 캡 — 열린 포지션 = 오늘 청산을 반영한 보유 + 아직 포지션이 아닌 in-flight 매수
+                // (auto 미체결·semi_auto 승인 대기). 안 세면 체결 전 주문이 칸을 두 번 쓴다.
+                const inFlightBuySymbols = new Set<string>();
+                for (const o of pendingSubmittedOrders) {
+                    if (o.side === 'buy') inFlightBuySymbols.add(o.symbol);
+                }
+                for (const a of approvals) {
+                    if (a.side === 'buy' && a.status === 'pending')
+                        inFlightBuySymbols.add(a.symbol);
+                }
+                // 장부와 브로커가 어긋나 사람 손을 기다리는 심볼은 브로커에 살아 있을 수 있다 — 칸을 차지한다.
+                for (const sym of needsReviewSymbols) inFlightBuySymbols.add(sym);
+                // 오늘 청산이 실제로 나간 종목만 뺀다(거절·수동확인·승인 대기 매도, 앞선 틱의 미체결 매도는 계속 보유).
+                const heldAfterExits = openPositions.filter((p) => !slotFreedSymbols.has(p.symbol));
+                const openCount =
+                    heldAfterExits.length +
+                    [...inFlightBuySymbols].filter(
+                        (sym) => !heldAfterExits.some((p) => p.symbol === sym),
+                    ).length;
+                // 오늘 첫 실제 판독을 재사용한다 — 판단이 재시도되는 날 SPY가 50일선을 오가도 캡이 뒤집히지 않는다.
+                // 조회 실패는 재사용 없음(지금 판독)으로 처리한다.
+                const lockedActive = params.softRegimeEnabled
+                    ? await getFirstSoftRegimeActiveSince(db, etDayStart(startedAt)).catch(
+                          (err) => {
+                              console.error(
+                                  '[execute] 소프트 캡 첫 판독 조회 실패 — 재사용 없음',
+                                  err,
+                              );
+                              return null;
+                          },
+                      )
+                    : null;
+                const softRegime = softRegimeCap(regime, params, openCount, lockedActive);
+                let softRegimeAdmitted = 0;
+                let softRegimeCut = 0;
+                const softRegimeExtra = () =>
+                    softRegime.enabled
+                        ? {
+                              softRegime: {
+                                  active: softRegime.active,
+                                  spyPrice: softRegime.spyPrice,
+                                  spySma50: softRegime.spySma50,
+                                  cap: softRegime.cap,
+                                  openPositions: softRegime.openPositions,
+                                  room: softRegime.room,
+                                  assumed: softRegime.assumed,
+                                  locked: softRegime.locked,
+                                  ...(softRegime.assumed
+                                      ? {
+                                            regime: 'unavailable',
+                                            reason: 'spy_unavailable_assume_active',
+                                        }
+                                      : {}),
+                              },
+                          }
+                        : {};
                 const notHeldOrExited = watchlistItems.filter(
                     (w) => !heldSymbols.has(w.symbol) && !exitedSymbols.has(w.symbol),
                 );
@@ -943,6 +1020,21 @@ async function handler(req: Request): Promise<Response> {
                             candidates.push(w);
                         }
                     }
+                }
+                // 캡만 켜져 있고(하드 필터 꺼짐) SPY를 못 읽고 재사용할 오늘 판독도 없으면, 진입 전체를 막지 않고
+                // 캡을 활성으로 가정해 여유(cap − 열린 포지션) 안에서 진행한다. 이 행은 `mr_data_error`라 진입이
+                // 하나도 없었으면 판단을 'done'으로 남기지 않아 다음 틱이 실제 SPY로 재시도한다(아래 hadDataError).
+                if (candidates.length > 0 && !params.regimeFilter && softRegime.assumed) {
+                    decisions.push({
+                        symbol: REGIME_SYMBOL,
+                        action: 'mr_data_error',
+                        score: 0,
+                        detail: {
+                            regime: 'unavailable',
+                            assumedCap: true,
+                            ...softRegimeExtra(),
+                        },
+                    });
                 }
                 if (candidates.length > 0 && params.regimeFilter && regime === null) {
                     // SPY를 못 읽으면 그날 진입은 없다(fail-closed, §3). 고장과 "신호 없음"을 구분한다.
@@ -1016,7 +1108,12 @@ async function handler(req: Request): Promise<Response> {
                         // A10: 이 심볼에 진입 신호가 있었음을 남긴다 — `executeEntry`가 아래에서
                         // 최종 action을 주문 결과(`order_submitted`·`needs_review`·`already_open` …)로
                         // 덮어써도 리뷰 크론이 `detail.mr.signal`로 이 결정 행을 여전히 찾을 수 있다.
-                        const detail = mrDetail(reading, regime, { rank, stopPrice, signal: true });
+                        const detail = mrDetail(reading, regime, {
+                            rank,
+                            stopPrice,
+                            signal: true,
+                            ...softRegimeExtra(),
+                        });
                         if (Date.now() > runDeadlineMs) {
                             deadlineHit = true;
                             decisions.push({
@@ -1038,6 +1135,8 @@ async function handler(req: Request): Promise<Response> {
                             });
                             continue;
                         }
+                        // executeEntry를 시작했는가 — 던진 뒤에도 주문이 브로커에 나갔을 수 있다.
+                        let entryCallStarted = false;
                         try {
                             if (entryBlock) {
                                 decisions.push({
@@ -1076,6 +1175,25 @@ async function handler(req: Request): Promise<Response> {
                                     action: 'pending_exists',
                                     score: reading.rsi2,
                                     detail,
+                                });
+                                continue;
+                            }
+                            // 소프트 국면 캡 — 여유(cap − 열린 포지션)를 이미 쓴 뒤의 신호는 잘린다. 순위(RSI(2) 낮은 순)
+                            // 는 그대로라 캡은 뒤쪽 신호만 자른다. 예산·잔고 거절은 칸을 쓰지 않는다.
+                            // 총자산 확인보다 앞에 둔다 — 캡에 막힌 신호가 `equity_unavailable`로 재시도를 만들면 안 된다.
+                            if (softRegime.active && softRegimeAdmitted >= (softRegime.room ?? 0)) {
+                                softRegimeCut += 1;
+                                decisions.push({
+                                    symbol,
+                                    action: 'mr_skip_soft_regime',
+                                    score: reading.rsi2,
+                                    detail: mrDetail(reading, regime, {
+                                        rank,
+                                        stopPrice,
+                                        signal: true,
+                                        reason: 'soft_regime_cap',
+                                        ...softRegimeExtra(),
+                                    }),
                                 });
                                 continue;
                             }
@@ -1128,6 +1246,7 @@ async function handler(req: Request): Promise<Response> {
                                 continue;
                             }
                             const reason = `RSI(2) ${reading.rsi2.toFixed(1)} < ${params.rsiEntry} · 200일선 위 눌림 (현재 $${reading.price.toFixed(2)}, SMA200 $${reading.sma200.toFixed(2)})`;
+                            entryCallStarted = true;
                             const outcome = await executeEntry(orderCtx, {
                                 symbol,
                                 quantity: plan.quantity,
@@ -1138,6 +1257,14 @@ async function handler(req: Request): Promise<Response> {
                                 remainingBuyingPower,
                             });
                             currentExposure += outcome.exposureDelta;
+                            // 주문이 나가 칸을 쓴 진입만 센다(체결·접수·승인 대기). 거절·잔고 부족은 칸이 아니다.
+                            if (
+                                outcome.executed ||
+                                outcome.exposureDelta > 0 ||
+                                outcome.cashDebit > 0
+                            ) {
+                                softRegimeAdmitted += 1;
+                            }
                             if (remainingBuyingPower !== null) {
                                 remainingBuyingPower = Math.max(
                                     0,
@@ -1157,6 +1284,10 @@ async function handler(req: Request): Promise<Response> {
                                 },
                             });
                         } catch (err) {
+                            // 주문 호출이 던진 뒤에는 "나갔는지" 모른다(결말 미확정) — 칸을 보수적으로 쓴 것으로 센다.
+                            // 안 세면 다음 신호가 여유를 그대로 보고 캡을 넘겨 산다. executeEntry 이전의 던짐(승인 대기
+                            // 조회 실패 등)은 주문이 나갔을 수 없으므로 세지 않는다.
+                            if (entryCallStarted) softRegimeAdmitted += 1;
                             await notifyError(symbol, String(err));
                             decisions.push({
                                 symbol,
@@ -1173,7 +1304,22 @@ async function handler(req: Request): Promise<Response> {
                 // 컷오프, 국면 필요·불가(이미 `mr_data_error` 행으로 남는다), 그리고 이번 런에서
                 // 어떤 형태로든 `mr_data_error`가 하나라도 났는가 — 데이터 실패가 있었다는 뜻이므로
                 // 다음 틱이 다시 시도해야 한다.
-                const hadDataError = decisions.some((d) => d.action === 'mr_data_error');
+                if (softRegime.enabled) {
+                    softRegimeSummary = {
+                        ...softRegimeExtra().softRegime,
+                        signalsCut: softRegimeCut,
+                    };
+                }
+                // 가정한 캡(SPY 결측)으로 이미 진입이 나갔다면 그 행은 재시도 사유가 아니다 — 재시도하면 같은 날
+                // 두 번째 판단이 이미 낸 진입 위에 또 진입한다. 진입이 없었으면 다음 틱이 실제 SPY로 다시 본다.
+                const hadDataError = decisions.some(
+                    (d) =>
+                        d.action === 'mr_data_error' &&
+                        !(
+                            (d.detail as { assumedCap?: boolean } | undefined)?.assumedCap ===
+                                true && softRegimeAdmitted > 0
+                        ),
+                );
                 decisionPhaseDone =
                     !deadlineHit && !closeCutoffHit && !hadDataError && !marketStatusUnknown;
             }
@@ -1214,6 +1360,7 @@ async function handler(req: Request): Promise<Response> {
                         maxTotalExposure: null,
                         dailyLossLimit: maxDailyLoss,
                     },
+                    ...(softRegimeSummary ? { softRegime: softRegimeSummary } : {}),
                     ...(stopBackfilled > 0 ? { stopBackfilled } : {}),
                     ...(deadlineHit ? { runDeadlineHit: true } : {}),
                     ...(closeCutoffHit ? { closeCutoffHit: true } : {}),

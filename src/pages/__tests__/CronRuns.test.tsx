@@ -1049,6 +1049,52 @@ describe('CronRunsPage', () => {
         expect(document.querySelector('pre')).toBeNull();
     });
 
+    it('renders a mr_skip_soft_regime row with the cap, open count and SPY SMA50 (no raw JSON)', async () => {
+        const user = userEvent.setup();
+        mockedApi.getCronRuns.mockResolvedValue({ runs: [mockRuns[0]] });
+        mockedApi.getCronDecisions.mockResolvedValue({
+            decisions: [
+                {
+                    id: 403,
+                    runId: 'run-abc-1',
+                    cronType: 'execute',
+                    symbol: 'NVDA',
+                    action: 'mr_skip_soft_regime',
+                    executed: false,
+                    score: '4.2',
+                    reason: null,
+                    detail: {
+                        mr: {
+                            price: 120,
+                            rsi2: 4.2,
+                            spyPrice: 540.2,
+                            spySma50: 552.1,
+                            signal: true,
+                            reason: 'soft_regime_cap',
+                            softRegime: { active: true, cap: 4, openPositions: 4, room: 0 },
+                        },
+                    },
+                    createdAt: new Date().toISOString(),
+                },
+            ],
+        });
+
+        renderWithQuery(<CronRunsPage />);
+
+        await waitFor(() => {
+            expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('button', { expanded: false }));
+
+        await waitFor(() => {
+            expect(screen.getByText('보유 수 제한')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/SPY SMA50 \$552\.10/)).toBeInTheDocument();
+        expect(screen.getByText(/보유 제한 4\/4/)).toBeInTheDocument();
+        expect(screen.getByText(/사유 soft_regime_cap/)).toBeInTheDocument();
+        expect(document.querySelector('pre')).toBeNull();
+    });
+
     // ─── C7: AI 리뷰(review) decision detail renders readably, not raw JSON ────────
 
     it("renders a reviewed decision's dropCause/fraction/confidence and afterClose tag", async () => {
