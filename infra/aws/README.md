@@ -54,7 +54,7 @@ cron 실패는 박스가 정상이어도 매매가 멈추는 유일한 경로다
 ## 주의
 
 - 인바운드 규칙 없음 — 포트를 열지 말 것. 외부 노출은 Tunnel이 전담한다.
-- EIP(`Name=siglens-trader` 태그, 현재 `3.34.121.104`)는 토스 Open API 허용 IP다. 반납하거나
+- EIP(`Name=siglens-trader` 태그. 주소는 AWS 콘솔이나 `aws ec2 describe-addresses`로 확인)는 토스 Open API 허용 IP다. 반납하거나
   다른 EIP로 바꾸면 실거래가 `403 access_denied`로 전부 멈춘다 — 바꿀 때는 WTS 허용 IP부터 갱신한다.
 - 시크릿은 SSM에만. 컨테이너는 부팅/재시작마다 `/run/siglens-trader/env`로 다시 받는다
   (`/run`은 tmpfs라 재부팅 시 사라짐).

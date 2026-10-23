@@ -2,9 +2,28 @@
     "name": "siglens-trader",
     "version": "0.40.2",
     "private": true,
+    "description": "Personal US stock auto-trading bot: daily RSI(2) mean reversion via the Toss Securities Open API, risk controls, record-only AI review.",
+    "keywords": [
+        "auto-trading",
+        "algorithmic-trading",
+        "trading-bot",
+        "rsi",
+        "mean-reversion",
+        "us-stocks",
+        "toss-securities",
+        "paper-trading",
+        "backtesting",
+        "risk-management",
+        "typescript"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/y0ngha/siglens-trader.git"
+    },
+    "homepage": "https://github.com/y0ngha/siglens-trader#readme",
     "type": "module",
     "author": "신용하 <dev.y0ngha@gmail.com>",
-    "license": "MITLICENSE",
+    "license": "MIT",
     "scripts": {
         "dev": "vite",
         "dev:mock": "VITE_API_MOCK=true vite",
