@@ -932,7 +932,9 @@ export type CronType =
     | 'execute'
     | 'reconcile'
     | 'digest'
-    | 'review';
+    | 'review'
+    /** 크론이 아니라 대시보드의 "Toss 보유 동기화" — 장부 교정의 감사 행으로 같은 테이블을 쓴다. */
+    | 'holdings_sync';
 
 export type CronOutcome =
     | 'completed'

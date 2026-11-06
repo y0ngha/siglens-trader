@@ -263,6 +263,8 @@ function cronTypeLabel(type: string): string {
             return 'AI 리뷰';
         case 'reconcile':
             return '정합';
+        case 'holdings_sync':
+            return '보유 동기화';
         default:
             return type;
     }
@@ -511,6 +513,10 @@ function parseSummary(cronType: string, summary: unknown): string {
     try {
         if (!isRecord(summary)) return '';
         const s = summary;
+
+        if (cronType === 'holdings_sync') {
+            return typeof s.applied === 'number' ? `${s.applied}건 동기화` : '';
+        }
 
         if (cronType === 'execute') {
             const parts: string[] = [];

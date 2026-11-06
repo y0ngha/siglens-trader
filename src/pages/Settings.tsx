@@ -6,6 +6,7 @@ import { useOptimisticMutation } from '@/lib/useOptimisticMutation';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { TickerSearch } from '@/components/TickerSearch';
+import { HoldingsSync } from '@/components/HoldingsSync';
 
 /**
  * 선택 가능한 분석 모델. **MODELS[0]가 신규/미설정 분석 설정의 기본 모델이다** —
@@ -432,6 +433,8 @@ export function SettingsPage() {
                     </button>
                 </div>
             </section>
+
+            <HoldingsSync />
 
             {/* General */}
             <section className="rounded-lg border border-[#262626] bg-[#141414] p-4">

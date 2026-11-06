@@ -300,6 +300,22 @@ quantity`(평가액)였는데, 그러면 가격이 내릴수록 남은 예산이
   "결말을 모른다"이고, 토스 멱등키는 10분만 유효해 그 뒤의 재승인은 새 주문으로 처리된다.
   확정은 reconcile이 브로커에 물어서 한다.
 
+## Toss 보유 동기화 (dashboard 경로)
+
+`GET /api/positions/sync`가 미리보기, `POST { hash }`가 적용이다(설정 페이지 "Toss 보유 동기화" 카드,
+[`docs/specs/2026-11-06-holdings-sync-design.md`](../docs/specs/2026-11-06-holdings-sync-design.md)).
+비교는 reconcile과 **같은 함수**(`lib/db/holdings-sync.ts`의 `diffHoldings`)이고, 범위도 같다(US 보유 중
+봇 관리 심볼 + DB 열린 포지션). 수량·평단을 브로커 값으로 고치고(`update`), 브로커에 없는 포지션은 닫고
+(`close`, `close_price` NULL), 브로커에만 있는 보유는 연다(`open`, `stop_price` NULL → execute가 채움).
+소수 주는 내린다(정수 컬럼).
+
+- **trades에는 쓰지 않는다** — 장부 교정은 체결이 아니다. 가짜 거래는 실현 손익·일일 한도를 오염시킨다.
+  감사는 `cron_runs`(`cron_type = 'holdings_sync'`, `summary.items`에 전후 값).
+- 거부(409): `dry_run`, in-flight 주문(`error` 포함) 또는 최근 7일 `needs_review`, execute·reconcile 락 경합,
+  미리보기 이후 diff 해시 변경, 적용 중 포지션 변경(0행 → 롤백). 브로커 조회 실패는 502, 변경 없음.
+- 적용은 두 락을 잡은 **뒤에** 주문 상태를 보고 브로커를 다시 읽는다.
+- reconcile 메일은 **수량 불일치만** 보낸다(`quantityMismatchMessages`) — 평단 차이는 동기화로 고치되 경보하지 않는다.
+
 ## Reconcile Cron Flow
 
 1. Acquire lock (`cron:reconcile:lock`, 5min TTL)
