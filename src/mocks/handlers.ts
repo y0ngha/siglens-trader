@@ -921,6 +921,38 @@ export const handlers = [
         return HttpResponse.json({ success: true });
     }),
 
+    // Toss 보유 동기화 — 첫 열린 포지션에 수량 +1·평단 차이가 있는 것처럼 보여 준다.
+    http.get('/api/positions/sync', () => {
+        const pos = positions.find((p) => p.status === 'open');
+        const items = pos
+            ? [
+                  {
+                      action: 'update',
+                      symbol: pos.symbol,
+                      positionId: pos.id,
+                      db: { quantity: pos.quantity, avgPrice: Number(pos.avgPrice) },
+                      broker: { quantity: pos.quantity + 1, avgPrice: Number(pos.avgPrice) - 0.4 },
+                      brokerQuantity: pos.quantity + 1,
+                      quantityMismatch: true,
+                  },
+              ]
+            : [];
+        return HttpResponse.json({
+            mode: 'auto',
+            blockedBy: null,
+            blockingSymbols: [],
+            items,
+            hash: items.length > 0 ? 'mock-hash' : null,
+        });
+    }),
+    http.post('/api/positions/sync', () => {
+        const pos = positions.find((p) => p.status === 'open');
+        if (!pos) return HttpResponse.json({ applied: 0, items: [] });
+        pos.quantity += 1;
+        pos.avgPrice = (Number(pos.avgPrice) - 0.4).toFixed(2);
+        return HttpResponse.json({ applied: 1, items: [] });
+    }),
+
     // Trades
     http.get('/api/trades', () => {
         return HttpResponse.json([...trades].reverse());

@@ -145,6 +145,33 @@ export interface CronDecision {
     createdAt: string;
 }
 
+export type HoldingsSyncItem =
+    | {
+          action: 'update';
+          symbol: string;
+          positionId: number;
+          db: { quantity: number; avgPrice: number };
+          broker: { quantity: number; avgPrice: number };
+          brokerQuantity: number;
+          quantityMismatch: boolean;
+      }
+    | {
+          action: 'close';
+          symbol: string;
+          positionId: number;
+          db: { quantity: number; avgPrice: number };
+          brokerQuantity: number;
+      }
+    | { action: 'open'; symbol: string; broker: { quantity: number; avgPrice: number } };
+
+export interface HoldingsSyncPreview {
+    mode: string;
+    blockedBy: 'dry_run' | 'orders_in_flight' | null;
+    blockingSymbols: string[];
+    items: HoldingsSyncItem[];
+    hash: string | null;
+}
+
 export const api = {
     /** Resolve the current session. Returns null (rather than throwing) when logged out. */
     getMe: async (signal?: AbortSignal): Promise<SessionUser | null> => {
@@ -185,6 +212,12 @@ export const api = {
         fetchJson(`/positions/${id}/close`, {
             method: 'POST',
             body: JSON.stringify(price ? { price } : {}),
+        }),
+    previewHoldingsSync: () => fetchJson<HoldingsSyncPreview>('/positions/sync'),
+    applyHoldingsSync: (hash: string) =>
+        fetchJson<{ applied: number; items: HoldingsSyncItem[] }>('/positions/sync', {
+            method: 'POST',
+            body: JSON.stringify({ hash }),
         }),
     triggerAnalysis: (symbol: string) =>
         fetchJson('/analysis/trigger', { method: 'POST', body: JSON.stringify({ symbol }) }),

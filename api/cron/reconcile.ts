@@ -22,6 +22,7 @@ import { makeEmailGate } from '../../lib/notification/gate.js';
 import { createEmailDispatcher } from '../../lib/notification/dispatch.js';
 import { readDigestHour } from '../_lib/digest-hour.js';
 import { checkConsistency, autoRecoverFilledOrders } from '../../lib/db/recovery.js';
+import { diffHoldings, quantityMismatchMessages } from '../../lib/db/holdings-sync.js';
 import { getOrder, listBrokerOrders } from '../../lib/trading/orders.js';
 import { cancelOrder, getHoldings } from '../../lib/trading/account.js';
 import { isFinitePositive } from '../../lib/validation.js';
@@ -39,9 +40,6 @@ const SUBMITTED_TIMEOUT_MS = 30 * 60 * 1000;
  * 한 세션(6.5시간)에 못 풀면 자동화가 할 수 있는 일은 없다.
  */
 const CANCEL_RETRY_LIMIT_MS = 6 * 60 * 60 * 1000;
-
-/** Quantity comparison tolerance for holdings reconciliation (fractional US shares). */
-const HOLDINGS_QTY_EPSILON = 0.01;
 
 /**
  * 브로커 id 없는 주문을 브로커 주문 목록과 맞출 때의 시각 창 — 우리 기록(`submitted_at`) 기준
@@ -568,42 +566,15 @@ async function handler(req: Request): Promise<Response> {
                 return null;
             });
             if (holdings) {
-                const usHoldings = holdings.filter(
-                    (h) => h.currency === 'USD' || h.marketCountry === 'US',
-                );
                 const [openPositions, managedSymbols] = await Promise.all([
                     getOpenPositions(db),
                     getBotManagedSymbols(db),
                 ]);
-                const mismatches: string[] = [];
-                const brokerBySymbol = new Map(usHoldings.map((h) => [h.symbol, h]));
-
-                for (const pos of openPositions) {
-                    const dbQty = Number(pos.quantity);
-                    const broker = brokerBySymbol.get(pos.symbol);
-                    const brokerQty = broker ? broker.quantity : 0;
-                    if (Math.abs(dbQty - brokerQty) > HOLDINGS_QTY_EPSILON) {
-                        mismatches.push(
-                            `${pos.symbol}: DB ${dbQty}주 vs 브로커 ${brokerQty}주 (불일치)`,
-                        );
-                    }
-                }
-
-                // Broker holdings with no matching open DB position — only for symbols the bot
-                // could have bought. Holdings the operator bought by hand in the same account are
-                // not a ledger mismatch (see getBotManagedSymbols).
-                const dbSymbols = new Set(openPositions.map((p) => p.symbol));
-                for (const h of usHoldings) {
-                    if (
-                        h.quantity > HOLDINGS_QTY_EPSILON &&
-                        !dbSymbols.has(h.symbol) &&
-                        managedSymbols.has(h.symbol)
-                    ) {
-                        mismatches.push(
-                            `${h.symbol}: 브로커 ${h.quantity}주 보유 but DB 포지션 없음`,
-                        );
-                    }
-                }
+                // 비교는 대시보드 "Toss 보유 동기화"와 같은 함수다. 경보는 수량 불일치만 —
+                // 평단 차이는 동기화로 고치되 10분마다 메일을 보낼 일은 아니다.
+                const mismatches = quantityMismatchMessages(
+                    diffHoldings(openPositions, holdings, managedSymbols),
+                );
 
                 holdingsMismatchCount = mismatches.length;
                 // 같은 불일치는 하루 한 번만 메일로 보낸다. 사람이 고칠 때까지 10분마다 같은 경보가
