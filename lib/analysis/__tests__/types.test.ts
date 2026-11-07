@@ -47,6 +47,10 @@ describe('getAnalysisReasoning', () => {
         expect(DEFAULT_ANALYSIS_REASONING).toBe(false);
     });
 
+    it('진입 리뷰만 추론 ON (2026-11-07 운영자 결정)', () => {
+        expect(getAnalysisReasoning('entry_review')).toBe(true);
+    });
+
     describe('symbolSignal', () => {
         it('마감이 없으면 signal도 없다 — 심볼당 상한을 두지 않는다', () => {
             // 150초 상한은 추론 ON 축에서 타임아웃이 아니라 실패 그 자체였다: 우리가 끊은

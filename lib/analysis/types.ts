@@ -121,6 +121,13 @@ export const ANALYSIS_REASONING: Readonly<Record<string, boolean>> = {
     technical: false,
     news: false,
     fundamental: false,
+    /**
+     * 2026-11-07 운영자 결정: 전 축 deepseek-v4.1-flash로 통일하고, **진입 리뷰만 추론 ON**.
+     * 리뷰는 신호당 1회뿐인 판단 호출("노이즈인가 악재인가")이라 추론 비용을 감당할 수 있고,
+     * 세 분석 축은 리뷰의 입력이라 빠르게 끝나는 쪽을 택했다(siglens 운영·백테스트도 OFF).
+     * 시간 예산은 `entry-review.ts`의 `REASONING_TIMEOUT_MS`가 따라간다.
+     */
+    entry_review: true,
 };
 
 /** 해당 분석 타입의 reasoning 설정. 정책이 없으면 {@link DEFAULT_ANALYSIS_REASONING}. */
