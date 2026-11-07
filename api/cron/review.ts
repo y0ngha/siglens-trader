@@ -16,6 +16,7 @@ import {
     finalizeStaleCronRuns,
 } from '../../lib/db/queries.js';
 import type { CronDecisionInput, CronRunFinish } from '../../lib/db/queries.js';
+import { getAnalysisReasoning } from '../../lib/analysis/types.js';
 import { runTechnicalAnalysis } from '../../lib/analysis/run-technical.js';
 import { runNewsAnalysis } from '../../lib/analysis/run-news.js';
 import { runFundamentalAnalysis } from '../../lib/analysis/run-fundamental.js';
@@ -208,7 +209,7 @@ async function handler(req: Request): Promise<Response> {
                             priorAnalysisStore:
                                 type === 'technical' ? priorAnalysisStore(db) : undefined,
                             deadlineMs,
-                            reasoning: false,
+                            reasoning: getAnalysisReasoning(type),
                         }),
                         deadlineMs - Date.now(),
                     );

@@ -16,7 +16,7 @@ import {
     safeRecord,
     safeString,
 } from '../strategy/safe-extract.js';
-import { ANALYSIS_TIER, toErrStr } from './types.js';
+import { ANALYSIS_TIER, getAnalysisReasoning, toErrStr } from './types.js';
 
 /**
  * AI 진입 리뷰 — **기록 전용**(docs/specs/2026-09-24-daily-mean-reversion-design.md §5).
@@ -98,6 +98,13 @@ export type EntryReviewOutcome =
     | { status: 'error'; error: string; model: string; transcript: EntryReviewTranscript };
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * 추론 ON일 때의 호출 상한. 2026-08 실측에서 flash 추론은 출력이 22k~37k 토큰까지 늘어 수 분이
+ * 걸렸다 — 120초면 리뷰가 타임아웃 `error` 행으로 남고(멱등 키라 재시도 없음) 신호 하나를 통째로
+ * 잃는다. review 크론의 런 마감(20분)과 런당 최대 5건 안에서 5분이면 넉넉하다.
+ */
+const REASONING_TIMEOUT_MS = 300_000;
+const ENTRY_REVIEW_REASONING = getAnalysisReasoning('entry_review');
 const REASON_MAX_LENGTH = 300;
 const DEFAULT_CONFIDENCE = 50;
 const MAX_INDICATOR_LINES = 8;
@@ -551,8 +558,11 @@ export async function runEntryReview(input: EntryReviewInput): Promise<EntryRevi
             // pro tier: free면 서버 키 라우팅이 깨진다(분석 축과 동일).
             tier: ANALYSIS_TIER,
             userApiKey: input.userApiKey,
-            reasoning: false,
-            signal: AbortSignal.timeout(input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+            reasoning: ENTRY_REVIEW_REASONING,
+            signal: AbortSignal.timeout(
+                input.timeoutMs ??
+                    (ENTRY_REVIEW_REASONING ? REASONING_TIMEOUT_MS : DEFAULT_TIMEOUT_MS),
+            ),
             correlationId: input.correlationId,
         });
     } catch (err) {

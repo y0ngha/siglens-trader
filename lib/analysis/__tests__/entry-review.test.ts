@@ -332,7 +332,7 @@ describe('runEntryReview', () => {
             expect.objectContaining({
                 model: 'deepseek-v4.1-pro',
                 tier: 'pro',
-                reasoning: false,
+                reasoning: true,
                 correlationId: 'review-1',
             }),
         );
