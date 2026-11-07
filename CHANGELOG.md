@@ -1,5 +1,13 @@
 # Changelog
 
+# [0.41.0](https://github.com/y0ngha/siglens-trader/compare/v0.40.2...v0.41.0) (2026-11-07)
+
+
+### Features
+
+* SPY 50일선 아래 동시 보유 수 제한(기본 꺼짐) ([#102](https://github.com/y0ngha/siglens-trader/issues/102)) ([71c9d14](https://github.com/y0ngha/siglens-trader/commit/71c9d14006bad77f245c5a43bcd86805fe27b1a8))
+* Toss 보유로 DB 포지션을 맞추는 동기화(설정 페이지) ([#104](https://github.com/y0ngha/siglens-trader/issues/104)) ([b23b199](https://github.com/y0ngha/siglens-trader/commit/b23b199e062cd0f9e2464059c9fb1b66a66d75ba))
+
 ## [0.40.2](https://github.com/y0ngha/siglens-trader/compare/v0.40.1...v0.40.2) (2026-10-17)
 
 
