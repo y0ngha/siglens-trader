@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.42.0](https://github.com/y0ngha/siglens-trader/compare/v0.41.0...v0.42.0) (2026-11-07)
+
+
+### Features
+
+* AI 진입 리뷰만 추론 ON, 추론 시 호출 상한 5분 ([#105](https://github.com/y0ngha/siglens-trader/issues/105)) ([544629c](https://github.com/y0ngha/siglens-trader/commit/544629c1f2236797148eafcf5766a62966fcb749))
+
 # [0.41.0](https://github.com/y0ngha/siglens-trader/compare/v0.40.2...v0.41.0) (2026-11-07)
 
 
